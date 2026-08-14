@@ -16,6 +16,7 @@ export interface Session {
   phoneIpAddress: string | null;
   status: 'WAITING' | 'PAIRED' | 'CALLING';
   lastHeartbeat: Date | null;
+  tenantId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -48,7 +49,7 @@ export function generateToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
-export function createSession(laptopSocketId: string): Session {
+export function createSession(laptopSocketId: string, tenantId?: string): Session {
   const sessionId = 'sess_' + Math.random().toString(36).substring(2, 11);
   const token = generateToken();
   const now = new Date();
@@ -69,6 +70,7 @@ export function createSession(laptopSocketId: string): Session {
     phoneIpAddress: null,
     status: 'WAITING',
     lastHeartbeat: null,
+    tenantId: tenantId || undefined,
     createdAt: now,
     updatedAt: now
   };
@@ -90,13 +92,14 @@ export function getSessionBySocketId(socketId: string): Session | undefined {
   );
 }
 
-export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId?: string): Session {
+export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId?: string, tenantId?: string): Session {
   // 1. Reclaim the exact same session by ID
   if (previousSessionId && sessions.has(previousSessionId)) {
     const s = sessions.get(previousSessionId)!;
     s.laptopSocketId = laptopSocketId;
+    if (tenantId) s.tenantId = tenantId;
     s.updatedAt = new Date();
-    console.log(`[Session] Laptop reclaimed session ${s.id}`);
+    console.log(`[Session] Laptop reclaimed session ${s.id} (tenant: ${s.tenantId || 'unassigned'})`);
     return s;
   }
 
@@ -104,18 +107,19 @@ export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId
   const orphaned = Array.from(sessions.values()).find(s => !s.laptopSocketId);
   if (orphaned) {
     orphaned.laptopSocketId = laptopSocketId;
+    if (tenantId) orphaned.tenantId = tenantId;
     orphaned.updatedAt = new Date();
-    console.log(`[Session] Laptop reclaimed orphaned session ${orphaned.id}`);
+    console.log(`[Session] Laptop reclaimed orphaned session ${orphaned.id} (tenant: ${orphaned.tenantId || 'unassigned'})`);
     return orphaned;
   }
 
   // 3. Create fresh session
-  return createSession(laptopSocketId);
+  return createSession(laptopSocketId, tenantId);
 }
 
 export function pairPhone(
-  tokenOrSessionId: string, 
-  phoneSocketId: string, 
+  tokenOrSessionId: string,
+  phoneSocketId: string,
   phoneDeviceName: string,
   phoneBtAddress: string,
   phoneOsType: string,
@@ -140,6 +144,13 @@ export function pairPhone(
     return null;
   }
 
+  // Fail-closed: session must belong to a verified tenant
+  const tenantId = session.tenantId;
+  if (!tenantId) {
+    console.error(`[Pairing] Failed: Session ${session.id} has no assigned tenantId. Pairing rejected (fail-closed).`);
+    return null;
+  }
+
   session.phoneSocketId = phoneSocketId;
   session.phoneDeviceName = phoneDeviceName || 'Android Device';
   session.phoneBtAddress = phoneBtAddress || '48:D2:24:D3:5F:AA';
@@ -149,17 +160,18 @@ export function pairPhone(
   session.lastHeartbeat = new Date();
   session.updatedAt = new Date();
 
-  // Upsert into SQLite devices table
+  // Upsert into SQLite devices table with strict tenantId
   try {
     const devId = phoneBtAddress || 'dev_' + phoneDeviceName.replace(/\s+/g, '_');
     db.prepare(`
-      INSERT INTO devices (id, name, btAddress, osType, ipAddress, status, lastSeenAt)
-      VALUES (@id, @name, @btAddress, @osType, @ipAddress, 'ONLINE', @lastSeenAt)
+      INSERT INTO devices (id, name, btAddress, osType, ipAddress, status, tenantId, lastSeenAt)
+      VALUES (@id, @name, @btAddress, @osType, @ipAddress, 'ONLINE', @tenantId, @lastSeenAt)
       ON CONFLICT(id) DO UPDATE SET
         name = @name,
         osType = @osType,
         ipAddress = @ipAddress,
         status = 'ONLINE',
+        tenantId = @tenantId,
         lastSeenAt = @lastSeenAt
     `).run({
       id: devId,
@@ -167,6 +179,7 @@ export function pairPhone(
       btAddress: phoneBtAddress,
       osType: phoneOsType,
       ipAddress: phoneIpAddress,
+      tenantId: tenantId,
       lastSeenAt: new Date().toISOString()
     });
   } catch (err) {

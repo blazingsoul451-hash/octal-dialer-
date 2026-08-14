@@ -533,22 +533,25 @@ interface LegacyLog      { id: string; leadId: string; leadName: string; leadPho
 
 // ─── Prepared statements ──────────────────────────────────────────────────────
 const stmts = {
-  getCampaigns:    db.prepare(`SELECT * FROM campaigns ORDER BY createdAt DESC`),
-  insertCampaign:  db.prepare(`INSERT INTO campaigns (id, name, fileName, leadCount, createdAt) VALUES (@id, @name, @fileName, @leadCount, @createdAt)`),
-  getLeadsByCamp:  db.prepare(`SELECT * FROM leads WHERE campaignId = @campaignId AND status != 'ARCHIVED'`),
-  insertLead:      db.prepare(`INSERT INTO leads (id, campaignId, name, phone, status, createdAt) VALUES (@id, @campaignId, @name, @phone, @status, @createdAt)`),
-  getLead:         db.prepare(`SELECT * FROM leads WHERE id = @id`),
-  updateLeadStatus:db.prepare(`UPDATE leads SET status = @status, outcome = COALESCE(@outcome, outcome), duration = COALESCE(@duration, duration) WHERE id = @id`),
-  getLogs:         db.prepare(`SELECT * FROM call_logs ORDER BY timestamp DESC`),
-  getLogByLeadId:  db.prepare(`SELECT * FROM call_logs WHERE leadId = @leadId LIMIT 1`),
-  insertLog:       db.prepare(`INSERT INTO call_logs (id, leadId, leadName, leadPhone, campaignName, outcome, duration, timestamp) VALUES (@id, @leadId, @leadName, @leadPhone, @campaignName, @outcome, @duration, @timestamp)`),
-  updateLogOutcome:db.prepare(`UPDATE call_logs SET outcome = @outcome WHERE leadId = @leadId`),
+  getCampaigns:    db.prepare(`SELECT * FROM campaigns WHERE tenantId = @tenantId ORDER BY createdAt DESC`),
+  getCampaignById: db.prepare(`SELECT * FROM campaigns WHERE id = @id AND tenantId = @tenantId`),
+  insertCampaign:  db.prepare(`INSERT INTO campaigns (id, name, fileName, leadCount, tenantId, createdAt) VALUES (@id, @name, @fileName, @leadCount, @tenantId, @createdAt)`),
+  getLeadsByCamp:  db.prepare(`SELECT * FROM leads WHERE campaignId = @campaignId AND tenantId = @tenantId AND status != 'ARCHIVED'`),
+  insertLead:      db.prepare(`INSERT INTO leads (id, campaignId, name, phone, status, tenantId, createdAt) VALUES (@id, @campaignId, @name, @phone, @status, @tenantId, @createdAt)`),
+  getLead:         db.prepare(`SELECT * FROM leads WHERE id = @id AND tenantId = @tenantId`),
+  getLeadByIdOnly: db.prepare(`SELECT * FROM leads WHERE id = @id`),
+  updateLeadStatus:db.prepare(`UPDATE leads SET status = @status, outcome = COALESCE(@outcome, outcome), duration = COALESCE(@duration, duration) WHERE id = @id AND tenantId = @tenantId`),
+  getLogs:         db.prepare(`SELECT * FROM call_logs WHERE tenantId = @tenantId ORDER BY timestamp DESC`),
+  getLogByLeadId:  db.prepare(`SELECT * FROM call_logs WHERE leadId = @leadId AND tenantId = @tenantId LIMIT 1`),
+  insertLog:       db.prepare(`INSERT INTO call_logs (id, leadId, leadName, leadPhone, campaignName, outcome, duration, tenantId, timestamp) VALUES (@id, @leadId, @leadName, @leadPhone, @campaignName, @outcome, @duration, @tenantId, @timestamp)`),
+  updateLogOutcome:db.prepare(`UPDATE call_logs SET outcome = @outcome WHERE leadId = @leadId AND tenantId = @tenantId`),
 };
 
-// ─── Exported API (same signatures as the old JSON implementation) ─────────────
+// ─── Exported API (explicit tenantId required - fail closed) ─────────────
 
-export function getCampaigns(): Campaign[] {
-  return stmts.getCampaigns.all() as Campaign[];
+export function getCampaigns(tenantId: string): Campaign[] {
+  if (!tenantId) throw new Error('tenantId is required');
+  return stmts.getCampaigns.all({ tenantId }) as Campaign[];
 }
 
 export interface CampaignImportResult {
@@ -562,17 +565,19 @@ export interface CampaignImportResult {
 export function createCampaign(
   name: string,
   fileName: string,
-  rawLeads: { name: string; phone: string }[]
+  rawLeads: { name: string; phone: string }[],
+  tenantId: string
 ): CampaignImportResult {
+  if (!tenantId) throw new Error('tenantId is required');
   const campaignId = 'camp_' + Math.random().toString(36).substring(2, 11);
   const now = new Date().toISOString();
 
-  // Get current DNC list numbers for fast lookup
-  const dncRows = db.prepare(`SELECT phone FROM suppression_list`).all() as { phone: string }[];
+  // Get current DNC list numbers for fast lookup within this tenant
+  const dncRows = db.prepare(`SELECT phone FROM suppression_list WHERE tenantId = ?`).all(tenantId) as { phone: string }[];
   const dncSet = new Set<string>(dncRows.map(r => r.phone));
 
-  // Get existing lead phones across all campaigns to avoid cross-campaign duplicates
-  const existingRows = db.prepare(`SELECT phone FROM leads`).all() as { phone: string }[];
+  // Get existing lead phones across all campaigns in this tenant to avoid cross-campaign duplicates
+  const existingRows = db.prepare(`SELECT phone FROM leads WHERE tenantId = ?`).all(tenantId) as { phone: string }[];
   const existingSet = new Set<string>(existingRows.map(r => r.phone));
 
   let dedupedCount = 0;
@@ -601,11 +606,12 @@ export function createCampaign(
     validLeads.push({ name: lead.name || 'Unknown Lead', phone: norm });
   }
 
-  const newCampaign: Campaign = {
+  const newCampaign: Campaign & { tenantId: string } = {
     id: campaignId,
     name,
     fileName,
     leadCount: validLeads.length,
+    tenantId,
     createdAt: now
   };
 
@@ -619,12 +625,13 @@ export function createCampaign(
         name: validLeads[i].name,
         phone: validLeads[i].phone,
         status: 'PENDING',
+        tenantId,
         createdAt: now
       });
     }
 
-    db.prepare(`UPDATE campaigns SET leadCount = @count WHERE id = @id`)
-      .run({ count: validLeads.length, id: campaignId });
+    db.prepare(`UPDATE campaigns SET leadCount = @count WHERE id = @id AND tenantId = @tenantId`)
+      .run({ count: validLeads.length, id: campaignId, tenantId });
   });
 
   insertLeads();
@@ -638,36 +645,41 @@ export function createCampaign(
   };
 }
 
-export function getLeads(campaignId: string): Lead[] {
-  return stmts.getLeadsByCamp.all({ campaignId }) as Lead[];
+export function getLeads(campaignId: string, tenantId: string): Lead[] {
+  if (!tenantId) throw new Error('tenantId is required');
+  return stmts.getLeadsByCamp.all({ campaignId, tenantId }) as Lead[];
 }
 
-export function deleteLead(id: string): boolean {
-  const lead = stmts.getLead.get({ id }) as Lead | undefined;
+export function deleteLead(id: string, tenantId: string): boolean {
+  if (!tenantId) throw new Error('tenantId is required');
+  const lead = stmts.getLead.get({ id, tenantId }) as Lead | undefined;
   if (!lead) return false;
   const campaignId = lead.campaignId;
-  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE id = ?`).run(id);
+  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE id = ? AND tenantId = ?`).run(id, tenantId);
   if (campaignId) {
-    db.prepare(`UPDATE campaigns SET leadCount = (SELECT COUNT(*) FROM leads WHERE campaignId = ? AND status != 'ARCHIVED') WHERE id = ?`).run(campaignId, campaignId);
+    db.prepare(`UPDATE campaigns SET leadCount = (SELECT COUNT(*) FROM leads WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED') WHERE id = ? AND tenantId = ?`).run(campaignId, tenantId, campaignId, tenantId);
   }
   return info.changes > 0;
 }
 
-export function clearAllLeadsInCampaign(campaignId: string): number {
-  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE campaignId = ? AND status != 'ARCHIVED'`).run(campaignId);
-  db.prepare(`UPDATE campaigns SET leadCount = 0 WHERE id = ?`).run(campaignId);
+export function clearAllLeadsInCampaign(campaignId: string, tenantId: string): number {
+  if (!tenantId) throw new Error('tenantId is required');
+  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED'`).run(campaignId, tenantId);
+  db.prepare(`UPDATE campaigns SET leadCount = 0 WHERE id = ? AND tenantId = ?`).run(campaignId, tenantId);
   return info.changes;
 }
 
-export function clearFakeQueueLeads(): number {
+export function clearFakeQueueLeads(tenantId: string): number {
+  if (!tenantId) throw new Error('tenantId is required');
   const info = db.prepare(`
     UPDATE leads SET status = 'ARCHIVED' 
-    WHERE (name LIKE '%Sample%' OR name LIKE '%Dummy%' OR name LIKE '%Fake%' OR phone LIKE '%0000000%' OR campaignId LIKE '%sample%') AND status != 'ARCHIVED'
-  `).run();
+    WHERE (name LIKE '%Sample%' OR name LIKE '%Dummy%' OR name LIKE '%Fake%' OR phone LIKE '%0000000%' OR campaignId LIKE '%sample%') AND status != 'ARCHIVED' AND tenantId = ?
+  `).run(tenantId);
   db.prepare(`
     UPDATE campaigns 
-    SET leadCount = (SELECT COUNT(*) FROM leads WHERE campaignId = campaigns.id AND status != 'ARCHIVED')
-  `).run();
+    SET leadCount = (SELECT COUNT(*) FROM leads WHERE campaignId = campaigns.id AND tenantId = ? AND status != 'ARCHIVED')
+    WHERE tenantId = ?
+  `).run(tenantId, tenantId);
   return info.changes;
 }
 
@@ -675,28 +687,48 @@ export function updateLeadStatus(
   id: string,
   status: 'PENDING' | 'CALLING' | 'COMPLETED',
   outcome?: string,
-  duration?: number
+  duration?: number,
+  tenantId?: string
 ) {
-  stmts.updateLeadStatus.run({
-    id: id,
-    status,
-    outcome: outcome ?? null,
-    duration: duration ?? null
-  });
+  if (tenantId) {
+    stmts.updateLeadStatus.run({
+      id: id,
+      status,
+      outcome: outcome ?? null,
+      duration: duration ?? null,
+      tenantId
+    });
+  } else {
+    // If no tenantId provided, lookup lead first to enforce its tenantId
+    const lead = stmts.getLeadByIdOnly.get({ id }) as any;
+    if (lead && lead.tenantId) {
+      stmts.updateLeadStatus.run({
+        id: id,
+        status,
+        outcome: outcome ?? null,
+        duration: duration ?? null,
+        tenantId: lead.tenantId
+      });
+    }
+  }
 }
 
-export function getLogs(): CallLog[] {
-  return stmts.getLogs.all() as CallLog[];
+export function getLogs(tenantId: string): CallLog[] {
+  if (!tenantId) throw new Error('tenantId is required');
+  return stmts.getLogs.all({ tenantId }) as CallLog[];
 }
 
-export function createLog(leadId: string, outcome: string, duration: number): CallLog | null {
-  const lead = stmts.getLead.get({ id: leadId }) as Lead | undefined;
+export function createLog(leadId: string, outcome: string, duration: number, tenantId?: string): CallLog | null {
+  const lead = (tenantId ? stmts.getLead.get({ id: leadId, tenantId }) : stmts.getLeadByIdOnly.get({ id: leadId })) as Lead | undefined;
   if (!lead) return null;
 
-  const campaign = db.prepare(`SELECT * FROM campaigns WHERE id = @campaignId`)
-    .get({ campaignId: lead.campaignId }) as Campaign | undefined;
+  const resolvedTenantId = (lead as any).tenantId || tenantId;
+  if (!resolvedTenantId) return null;
 
-  const log: CallLog = {
+  const campaign = db.prepare(`SELECT * FROM campaigns WHERE id = @campaignId AND tenantId = @tenantId`)
+    .get({ campaignId: lead.campaignId, tenantId: resolvedTenantId }) as Campaign | undefined;
+
+  const log: CallLog & { tenantId: string } = {
     id: 'log_' + Math.random().toString(36).substring(2, 11),
     leadId,
     leadName: lead.name,
@@ -704,6 +736,7 @@ export function createLog(leadId: string, outcome: string, duration: number): Ca
     campaignName: campaign ? campaign.name : 'Unknown Campaign',
     outcome,
     duration,
+    tenantId: resolvedTenantId,
     timestamp: new Date().toISOString()
   };
 
@@ -713,7 +746,8 @@ export function createLog(leadId: string, outcome: string, duration: number): Ca
       id: leadId,
       status: 'COMPLETED',
       outcome,
-      duration
+      duration,
+      tenantId: resolvedTenantId
     });
   });
 
@@ -721,8 +755,9 @@ export function createLog(leadId: string, outcome: string, duration: number): Ca
   return log;
 }
 
-export function createManualLog(phone: string, name: string, outcome: string, duration: number): CallLog {
-  const log: CallLog = {
+export function createManualLog(phone: string, name: string, outcome: string, duration: number, tenantId: string): CallLog {
+  if (!tenantId) throw new Error('tenantId is required');
+  const log: CallLog & { tenantId: string } = {
     id: 'log_' + Math.random().toString(36).substring(2, 11),
     leadId: 'manual_' + Date.now(),
     leadName: name || 'Manual Quick Dial',
@@ -730,6 +765,7 @@ export function createManualLog(phone: string, name: string, outcome: string, du
     campaignName: 'Manual Quick Dial',
     outcome,
     duration,
+    tenantId,
     timestamp: new Date().toISOString()
   };
   stmts.insertLog.run(log);
@@ -745,11 +781,11 @@ export interface LegacyDb {
   logs: CallLog[];
 }
 
-export function loadDb(): LegacyDb {
+export function loadDb(tenantId: string): LegacyDb {
   return {
-    campaigns: getCampaigns(),
-    leads: db.prepare(`SELECT * FROM leads`).all() as Lead[],
-    logs: getLogs()
+    campaigns: getCampaigns(tenantId),
+    leads: db.prepare(`SELECT * FROM leads WHERE tenantId = ?`).all(tenantId) as Lead[],
+    logs: getLogs(tenantId)
   };
 }
 

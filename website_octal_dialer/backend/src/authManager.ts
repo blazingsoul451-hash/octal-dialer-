@@ -41,6 +41,7 @@ export interface AuthUser {
   id: string;
   username: string;
   role: string;
+  tenantId: string;
 }
 
 export interface AuthSession {
@@ -75,7 +76,7 @@ function verifyPassword(password: string, stored: string): boolean {
 const stmts = {
   findUserByUsername: db.prepare(`SELECT * FROM users WHERE username = @username`),
   findUserById:       db.prepare(`SELECT * FROM users WHERE id = @id`),
-  insertUser:         db.prepare(`INSERT INTO users (id, username, passwordHash, role, createdAt) VALUES (@id, @username, @passwordHash, @role, @createdAt)`),
+  insertUser:         db.prepare(`INSERT INTO users (id, username, passwordHash, role, tenantId, createdAt) VALUES (@id, @username, @passwordHash, @role, @tenantId, @createdAt)`),
   countUsers:         db.prepare(`SELECT COUNT(*) as c FROM users`),
   insertSession:      db.prepare(`INSERT INTO sessions_store (id, userId, token, expiresAt, createdAt) VALUES (@id, @userId, @token, @expiresAt, @createdAt)`),
   findSession:        db.prepare(`SELECT * FROM sessions_store WHERE token = @token`),
@@ -97,6 +98,7 @@ export function ensureDefaultAdmin(): void {
     username: 'admin',
     passwordHash: hash,
     role: 'admin',
+    tenantId: 'tenant_default',
     createdAt: new Date().toISOString()
   });
 
@@ -113,20 +115,27 @@ export function ensureDefaultAdmin(): void {
 
 // ─── Auth operations ──────────────────────────────────────────────────────────
 
-/** Validate credentials → return JWT token (Phase 1: JWT) or null */
+/** Validate credentials → return JWT token (Phase 4: with strict tenantId) or null */
 export function login(username: string, password: string): string | null {
   const user = stmts.findUserByUsername.get({ username }) as any;
   if (!user) return null;
   if (!verifyPassword(password, user.passwordHash)) return null;
 
+  // Strict check: User must belong to a valid tenant (fail-closed)
+  if (!user.tenantId) {
+    console.error(`[Auth] User ${username} has no associated tenantId. Login rejected.`);
+    return null;
+  }
+
   // Clean up expired legacy sessions (maintenance)
   stmts.deleteExpired.run({ now: new Date().toISOString() });
 
-  // PHASE 1: Issue JWT token (no sessions_store entry)
+  // PHASE 4: Include trusted tenant context in JWT token
   const payload = {
     sub: user.id,
     username: user.username,
-    role: user.role
+    role: user.role,
+    tenantId: user.tenantId
   };
 
   const token = jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
@@ -134,21 +143,26 @@ export function login(username: string, password: string): string | null {
   return token;
 }
 
-/** Validate a token → return user or null (JWT Bridge: accepts both JWT and legacy) */
+/** Validate a token → return user or null (Strict Fail-Closed: requires valid tenantId) */
 export function validateToken(token: string): AuthUser | null {
   if (!token) return null;
 
-  // ─── PHASE 1: Try JWT verification first ───
+  // ─── PHASE 4: JWT verification with strict tenantId requirement ───
   try {
     const decoded = jwt.verify(token, getJWTSecret()) as any;
 
-    // JWT payload structure: { sub, username, role, iat, exp }
-    if (decoded.sub && decoded.username && decoded.role) {
+    if (decoded.sub && decoded.username && decoded.role && decoded.tenantId) {
       return {
         id: decoded.sub,
         username: decoded.username,
-        role: decoded.role
+        role: decoded.role,
+        tenantId: decoded.tenantId
       };
+    }
+    // If tenantId is missing from JWT payload, fail closed
+    if (decoded.sub && !decoded.tenantId) {
+      console.warn('[Auth] Rejected JWT token missing tenantId claim.');
+      return null;
     }
   } catch (err) {
     // Not a valid JWT or expired — fall through to legacy validation
@@ -165,9 +179,17 @@ export function validateToken(token: string): AuthUser | null {
   }
 
   const user = stmts.findUserById.get({ id: session.userId }) as any;
-  if (!user) return null;
+  if (!user || !user.tenantId) {
+    // Missing user or unassigned tenant -> fail closed
+    return null;
+  }
 
-  return { id: user.id, username: user.username, role: user.role };
+  return {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    tenantId: user.tenantId
+  };
 }
 
 /** Destroy a session (logout)
