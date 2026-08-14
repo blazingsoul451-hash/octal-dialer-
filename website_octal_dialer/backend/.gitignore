@@ -1,0 +1,41 @@
+# Environment variables (contains secrets)
+.env
+.env.*
+*.env
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# SQLite databases (may contain sensitive data)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.temp
+test_*.js

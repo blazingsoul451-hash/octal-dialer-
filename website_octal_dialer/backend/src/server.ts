@@ -1,3 +1,7 @@
+// Load environment variables FIRST before any other imports
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import { spawn } from 'child_process';
 import { createServer } from 'http';
@@ -8,7 +12,6 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import ExcelJS from 'exceljs';
-import dotenv from 'dotenv';
 import { chromium } from 'playwright';
 
 import {
@@ -67,8 +70,6 @@ import {
   expireCommand,
   getActiveCommands
 } from './safetyController';
-
-dotenv.config();
 
 const app = express();
 
