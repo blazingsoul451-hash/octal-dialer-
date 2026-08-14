@@ -1,0 +1,1125 @@
+import React, { useState, useEffect } from 'react';
+import {
+  PhoneCall, QrCode, Database, Upload, History,
+  Bluetooth, PlaySquare, Sun, Moon, LogOut, ShieldOff, ShieldAlert, LayoutDashboard, Menu, Mail,
+  Play, Filter, Layers, Eye, Settings, Download, FileInput, Users, FileText,
+  Facebook, Share2, Terminal, Bot, Shield
+} from 'lucide-react';
+import { useSocket } from './hooks/useSocket';
+import { DashboardOverview } from './components/DashboardOverview';
+import { ConnectionPanel } from './components/ConnectionPanel';
+import { ScraperFilesPanel } from './components/ScraperFilesPanel';
+import { ImportPanel } from './components/ImportPanel';
+import { LeadQueue } from './components/LeadQueue';
+import { CallLog } from './components/CallLog';
+import { DispositionModal } from './components/DispositionModal';
+import { LoginScreen } from './components/LoginScreen';
+import { DncPanel } from './components/DncPanel';
+import { AutoEmailer } from './components/AutoEmailer';
+import { FacebookScraper } from './components/FacebookScraper';
+import { FacebookAutoPoster } from './components/FacebookAutoPoster';
+import { AdminPanel } from './components/AdminPanel';
+import { LeadsTable } from './components/LeadsTable';
+import { AdminInterface } from './components/admin/AdminInterface';
+import type { Campaign } from './types';
+
+const hostname = window.location.hostname === 'localhost' ? '127.0.0.1' : (window.location.hostname || '127.0.0.1');
+const SERVER_URL = `http://${hostname}:3000`;
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'admin' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs'>('dashboard');
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
+  const [lanServerUrl, setLanServerUrl] = useState<string>(SERVER_URL);
+
+  // ─── Auth state ─────────────────────────────────────────────────────────────
+  const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem('octal_auth_token'));
+  const [authUser, setAuthUser] = useState<string | null>(() => localStorage.getItem('octal_auth_user'));
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // ─── Permission state ───────────────────────────────────────────────────────
+  const [userRole, setUserRole] = useState<'admin' | 'agent'>('agent');
+  const [userPermissions, setUserPermissions] = useState<Record<string, boolean>>({
+    octalDialer: false,
+    googleScraper: false,
+    autoEmailer: false,
+    facebookScraper: false,
+    facebookPoster: false
+  });
+
+  // ─── Collapsible Hover & Pinned Navigation Drawer State ──────────
+  const [isNavPinned, setIsNavPinned] = useState(false);
+  const [isNavHovered, setIsNavHovered] = useState(false);
+  const isNavExpanded = isNavPinned || isNavHovered;
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Automatically close mobile menu when tab changes
+  useEffect(() => {
+    setIsMobileMenuOpen(false);
+  }, [activeTab]);
+
+  const [openAccordion, setOpenAccordion] = useState<Record<string, boolean>>({
+    octalDialer: true,
+    googleScraper: false,
+    autoEmailer: false,
+    facebookScraper: false,
+    facebookPoster: false
+  });
+
+  const [hoveredAccordion, setHoveredAccordion] = useState<string | null>(null);
+
+  // Synchronize accordion open/collapse state with active tab
+  useEffect(() => {
+    const isDialerSubTab = ['dialer', 'pair', 'upload', 'dnc', 'history'].includes(activeTab);
+    const isScraperSubTab = ['scraper', 'scraper-import', 'scraper-settings'].includes(activeTab);
+    const isEmailerSubTab = ['emailer-gmail', 'emailer-campaign', 'emailer-templates', 'emailer-leads'].includes(activeTab);
+    const isFbScraperSubTab = ['fb-scraper', 'fb-scraper-files'].includes(activeTab);
+    const isFbPosterSubTab = ['fb-poster-accounts', 'fb-poster-campaigns', 'fb-poster-scheduler', 'fb-poster-joiner', 'fb-poster-logs'].includes(activeTab);
+
+    if (isDialerSubTab) {
+      setOpenAccordion({ octalDialer: true, googleScraper: false, autoEmailer: false, facebookScraper: false, facebookPoster: false });
+    } else if (isScraperSubTab) {
+      setOpenAccordion({ octalDialer: false, googleScraper: true, autoEmailer: false, facebookScraper: false, facebookPoster: false });
+    } else if (isEmailerSubTab) {
+      setOpenAccordion({ octalDialer: false, googleScraper: false, autoEmailer: true, facebookScraper: false, facebookPoster: false });
+    } else if (isFbScraperSubTab) {
+      setOpenAccordion({ octalDialer: false, googleScraper: false, autoEmailer: false, facebookScraper: true, facebookPoster: false });
+    } else if (isFbPosterSubTab) {
+      setOpenAccordion({ octalDialer: false, googleScraper: false, autoEmailer: false, facebookScraper: false, facebookPoster: true });
+    } else {
+      setOpenAccordion({ octalDialer: false, googleScraper: false, autoEmailer: false, facebookScraper: false, facebookPoster: false });
+    }
+  }, [activeTab]);
+
+  const toggleAccordion = (key: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    // Toggle accordion open/closed
+    const newState: Record<string, boolean> = { octalDialer: false, googleScraper: false, autoEmailer: false, facebookScraper: false, facebookPoster: false };
+    newState[key] = !openAccordion[key];
+    setOpenAccordion(newState);
+
+    // When opening, select default tab for that module
+    if (newState[key]) {
+      if (key === 'octalDialer') {
+        setActiveTab('dialer');
+      } else if (key === 'googleScraper') {
+        setActiveTab('scraper');
+      } else if (key === 'autoEmailer') {
+        setActiveTab('emailer-gmail');
+      } else if (key === 'facebookScraper') {
+        setActiveTab('fb-scraper');
+      } else if (key === 'facebookPoster') {
+        setActiveTab('fb-poster-accounts');
+      }
+    }
+  };
+
+  const handleLogin = (token: string, username: string) => {
+    setAuthToken(token);
+    setAuthUser(username);
+  };
+
+  const handleLogout = async () => {
+    if (authToken) {
+      await fetch(`${SERVER_URL}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      }).catch(() => {});
+    }
+    localStorage.removeItem('octal_auth_token');
+    localStorage.removeItem('octal_auth_user');
+    setAuthToken(null);
+    setAuthUser(null);
+  };
+
+  // Bright Mode / Dark Mode state
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (localStorage.getItem('octal_theme') as 'dark' | 'light') || 'dark';
+  });
+
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    localStorage.setItem('octal_theme', next);
+  };
+
+  // Verify stored auth token on mount
+  useEffect(() => {
+    const verifyToken = async () => {
+      if (!authToken) {
+        setAuthChecked(true);
+        return;
+      }
+      try {
+        const res = await fetch(`${SERVER_URL}/auth/verify`, {
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        if (!res.ok) {
+          // Token invalid, clear it
+          localStorage.removeItem('octal_auth_token');
+          localStorage.removeItem('octal_auth_user');
+          setAuthToken(null);
+          setAuthUser(null);
+        }
+      } catch (err) {
+        console.error('Error verifying token:', err);
+      } finally {
+        setAuthChecked(true);
+      }
+    };
+    verifyToken();
+  }, []);
+
+  // Fetch user role and permissions
+  useEffect(() => {
+    if (!authToken) return;
+
+    const fetchUserData = async () => {
+      try {
+        // Get user role
+        const res = await fetch(`${lanServerUrl}/auth/me`, {
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setUserRole(data.user.role);
+
+          // Fetch module permissions
+          const permRes = await fetch(`${lanServerUrl}/auth/permissions`, {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+          });
+
+          if (permRes.ok) {
+            const permissions = await permRes.json();
+            setUserPermissions(permissions);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching user data:', err);
+      }
+    };
+
+    fetchUserData();
+  }, [authToken, lanServerUrl]);
+
+  // Fetch Server Info (LAN IP) on mount
+  useEffect(() => {
+    fetch(`${SERVER_URL}/info`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.localIP && data.localIP !== 'localhost') {
+          setLanServerUrl(`http://${data.localIP}:3000`);
+        }
+      })
+      .catch(err => console.error('Error fetching server info:', err));
+  }, []);
+
+  // Disposition popup states
+  const [dispOpen, setDispOpen] = useState(false);
+  const [dispLeadId, setDispLeadId] = useState('');
+  const [dispLeadName, setDispLeadName] = useState('');
+
+  // Pass auth token to socket connection
+  const socketData = useSocket(SERVER_URL, authToken || undefined);
+
+  const fetchCampaigns = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${SERVER_URL}/campaigns`, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCampaigns(data);
+      }
+    } catch (err) {
+      console.error('Error fetching campaigns:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (authToken) {
+      fetchCampaigns();
+    }
+  }, [authToken]);
+
+  const showToast = (message: string, type: 'success' | 'info' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const handleImportSuccess = (campaignName: string, count: number) => {
+    showToast(`Campaign "${campaignName}" imported with ${count} leads!`, 'success');
+    fetchCampaigns();
+    setActiveTab('dialer'); // auto redirect to dialer
+  };
+
+  const triggerDisposition = (leadId: string, leadName: string) => {
+    setDispLeadId(leadId);
+    setDispLeadName(leadName);
+    setDispOpen(true);
+  };
+
+  const isLight = theme === 'light';
+
+  // Synchronize document theme class for Tailwind dark: modifiers
+  useEffect(() => {
+    if (isLight) {
+      document.documentElement.classList.remove('dark');
+    } else {
+      document.documentElement.classList.add('dark');
+    }
+  }, [isLight]);
+
+  // ─── Gate: show spinner while checking stored token ──────────────────────────
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-slate-500 font-mono text-sm animate-pulse">Authenticating...</div>
+      </div>
+    );
+  }
+
+  // ─── Gate: show login screen if not authenticated ─────────────────────────────
+  if (!authToken) {
+    return <LoginScreen serverUrl={SERVER_URL} onLogin={handleLogin} />;
+  }
+
+  return (
+    <div className={`min-h-screen w-full max-w-full overflow-x-hidden flex flex-col font-sans transition-colors ${
+      isLight ? 'bg-slate-100 text-slate-900' : 'bg-[#030712] text-slate-100'
+    }`}>
+      
+      {/* Toast Notification Banner */}
+      {toast && (
+        <div className={`fixed top-5 right-5 z-50 p-4 border-2 rounded-2xl shadow-2xl flex items-center gap-3 animate-bounce ${
+          isLight ? 'bg-white border-emerald-500 text-slate-900' : 'bg-slate-900 border-emerald-500 text-white'
+        }`}>
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+          <span className="text-xs font-mono font-bold">{toast.message}</span>
+        </div>
+      )}
+
+      {/* Main Octal Accounts Style Rounded Header Block (Fixed Top) */}
+      <header className={`fixed top-0 right-0 left-0 z-40 transition-all duration-300 ${
+        isNavExpanded ? 'md:left-64' : 'md:left-16'
+      } ${
+        isLight 
+          ? 'bg-[#f8fafc] text-slate-900' 
+          : 'bg-[#030712] text-white'
+      }`}>
+        <div className={`mr-4 ml-4 md:ml-0.5 my-2 px-5 h-14 rounded-2xl border flex items-center justify-between gap-4 transition-all duration-300 ${
+          isLight
+            ? 'bg-white border-slate-200 shadow-md shadow-slate-200/50 text-slate-900'
+            : 'bg-[#090d16] border-slate-800 shadow-lg text-white'
+        }`}>
+          
+          {/* Left: Brand Identity & Menu Toggle */}
+          <div className="flex items-center gap-4 select-none">
+            <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setActiveTab('dashboard')}>
+              
+              {/* Desktop Menu Icon Button */}
+              <button 
+                onClick={(e) => { e.stopPropagation(); setIsNavPinned(!isNavPinned); }}
+                title={isNavPinned ? "Unpin Navigation Sidebar" : "Pin Navigation Sidebar Open"}
+                className={`hidden md:block p-1.5 rounded-lg transition-all cursor-pointer ${
+                  isNavPinned
+                    ? isLight ? 'text-amber-700 bg-amber-50 border border-amber-200' : 'text-amber-400 bg-slate-900 border border-amber-500/30'
+                    : isLight ? 'text-slate-800 hover:bg-slate-100 border border-slate-200' : 'text-slate-200 hover:bg-slate-800 border border-slate-700'
+                }`}
+              >
+                <Menu className="w-5 h-5 stroke-[2.5]" />
+              </button>
+
+              {/* Mobile Menu Icon Button */}
+              <button 
+                onClick={(e) => { e.stopPropagation(); setIsMobileMenuOpen(!isMobileMenuOpen); }}
+                title="Toggle Mobile Drawer"
+                className={`block md:hidden p-1.5 rounded-lg transition-all cursor-pointer ${
+                  isMobileMenuOpen
+                    ? isLight ? 'text-amber-700 bg-amber-50 border border-amber-200' : 'text-amber-400 bg-slate-900 border border-amber-500/30'
+                    : isLight ? 'text-slate-800 hover:bg-slate-100 border border-slate-200' : 'text-slate-200 hover:bg-slate-800 border border-slate-700'
+                }`}
+              >
+                <Menu className="w-5 h-5 stroke-[2.5]" />
+              </button>
+
+              {/* Octal Dialer Premium Gradient Logo Typography */}
+              <div className="flex items-center gap-1.5 font-display tracking-tight text-xl font-black select-none">
+                <span className={isLight ? 'text-slate-900' : 'text-white'}>
+                  OCTAL
+                </span>
+                <span className="bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 dark:from-amber-400 dark:via-amber-500 dark:to-amber-600 bg-clip-text text-transparent font-black">
+                  DIALER
+                </span>
+              </div>
+            </div>
+
+            <div className="hidden md:flex items-center gap-2 pl-4 border-l border-slate-300 dark:border-slate-700/40 text-xs font-mono">
+              <span className="text-slate-500 font-bold uppercase text-[10px] tracking-wider">WORKSPACE</span>
+              <span className="text-slate-400">/</span>
+              <span className="text-amber-600 dark:text-amber-400 font-black capitalize">{activeTab.replace('-', ' ')}</span>
+            </div>
+          </div>
+
+          {/* Right: Octal Accounts Style Action Bar */}
+          <div className="flex items-center gap-3 select-none">
+            
+            {/* Phone Status Pill */}
+            <button
+              onClick={() => setActiveTab('pair')}
+              title="Click to manage Bluetooth Phone Link connection"
+              className={`hidden sm:flex items-center gap-2 px-3 py-1 rounded-full border transition-all cursor-pointer font-extrabold text-[11px] ${
+                socketData.phoneConnected
+                  ? isLight
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-900 shadow-sm'
+                    : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                  : isLight
+                    ? 'bg-red-50 border-red-200 text-red-800 shadow-sm'
+                    : 'bg-red-500/10 border-red-500/30 text-red-400'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${socketData.phoneConnected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+              <span>{socketData.phoneConnected ? `Phone Connected` : 'Phone Offline'}</span>
+            </button>
+
+            {/* User Dropdown Pill (mohsin octal style) */}
+            <div className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full border text-xs font-bold ${
+              isLight ? 'bg-slate-100 border-slate-300 text-slate-900 shadow-sm' : 'bg-slate-900 border-slate-800 text-slate-200'
+            }`}>
+              <span className="capitalize">{authUser || 'mohsin octal'}</span>
+              <span className="text-slate-500 text-[10px] font-black">∨</span>
+            </div>
+
+            {/* Action Circles (Octal Accounts circular button icons) */}
+            {/* Quick Upload Action */}
+            <button
+              onClick={() => setActiveTab('upload')}
+              title="Upload Lead Sheet"
+              className={`w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-sm ${
+                isLight 
+                  ? 'bg-slate-200 text-slate-850 hover:bg-slate-300' 
+                  : 'bg-slate-900 text-white hover:bg-slate-850'
+              }`}
+            >
+              <Upload className="w-4 h-4" />
+            </button>
+
+            {/* 🎤 Voice Search / Mic */}
+            <button
+              onClick={() => setActiveTab('dialer')}
+              title="Voice Search / Assistant"
+              className="w-8 h-8 rounded-full bg-slate-900 text-white hover:bg-slate-800 flex items-center justify-center text-xs transition-all cursor-pointer shadow-sm"
+            >
+              🎤
+            </button>
+
+            {/* ⚙️ Settings / Theme Toggle Circle */}
+            <button
+              onClick={toggleTheme}
+              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
+                isLight
+                  ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200 font-bold'
+                  : 'bg-slate-900 border-slate-800 text-amber-400 hover:text-white'
+              }`}
+              title={isLight ? 'Switch to Dark Mode' : 'Switch to Bright Mode'}
+            >
+              {isLight ? <Moon className="w-4 h-4 text-slate-800" /> : <Sun className="w-4 h-4 text-amber-400" />}
+            </button>
+
+            {/* 👤 User Profile Avatar Circle with green online status dot */}
+            <div className="relative cursor-pointer" title={`Logged in as ${authUser}`}>
+              <div className={`w-8 h-8 rounded-full font-bold text-xs flex items-center justify-center border ${
+                isLight ? 'bg-slate-100 text-slate-900 border-slate-300' : 'bg-slate-900 text-amber-400 border-slate-800'
+              }`}>
+                👤
+              </div>
+              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00A651] border-2 border-white dark:border-slate-800" />
+            </div>
+
+            {/* Download APK Link for Mobile */}
+            <a
+              href="/download/apk"
+              title="Download Android Dialer APK"
+              className={`p-1.5 rounded-lg transition-all flex items-center justify-center cursor-pointer ${
+                isLight
+                  ? 'text-emerald-700 hover:text-emerald-950 hover:bg-emerald-50'
+                  : 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/30'
+              }`}
+            >
+              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                <path d="M17.5 12.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5m-11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5m10.3-4.72l1.9-3.29a.498.498 0 00-.18-.68.498.498 0 00-.68.18l-1.92 3.32C14.73 6.47 13.41 6 12 6s-2.73.47-3.92 1.31L6.16 3.99a.498.498 0 00-.68-.18.498.498 0 00-.18.68l1.9 3.29C4.54 9.17 3 11.9 3 15h18c0-3.1-1.54-5.83-4.2-7.22z"/>
+              </svg>
+            </a>
+
+            {/* Logout */}
+            <button
+              id="btn-logout"
+              onClick={handleLogout}
+              title="Sign out"
+              className={`p-1.5 rounded-lg transition-all cursor-pointer ${
+                isLight
+                  ? 'text-slate-700 hover:text-red-700 hover:bg-red-50'
+                  : 'text-slate-400 hover:text-red-400 hover:bg-red-950/30'
+              }`}
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Container Layout */}
+      <div className="w-full min-h-screen flex flex-col pt-20">
+        
+        {/* Backdrop overlay for mobile drawer */}
+        {isMobileMenuOpen && (
+          <div 
+            className="fixed inset-0 z-45 bg-black/60 backdrop-blur-sm md:hidden"
+            onClick={() => setIsMobileMenuOpen(false)}
+          />
+        )}
+
+        {/* Octal Accounts Style Fixed Left Icon Rail (Starts from Upper Edge top-0) */}
+        <nav 
+          onMouseEnter={() => setIsNavHovered(true)}
+          onMouseLeave={() => setIsNavHovered(false)}
+          className={`fixed top-0 bottom-0 z-50 transition-all duration-300 ease-in-out border-r shadow-2xl flex flex-col justify-between select-none ${
+            isNavExpanded 
+              ? 'w-64 p-4 left-0' 
+              : 'w-16 p-2.5 items-center -left-16 md:left-0'
+          } ${
+            isMobileMenuOpen ? 'left-0 w-64 p-4' : ''
+          } ${
+            isLight ? 'bg-white border-slate-200 text-slate-900 shadow-slate-300/50' : 'bg-[#090d16] border-slate-800 text-white'
+          }`}
+        >
+          {/* Main Top Actions & Navigation */}
+          <div className="space-y-2 w-full pt-2">
+            
+            {/* Dashboard Link */}
+            <button
+              onClick={() => setActiveTab('dashboard')}
+              title="Dashboard"
+              className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-3 pr-2 py-1.5 justify-start text-xs font-bold' : 'justify-center py-2'} rounded-lg transition-all duration-500 cursor-pointer ${
+                activeTab === 'dashboard'
+                  ? isLight
+                    ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
+                    : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500 shadow-sm'
+                  : isLight
+                    ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                    : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+              }`}
+            >
+              <LayoutDashboard className={`w-4 h-4 shrink-0 ${activeTab === 'dashboard' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
+              {isNavExpanded && <span className="truncate">Dashboard</span>}
+            </button>
+
+            {/* Admin Panel - only for admins */}
+            {userRole === 'admin' && (
+              <button
+                onClick={() => setActiveTab('admin')}
+                className={`w-full flex items-center gap-2.5 pl-3.5 pr-2.5 py-2.5 rounded-lg transition-all duration-500 ${
+                  activeTab === 'admin'
+                    ? isLight
+                      ? 'bg-purple-500/15 text-purple-950 font-bold border-l-3 border-purple-500 shadow-sm'
+                      : 'bg-purple-500/15 text-purple-400 font-bold border-l-3 border-purple-500 shadow-sm'
+                    : isLight
+                      ? 'text-slate-800 hover:text-purple-600 hover:bg-purple-500/5 hover:translate-x-0.5 shadow-sm'
+                      : 'text-slate-200 hover:text-purple-400 hover:bg-purple-500/10 hover:translate-x-0.5 shadow-sm'
+                }`}
+              >
+                <Shield className={`w-4 h-4 shrink-0 ${activeTab === 'admin' ? (isLight ? 'text-purple-700' : 'text-purple-400') : 'text-slate-400'}`} />
+                {isNavExpanded && <span className="truncate">Admin Panel</span>}
+              </button>
+            )}
+
+            {/* Leads Database */}
+            <button
+              onClick={() => setActiveTab('leads')}
+              className={`w-full flex items-center gap-2.5 pl-3.5 pr-2.5 py-2.5 rounded-lg transition-all duration-500 ${
+                activeTab === 'leads'
+                  ? isLight
+                    ? 'bg-blue-500/15 text-blue-950 font-bold border-l-3 border-blue-500 shadow-sm'
+                    : 'bg-blue-500/15 text-blue-400 font-bold border-l-3 border-blue-500 shadow-sm'
+                  : isLight
+                    ? 'text-slate-800 hover:text-blue-600 hover:bg-blue-500/5 hover:translate-x-0.5 shadow-sm'
+                    : 'text-slate-200 hover:text-blue-400 hover:bg-blue-500/10 hover:translate-x-0.5 shadow-sm'
+              }`}
+            >
+              <Database className={`w-4 h-4 shrink-0 ${activeTab === 'leads' ? (isLight ? 'text-blue-700' : 'text-blue-400') : 'text-slate-400'}`} />
+              {isNavExpanded && <span className="truncate">Leads Database</span>}
+            </button>
+
+            {/* Accordion Categorized Navigation */}
+            {isNavExpanded ? (
+              <div className="space-y-4 text-left overflow-y-auto max-h-[calc(100vh-140px)] pr-1 pt-2">
+                
+                {/* OCTAL Dialer Group */}
+                {(userRole === 'admin' || userPermissions.octalDialer) && (
+                <div
+                  className="space-y-1.5"
+                  onMouseEnter={() => setHoveredAccordion('octalDialer')}
+                  onMouseLeave={() => setHoveredAccordion(null)}
+                >
+                  <button
+                    onClick={(e) => toggleAccordion('octalDialer', e)}
+                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-500 cursor-pointer ${
+                      (openAccordion.octalDialer || hoveredAccordion === 'octalDialer')
+                        ? isLight
+                          ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30'
+                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                        : isLight
+                          ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                          : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <PhoneCall className={`w-4.5 h-4.5 shrink-0 ${(openAccordion.octalDialer || hoveredAccordion === 'octalDialer') ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                        <span className={(openAccordion.octalDialer || hoveredAccordion === 'octalDialer') ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
+                          OCTAL
+                        </span>
+                        <span className="bg-gradient-to-r from-amber-500 to-amber-600 dark:from-amber-400 dark:to-amber-500 bg-clip-text text-transparent font-black">
+                          DIALER
+                        </span>
+                      </div>
+                    </div>
+                    <span className={`font-bold text-[10px] ${(openAccordion.octalDialer || hoveredAccordion === 'octalDialer') ? 'text-amber-500' : (isLight ? 'text-slate-500' : 'text-slate-400')}`}>
+                      {(openAccordion.octalDialer || hoveredAccordion === 'octalDialer') ? '−' : '+'}
+                    </span>
+                  </button>
+                  <div className={`overflow-hidden transition-all duration-700 ease-in-out ${
+                    (openAccordion.octalDialer || hoveredAccordion === 'octalDialer') ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
+                  }`}>
+                    <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-2 pb-2">
+                      {[
+                        { id: 'dialer', label: 'Auto Dialer', icon: PlaySquare },
+                        { id: 'pair', label: 'Connect to Phone', icon: Bluetooth },
+                        { id: 'upload', label: 'Upload Sheet', icon: Upload },
+                        { id: 'dnc', label: 'DNC Suppression', icon: ShieldAlert },
+                        { id: 'history', label: 'Call Logs', icon: History },
+                      ].map((item, idx) => {
+                        const Icon = item.icon;
+                        const active = activeTab === item.id;
+                        return (
+                          <button
+                            key={item.label + idx}
+                            onClick={() => setActiveTab(item.id as any)}
+                            className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              active
+                                ? isLight
+                                  ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
+                                  : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500'
+                                : isLight
+                                  ? 'text-slate-700 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5'
+                                  : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                            <span className="truncate">{item.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+                )}
+
+                {/* Google Scraper Group */}
+                {(userRole === 'admin' || userPermissions.googleScraper) && (
+                <div
+                  className="space-y-1.5"
+                  onMouseEnter={() => setHoveredAccordion('googleScraper')}
+                  onMouseLeave={() => setHoveredAccordion(null)}
+                >
+                  <button
+                    onClick={(e) => toggleAccordion('googleScraper', e)}
+                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-500 cursor-pointer ${
+                      (openAccordion.googleScraper || hoveredAccordion === 'googleScraper')
+                        ? isLight
+                          ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30'
+                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                        : isLight
+                          ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                          : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Database className={`w-4.5 h-4.5 shrink-0 ${(openAccordion.googleScraper || hoveredAccordion === 'googleScraper') ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                        <span className={(openAccordion.googleScraper || hoveredAccordion === 'googleScraper') ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
+                          GOOGLE
+                        </span>
+                        <span className="bg-gradient-to-r from-amber-500 to-amber-600 dark:from-amber-400 dark:to-amber-500 bg-clip-text text-transparent font-black">
+                          SCRAPER
+                        </span>
+                      </div>
+                    </div>
+                    <span className={`font-bold text-[10px] ${(openAccordion.googleScraper || hoveredAccordion === 'googleScraper') ? 'text-amber-500' : (isLight ? 'text-slate-500' : 'text-slate-400')}`}>
+                      {(openAccordion.googleScraper || hoveredAccordion === 'googleScraper') ? '−' : '+'}
+                    </span>
+                  </button>
+                  <div className={`overflow-hidden transition-all duration-700 ease-in-out ${
+                    (openAccordion.googleScraper || hoveredAccordion === 'googleScraper') ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
+                  }`}>
+                    <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-2 pb-2">
+                      {[
+                        { id: 'scraper', label: 'Run Scraper', icon: Play },
+                        { id: 'scraper-import', label: 'File Manager', icon: Database },
+                        { id: 'scraper-settings', label: 'Settings', icon: Settings },
+                      ].map((item, idx) => {
+                        const Icon = item.icon;
+                        const active = activeTab === item.id;
+                        return (
+                          <button
+                            key={item.label + idx}
+                            onClick={() => setActiveTab(item.id as any)}
+                            className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              active
+                                ? isLight
+                                  ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
+                                  : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500'
+                                : isLight
+                                  ? 'text-slate-700 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5'
+                                  : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                            <span className="truncate">{item.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+                )}
+
+                {/* Auto Emailer Group */}
+                {(userRole === 'admin' || userPermissions.autoEmailer) && (
+                <div
+                  className="space-y-1.5"
+                  onMouseEnter={() => setHoveredAccordion('autoEmailer')}
+                  onMouseLeave={() => setHoveredAccordion(null)}
+                >
+                  <button
+                    onClick={(e) => toggleAccordion('autoEmailer', e)}
+                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-500 cursor-pointer ${
+                      (openAccordion.autoEmailer || hoveredAccordion === 'autoEmailer')
+                        ? isLight
+                          ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30'
+                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                        : isLight
+                          ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                          : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Mail className={`w-4.5 h-4.5 shrink-0 ${(openAccordion.autoEmailer || hoveredAccordion === 'autoEmailer') ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                        <span className={(openAccordion.autoEmailer || hoveredAccordion === 'autoEmailer') ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
+                          AUTO
+                        </span>
+                        <span className="bg-gradient-to-r from-amber-500 to-amber-600 dark:from-amber-400 dark:to-amber-500 bg-clip-text text-transparent font-black">
+                          EMAILER
+                        </span>
+                      </div>
+                    </div>
+                    <span className={`font-bold text-[10px] ${(openAccordion.autoEmailer || hoveredAccordion === 'autoEmailer') ? 'text-amber-500' : (isLight ? 'text-slate-500' : 'text-slate-400')}`}>
+                      {(openAccordion.autoEmailer || hoveredAccordion === 'autoEmailer') ? '−' : '+'}
+                    </span>
+                  </button>
+                  <div className={`overflow-hidden transition-all duration-700 ease-in-out ${
+                    (openAccordion.autoEmailer || hoveredAccordion === 'autoEmailer') ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
+                  }`}>
+                    <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-2 pb-2">
+                      {[
+                        { id: 'emailer-gmail', label: 'Email Accounts', icon: Mail },
+                        { id: 'emailer-campaign', label: 'Campaign Manager', icon: Play },
+                        { id: 'emailer-templates', label: 'Templates', icon: FileText },
+                        { id: 'emailer-leads', label: 'Lead Management', icon: Users },
+                      ].map((item, idx) => {
+                        const Icon = item.icon;
+                        const active = activeTab === item.id;
+                        return (
+                          <button
+                            key={item.label + idx}
+                            onClick={() => setActiveTab(item.id as any)}
+                            className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              active
+                                ? isLight
+                                  ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
+                                  : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500'
+                                : isLight
+                                  ? 'text-slate-700 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5'
+                                  : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                            <span className="truncate">{item.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+                )}
+
+                {/* Facebook Scraper Group */}
+                {(userRole === 'admin' || userPermissions.facebookScraper) && (
+                <div
+                  className="space-y-1.5"
+                  onMouseEnter={() => setHoveredAccordion('facebookScraper')}
+                  onMouseLeave={() => setHoveredAccordion(null)}
+                >
+                  <button
+                    onClick={(e) => toggleAccordion('facebookScraper', e)}
+                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-500 cursor-pointer ${
+                      (openAccordion.facebookScraper || hoveredAccordion === 'facebookScraper')
+                        ? isLight
+                          ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30'
+                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                        : isLight
+                          ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                          : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Facebook className={`w-4.5 h-4.5 shrink-0 ${(openAccordion.facebookScraper || hoveredAccordion === 'facebookScraper') ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                        <span className={(openAccordion.facebookScraper || hoveredAccordion === 'facebookScraper') ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
+                          FACEBOOK
+                        </span>
+                        <span className="bg-gradient-to-r from-amber-500 to-amber-600 dark:from-amber-400 dark:to-amber-500 bg-clip-text text-transparent font-black">
+                          SCRAPER
+                        </span>
+                      </div>
+                    </div>
+                    <span className={`font-bold text-[10px] ${(openAccordion.facebookScraper || hoveredAccordion === 'facebookScraper') ? 'text-amber-500' : (isLight ? 'text-slate-500' : 'text-slate-400')}`}>
+                      {(openAccordion.facebookScraper || hoveredAccordion === 'facebookScraper') ? '−' : '+'}
+                    </span>
+                  </button>
+                  <div className={`overflow-hidden transition-all duration-700 ease-in-out ${
+                    (openAccordion.facebookScraper || hoveredAccordion === 'facebookScraper') ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
+                  }`}>
+                    <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-2 pb-2">
+                      {[
+                        { id: 'fb-scraper', label: 'Run Scraper', icon: Play },
+                        { id: 'fb-scraper-files', label: 'File Manager', icon: Database },
+                      ].map((item, idx) => {
+                        const Icon = item.icon;
+                        const active = activeTab === item.id;
+                        return (
+                          <button
+                            key={item.label + idx}
+                            onClick={() => setActiveTab(item.id as any)}
+                            className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              active
+                                ? isLight
+                                  ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
+                                  : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500'
+                                : isLight
+                                  ? 'text-slate-700 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5'
+                                  : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                            <span className="truncate">{item.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+                )}
+
+                {/* Facebook Poster Group */}
+                {(userRole === 'admin' || userPermissions.facebookPoster) && (
+                <div
+                  className="space-y-1.5"
+                  onMouseEnter={() => setHoveredAccordion('facebookPoster')}
+                  onMouseLeave={() => setHoveredAccordion(null)}
+                >
+                  <button
+                    onClick={(e) => toggleAccordion('facebookPoster', e)}
+                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-500 cursor-pointer ${
+                      (openAccordion.facebookPoster || hoveredAccordion === 'facebookPoster')
+                        ? isLight
+                          ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30'
+                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                        : isLight
+                          ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                          : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Share2 className={`w-4.5 h-4.5 shrink-0 ${(openAccordion.facebookPoster || hoveredAccordion === 'facebookPoster') ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                        <span className={(openAccordion.facebookPoster || hoveredAccordion === 'facebookPoster') ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
+                          FB
+                        </span>
+                        <span className="bg-gradient-to-r from-amber-500 to-amber-600 dark:from-amber-400 dark:to-amber-500 bg-clip-text text-transparent font-black">
+                          AUTOPOSTER
+                        </span>
+                      </div>
+                    </div>
+                    <span className={`font-bold text-[10px] ${(openAccordion.facebookPoster || hoveredAccordion === 'facebookPoster') ? 'text-amber-500' : (isLight ? 'text-slate-500' : 'text-slate-400')}`}>
+                      {(openAccordion.facebookPoster || hoveredAccordion === 'facebookPoster') ? '−' : '+'}
+                    </span>
+                  </button>
+                  <div className={`overflow-hidden transition-all duration-700 ease-in-out ${
+                    (openAccordion.facebookPoster || hoveredAccordion === 'facebookPoster') ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
+                  }`}>
+                    <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-2 pb-2">
+                      {[
+                        { id: 'fb-poster-accounts', label: 'FB Accounts', icon: Users },
+                        { id: 'fb-poster-campaigns', label: 'Campaign Manager', icon: Play },
+                        { id: 'fb-poster-scheduler', label: 'Auto Poster', icon: Share2 },
+                        { id: 'fb-poster-joiner', label: 'Auto Joiner', icon: Bot },
+                        { id: 'fb-poster-logs', label: 'Activity Logs', icon: Terminal },
+                      ].map((item, idx) => {
+                        const Icon = item.icon;
+                        const active = activeTab === item.id;
+                        return (
+                          <button
+                            key={item.label + idx}
+                            onClick={() => setActiveTab(item.id as any)}
+                            className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              active
+                                ? isLight
+                                  ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
+                                  : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500'
+                                : isLight
+                                  ? 'text-slate-700 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5'
+                                  : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                            <span className="truncate">{item.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+                )}
+              </div>
+            ) : (
+              /* Collapsed Icon-Only Vertical Docked Rail */
+              <div className="space-y-3 flex flex-col items-center pt-2">
+                {[
+                  { id: 'dialer', label: 'Auto Dialer', icon: PlaySquare },
+                  { id: 'pair', label: 'Connect to Phone', icon: Bluetooth },
+                  { id: 'upload', label: 'Upload Sheet', icon: Upload },
+                  { id: 'dnc', label: 'DNC Suppression', icon: ShieldAlert },
+                  { id: 'history', label: 'Call Logs', icon: History },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  const active = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => setActiveTab(item.id as any)}
+                      title={item.label}
+                      className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        active
+                          ? isLight
+                            ? 'bg-amber-500/20 text-amber-800 border-amber-500 shadow-sm'
+                            : 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-sm'
+                          : isLight
+                            ? 'text-slate-600 hover:bg-slate-100 border-transparent'
+                            : 'text-slate-400 hover:text-white hover:bg-slate-800/60 border-transparent'
+                      }`}
+                    >
+                      <Icon className="w-5 h-5" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Bottom Sidebar Card: User Profile & Hardware Status */}
+          <div className={`pt-3 border-t w-full ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
+            {isNavExpanded ? (
+              <div className={`p-2.5 rounded-xl flex items-center justify-between text-left border ${
+                isLight ? 'bg-slate-50 border-slate-200 shadow-sm' : 'bg-slate-950/60 border-slate-800'
+              }`}>
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className={`w-7 h-7 rounded-lg font-bold text-xs flex items-center justify-center border shrink-0 ${
+                    isLight ? 'bg-amber-500/15 text-amber-800 border-amber-300' : 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                  }`}>
+                    {authUser?.charAt(0).toUpperCase() || 'A'}
+                  </div>
+                  <div className="min-w-0">
+                    <p className={`text-xs font-black truncate capitalize ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>{authUser}</p>
+                    <p className="text-[9px] font-mono text-emerald-600 dark:text-emerald-400 font-bold">● Active</p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-center" title={`Active: ${authUser}`}>
+                <div className={`w-8 h-8 rounded-xl font-bold text-xs flex items-center justify-center border ${
+                  isLight ? 'bg-amber-500/15 text-amber-800 border-amber-300' : 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                }`}>
+                  {authUser?.charAt(0).toUpperCase() || 'A'}
+                </div>
+              </div>
+            )}
+          </div>
+        </nav>
+
+        {/* Tab Content Panel Container */}
+        <main className={`flex-1 min-w-0 transition-all duration-300 p-4 sm:p-6 lg:p-8 ${isNavExpanded ? 'ml-0 md:ml-64' : 'ml-0 md:ml-16'}`}>
+          {activeTab === 'dashboard' && (
+            <DashboardOverview
+              isLight={isLight}
+              serverUrl={SERVER_URL}
+              authToken={authToken || ''}
+              authUser={authUser}
+              phoneConnected={socketData.phoneConnected}
+              phoneDeviceName={socketData.phoneDeviceName}
+              campaigns={campaigns}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onSelectCampaign={() => {}}
+            />
+          )}
+
+          {activeTab === 'admin' && userRole === 'admin' && (
+            <AdminPanel
+              isLight={isLight}
+              serverUrl={lanServerUrl}
+              authToken={authToken || ''}
+              currentUser={authUser || ''}
+            />
+          )}
+
+          {activeTab === 'leads' && (
+            <LeadsTable
+              isLight={isLight}
+              serverUrl={lanServerUrl}
+              authToken={authToken || ''}
+            />
+          )}
+
+          {/* Always mounted — hidden when not on dialer tab to preserve state */}
+          <div className={activeTab !== 'dialer' ? 'hidden' : ''}>
+          <LeadQueue
+              isLight={isLight}
+              phoneConnected={socketData.phoneConnected}
+              campaigns={campaigns}
+              serverUrl={SERVER_URL}
+              authToken={authToken || ''}
+              dialLead={socketData.dialLead}
+              hangupCall={socketData.hangupCall}
+              emergencyStop={socketData.emergencyStop}
+              clearEmergencyStop={socketData.clearEmergencyStop}
+              callState={socketData.callState}
+              lastCallFinished={socketData.lastCallFinished}
+              lastBlockedReason={socketData.lastBlockedReason}
+              triggerDisposition={triggerDisposition}
+              socket={socketData.socket}
+              latencyMs={socketData.latencyMs}
+              phoneDeviceName={socketData.phoneDeviceName}
+            />
+          </div>
+
+          {activeTab === 'pair' && (
+            <ConnectionPanel
+              isLight={isLight}
+              isConnected={socketData.isConnected}
+              sessionId={socketData.sessionId}
+              token={socketData.token}
+              qrPayload={socketData.qrPayload}
+              phoneConnected={socketData.phoneConnected}
+              phoneDeviceName={socketData.phoneDeviceName}
+              phoneBtAddress={socketData.phoneBtAddress}
+              phoneOsType={socketData.phoneOsType}
+              phoneIpAddress={socketData.phoneIpAddress}
+              laptopBtAddress={socketData.laptopBtAddress}
+              revokePhone={socketData.revokePhone}
+              serverUrl={lanServerUrl || SERVER_URL}
+            />
+          )}
+
+          {activeTab === 'dnc' && (
+            <DncPanel
+              isLight={isLight}
+              serverUrl={SERVER_URL}
+              authToken={authToken || ''}
+            />
+          )}
+
+          {['scraper', 'scraper-import', 'scraper-settings'].includes(activeTab) && (
+            <ScraperFilesPanel
+              isLight={isLight}
+              onImportSuccess={handleImportSuccess}
+              serverUrl={SERVER_URL}
+              authToken={authToken || ''}
+              activeSubTab={activeTab}
+            />
+          )}
+
+          {activeTab === 'upload' && (
+            <ImportPanel
+              isLight={isLight}
+              onImportSuccess={handleImportSuccess}
+              serverUrl={SERVER_URL}
+              authToken={authToken || ''}
+              campaigns={campaigns}
+            />
+          )}
+
+          {activeTab === 'history' && (
+            <CallLog
+              isLight={isLight}
+              serverUrl={SERVER_URL}
+            />
+          )}
+
+          {['emailer-gmail', 'emailer-campaign', 'emailer-templates', 'emailer-leads'].includes(activeTab) && (
+            <AutoEmailer
+              isLight={isLight}
+              serverUrl={SERVER_URL}
+              authToken={authToken || ''}
+              activeSubTab={activeTab}
+            />
+          )}
+
+          {['fb-scraper', 'fb-scraper-files'].includes(activeTab) && (
+            <FacebookScraper
+              isLight={isLight}
+              serverUrl={SERVER_URL}
+              authToken={authToken || ''}
+              activeSubTab={activeTab}
+            />
+          )}
+
+          {['fb-poster-accounts', 'fb-poster-campaigns', 'fb-poster-scheduler', 'fb-poster-joiner', 'fb-poster-logs'].includes(activeTab) && (
+            <FacebookAutoPoster
+              isLight={isLight}
+              serverUrl={SERVER_URL}
+              authToken={authToken || ''}
+              activeSubTab={activeTab}
+            />
+          )}
+        </main>
+      </div>
+
+      {/* Global Post-Call Disposition popup modal */}
+      <DispositionModal
+        isLight={isLight}
+        isOpen={dispOpen}
+        leadId={dispLeadId}
+        leadName={dispLeadName}
+        onClose={() => setDispOpen(false)}
+        serverUrl={SERVER_URL}
+        onSaveSuccess={() => {
+          showToast('Call disposition logged successfully.', 'success');
+          fetchCampaigns();
+        }}
+      />
+    </div>
+  );
+}

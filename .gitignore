@@ -1,0 +1,30 @@
+﻿# Dependencies
+node_modules/
+
+# Build & Output files
+dist/
+build/
+*.apk
+*.aab
+*.exe
+
+# Database & Runtime Data
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Flutter & Android/iOS Cache
+.dart_tool/
+.gradle/
+.idea/
+*.iml
+.DS_Store
+
+# Logs
+*.log
+
+# Environment & Secrets
+.env
+aws_credentials.txt
+supabase_credentials

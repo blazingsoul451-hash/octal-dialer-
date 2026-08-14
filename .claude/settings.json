@@ -1,0 +1,8 @@
+{
+  "model": "claude-sonnet-5",
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/ice/Desktop/**)"
+    ]
+  }
+}
