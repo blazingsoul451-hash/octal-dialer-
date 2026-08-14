@@ -349,6 +349,58 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON system_metrics(timestamp);
 
   -- ═══════════════════════════════════════════════════════════════════════════
+  -- PHASE 2: SAAS TENANT FOUNDATION
+  -- ═══════════════════════════════════════════════════════════════════════════
+
+  -- Tenants table: represents companies/organizations subscribing to the platform
+  CREATE TABLE IF NOT EXISTS tenants (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    slug        TEXT NOT NULL UNIQUE,
+    status      TEXT NOT NULL DEFAULT 'active',
+    createdAt   TEXT NOT NULL DEFAULT (datetime('now')),
+    updatedAt   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants(slug);
+  CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
+
+  -- Plans table: platform subscription plans catalog
+  CREATE TABLE IF NOT EXISTS plans (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    priceMonthly  REAL NOT NULL DEFAULT 0,
+    priceYearly   REAL NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL DEFAULT 'active',
+    createdAt     TEXT NOT NULL DEFAULT (datetime('now')),
+    updatedAt     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
+
+  -- Plan features: defines capabilities included in each plan
+  CREATE TABLE IF NOT EXISTS plan_features (
+    planId      TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+    featureKey  TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (planId, featureKey)
+  );
+  CREATE INDEX IF NOT EXISTS idx_plan_features_planId ON plan_features(planId);
+
+  -- Subscriptions: links tenants to their active plan
+  CREATE TABLE IF NOT EXISTS subscriptions (
+    id                  TEXT PRIMARY KEY,
+    tenantId            TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    planId              TEXT NOT NULL REFERENCES plans(id) ON DELETE RESTRICT,
+    status              TEXT NOT NULL DEFAULT 'active',
+    currentPeriodStart  TEXT NOT NULL DEFAULT (datetime('now')),
+    currentPeriodEnd    TEXT NOT NULL,
+    createdAt           TEXT NOT NULL DEFAULT (datetime('now')),
+    updatedAt           TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_tenantId ON subscriptions(tenantId);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_planId ON subscriptions(planId);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+
+  -- ═══════════════════════════════════════════════════════════════════════════
   -- ADMIN PANEL: Enhanced Email Templates
   -- ═══════════════════════════════════════════════════════════════════════════
 
