@@ -227,3 +227,206 @@ export function requireAdmin(req: express.Request, res: express.Response, next: 
   (req as any).user = user;
   next();
 }
+
+// ─── PHASE 5: SaaS Signup & Tenant Onboarding ────────────────────────────────
+
+export interface SignupInput {
+  companyName: string;
+  username: string;
+  password: string;
+  email?: string;
+}
+
+export interface SignupResult {
+  token: string;
+  user: {
+    id: string;
+    username: string;
+    role: string;
+    tenantId: string;
+  };
+  tenant: {
+    id: string;
+    name: string;
+    slug: string;
+  };
+}
+
+/** Helper to generate a collision-safe URL slug */
+function generateTenantSlug(companyName: string): string {
+  let baseSlug = companyName
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  if (!baseSlug || baseSlug.length < 2) {
+    baseSlug = 'company';
+  }
+
+  // Check if slug already exists in tenants table
+  const checkSlug = db.prepare(`SELECT id FROM tenants WHERE slug = ?`);
+  const existing = checkSlug.get(baseSlug);
+
+  if (!existing) {
+    return baseSlug;
+  }
+
+  // Collision resolution: append a unique hex suffix
+  let candidateSlug = `${baseSlug}-${crypto.randomBytes(2).toString('hex')}`;
+  let attempts = 0;
+  while (checkSlug.get(candidateSlug) && attempts < 10) {
+    candidateSlug = `${baseSlug}-${crypto.randomBytes(3).toString('hex')}`;
+    attempts++;
+  }
+  return candidateSlug;
+}
+
+/**
+ * signupTenant
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Atomic Signup & Onboarding:
+ * 1. Validates input fields
+ * 2. Generates unique tenant and collision-safe slug
+ * 3. Creates tenant record
+ * 4. Creates first admin user with secure scrypt password hash
+ * 5. Provisions default module permissions (all 5 core modules enabled)
+ * 6. Assigns active starter subscription linking to catalog plan
+ * 7. Issues signed JWT with trusted tenantId
+ * 8. Rolls back entire transaction if any step fails
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+export function signupTenant(input: SignupInput): SignupResult {
+  const companyName = (input.companyName || '').trim();
+  const username = (input.username || '').trim().toLowerCase();
+  const password = input.password || '';
+
+  // 1. Validation
+  if (!companyName || companyName.length < 2) {
+    throw new Error('Company name must be at least 2 characters long.');
+  }
+  if (companyName.length > 100) {
+    throw new Error('Company name cannot exceed 100 characters.');
+  }
+  if (!username || username.length < 3) {
+    throw new Error('Username must be at least 3 characters long.');
+  }
+  if (!/^[a-z0-9_.\-]+$/.test(username)) {
+    throw new Error('Username may only contain lowercase letters, numbers, underscores, dashes, and dots.');
+  }
+  if (!password || password.length < 6) {
+    throw new Error('Password must be at least 6 characters long.');
+  }
+
+  // 2. Pre-check: Username uniqueness (fail fast)
+  const existingUser = stmts.findUserByUsername.get({ username });
+  if (existingUser) {
+    throw new Error(`Username "${username}" is already taken.`);
+  }
+
+  const now = new Date().toISOString();
+  const tenantId = 'tenant_' + crypto.randomBytes(8).toString('hex');
+  const slug = generateTenantSlug(companyName);
+  const userId = 'user_admin_' + crypto.randomBytes(6).toString('hex');
+  const { hash } = hashPassword(password);
+
+  // 3. Execute atomic onboarding transaction
+  const executeSignupTransaction = db.transaction(() => {
+    // 3a. Insert Tenant
+    db.prepare(`
+      INSERT INTO tenants (id, name, slug, status, createdAt, updatedAt)
+      VALUES (@id, @name, @slug, 'active', @createdAt, @updatedAt)
+    `).run({
+      id: tenantId,
+      name: companyName,
+      slug: slug,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    // 3b. Insert First Admin User
+    stmts.insertUser.run({
+      id: userId,
+      username: username,
+      passwordHash: hash,
+      role: 'admin',
+      tenantId: tenantId,
+      createdAt: now
+    });
+
+    // 3c. Provision Default User Module Permissions (all 5 core modules enabled for admin)
+    const modules = ['octalDialer', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
+    const insertPerm = db.prepare(`
+      INSERT INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
+      VALUES (?, ?, ?, 1, ?, ?, ?)
+    `);
+
+    for (const moduleId of modules) {
+      insertPerm.run(
+        `perm_${userId}_${moduleId}`,
+        userId,
+        moduleId,
+        'SYSTEM_ONBOARDING',
+        tenantId,
+        now
+      );
+    }
+
+    // 3d. Find or ensure a default Plan
+    let plan = db.prepare(`SELECT id FROM plans WHERE status = 'active' ORDER BY priceMonthly ASC LIMIT 1`).get() as { id: string } | undefined;
+    if (!plan) {
+      const defaultPlanId = 'plan_starter';
+      db.prepare(`
+        INSERT INTO plans (id, name, priceMonthly, priceYearly, status, createdAt, updatedAt)
+        VALUES (?, 'Starter Plan', 0, 0, 'active', ?, ?)
+      `).run(defaultPlanId, now, now);
+      plan = { id: defaultPlanId };
+    }
+
+    // 3e. Assign Subscription (Active for 1 year)
+    const subId = 'sub_' + crypto.randomBytes(8).toString('hex');
+    const periodEnd = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+
+    db.prepare(`
+      INSERT INTO subscriptions (id, tenantId, planId, status, currentPeriodStart, currentPeriodEnd, createdAt, updatedAt)
+      VALUES (@id, @tenantId, @planId, 'active', @currentPeriodStart, @currentPeriodEnd, @createdAt, @updatedAt)
+    `).run({
+      id: subId,
+      tenantId: tenantId,
+      planId: plan.id,
+      currentPeriodStart: now,
+      currentPeriodEnd: periodEnd,
+      createdAt: now,
+      updatedAt: now
+    });
+  });
+
+  // Run the atomic transaction
+  executeSignupTransaction();
+
+  // 4. Issue JWT with trusted tenant context
+  const payload = {
+    sub: userId,
+    username: username,
+    role: 'admin',
+    tenantId: tenantId
+  };
+
+  const token = jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
+
+  return {
+    token,
+    user: {
+      id: userId,
+      username: username,
+      role: 'admin',
+      tenantId: tenantId
+    },
+    tenant: {
+      id: tenantId,
+      name: companyName,
+      slug: slug
+    }
+  };
+}
+

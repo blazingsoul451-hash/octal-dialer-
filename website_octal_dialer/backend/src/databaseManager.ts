@@ -399,14 +399,20 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_subscriptions_tenantId ON subscriptions(tenantId);
   CREATE INDEX IF NOT EXISTS idx_subscriptions_planId ON subscriptions(planId);
   CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
-
-  -- ═══════════════════════════════════════════════════════════════════════════
-  -- ADMIN PANEL: Enhanced Email Templates
-  -- ═══════════════════════════════════════════════════════════════════════════
-
-  ALTER TABLE email_templates ADD COLUMN templateType TEXT DEFAULT 'campaign';
-  ALTER TABLE email_templates ADD COLUMN systemTemplate INTEGER DEFAULT 0;
 `);
+
+// Safe column migrations for email_templates
+try {
+  const cols = db.prepare(`PRAGMA table_info(email_templates)`).all() as any[];
+  if (!cols.some(c => c.name === 'templateType')) {
+    db.prepare(`ALTER TABLE email_templates ADD COLUMN templateType TEXT DEFAULT 'campaign'`).run();
+  }
+  if (!cols.some(c => c.name === 'systemTemplate')) {
+    db.prepare(`ALTER TABLE email_templates ADD COLUMN systemTemplate INTEGER DEFAULT 0`).run();
+  }
+} catch (e) {
+  // Ignore migration error
+}
 
 console.log('[SQLite] Database initialised at:', DB_FILE);
 

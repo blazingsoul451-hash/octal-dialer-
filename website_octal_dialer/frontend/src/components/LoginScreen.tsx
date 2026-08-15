@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { PhoneCall, Lock, User, Eye, EyeOff, Shield } from 'lucide-react';
+import { PhoneCall, Lock, User, Eye, EyeOff, Shield, Building, UserPlus, LogIn } from 'lucide-react';
 
 interface LoginScreenProps {
   serverUrl: string;
@@ -7,8 +7,11 @@ interface LoginScreenProps {
 }
 
 export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [companyName, setCompanyName] = useState('');
   const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('octal93HMJL');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -16,6 +19,26 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    if (mode === 'signup') {
+      if (!companyName.trim() || companyName.trim().length < 2) {
+        setError('Company name must be at least 2 characters.');
+        return;
+      }
+      if (!username.trim() || username.trim().length < 3) {
+        setError('Username must be at least 3 characters.');
+        return;
+      }
+      if (password.length < 6) {
+        setError('Password must be at least 6 characters.');
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError('Passwords do not match.');
+        return;
+      }
+    }
+
     setLoading(true);
 
     try {
@@ -27,18 +50,22 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       ]));
 
       let res: Response | null = null;
-      let lastErrMessage = '';
 
       for (const baseUrl of candidateUrls) {
         try {
-          res = await fetch(`${baseUrl}/auth/login`, {
+          const endpoint = mode === 'signup' ? `${baseUrl}/auth/signup` : `${baseUrl}/auth/login`;
+          const payload = mode === 'signup' 
+            ? { companyName: companyName.trim(), username: username.trim(), password }
+            : { username: username.trim(), password };
+
+          res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: username.trim(), password })
+            body: JSON.stringify(payload)
           });
           if (res) break;
         } catch (e: any) {
-          lastErrMessage = e?.message || '';
+          // Try next url
         }
       }
 
@@ -50,13 +77,16 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       const data = await res.json();
 
       if (!res.ok) {
-        setError(data.error || 'Login failed. Check your credentials.');
+        setError(data.error || (mode === 'signup' ? 'Signup failed.' : 'Login failed. Check your credentials.'));
         return;
       }
 
-      localStorage.setItem('octal_auth_token', data.token);
-      localStorage.setItem('octal_auth_user', data.username);
-      onLogin(data.token, data.username);
+      const token = data.token;
+      const returnedUser = data.user?.username || data.username || username;
+
+      localStorage.setItem('octal_auth_token', token);
+      localStorage.setItem('octal_auth_user', returnedUser);
+      onLogin(token, returnedUser);
     } catch {
       setError('Cannot reach server. Make sure the backend is running.');
     } finally {
@@ -84,48 +114,69 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       {/* Overlay to ensure text readability */}
       <div className="absolute inset-0 bg-gradient-to-b from-slate-950/40 via-slate-950/60 to-slate-950/40 pointer-events-none" />
 
-      {/* Floating particles */}
-      <style dangerouslySetInnerHTML={{__html: `
-        @keyframes twinkle {
-          0%, 100% { opacity: 0.3; transform: scale(1); }
-          50% { opacity: 1; transform: scale(1.5); }
-        }
-        @keyframes float {
-          0% { transform: translateY(0) translateX(0); opacity: 0; }
-          10% { opacity: 0.5; }
-          90% { opacity: 0.5; }
-          100% { transform: translateY(-100vh) translateX(20px); opacity: 0; }
-        }
-        @keyframes pulse-slow {
-          0%, 100% { opacity: 0.05; transform: scale(1); }
-          50% { opacity: 0.15; transform: scale(1.1); }
-        }
-        .animate-pulse-slow {
-          animation: pulse-slow 8s ease-in-out infinite;
-        }
-        @keyframes rotate-slow {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-        .animate-rotate-slow {
-          animation: rotate-slow 20s linear infinite;
-        }
-      `}} />
-
       <div className="w-full max-w-sm relative z-10">
-        {/* Login card - Compact Clean */}
-        <div className="w-full max-w-xs">
+        {/* Card */}
+        <div className="w-full max-w-xs mx-auto">
           <div className="bg-slate-900/85 backdrop-blur-md border border-slate-700/50 rounded-2xl p-6 shadow-2xl">
-            {/* Compact header */}
-            <div className="flex items-center justify-center gap-2 mb-5">
+            {/* Header */}
+            <div className="flex items-center justify-center gap-2 mb-4">
               <Shield className="w-4 h-4 text-amber-500" />
-              <h1 className="text-sm font-bold text-amber-400">OCTAL DIALER</h1>
+              <h1 className="text-sm font-bold text-amber-400">OCTAL DIALER SAAS</h1>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-3.5">
+            {/* Mode Switcher */}
+            <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-800 mb-4">
+              <button
+                type="button"
+                onClick={() => { setMode('login'); setError(null); }}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[11px] font-mono font-bold rounded-md transition-all ${
+                  mode === 'login'
+                    ? 'bg-amber-500 text-slate-950 shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <LogIn className="w-3 h-3" />
+                Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => { setMode('signup'); setError(null); }}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[11px] font-mono font-bold rounded-md transition-all ${
+                  mode === 'signup'
+                    ? 'bg-amber-500 text-slate-950 shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <UserPlus className="w-3 h-3" />
+                New Tenant
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-3">
+              {/* Company Name (Signup only) */}
+              {mode === 'signup' && (
+                <div>
+                  <label className="block text-[10px] font-mono text-slate-400 mb-1 uppercase tracking-wider font-bold">Company / Organization</label>
+                  <div className="relative">
+                    <Building className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                    <input
+                      id="signup-company"
+                      type="text"
+                      value={companyName}
+                      onChange={e => setCompanyName(e.target.value)}
+                      placeholder="Acme Global"
+                      required
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-3 py-2 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all"
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* Username */}
               <div>
-                <label className="block text-[10px] font-mono text-slate-400 mb-1 uppercase tracking-wider font-bold">Username</label>
+                <label className="block text-[10px] font-mono text-slate-400 mb-1 uppercase tracking-wider font-bold">
+                  {mode === 'signup' ? 'Admin Username' : 'Username'}
+                </label>
                 <div className="relative">
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
                   <input
@@ -133,7 +184,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                     type="text"
                     value={username}
                     onChange={e => setUsername(e.target.value)}
-                    placeholder="admin"
+                    placeholder={mode === 'signup' ? 'admin_john' : 'admin'}
                     autoComplete="username"
                     required
                     className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-3 py-2 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all"
@@ -152,7 +203,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                     value={password}
                     onChange={e => setPassword(e.target.value)}
                     placeholder="••••••••"
-                    autoComplete="current-password"
+                    autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                     required
                     className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-9 py-2 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all"
                   />
@@ -165,6 +216,26 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                   </button>
                 </div>
               </div>
+
+              {/* Confirm Password (Signup only) */}
+              {mode === 'signup' && (
+                <div>
+                  <label className="block text-[10px] font-mono text-slate-400 mb-1 uppercase tracking-wider font-bold">Confirm Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                    <input
+                      id="signup-confirm-password"
+                      type={showPassword ? 'text' : 'password'}
+                      value={confirmPassword}
+                      onChange={e => setConfirmPassword(e.target.value)}
+                      placeholder="••••••••"
+                      autoComplete="new-password"
+                      required
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-3 py-2 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all"
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* Error message */}
               {error && (
@@ -180,19 +251,23 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                 disabled={loading}
                 className="w-full bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 font-black text-xs rounded-lg py-2.5 transition-all duration-200 uppercase tracking-wider mt-1 cursor-pointer disabled:cursor-not-allowed"
               >
-                {loading ? 'Authenticating...' : 'Sign In'}
+                {loading
+                  ? (mode === 'signup' ? 'Provisioning Tenant...' : 'Authenticating...')
+                  : (mode === 'signup' ? 'Create Tenant & Admin' : 'Sign In')}
               </button>
             </form>
 
             {/* Footer hint */}
-            <p className="text-center text-[9px] font-mono text-slate-600 mt-4">
-              Default credentials in backend terminal
-            </p>
+            {mode === 'login' && (
+              <p className="text-center text-[9px] font-mono text-slate-600 mt-3">
+                Default credentials in backend terminal
+              </p>
+            )}
           </div>
         </div>
 
-        {/* APK Download - Centered with Amber Theme */}
-        <div className="flex justify-center mt-6">
+        {/* APK Download */}
+        <div className="flex justify-center mt-4">
           <a
             href="/download/apk"
             className="flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-lg px-4 py-2 shadow-lg shadow-amber-500/30 transition-all duration-200 uppercase tracking-wider cursor-pointer"

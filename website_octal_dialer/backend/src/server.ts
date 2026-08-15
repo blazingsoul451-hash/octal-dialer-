@@ -53,7 +53,8 @@ import {
   validateToken,
   changePassword,
   requireAdmin,
-  hashPassword
+  hashPassword,
+  signupTenant
 } from './authManager';
 
 import {
@@ -168,6 +169,41 @@ app.post('/auth/login', (req, res) => {
     return;
   }
   res.json({ token, username });
+});
+
+// POST /auth/signup — SaaS Self-Service Tenant Onboarding (Phase 5)
+app.post('/auth/signup', (req, res) => {
+  try {
+    // Explicitly extract ONLY allowed fields — client cannot dictate tenantId, role, planId, or status
+    const { companyName, username, password, email } = req.body as {
+      companyName?: string;
+      username?: string;
+      password?: string;
+      email?: string;
+    };
+
+    if (!companyName || !username || !password) {
+      res.status(400).json({ error: 'companyName, username, and password are required.' });
+      return;
+    }
+
+    const result = signupTenant({
+      companyName,
+      username,
+      password,
+      email
+    });
+
+    res.status(201).json(result);
+  } catch (err: any) {
+    const isClientError = err.message && (
+      err.message.includes('already taken') ||
+      err.message.includes('must be at least') ||
+      err.message.includes('cannot exceed') ||
+      err.message.includes('only contain')
+    );
+    res.status(isClientError ? 400 : 500).json({ error: err.message || 'Signup failed.' });
+  }
 });
 
 // POST /auth/logout
