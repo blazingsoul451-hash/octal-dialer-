@@ -4,7 +4,7 @@ import { Users, Plus, Trash2, Edit, Shield, CheckCircle2, XCircle, ChevronDown, 
 interface User {
   id: string;
   username: string;
-  role: 'admin' | 'agent';
+  role: 'platform_admin' | 'admin' | 'agent';
   createdAt: string;
   permissions: {
     id: string;
@@ -21,6 +21,7 @@ interface AdminPanelProps {
   serverUrl: string;
   authToken: string;
   currentUser: string;
+  currentUserRole?: 'platform_admin' | 'admin' | 'agent';
 }
 
 const MODULES = [
@@ -31,7 +32,7 @@ const MODULES = [
   { id: 'facebookPoster', label: 'FB AUTO POSTER', icon: '📤' }
 ];
 
-export const AdminPanel: React.FC<AdminPanelProps> = ({ isLight, serverUrl, authToken, currentUser }) => {
+export const AdminPanel: React.FC<AdminPanelProps> = ({ isLight, serverUrl, authToken, currentUser, currentUserRole }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -280,10 +281,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isLight, serverUrl, auth
                           </div>
                         </td>
                         <td className="px-4 py-4">
-                          {user.role === 'admin' ? (
+                          {user.role === 'platform_admin' ? (
+                            <span className="inline-flex items-center gap-1 bg-amber-500/20 text-amber-500 font-black px-2 py-1 rounded text-xs">
+                              👑 PLATFORM ADMIN
+                            </span>
+                          ) : user.role === 'admin' ? (
                             <span className="inline-flex items-center gap-1 bg-purple-500/20 text-purple-600 dark:text-purple-400 px-2 py-1 rounded text-xs font-bold">
                               <Shield className="w-3 h-3" />
-                              ADMIN
+                              TENANT ADMIN
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-1 rounded text-xs font-bold">
@@ -292,8 +297,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isLight, serverUrl, auth
                           )}
                         </td>
                         <td className="px-4 py-4">
-                          {user.role === 'admin' ? (
-                            <span className="text-xs text-slate-500">Full Access (Admin)</span>
+                          {user.role === 'platform_admin' || user.role === 'admin' ? (
+                            <span className="text-xs text-slate-500">Full Access ({user.role === 'platform_admin' ? 'Platform Admin' : 'Tenant Admin'})</span>
                           ) : (
                             <>
                               <button
@@ -308,25 +313,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isLight, serverUrl, auth
                         </td>
                         <td className="px-4 py-4">
                           <div className="flex items-center justify-end gap-2">
-                            <button
-                              onClick={() => {
-                                setEditingUser(user);
-                                setEditRole(user.role);
-                                setEditPassword('');
-                              }}
-                              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded transition-colors"
-                              title="Edit user"
-                            >
-                              <Edit className="w-4 h-4 text-slate-400" />
-                            </button>
-                            {user.username !== currentUser && (
-                              <button
-                                onClick={() => handleDeleteUser(user.id, user.username)}
-                                className="p-2 hover:bg-red-500/10 rounded transition-colors"
-                                title="Delete user"
-                              >
-                                <Trash2 className="w-4 h-4 text-red-500" />
-                              </button>
+                            {user.role === 'platform_admin' && currentUserRole !== 'platform_admin' ? (
+                              <span className="text-[10px] font-mono text-slate-500 italic">Protected</span>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setEditingUser(user);
+                                    setEditRole(user.role === 'platform_admin' ? 'admin' : user.role);
+                                    setEditPassword('');
+                                  }}
+                                  className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded transition-colors"
+                                  title="Edit user"
+                                >
+                                  <Edit className="w-4 h-4 text-slate-400 hover:text-blue-500" />
+                                </button>
+                                {user.username !== currentUser && (
+                                  <button
+                                    onClick={() => handleDeleteUser(user.id, user.username)}
+                                    className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded transition-colors"
+                                    title="Delete user"
+                                  >
+                                    <Trash2 className="w-4 h-4 text-slate-400 hover:text-red-500" />
+                                  </button>
+                                )}
+                              </>
                             )}
                           </div>
                         </td>

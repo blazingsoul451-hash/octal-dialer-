@@ -88,7 +88,15 @@ const stmts = {
 // ─── Default admin bootstrap ──────────────────────────────────────────────────
 export function ensureDefaultAdmin(): void {
   const count = (stmts.countUsers.get() as { c: number }).c;
-  if (count > 0) return;
+  if (count > 0) {
+    // If the default admin in tenant_default exists with role 'admin', upgrade to 'platform_admin'
+    const defaultAdmin = db.prepare(`SELECT * FROM users WHERE username = 'admin' AND tenantId = 'tenant_default'`).get() as any;
+    if (defaultAdmin && defaultAdmin.role === 'admin') {
+      db.prepare(`UPDATE users SET role = 'platform_admin' WHERE id = ?`).run(defaultAdmin.id);
+      console.log('[Auth] Root default admin promoted to platform_admin');
+    }
+    return;
+  }
 
   const defaultPassword = 'octal' + Math.random().toString(36).substring(2, 8).toUpperCase();
   const { hash } = hashPassword(defaultPassword);
@@ -97,7 +105,7 @@ export function ensureDefaultAdmin(): void {
     id: 'user_admin_' + crypto.randomBytes(4).toString('hex'),
     username: 'admin',
     passwordHash: hash,
-    role: 'admin',
+    role: 'platform_admin',
     tenantId: 'tenant_default',
     createdAt: new Date().toISOString()
   });
@@ -107,6 +115,7 @@ export function ensureDefaultAdmin(): void {
   console.log('║       OCTAL DIALER — FIRST BOOT AUTH         ║');
   console.log('╠══════════════════════════════════════════════╣');
   console.log(`║  Username : admin                            ║`);
+  console.log(`║  Role     : platform_admin                   ║`);
   console.log(`║  Password : ${defaultPassword.padEnd(32)} ║`);
   console.log('║  Change this after first login!              ║');
   console.log('╚══════════════════════════════════════════════╝');
@@ -147,16 +156,23 @@ export function login(username: string, password: string): string | null {
 export function validateToken(token: string): AuthUser | null {
   if (!token) return null;
 
-  // ─── PHASE 4: JWT verification with strict tenantId requirement ───
+  // ─── PHASE 4 & 6: JWT verification with DB tenant & role consistency check ───
   try {
     const decoded = jwt.verify(token, getJWTSecret()) as any;
 
     if (decoded.sub && decoded.username && decoded.role && decoded.tenantId) {
+      // Re-verify against database to prevent stale token usage upon tenant move, role change, or user deletion
+      const dbUser = stmts.findUserById.get({ id: decoded.sub }) as any;
+      if (!dbUser || !dbUser.tenantId || dbUser.tenantId !== decoded.tenantId) {
+        // User no longer exists, tenant membership changed, or user disabled -> Fail closed!
+        return null;
+      }
+
       return {
-        id: decoded.sub,
-        username: decoded.username,
-        role: decoded.role,
-        tenantId: decoded.tenantId
+        id: dbUser.id,
+        username: dbUser.username,
+        role: dbUser.role, // Use authoritative current database role
+        tenantId: dbUser.tenantId // Use authoritative current database tenant
       };
     }
     // If tenantId is missing from JWT payload, fail closed
@@ -208,8 +224,8 @@ export function changePassword(userId: string, newPassword: string): void {
   stmts.updatePassword.run({ id: userId, passwordHash: hash });
 }
 
-/** Middleware: require admin role */
-export function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
+/** Middleware: require platform admin role (Super Admin) */
+export function requirePlatformAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   const user = validateToken(token);
@@ -219,14 +235,37 @@ export function requireAdmin(req: express.Request, res: express.Response, next: 
     return;
   }
 
-  if (user.role !== 'admin') {
-    res.status(403).json({ error: 'Forbidden. Admin access required.' });
+  if (user.role !== 'platform_admin') {
+    res.status(403).json({ error: 'Forbidden. Platform Admin access required.' });
     return;
   }
 
   (req as any).user = user;
   next();
 }
+
+/** Middleware: require tenant admin role (Tenant Admin or Platform Admin) */
+export function requireTenantAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  const user = validateToken(token);
+
+  if (!user) {
+    res.status(401).json({ error: 'Unauthorized. Please log in.' });
+    return;
+  }
+
+  if (user.role !== 'admin' && user.role !== 'platform_admin') {
+    res.status(403).json({ error: 'Forbidden. Tenant Admin access required.' });
+    return;
+  }
+
+  (req as any).user = user;
+  next();
+}
+
+/** Backward compatibility alias for tenant admin routes */
+export const requireAdmin = requireTenantAdmin;
 
 // ─── PHASE 5: SaaS Signup & Tenant Onboarding ────────────────────────────────
 

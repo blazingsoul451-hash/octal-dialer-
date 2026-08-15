@@ -38,7 +38,7 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
 
   // ─── Permission state ───────────────────────────────────────────────────────
-  const [userRole, setUserRole] = useState<'admin' | 'agent'>('agent');
+  const [userRole, setUserRole] = useState<'platform_admin' | 'admin' | 'agent'>('agent');
   const [userPermissions, setUserPermissions] = useState<Record<string, boolean>>({
     octalDialer: false,
     googleScraper: false,
@@ -516,8 +516,8 @@ export default function App() {
               {isNavExpanded && <span className="truncate">Dashboard</span>}
             </button>
 
-            {/* Admin Panel - only for admins */}
-            {userRole === 'admin' && (
+            {/* Admin Panel - for platform and tenant admins */}
+            {(userRole === 'admin' || userRole === 'platform_admin') && (
               <button
                 onClick={() => setActiveTab('admin')}
                 className={`w-full flex items-center gap-2.5 pl-3.5 pr-2.5 py-2.5 rounded-lg transition-all duration-500 ${
@@ -531,7 +531,7 @@ export default function App() {
                 }`}
               >
                 <Shield className={`w-4 h-4 shrink-0 ${activeTab === 'admin' ? (isLight ? 'text-purple-700' : 'text-purple-400') : 'text-slate-400'}`} />
-                {isNavExpanded && <span className="truncate">Admin Panel</span>}
+                {isNavExpanded && <span className="truncate">{userRole === 'platform_admin' ? 'Platform Admin' : 'Admin Panel'}</span>}
               </button>
             )}
 
@@ -986,12 +986,13 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'admin' && userRole === 'admin' && (
+          {activeTab === 'admin' && (userRole === 'admin' || userRole === 'platform_admin') && (
             <AdminPanel
               isLight={isLight}
               serverUrl={lanServerUrl}
               authToken={authToken || ''}
               currentUser={authUser || ''}
+              currentUserRole={userRole}
             />
           )}
 

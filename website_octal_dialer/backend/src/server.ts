@@ -53,6 +53,8 @@ import {
   validateToken,
   changePassword,
   requireAdmin,
+  requirePlatformAdmin,
+  requireTenantAdmin,
   hashPassword,
   signupTenant
 } from './authManager';
@@ -241,7 +243,7 @@ app.get('/auth/verify', requireAuth, (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // GET /admin/users — list all users in the current tenant with their permissions
-app.get('/admin/users', requireAdmin, (req, res) => {
+app.get('/admin/users', requireTenantAdmin, (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
@@ -277,8 +279,8 @@ app.get('/admin/users', requireAdmin, (req, res) => {
   }
 });
 
-// POST /admin/users — create new user in the current tenant
-app.post('/admin/users', requireAdmin, (req, res) => {
+// POST /admin/users — create new user in the current tenant (Phase 6: privilege escalation prevented)
+app.post('/admin/users', requireTenantAdmin, (req, res) => {
   const { username, password, role = 'agent' } = req.body as {
     username: string;
     password: string;
@@ -295,8 +297,9 @@ app.post('/admin/users', requireAdmin, (req, res) => {
     return;
   }
 
+  // Phase 6 Invariant: Tenant Admins may only create 'admin' or 'agent' roles. Never 'platform_admin'.
   if (!['admin', 'agent'].includes(role)) {
-    res.status(400).json({ error: 'Role must be admin or agent.' });
+    res.status(400).json({ error: 'Role must be admin or agent. Cannot assign platform admin privileges.' });
     return;
   }
 
@@ -348,23 +351,29 @@ app.post('/admin/users', requireAdmin, (req, res) => {
   }
 });
 
-// PUT /admin/users/:userId — update user role or password within the current tenant
-app.put('/admin/users/:userId', requireAdmin, (req, res) => {
+// PUT /admin/users/:userId — update user role or password within the current tenant (Phase 6: prevent escalation)
+app.put('/admin/users/:userId', requireTenantAdmin, (req, res) => {
   const { userId } = req.params;
   const { role, newPassword } = req.body as { role?: string; newPassword?: string };
   const adminUser = (req as any).user;
   const tenantId = adminUser.tenantId;
 
   try {
-    const user = db.prepare(`SELECT * FROM users WHERE id = ? AND tenantId = ?`).get(userId, tenantId);
+    const user = db.prepare(`SELECT * FROM users WHERE id = ? AND tenantId = ?`).get(userId, tenantId) as any;
     if (!user) {
-      res.status(404).json({ error: 'User not found.' });
+      res.status(404).json({ error: 'User not found in your organization.' });
+      return;
+    }
+
+    // Safety: Tenant admins cannot modify platform_admin users
+    if (user.role === 'platform_admin' && adminUser.role !== 'platform_admin') {
+      res.status(403).json({ error: 'Forbidden. Cannot modify platform admin accounts.' });
       return;
     }
 
     if (role !== undefined) {
       if (!['admin', 'agent'].includes(role)) {
-        res.status(400).json({ error: 'Role must be admin or agent.' });
+        res.status(400).json({ error: 'Role must be admin or agent. Cannot escalate to platform admin.' });
         return;
       }
       db.prepare(`UPDATE users SET role = ? WHERE id = ? AND tenantId = ?`).run(role, userId, tenantId);
@@ -386,7 +395,7 @@ app.put('/admin/users/:userId', requireAdmin, (req, res) => {
 });
 
 // DELETE /admin/users/:userId — delete user within the current tenant
-app.delete('/admin/users/:userId', requireAdmin, (req, res) => {
+app.delete('/admin/users/:userId', requireTenantAdmin, (req, res) => {
   const { userId } = req.params;
   const adminUser = (req as any).user;
   const tenantId = adminUser.tenantId;
@@ -398,6 +407,17 @@ app.delete('/admin/users/:userId', requireAdmin, (req, res) => {
   }
 
   try {
+    const user = db.prepare(`SELECT * FROM users WHERE id = ? AND tenantId = ?`).get(userId, tenantId) as any;
+    if (!user) {
+      res.status(404).json({ error: 'User not found in your organization.' });
+      return;
+    }
+
+    if (user.role === 'platform_admin' && adminUser.role !== 'platform_admin') {
+      res.status(403).json({ error: 'Forbidden. Cannot delete platform admin accounts.' });
+      return;
+    }
+
     const result = db.prepare(`DELETE FROM users WHERE id = ? AND tenantId = ?`).run(userId, tenantId);
 
     if (result.changes === 0) {
@@ -412,8 +432,8 @@ app.delete('/admin/users/:userId', requireAdmin, (req, res) => {
   }
 });
 
-// POST /admin/permissions — update user module permissions
-app.post('/admin/permissions', requireAdmin, (req, res) => {
+// POST /admin/permissions — update user module permissions (tenant-scoped)
+app.post('/admin/permissions', requireTenantAdmin, (req, res) => {
   const { userId, moduleId, enabled } = req.body as {
     userId: string;
     moduleId: string;
@@ -433,13 +453,22 @@ app.post('/admin/permissions', requireAdmin, (req, res) => {
 
   try {
     const adminUser = (req as any).user;
+    const tenantId = adminUser.tenantId;
+
+    // Verify target user belongs to the requesting admin's tenant
+    const targetUser = db.prepare(`SELECT * FROM users WHERE id = ? AND tenantId = ?`).get(userId, tenantId);
+    if (!targetUser) {
+      res.status(404).json({ error: 'User not found in your organization.' });
+      return;
+    }
 
     db.prepare(`
-      INSERT INTO user_permissions (id, userId, moduleId, enabled, grantedBy, grantedAt)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(userId, moduleId) DO UPDATE SET
         enabled = excluded.enabled,
         grantedBy = excluded.grantedBy,
+        tenantId = excluded.tenantId,
         grantedAt = excluded.grantedAt
     `).run(
       `perm_${userId}_${moduleId}`,
@@ -447,6 +476,7 @@ app.post('/admin/permissions', requireAdmin, (req, res) => {
       moduleId,
       enabled ? 1 : 0,
       adminUser.username,
+      tenantId,
       new Date().toISOString()
     );
 
@@ -522,8 +552,8 @@ app.get('/auth/permissions', requireAuth, (req, res) => {
 // ADMIN ENDPOINTS — Tool-Level Permissions
 // ═══════════════════════════════════════════════════════════════════════════
 
-// GET /admin/tools — list all registered tools
-app.get('/admin/tools', requireAdmin, (req, res) => {
+// GET /admin/tools — list all registered tools (Platform Admin)
+app.get('/admin/tools', requirePlatformAdmin, (req, res) => {
   try {
     const tools = db.prepare(`
       SELECT * FROM module_tools ORDER BY moduleId, toolKey
@@ -544,8 +574,8 @@ app.get('/admin/tools', requireAdmin, (req, res) => {
   }
 });
 
-// POST /admin/tools — register a new tool
-app.post('/admin/tools', requireAdmin, (req, res) => {
+// POST /admin/tools — register a new tool (Platform Admin)
+app.post('/admin/tools', requirePlatformAdmin, (req, res) => {
   const { moduleId, toolKey, toolLabel } = req.body as {
     moduleId: string;
     toolKey: string;
@@ -580,8 +610,8 @@ app.post('/admin/tools', requireAdmin, (req, res) => {
   }
 });
 
-// PATCH /admin/tools/:toolId — toggle global kill-switch
-app.patch('/admin/tools/:toolId', requireAdmin, (req, res) => {
+// PATCH /admin/tools/:toolId — toggle global kill-switch (Platform Admin)
+app.patch('/admin/tools/:toolId', requirePlatformAdmin, (req, res) => {
   const { toolId } = req.params;
   const { enabledGlobally } = req.body as { enabledGlobally: boolean };
 
@@ -606,8 +636,8 @@ app.patch('/admin/tools/:toolId', requireAdmin, (req, res) => {
   }
 });
 
-// POST /admin/tool-permissions — set per-user tool access
-app.post('/admin/tool-permissions', requireAdmin, (req, res) => {
+// POST /admin/tool-permissions — set per-user tool access (Tenant Admin)
+app.post('/admin/tool-permissions', requireTenantAdmin, (req, res) => {
   const { userId, toolId, enabled } = req.body as {
     userId: string;
     toolId: string;
@@ -620,6 +650,13 @@ app.post('/admin/tool-permissions', requireAdmin, (req, res) => {
   }
 
   try {
+    const adminUser = (req as any).user;
+    const targetUser = db.prepare(`SELECT tenantId FROM users WHERE id = ?`).get(userId) as any;
+    if (!targetUser || (adminUser.role !== 'platform_admin' && targetUser.tenantId !== adminUser.tenantId)) {
+      res.status(404).json({ error: 'User not found in your organization.' });
+      return;
+    }
+
     db.prepare(`
       INSERT INTO user_tool_permissions (id, userId, toolId, enabled)
       VALUES (?, ?, ?, ?)
@@ -670,16 +707,17 @@ app.get('/auth/tool-permissions', requireAuth, (req, res) => {
 // LEADS ENDPOINTS — Scraped Lead Storage
 // ═══════════════════════════════════════════════════════════════════════════
 
-// GET /leads — list leads with filters and pagination
+// GET /leads — list leads with filters and pagination (Tenant-scoped)
 app.get('/leads', requireAuth, (req, res) => {
   try {
+    const user = (req as any).user;
     const { source, status, campaignId, page = '1', limit = '50' } = req.query;
     const pageNum = parseInt(page as string, 10);
     const limitNum = parseInt(limit as string, 10);
     const offset = (pageNum - 1) * limitNum;
 
-    let query = `SELECT * FROM scraped_leads WHERE 1=1`;
-    const params: any[] = [];
+    let query = `SELECT * FROM scraped_leads WHERE tenantId = ?`;
+    const params: any[] = [user.tenantId];
 
     if (source) {
       query += ` AND source = ?`;
@@ -700,8 +738,8 @@ app.get('/leads', requireAuth, (req, res) => {
     const leads = db.prepare(query).all(...params);
 
     // Get total count for pagination
-    let countQuery = `SELECT COUNT(*) as total FROM scraped_leads WHERE 1=1`;
-    const countParams: any[] = [];
+    let countQuery = `SELECT COUNT(*) as total FROM scraped_leads WHERE tenantId = ?`;
+    const countParams: any[] = [user.tenantId];
     if (source) {
       countQuery += ` AND source = ?`;
       countParams.push(source);
@@ -731,7 +769,7 @@ app.get('/leads', requireAuth, (req, res) => {
   }
 });
 
-// POST /leads — bulk insert from scraper output
+// POST /leads — bulk insert from scraper output (Tenant-scoped)
 app.post('/leads', requireAuth, (req, res) => {
   const { leads } = req.body as { leads: any[] };
 
@@ -745,14 +783,15 @@ app.post('/leads', requireAuth, (req, res) => {
     const stmt = db.prepare(`
       INSERT INTO scraped_leads (
         id, source, campaignId, businessName, phone, email, address, website,
-        socialLinks, rawData, status, scrapedBy, scrapedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+        socialLinks, rawData, status, scrapedBy, scrapedAt, tenantId
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?)
       ON CONFLICT(source, phone, businessName) DO UPDATE SET
         email = excluded.email,
         address = excluded.address,
         website = excluded.website,
         socialLinks = excluded.socialLinks,
-        rawData = excluded.rawData
+        rawData = excluded.rawData,
+        tenantId = excluded.tenantId
     `);
 
     const insertMany = db.transaction((leadsArray: any[]) => {
@@ -770,7 +809,8 @@ app.post('/leads', requireAuth, (req, res) => {
           lead.socialLinks ? JSON.stringify(lead.socialLinks) : null,
           lead.rawData ? JSON.stringify(lead.rawData) : null,
           user.username,
-          new Date().toISOString()
+          new Date().toISOString(),
+          user.tenantId
         );
       }
     });
@@ -810,35 +850,36 @@ app.patch('/leads/:id', requireAuth, (req, res) => {
   }
 });
 
-// DELETE /leads/:id — delete a lead
+// DELETE /leads/:id — delete a lead within tenant
 app.delete('/leads/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const user = (req as any).user;
 
   try {
-    // Allow deletion if: admin OR the user scraped it
-    const lead = db.prepare(`SELECT scrapedBy FROM scraped_leads WHERE id = ?`).get(id) as any;
+    // Allow deletion if: admin OR the user scraped it within the same tenant
+    const lead = db.prepare(`SELECT scrapedBy FROM scraped_leads WHERE id = ? AND tenantId = ?`).get(id, user.tenantId) as any;
 
     if (!lead) {
       res.status(404).json({ error: 'Lead not found.' });
       return;
     }
 
-    if (user.role !== 'admin' && lead.scrapedBy !== user.username) {
+    if (user.role !== 'admin' && user.role !== 'platform_admin' && lead.scrapedBy !== user.username) {
       res.status(403).json({ error: 'You can only delete leads you scraped.' });
       return;
     }
 
-    db.prepare(`DELETE FROM scraped_leads WHERE id = ?`).run(id);
+    db.prepare(`DELETE FROM scraped_leads WHERE id = ? AND tenantId = ?`).run(id, user.tenantId);
     res.json({ success: true, message: 'Lead deleted.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /leads/export — export filtered leads as CSV
+// GET /leads/export — export filtered leads as CSV within tenant
 app.get('/leads/export', requireAuth, (req, res) => {
   try {
+    const user = (req as any).user;
     const { source, status, campaignId, format = 'csv' } = req.query;
 
     if (format !== 'csv') {
@@ -846,8 +887,8 @@ app.get('/leads/export', requireAuth, (req, res) => {
       return;
     }
 
-    let query = `SELECT * FROM scraped_leads WHERE 1=1`;
-    const params: any[] = [];
+    let query = `SELECT * FROM scraped_leads WHERE tenantId = ?`;
+    const params: any[] = [user.tenantId];
 
     if (source) {
       query += ` AND source = ?`;
@@ -2618,16 +2659,24 @@ app.get('/emailer/status', requireAuth, (_req: express.Request, res: express.Res
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ADMIN DASHBOARD ENDPOINTS (Phase 4)
+// ADMIN DASHBOARD ENDPOINTS (Tenant-Scoped Analytics)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Analytics: Overview KPIs
-app.get('/admin/analytics/overview', requireAdmin, (req, res) => {
+// Analytics: Overview KPIs (Scoped to current tenant)
+app.get('/admin/analytics/overview', requireTenantAdmin, (req, res) => {
   try {
-    const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
-    const activeSessions = db.prepare('SELECT COUNT(*) as count FROM sessions_store WHERE expiresAt > datetime("now")').get() as { count: number };
-    const todaysCalls = db.prepare(`SELECT COUNT(*) as count FROM call_logs WHERE date(timestamp) = date('now')`).get() as { count: number };
-    const todaysLeads = db.prepare(`SELECT COUNT(*) as count FROM scraped_leads WHERE date(scrapedAt) = date('now')`).get() as { count: number };
+    const adminUser = (req as any).user;
+    const tenantId = adminUser.tenantId;
+
+    const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users WHERE tenantId = ?').get(tenantId) as { count: number };
+    const activeSessions = db.prepare(`
+      SELECT COUNT(*) as count 
+      FROM sessions_store s 
+      JOIN users u ON u.id = s.userId 
+      WHERE u.tenantId = ? AND s.expiresAt > datetime("now")
+    `).get(tenantId) as { count: number };
+    const todaysCalls = db.prepare(`SELECT COUNT(*) as count FROM call_logs WHERE tenantId = ? AND date(timestamp) = date('now')`).get(tenantId) as { count: number };
+    const todaysLeads = db.prepare(`SELECT COUNT(*) as count FROM scraped_leads WHERE tenantId = ? AND date(scrapedAt) = date('now')`).get(tenantId) as { count: number };
 
     res.json({
       totalUsers: totalUsers.count,
@@ -2640,18 +2689,21 @@ app.get('/admin/analytics/overview', requireAdmin, (req, res) => {
   }
 });
 
-// Analytics: Usage trends (last 30 days)
-app.get('/admin/analytics/usage-trends', requireAdmin, (req, res) => {
+// Analytics: Usage trends (last 30 days — Scoped to current tenant)
+app.get('/admin/analytics/usage-trends', requireTenantAdmin, (req, res) => {
   try {
+    const adminUser = (req as any).user;
+    const tenantId = adminUser.tenantId;
+
     const trends = db.prepare(`
       SELECT
         date(timestamp) as date,
         COUNT(*) as callCount
       FROM call_logs
-      WHERE timestamp > datetime('now', '-30 days')
+      WHERE tenantId = ? AND timestamp > datetime('now', '-30 days')
       GROUP BY date(timestamp)
       ORDER BY date ASC
-    `).all() as Array<{ date: string; callCount: number }>;
+    `).all(tenantId) as Array<{ date: string; callCount: number }>;
 
     res.json({ trends });
   } catch (err: any) {
@@ -2659,9 +2711,12 @@ app.get('/admin/analytics/usage-trends', requireAdmin, (req, res) => {
   }
 });
 
-// Analytics: Module usage stats
-app.get('/admin/analytics/module-usage', requireAdmin, (req, res) => {
+// Analytics: Module usage stats (Scoped to current tenant)
+app.get('/admin/analytics/module-usage', requireTenantAdmin, (req, res) => {
   try {
+    const adminUser = (req as any).user;
+    const tenantId = adminUser.tenantId;
+
     const modules = [
       { moduleId: 'octalDialer', label: 'Octal Dialer' },
       { moduleId: 'googleScraper', label: 'Google Scraper' },
@@ -2672,9 +2727,10 @@ app.get('/admin/analytics/module-usage', requireAdmin, (req, res) => {
 
     const stats = modules.map(m => {
       const enabledUsers = db.prepare(`
-        SELECT COUNT(DISTINCT userId) as count FROM user_permissions
-        WHERE moduleId = ? AND enabled = 1
-      `).get({ 1: m.moduleId }) as { count: number };
+        SELECT COUNT(DISTINCT userId) as count 
+        FROM user_permissions
+        WHERE tenantId = ? AND moduleId = ? AND enabled = 1
+      `).get(tenantId, m.moduleId) as { count: number };
       return { module: m.label, enabledUsers: enabledUsers.count };
     });
 
@@ -2684,8 +2740,162 @@ app.get('/admin/analytics/module-usage', requireAdmin, (req, res) => {
   }
 });
 
-// Audit Logs: Get paginated logs
-app.get('/admin/audit-logs', requireAdmin, (req, res) => {
+// ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM ADMIN ENDPOINTS (Super Admin only — platform-wide authority)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// GET /admin/tenants — list all tenants across the platform (Platform Admin only)
+app.get('/admin/tenants', requirePlatformAdmin, (req, res) => {
+  try {
+    const tenants = db.prepare(`
+      SELECT 
+        t.id, t.name, t.slug, t.status, t.createdAt, t.updatedAt,
+        (SELECT COUNT(*) FROM users u WHERE u.tenantId = t.id) as userCount,
+        (SELECT s.planId FROM subscriptions s WHERE s.tenantId = t.id AND s.status = 'active' ORDER BY s.createdAt DESC LIMIT 1) as planId,
+        (SELECT s.status FROM subscriptions s WHERE s.tenantId = t.id ORDER BY s.createdAt DESC LIMIT 1) as subscriptionStatus
+      FROM tenants t
+      ORDER BY t.createdAt DESC
+    `).all() as any[];
+
+    res.json({ tenants });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/tenants/:id — get specific tenant detail (Platform Admin only)
+app.get('/admin/tenants/:id', requirePlatformAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const tenant = db.prepare(`SELECT * FROM tenants WHERE id = ?`).get(id) as any;
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant not found.' });
+      return;
+    }
+
+    const users = db.prepare(`SELECT id, username, role, createdAt FROM users WHERE tenantId = ?`).all(id);
+    const subscriptions = db.prepare(`SELECT * FROM subscriptions WHERE tenantId = ? ORDER BY createdAt DESC`).all(id);
+
+    res.json({ tenant, users, subscriptions });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /admin/tenants/:id/status — update tenant status (Platform Admin only)
+app.put('/admin/tenants/:id/status', requirePlatformAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body as { status: string };
+
+    if (!['active', 'suspended'].includes(status)) {
+      res.status(400).json({ error: 'Status must be active or suspended.' });
+      return;
+    }
+
+    const result = db.prepare(`UPDATE tenants SET status = ?, updatedAt = datetime('now') WHERE id = ?`).run(status, id);
+    if (result.changes === 0) {
+      res.status(404).json({ error: 'Tenant not found.' });
+      return;
+    }
+
+    res.json({ success: true, message: `Tenant status updated to ${status}.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/plans — list all catalog plans (Platform Admin only)
+app.get('/admin/plans', requirePlatformAdmin, (req, res) => {
+  try {
+    const plans = db.prepare(`SELECT * FROM plans ORDER BY priceMonthly ASC`).all() as any[];
+    res.json({ plans });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/plans — create a new catalog plan (Platform Admin only)
+app.post('/admin/plans', requirePlatformAdmin, (req, res) => {
+  try {
+    const { name, priceMonthly, priceYearly, description, maxAgents, maxDailyDials } = req.body as {
+      name: string;
+      priceMonthly: number;
+      priceYearly: number;
+      description?: string;
+      maxAgents?: number;
+      maxDailyDials?: number;
+    };
+
+    if (!name) {
+      res.status(400).json({ error: 'Plan name is required.' });
+      return;
+    }
+
+    const planId = 'plan_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO plans (id, name, priceMonthly, priceYearly, status, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, 'active', ?, ?)
+    `).run(planId, name, priceMonthly || 0, priceYearly || 0, now, now);
+
+    res.status(201).json({ success: true, planId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /admin/plans/:id — update a catalog plan (Platform Admin only)
+app.put('/admin/plans/:id', requirePlatformAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, priceMonthly, priceYearly, status } = req.body as {
+      name?: string;
+      priceMonthly?: number;
+      priceYearly?: number;
+      status?: string;
+    };
+
+    const plan = db.prepare(`SELECT * FROM plans WHERE id = ?`).get(id);
+    if (!plan) {
+      res.status(404).json({ error: 'Plan not found.' });
+      return;
+    }
+
+    if (name) db.prepare(`UPDATE plans SET name = ?, updatedAt = datetime('now') WHERE id = ?`).run(name, id);
+    if (priceMonthly !== undefined) db.prepare(`UPDATE plans SET priceMonthly = ?, updatedAt = datetime('now') WHERE id = ?`).run(priceMonthly, id);
+    if (priceYearly !== undefined) db.prepare(`UPDATE plans SET priceYearly = ?, updatedAt = datetime('now') WHERE id = ?`).run(priceYearly, id);
+    if (status) db.prepare(`UPDATE plans SET status = ?, updatedAt = datetime('now') WHERE id = ?`).run(status, id);
+
+    res.json({ success: true, message: 'Plan updated.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/subscriptions — list all tenant subscriptions (Platform Admin only)
+app.get('/admin/subscriptions', requirePlatformAdmin, (req, res) => {
+  try {
+    const subscriptions = db.prepare(`
+      SELECT 
+        s.*, 
+        t.name as tenantName, 
+        p.name as planName 
+      FROM subscriptions s
+      LEFT JOIN tenants t ON t.id = s.tenantId
+      LEFT JOIN plans p ON p.id = s.planId
+      ORDER BY s.createdAt DESC
+    `).all() as any[];
+
+    res.json({ subscriptions });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Audit Logs: Get paginated logs (Platform Admin only)
+app.get('/admin/audit-logs', requirePlatformAdmin, (req, res) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 50;
@@ -2713,8 +2923,8 @@ app.get('/admin/audit-logs', requireAdmin, (req, res) => {
   }
 });
 
-// System Settings: Get all settings grouped by category
-app.get('/admin/system-settings', requireAdmin, (req, res) => {
+// System Settings: Get all settings grouped by category (Platform Admin only)
+app.get('/admin/system-settings', requirePlatformAdmin, (req, res) => {
   try {
     const settings = db.prepare(`
       SELECT * FROM system_settings
@@ -2733,8 +2943,8 @@ app.get('/admin/system-settings', requireAdmin, (req, res) => {
   }
 });
 
-// System Settings: Update settings
-app.put('/admin/system-settings', requireAdmin, (req, res) => {
+// System Settings: Update settings (Platform Admin only)
+app.put('/admin/system-settings', requirePlatformAdmin, (req, res) => {
   try {
     const { settings } = req.body as { settings: Array<{ id: string; settingValue: string }> };
     if (!Array.isArray(settings)) {
@@ -2758,27 +2968,53 @@ app.put('/admin/system-settings', requireAdmin, (req, res) => {
   }
 });
 
-// Custom Roles: List roles
-app.get('/admin/roles', requireAdmin, (req, res) => {
+// System Health: Get current metrics (Platform Admin only)
+app.get('/admin/health/status', requirePlatformAdmin, (req, res) => {
   try {
-    const roles = db.prepare('SELECT * FROM custom_roles ORDER BY createdAt DESC').all() as any[];
+    const uptime = process.uptime();
+    const memUsage = process.memoryUsage();
+    const activeSessions = db.prepare('SELECT COUNT(*) as count FROM sessions_store WHERE expiresAt > datetime("now")').get() as { count: number };
+
+    res.json({
+      uptime,
+      memory: {
+        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024)
+      },
+      activeSessions: activeSessions.count,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TENANT ADMIN ENDPOINTS (Scoped to current tenant)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Custom Roles: List roles for current tenant
+app.get('/admin/roles', requireTenantAdmin, (req, res) => {
+  try {
+    const adminUser = (req as any).user;
+    const roles = db.prepare('SELECT * FROM custom_roles WHERE tenantId = ? ORDER BY createdAt DESC').all(adminUser.tenantId) as any[];
     res.json({ roles });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Custom Roles: Create role
-app.post('/admin/roles', requireAdmin, (req, res) => {
+// Custom Roles: Create role for current tenant
+app.post('/admin/roles', requireTenantAdmin, (req, res) => {
   try {
     const { roleName, description, permissions } = req.body as { roleName: string; description: string; permissions: any };
-    const user = (req as any).user;
+    const adminUser = (req as any).user;
     const id = crypto.randomUUID();
 
     db.prepare(`
-      INSERT INTO custom_roles (id, roleName, description, permissions, createdBy)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, roleName, JSON.stringify(permissions), user.username);
+      INSERT INTO custom_roles (id, roleName, description, permissions, createdBy, tenantId)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, roleName, JSON.stringify(permissions), adminUser.username, adminUser.tenantId);
 
     res.json({ success: true, id });
   } catch (err: any) {
@@ -2786,15 +3022,21 @@ app.post('/admin/roles', requireAdmin, (req, res) => {
   }
 });
 
-// Custom Roles: Update role
-app.put('/admin/roles/:roleId', requireAdmin, (req, res) => {
+// Custom Roles: Update role within current tenant
+app.put('/admin/roles/:roleId', requireTenantAdmin, (req, res) => {
   try {
     const { roleName, description, permissions } = req.body as { roleName: string; description: string; permissions: any };
     const { roleId } = req.params;
+    const adminUser = (req as any).user;
 
-    db.prepare(`
-      UPDATE custom_roles SET roleName = ?, description = ?, permissions = ? WHERE id = ?
-    `).run(roleName, description, JSON.stringify(permissions), roleId);
+    const result = db.prepare(`
+      UPDATE custom_roles SET roleName = ?, description = ?, permissions = ? WHERE id = ? AND tenantId = ?
+    `).run(roleName, description, JSON.stringify(permissions), roleId, adminUser.tenantId);
+
+    if (result.changes === 0) {
+      res.status(404).json({ error: 'Role not found in your organization.' });
+      return;
+    }
 
     res.json({ success: true });
   } catch (err: any) {
@@ -2803,7 +3045,7 @@ app.put('/admin/roles/:roleId', requireAdmin, (req, res) => {
 });
 
 // API Keys: List all keys for current tenant
-app.get('/admin/api-keys', requireAdmin, (req, res) => {
+app.get('/admin/api-keys', requireTenantAdmin, (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
@@ -2822,7 +3064,7 @@ app.get('/admin/api-keys', requireAdmin, (req, res) => {
 });
 
 // API Keys: Generate new key for current tenant
-app.post('/admin/api-keys', requireAdmin, (req, res) => {
+app.post('/admin/api-keys', requireTenantAdmin, (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
@@ -2844,7 +3086,7 @@ app.post('/admin/api-keys', requireAdmin, (req, res) => {
 });
 
 // API Keys: Revoke key within current tenant
-app.delete('/admin/api-keys/:keyId', requireAdmin, (req, res) => {
+app.delete('/admin/api-keys/:keyId', requireTenantAdmin, (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
@@ -2857,27 +3099,6 @@ app.delete('/admin/api-keys/:keyId', requireAdmin, (req, res) => {
     }
 
     res.json({ success: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// System Health: Get current metrics
-app.get('/admin/health/status', requireAdmin, (req, res) => {
-  try {
-    const uptime = process.uptime();
-    const memUsage = process.memoryUsage();
-    const activeSessions = db.prepare('SELECT COUNT(*) as count FROM sessions_store WHERE expiresAt > datetime("now")').get() as { count: number };
-
-    res.json({
-      uptime,
-      memory: {
-        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
-        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024)
-      },
-      activeSessions: activeSessions.count,
-      timestamp: new Date().toISOString()
-    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -401,14 +401,20 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
 `);
 
-// Safe column migrations for email_templates
+// Safe column migrations for email_templates and custom_roles
 try {
-  const cols = db.prepare(`PRAGMA table_info(email_templates)`).all() as any[];
-  if (!cols.some(c => c.name === 'templateType')) {
+  const emailCols = db.prepare(`PRAGMA table_info(email_templates)`).all() as any[];
+  if (!emailCols.some(c => c.name === 'templateType')) {
     db.prepare(`ALTER TABLE email_templates ADD COLUMN templateType TEXT DEFAULT 'campaign'`).run();
   }
-  if (!cols.some(c => c.name === 'systemTemplate')) {
+  if (!emailCols.some(c => c.name === 'systemTemplate')) {
     db.prepare(`ALTER TABLE email_templates ADD COLUMN systemTemplate INTEGER DEFAULT 0`).run();
+  }
+
+  const roleCols = db.prepare(`PRAGMA table_info(custom_roles)`).all() as any[];
+  if (!roleCols.some(c => c.name === 'tenantId')) {
+    db.prepare(`ALTER TABLE custom_roles ADD COLUMN tenantId TEXT DEFAULT 'tenant_default'`).run();
+    db.prepare(`CREATE INDEX IF NOT EXISTS idx_custom_roles_tenantId ON custom_roles(tenantId)`).run();
   }
 } catch (e) {
   // Ignore migration error
