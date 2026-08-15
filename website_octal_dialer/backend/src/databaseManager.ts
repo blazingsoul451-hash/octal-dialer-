@@ -18,6 +18,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { checkLimit, initializeCatalogPlans } from './entitlementManager';
 
 // ─── DB file location ────────────────────────────────────────────────────────
 const DATA_DIR = path.join(__dirname, '../data');
@@ -420,6 +421,13 @@ try {
   // Ignore migration error
 }
 
+// Initialize standard catalog plans & features (Phase 7)
+try {
+  initializeCatalogPlans();
+} catch (e) {
+  console.error('[Entitlements] Catalog plans init error:', e);
+}
+
 console.log('[SQLite] Database initialised at:', DB_FILE);
 
 // ─── One-time migration from legacy db.json ──────────────────────────────────
@@ -628,6 +636,19 @@ export function createCampaign(
   };
 
   const insertLeads = db.transaction(() => {
+    // Phase 7 Invariant: Atomic check for campaign and lead limits inside serialized transaction
+    const campaignLimitCheck = checkLimit(tenantId, 'maxCampaigns', 1);
+    if (!campaignLimitCheck.allowed) {
+      throw new Error(campaignLimitCheck.error || `Campaign limit reached for your plan (${campaignLimitCheck.current}/${campaignLimitCheck.limit}).`);
+    }
+
+    if (validLeads.length > 0) {
+      const leadLimitCheck = checkLimit(tenantId, 'maxLeads', validLeads.length);
+      if (!leadLimitCheck.allowed) {
+        throw new Error(leadLimitCheck.error || `Lead quota exceeded (${leadLimitCheck.current + validLeads.length}/${leadLimitCheck.limit}).`);
+      }
+    }
+
     stmts.insertCampaign.run(newCampaign);
 
     for (let i = 0; i < validLeads.length; i++) {
@@ -924,5 +945,8 @@ export function getLockedLeads(): Lead[] {
 setInterval(() => releaseExpiredLeases(LEASE_TTL_MINUTES), 60 * 1000);
 
 // ─── Expose the raw db instance for future steps ─────────────────────────────
+export function getDatabase(): Database.Database {
+  return db;
+}
 export { db };
 

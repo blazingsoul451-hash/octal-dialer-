@@ -60,6 +60,15 @@ import {
 } from './authManager';
 
 import {
+  getTenantEntitlements,
+  getTenantUsage,
+  checkLimit,
+  requireFeature,
+  requireActiveSubscription,
+  initializeCatalogPlans
+} from './entitlementManager';
+
+import {
   checkCallAllowed,
   triggerEmergencyStop,
   clearEmergencyStop,
@@ -307,47 +316,66 @@ app.post('/admin/users', requireTenantAdmin, (req, res) => {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
 
-    // Check if username already exists
-    const existing = db.prepare(`SELECT id FROM users WHERE username = ?`).get(username);
-    if (existing) {
-      res.status(400).json({ error: 'Username already exists.' });
-      return;
-    }
+    // Phase 7 Invariant: Atomic check + insert within serialized SQLite transaction
+    const createUserTxn = db.transaction(() => {
+      const userLimitCheck = checkLimit(tenantId, 'maxUsers', 1);
+      if (!userLimitCheck.allowed) {
+        const err: any = new Error(userLimitCheck.error || `User limit reached for your plan (${userLimitCheck.current}/${userLimitCheck.limit}).`);
+        err.statusCode = 403;
+        err.limitDetails = { current: userLimitCheck.current, limit: userLimitCheck.limit };
+        throw err;
+      }
 
-    const userId = 'user_' + crypto.randomBytes(8).toString('hex');
-    const { hash } = hashPassword(password);
+      // Check if username already exists
+      const existing = db.prepare(`SELECT id FROM users WHERE username = ?`).get(username);
+      if (existing) {
+        const err: any = new Error('Username already exists.');
+        err.statusCode = 400;
+        throw err;
+      }
 
-    db.prepare(`
-      INSERT INTO users (id, username, passwordHash, role, tenantId, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(userId, username, hash, role, tenantId, new Date().toISOString());
+      const userId = 'user_' + crypto.randomBytes(8).toString('hex');
+      const { hash } = hashPassword(password);
 
-    // Grant all permissions by default for new users within this tenant
-    const modules = ['octalDialer', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
+      db.prepare(`
+        INSERT INTO users (id, username, passwordHash, role, tenantId, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(userId, username, hash, role, tenantId, new Date().toISOString());
 
-    const insertPerm = db.prepare(`
-      INSERT INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
-      VALUES (?, ?, ?, 1, ?, ?, ?)
-    `);
+      // Grant all permissions by default for new users within this tenant
+      const modules = ['octalDialer', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
 
-    for (const moduleId of modules) {
-      insertPerm.run(
-        `perm_${userId}_${moduleId}`,
-        userId,
-        moduleId,
-        adminUser.username,
-        tenantId,
-        new Date().toISOString()
-      );
-    }
+      const insertPerm = db.prepare(`
+        INSERT INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
+        VALUES (?, ?, ?, 1, ?, ?, ?)
+      `);
+
+      for (const moduleId of modules) {
+        insertPerm.run(
+          `perm_${userId}_${moduleId}`,
+          userId,
+          moduleId,
+          adminUser.username,
+          tenantId,
+          new Date().toISOString()
+        );
+      }
+
+      return userId;
+    });
+
+    const newUserId = createUserTxn();
 
     res.json({
       success: true,
-      userId,
+      userId: newUserId,
       message: `User ${username} created successfully.`
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({
+      error: err.message,
+      ...(err.limitDetails ? err.limitDetails : {})
+    });
   }
 });
 
@@ -507,13 +535,13 @@ app.get('/admin/permissions/:userId', requireAuth, (req, res) => {
   }
 });
 
-// GET /auth/permissions — get permissions for current logged-in user
+// GET /auth/permissions — get effective permissions for current user (Phase 7: constrained by plan entitlements)
 app.get('/auth/permissions', requireAuth, (req, res) => {
   try {
     const user = (req as any).user;
 
-    // Admins have access to everything
-    if (user.role === 'admin') {
+    // Platform Admins have full access across modules
+    if (user.role === 'platform_admin') {
       res.json({
         octalDialer: true,
         googleScraper: true,
@@ -524,25 +552,43 @@ app.get('/auth/permissions', requireAuth, (req, res) => {
       return;
     }
 
+    // Resolve tenant plan entitlements
+    const entitlements = getTenantEntitlements(user.tenantId);
+    const planFeatures = entitlements.isValid ? entitlements.features : {};
+
+    // Tenant Admins receive all features enabled in their tenant plan
+    if (user.role === 'admin') {
+      res.json({
+        octalDialer: !!planFeatures.octalDialer,
+        googleScraper: !!planFeatures.googleScraper,
+        autoEmailer: !!planFeatures.autoEmailer,
+        facebookScraper: !!planFeatures.facebookScraper,
+        facebookPoster: !!planFeatures.facebookPoster
+      });
+      return;
+    }
+
+    // Agents receive features permitted by BOTH user permission and tenant plan
     const permissions = db.prepare(`
       SELECT moduleId, enabled
       FROM user_permissions
-      WHERE userId = ?
-    `).all(user.id);
+      WHERE userId = ? AND tenantId = ?
+    `).all(user.id, user.tenantId);
 
-    const permMap: Record<string, boolean> = {
-      octalDialer: false,
-      googleScraper: false,
-      autoEmailer: false,
-      facebookScraper: false,
-      facebookPoster: false
-    };
-
+    const userPermMap: Record<string, boolean> = {};
     for (const perm of permissions as any[]) {
-      permMap[perm.moduleId] = perm.enabled === 1;
+      userPermMap[perm.moduleId] = perm.enabled === 1;
     }
 
-    res.json(permMap);
+    const effectiveMap: Record<string, boolean> = {
+      octalDialer: (userPermMap.octalDialer !== false) && !!planFeatures.octalDialer,
+      googleScraper: !!userPermMap.googleScraper && !!planFeatures.googleScraper,
+      autoEmailer: !!userPermMap.autoEmailer && !!planFeatures.autoEmailer,
+      facebookScraper: !!userPermMap.facebookScraper && !!planFeatures.facebookScraper,
+      facebookPoster: !!userPermMap.facebookPoster && !!planFeatures.facebookPoster
+    };
+
+    res.json(effectiveMap);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -769,7 +815,7 @@ app.get('/leads', requireAuth, (req, res) => {
   }
 });
 
-// POST /leads — bulk insert from scraper output (Tenant-scoped)
+// POST /leads — bulk insert from scraper output (Tenant-scoped with atomic maxLeads quota check)
 app.post('/leads', requireAuth, (req, res) => {
   const { leads } = req.body as { leads: any[] };
 
@@ -780,6 +826,8 @@ app.post('/leads', requireAuth, (req, res) => {
 
   try {
     const user = (req as any).user;
+    const tenantId = user.tenantId;
+
     const stmt = db.prepare(`
       INSERT INTO scraped_leads (
         id, source, campaignId, businessName, phone, email, address, website,
@@ -794,7 +842,16 @@ app.post('/leads', requireAuth, (req, res) => {
         tenantId = excluded.tenantId
     `);
 
-    const insertMany = db.transaction((leadsArray: any[]) => {
+    const insertManyTxn = db.transaction((leadsArray: any[]) => {
+      // Phase 7 Invariant: Check plan limit for maxLeads atomically inside transaction
+      const leadLimitCheck = checkLimit(tenantId, 'maxLeads', leadsArray.length);
+      if (!leadLimitCheck.allowed) {
+        const err: any = new Error(leadLimitCheck.error || `Lead quota exceeded (${leadLimitCheck.current + leadsArray.length}/${leadLimitCheck.limit}).`);
+        err.statusCode = 403;
+        err.limitDetails = { current: leadLimitCheck.current, limit: leadLimitCheck.limit };
+        throw err;
+      }
+
       for (const lead of leadsArray) {
         const leadId = 'lead_' + crypto.randomBytes(8).toString('hex');
         stmt.run(
@@ -810,16 +867,19 @@ app.post('/leads', requireAuth, (req, res) => {
           lead.rawData ? JSON.stringify(lead.rawData) : null,
           user.username,
           new Date().toISOString(),
-          user.tenantId
+          tenantId
         );
       }
     });
 
-    insertMany(leads);
+    insertManyTxn(leads);
 
     res.json({ success: true, inserted: leads.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({
+      error: err.message,
+      ...(err.limitDetails ? err.limitDetails : {})
+    });
   }
 });
 
@@ -1249,8 +1309,8 @@ app.get('/api/logs/mobile', (req, res) => {
   res.json(logs.slice(0, 100));
 });
 
-// REST: Scan sibling scraper folders (protected)
-app.get('/api/scraper-files', requireAuth, (req, res) => {
+// REST: Scan sibling scraper folders (Feature-Gated)
+app.get('/api/scraper-files', requireAuth, requireFeature('googleScraper'), (req, res) => {
   const list: { name: string; path: string; sizeBytes: number; lastModified: string }[] = [];
   for (const folder of SCRAPER_PATHS) {
     if (fs.existsSync(folder)) {
@@ -1276,8 +1336,8 @@ app.get('/api/scraper-files', requireAuth, (req, res) => {
   res.json(list);
 });
 
-// REST: Import leads from scraped file (protected)
-app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
+// REST: Import leads from scraped file (Feature-Gated)
+app.post('/api/scraper-files/import', requireAuth, requireFeature('googleScraper'), async (req, res) => {
   try {
     const { filePath, campaignName } = req.body as { filePath: string; campaignName?: string };
     if (!filePath || !fs.existsSync(filePath)) {
@@ -1377,8 +1437,8 @@ let activeScrapeTask = {
   logs: [] as string[]
 };
 
-// REST: Run Scraper (protected)
-app.post('/api/scraper/run', requireAuth, (req, res) => {
+// REST: Run Scraper (Feature-Gated)
+app.post('/api/scraper/run', requireAuth, requireFeature('googleScraper'), (req, res) => {
   if (activeScrapeTask.status === 'running') {
     res.status(400).json({ error: 'A scraper job is already running.' });
     return;
@@ -1461,13 +1521,13 @@ app.post('/api/scraper/run', requireAuth, (req, res) => {
   res.json({ success: true, message: 'Scraper started successfully.' });
 });
 
-// REST: Scraper Status (protected)
-app.get('/api/scraper/status', requireAuth, (req, res) => {
+// REST: Scraper Status (Feature-Gated)
+app.get('/api/scraper/status', requireAuth, requireFeature('googleScraper'), (req, res) => {
   res.json(activeScrapeTask);
 });
 
-// REST: Stop Scraper (protected)
-app.post('/api/scraper/stop', requireAuth, (req, res) => {
+// REST: Stop Scraper (Feature-Gated)
+app.post('/api/scraper/stop', requireAuth, requireFeature('googleScraper'), (req, res) => {
   if (activeScrapeProcess) {
     activeScrapeProcess.kill('SIGINT');
     activeScrapeTask.status = 'failed';
@@ -1527,8 +1587,8 @@ function writeFbJson(filePath: string, data: any) {
   } catch (_) {}
 }
 
-// REST: Facebook Scraper endpoints
-app.post('/api/facebook-scraper/run', requireAuth, (req, res) => {
+// REST: Facebook Scraper endpoints (Feature-Gated)
+app.post('/api/facebook-scraper/run', requireAuth, requireFeature('facebookScraper'), (req, res) => {
   if (activeFbScrapeTask.status === 'running') {
     res.status(400).json({ error: 'Facebook Scraper is already running.' });
     return;
@@ -1614,7 +1674,7 @@ app.post('/api/facebook-scraper/run', requireAuth, (req, res) => {
   res.json({ success: true, message: 'Facebook Scraper started.' });
 });
 
-app.get('/api/facebook-scraper/status', requireAuth, (req, res) => {
+app.get('/api/facebook-scraper/status', requireAuth, requireFeature('facebookScraper'), (req, res) => {
   let leads = [];
   const currentLeadsFile = path.join(FB_LEADS_DIR, 'current_leads.json');
   if (fs.existsSync(currentLeadsFile)) {
@@ -1628,7 +1688,7 @@ app.get('/api/facebook-scraper/status', requireAuth, (req, res) => {
   });
 });
 
-app.post('/api/facebook-scraper/stop', requireAuth, (req, res) => {
+app.post('/api/facebook-scraper/stop', requireAuth, requireFeature('facebookScraper'), (req, res) => {
   if (activeFbScrapeProcess) {
     activeFbScrapeProcess.kill('SIGINT');
     activeFbScrapeTask.status = 'failed';
@@ -1640,7 +1700,7 @@ app.post('/api/facebook-scraper/stop', requireAuth, (req, res) => {
   }
 });
 
-app.get('/api/facebook-scraper/download', requireAuth, (req, res) => {
+app.get('/api/facebook-scraper/download', requireAuth, requireFeature('facebookScraper'), (req, res) => {
   const format = req.query.format as string || 'csv';
   
   if (!fs.existsSync(FB_LEADS_DIR)) {
@@ -1671,8 +1731,8 @@ app.get('/api/facebook-scraper/download', requireAuth, (req, res) => {
   fs.createReadStream(targetPath).pipe(res);
 });
 
-// REST: Facebook Poster endpoints
-app.get('/api/facebook-poster/accounts', requireAuth, (req, res) => {
+// REST: Facebook Poster endpoints (Feature-Gated)
+app.get('/api/facebook-poster/accounts', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   const profiles = fs.readdirSync(FB_PROFILES_DIR)
     .filter(f => f.startsWith('fb_profile_') && fs.statSync(path.join(FB_PROFILES_DIR, f)).isDirectory())
     .sort();
@@ -1693,7 +1753,7 @@ app.get('/api/facebook-poster/accounts', requireAuth, (req, res) => {
   res.json(list);
 });
 
-app.post('/api/facebook-poster/accounts/add', requireAuth, async (req, res) => {
+app.post('/api/facebook-poster/accounts/add', requireAuth, requireFeature('facebookPoster'), async (req, res) => {
   const { profileId, cookiesStr, note, name } = req.body as { profileId: string; cookiesStr: string; note?: string; name?: string };
 
   if (!profileId || !cookiesStr) {
@@ -1765,7 +1825,7 @@ app.post('/api/facebook-poster/accounts/add', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/facebook-poster/accounts/delete', requireAuth, (req, res) => {
+app.post('/api/facebook-poster/accounts/delete', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   const { profileId } = req.body as { profileId: string };
   if (!profileId) {
     res.status(400).json({ error: 'profileId is required.' });
@@ -1786,39 +1846,39 @@ app.post('/api/facebook-poster/accounts/delete', requireAuth, (req, res) => {
   res.json({ success: true, message: 'Account deleted successfully.' });
 });
 
-app.get('/api/facebook-poster/config', requireAuth, (req, res) => {
+app.get('/api/facebook-poster/config', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   res.json(readFbJson(FB_CONFIG_FILE, { postUrls: [], caption: '' }));
 });
 
-app.post('/api/facebook-poster/config', requireAuth, (req, res) => {
+app.post('/api/facebook-poster/config', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   const { postUrls, caption } = req.body as { postUrls: string[]; caption: string };
   writeFbJson(FB_CONFIG_FILE, { postUrls: postUrls || [], caption: caption || '' });
   res.json({ success: true, message: 'Campaign configuration saved.' });
 });
 
-app.get('/api/facebook-poster/join-config', requireAuth, (req, res) => {
+app.get('/api/facebook-poster/join-config', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   res.json(readFbJson(FB_JOIN_CONFIG_FILE, { keywords: [], joinsPerSession: 5 }));
 });
 
-app.post('/api/facebook-poster/join-config', requireAuth, (req, res) => {
+app.post('/api/facebook-poster/join-config', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   const { keywords, joinsPerSession } = req.body as { keywords: string[]; joinsPerSession: number };
   writeFbJson(FB_JOIN_CONFIG_FILE, { keywords: keywords || [], joinsPerSession: joinsPerSession || 5 });
   res.json({ success: true, message: 'Auto Joiner configuration saved.' });
 });
 
-app.get('/api/facebook-poster/groups', requireAuth, (req, res) => {
+app.get('/api/facebook-poster/groups', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   res.json(readFbJson(FB_GROUPS_FILE, []));
 });
 
-app.get('/api/facebook-poster/activity-log', requireAuth, (req, res) => {
+app.get('/api/facebook-poster/activity-log', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   res.json(readFbJson(FB_ACTIVITY_FILE, []));
 });
 
-app.get('/api/facebook-poster/status', requireAuth, (req, res) => {
+app.get('/api/facebook-poster/status', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   res.json(activeFbPosterTask);
 });
 
-app.post('/api/facebook-poster/toggle', requireAuth, (req, res) => {
+app.post('/api/facebook-poster/toggle', requireAuth, requireFeature('facebookPoster'), (req, res) => {
   if (activeFbPosterTask.status === 'running') {
     if (activeFbPosterProcess) {
       activeFbPosterProcess.kill('SIGINT');
@@ -2431,16 +2491,16 @@ function emailLog(msg: string) {
   console.log('[Emailer]', msg);
 }
 
-// ── GET /email/leads
-app.get('/email/leads', requireAuth, (req: express.Request, res: express.Response): void => {
+// ── GET /email/leads (Feature-Gated)
+app.get('/email/leads', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   const rows = emailDb.prepare('SELECT * FROM email_leads WHERE tenantId = ? ORDER BY createdAt ASC').all(tenantId);
   res.json(rows);
 });
 
-// ── POST /email/upload
-app.post('/email/upload', requireAuth, (req: express.Request, res: express.Response): void => {
+// ── POST /email/upload (Feature-Gated)
+app.post('/email/upload', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   const { leads } = req.body as { leads: { email: string; name?: string; company?: string }[] };
@@ -2462,24 +2522,24 @@ app.post('/email/upload', requireAuth, (req: express.Request, res: express.Respo
   res.json({ success: true, added, duplicates: skipped });
 });
 
-// ── DELETE /email/leads
-app.delete('/email/leads', requireAuth, (req: express.Request, res: express.Response): void => {
+// ── DELETE /email/leads (Feature-Gated)
+app.delete('/email/leads', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   emailDb.prepare('DELETE FROM email_leads WHERE tenantId = ?').run(tenantId);
   res.json({ success: true });
 });
 
-// ── GET /email/accounts
-app.get('/email/accounts', requireAuth, (req: express.Request, res: express.Response): void => {
+// ── GET /email/accounts (Feature-Gated)
+app.get('/email/accounts', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   const rows = emailDb.prepare('SELECT id, email, senderName, smtpHost, smtpPort, status, tenantId FROM email_accounts WHERE tenantId = ?').all(tenantId);
   res.json(rows);
 });
 
-// ── POST /email/accounts
-app.post('/email/accounts', requireAuth, (req: express.Request, res: express.Response): void => {
+// ── POST /email/accounts (Feature-Gated)
+app.post('/email/accounts', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   const { accounts } = req.body as { accounts: { email: string; password: string; senderName?: string; smtpHost?: string; smtpPort?: number; status?: string }[] };
@@ -2512,16 +2572,16 @@ app.post('/email/accounts', requireAuth, (req: express.Request, res: express.Res
   res.json({ success: true });
 });
 
-// ── GET /email/templates
-app.get('/email/templates', requireAuth, (req: express.Request, res: express.Response): void => {
+// ── GET /email/templates (Feature-Gated)
+app.get('/email/templates', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   const rows = emailDb.prepare('SELECT * FROM email_templates WHERE tenantId = ? ORDER BY stage ASC, id ASC').all(tenantId);
   res.json(rows);
 });
 
-// ── POST /email/templates
-app.post('/email/templates', requireAuth, (req: express.Request, res: express.Response): void => {
+// ── POST /email/templates (Feature-Gated)
+app.post('/email/templates', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   const { templates } = req.body as { templates: { subject: string; body: string; stage?: number }[] };
@@ -2541,8 +2601,8 @@ app.post('/email/templates', requireAuth, (req: express.Request, res: express.Re
   res.json({ success: true });
 });
 
-// ── POST /email/start — tenant-isolated campaign runner
-app.post('/email/start', requireAuth, (req: express.Request, res: express.Response): void => {
+// ── POST /email/start — tenant-isolated campaign runner (Feature-Gated)
+app.post('/email/start', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   if (emailerJob.running) {
     res.json({ success: true, message: 'Campaign already running.' });
     return;
@@ -2643,14 +2703,14 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
   res.json({ success: true, message: 'Campaign started in background.' });
 });
 
-// ── POST /emailer/stop
-app.post('/emailer/stop', requireAuth, (_req: express.Request, res: express.Response): void => {
+// ── POST /emailer/stop (Feature-Gated)
+app.post('/emailer/stop', requireAuth, requireFeature('autoEmailer'), (_req: express.Request, res: express.Response): void => {
   emailerJob.stop = true;
   res.json({ success: true });
 });
 
-// ── GET /emailer/status
-app.get('/emailer/status', requireAuth, (_req: express.Request, res: express.Response): void => {
+// ── GET /emailer/status (Feature-Gated)
+app.get('/emailer/status', requireAuth, requireFeature('autoEmailer'), (_req: express.Request, res: express.Response): void => {
   res.json({
     status: emailerJob.running ? 'running' : 'idle',
     logs: emailerJob.logs.slice(-200)
@@ -2662,8 +2722,8 @@ app.get('/emailer/status', requireAuth, (_req: express.Request, res: express.Res
 // ADMIN DASHBOARD ENDPOINTS (Tenant-Scoped Analytics)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Analytics: Overview KPIs (Scoped to current tenant)
-app.get('/admin/analytics/overview', requireTenantAdmin, (req, res) => {
+// Analytics: Overview KPIs (Scoped to current tenant - Feature Gated)
+app.get('/admin/analytics/overview', requireTenantAdmin, requireFeature('analytics'), (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
@@ -2689,8 +2749,8 @@ app.get('/admin/analytics/overview', requireTenantAdmin, (req, res) => {
   }
 });
 
-// Analytics: Usage trends (last 30 days — Scoped to current tenant)
-app.get('/admin/analytics/usage-trends', requireTenantAdmin, (req, res) => {
+// Analytics: Usage trends (last 30 days — Scoped to current tenant - Feature Gated)
+app.get('/admin/analytics/usage-trends', requireTenantAdmin, requireFeature('analytics'), (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
@@ -2711,8 +2771,8 @@ app.get('/admin/analytics/usage-trends', requireTenantAdmin, (req, res) => {
   }
 });
 
-// Analytics: Module usage stats (Scoped to current tenant)
-app.get('/admin/analytics/module-usage', requireTenantAdmin, (req, res) => {
+// Analytics: Module usage stats (Scoped to current tenant - Feature Gated)
+app.get('/admin/analytics/module-usage', requireTenantAdmin, requireFeature('analytics'), (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
@@ -2735,6 +2795,39 @@ app.get('/admin/analytics/module-usage', requireTenantAdmin, (req, res) => {
     });
 
     res.json({ stats });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TENANT SUBSCRIPTION & ENTITLEMENT ENDPOINTS (Phase 7)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// GET /subscription — get subscription, entitlements, limits & real-time usage for authenticated tenant
+app.get('/subscription', requireAuth, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const entitlements = getTenantEntitlements(user.tenantId);
+    const usage = getTenantUsage(user.tenantId);
+
+    res.json({
+      tenantId: user.tenantId,
+      entitlements,
+      usage
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /auth/entitlements — lightweight entitlement check for current tenant
+app.get('/auth/entitlements', requireAuth, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const entitlements = getTenantEntitlements(user.tenantId);
+
+    res.json(entitlements);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2993,8 +3086,8 @@ app.get('/admin/health/status', requirePlatformAdmin, (req, res) => {
 // TENANT ADMIN ENDPOINTS (Scoped to current tenant)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Custom Roles: List roles for current tenant
-app.get('/admin/roles', requireTenantAdmin, (req, res) => {
+// Custom Roles: List roles for current tenant (Feature-Gated)
+app.get('/admin/roles', requireTenantAdmin, requireFeature('custom_roles'), (req, res) => {
   try {
     const adminUser = (req as any).user;
     const roles = db.prepare('SELECT * FROM custom_roles WHERE tenantId = ? ORDER BY createdAt DESC').all(adminUser.tenantId) as any[];
@@ -3004,8 +3097,8 @@ app.get('/admin/roles', requireTenantAdmin, (req, res) => {
   }
 });
 
-// Custom Roles: Create role for current tenant
-app.post('/admin/roles', requireTenantAdmin, (req, res) => {
+// Custom Roles: Create role for current tenant (Feature-Gated)
+app.post('/admin/roles', requireTenantAdmin, requireFeature('custom_roles'), (req, res) => {
   try {
     const { roleName, description, permissions } = req.body as { roleName: string; description: string; permissions: any };
     const adminUser = (req as any).user;
@@ -3022,8 +3115,8 @@ app.post('/admin/roles', requireTenantAdmin, (req, res) => {
   }
 });
 
-// Custom Roles: Update role within current tenant
-app.put('/admin/roles/:roleId', requireTenantAdmin, (req, res) => {
+// Custom Roles: Update role within current tenant (Feature-Gated)
+app.put('/admin/roles/:roleId', requireTenantAdmin, requireFeature('custom_roles'), (req, res) => {
   try {
     const { roleName, description, permissions } = req.body as { roleName: string; description: string; permissions: any };
     const { roleId } = req.params;
@@ -3044,8 +3137,8 @@ app.put('/admin/roles/:roleId', requireTenantAdmin, (req, res) => {
   }
 });
 
-// API Keys: List all keys for current tenant
-app.get('/admin/api-keys', requireTenantAdmin, (req, res) => {
+// API Keys: List all keys for current tenant (Feature-Gated)
+app.get('/admin/api-keys', requireTenantAdmin, requireFeature('api_keys'), (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
@@ -3063,8 +3156,8 @@ app.get('/admin/api-keys', requireTenantAdmin, (req, res) => {
   }
 });
 
-// API Keys: Generate new key for current tenant
-app.post('/admin/api-keys', requireTenantAdmin, (req, res) => {
+// API Keys: Generate new key for current tenant (Feature-Gated & Atomic limit check)
+app.post('/admin/api-keys', requireTenantAdmin, requireFeature('api_keys'), (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
@@ -3074,19 +3167,35 @@ app.post('/admin/api-keys', requireTenantAdmin, (req, res) => {
     const keyValue = crypto.randomBytes(32).toString('hex');
     const keyHash = crypto.createHash('sha256').update(keyValue).digest('hex');
 
-    db.prepare(`
-      INSERT INTO api_keys (id, keyName, keyHash, userId, scopes, expiresAt, tenantId)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, keyName, keyHash, userId, JSON.stringify(scopes), expiresAt || null, tenantId);
+    const createKeyTxn = db.transaction(() => {
+      // Phase 7 Invariant: Check plan limit for maxApiKeys atomically inside transaction
+      const apiKeyLimitCheck = checkLimit(tenantId, 'maxApiKeys', 1);
+      if (!apiKeyLimitCheck.allowed) {
+        const err: any = new Error(apiKeyLimitCheck.error || `API key limit reached for your plan (${apiKeyLimitCheck.current}/${apiKeyLimitCheck.limit}).`);
+        err.statusCode = 403;
+        err.limitDetails = { current: apiKeyLimitCheck.current, limit: apiKeyLimitCheck.limit };
+        throw err;
+      }
+
+      db.prepare(`
+        INSERT INTO api_keys (id, keyName, keyHash, userId, scopes, expiresAt, tenantId)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(id, keyName, keyHash, userId, JSON.stringify(scopes), expiresAt || null, tenantId);
+    });
+
+    createKeyTxn();
 
     res.json({ success: true, id, keyValue, message: 'Save this key — it will not be shown again' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({
+      error: err.message,
+      ...(err.limitDetails ? err.limitDetails : {})
+    });
   }
 });
 
-// API Keys: Revoke key within current tenant
-app.delete('/admin/api-keys/:keyId', requireTenantAdmin, (req, res) => {
+// API Keys: Revoke key within current tenant (Feature-Gated)
+app.delete('/admin/api-keys/:keyId', requireTenantAdmin, requireFeature('api_keys'), (req, res) => {
   try {
     const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;

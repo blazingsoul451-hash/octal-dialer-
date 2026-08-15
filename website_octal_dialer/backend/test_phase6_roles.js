@@ -217,8 +217,8 @@ try {
   const roleAId = 'role_a_' + ts;
   db.prepare(`
     INSERT INTO custom_roles (id, roleName, description, permissions, createdBy, tenantId)
-    VALUES (?, 'Supervisor', 'Lead supervisor', '[]', 'alpha_admin', ?)
-  `).run(roleAId, tenantAResult.tenant.id);
+    VALUES (?, ?, 'Lead supervisor', '[]', 'alpha_admin', ?)
+  `).run(roleAId, 'Supervisor_' + ts, tenantAResult.tenant.id);
 
   // Tenant B queries custom roles
   const tenantBRoles = db.prepare(`SELECT * FROM custom_roles WHERE tenantId = ?`).all(tenantBResult.tenant.id);
@@ -232,8 +232,8 @@ try {
   const apiKeyAId = 'key_a_' + ts;
   db.prepare(`
     INSERT INTO api_keys (id, keyName, keyHash, userId, scopes, tenantId)
-    VALUES (?, 'Prod Key', 'hash123', ?, '[]', ?)
-  `).run(apiKeyAId, tenantAAdminId, tenantAResult.tenant.id);
+    VALUES (?, 'Prod Key', ?, ?, '[]', ?)
+  `).run(apiKeyAId, 'hash_' + ts, tenantAAdminId, tenantAResult.tenant.id);
 
   // Tenant B queries API keys
   const tenantBKeys = db.prepare(`SELECT * FROM api_keys WHERE tenantId = ?`).all(tenantBResult.tenant.id);

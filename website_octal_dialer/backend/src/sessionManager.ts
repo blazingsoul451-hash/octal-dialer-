@@ -1,6 +1,7 @@
 import os from 'os';
 import crypto from 'crypto';
 import { db } from './databaseManager';
+import { checkLimit } from './entitlementManager';
 
 export interface Session {
   id: string;
@@ -160,30 +161,49 @@ export function pairPhone(
   session.lastHeartbeat = new Date();
   session.updatedAt = new Date();
 
-  // Upsert into SQLite devices table with strict tenantId
+  // Phase 7 Invariant: Atomic check for plan device limit and registration inside transaction
   try {
-    const devId = phoneBtAddress || 'dev_' + phoneDeviceName.replace(/\s+/g, '_');
-    db.prepare(`
-      INSERT INTO devices (id, name, btAddress, osType, ipAddress, status, tenantId, lastSeenAt)
-      VALUES (@id, @name, @btAddress, @osType, @ipAddress, 'ONLINE', @tenantId, @lastSeenAt)
-      ON CONFLICT(id) DO UPDATE SET
-        name = @name,
-        osType = @osType,
-        ipAddress = @ipAddress,
-        status = 'ONLINE',
-        tenantId = @tenantId,
-        lastSeenAt = @lastSeenAt
-    `).run({
-      id: devId,
-      name: phoneDeviceName,
-      btAddress: phoneBtAddress,
-      osType: phoneOsType,
-      ipAddress: phoneIpAddress,
-      tenantId: tenantId,
-      lastSeenAt: new Date().toISOString()
+    const pairDeviceTxn = db.transaction(() => {
+      const devId = phoneBtAddress || 'dev_' + phoneDeviceName.replace(/\s+/g, '_');
+      const existingDevice = db.prepare(`SELECT id FROM devices WHERE id = ? AND tenantId = ?`).get(devId, tenantId);
+      if (!existingDevice) {
+        const limitCheck = checkLimit(tenantId, 'maxDevices', 1);
+        if (!limitCheck.allowed) {
+          const err: any = new Error(`Tenant ${tenantId} reached device limit (${limitCheck.current}/${limitCheck.limit}).`);
+          (err as any).limitRejected = true;
+          throw err;
+        }
+      }
+
+      db.prepare(`
+        INSERT INTO devices (id, name, btAddress, osType, ipAddress, status, tenantId, lastSeenAt)
+        VALUES (@id, @name, @btAddress, @osType, @ipAddress, 'ONLINE', @tenantId, @lastSeenAt)
+        ON CONFLICT(id) DO UPDATE SET
+          name = @name,
+          osType = @osType,
+          ipAddress = @ipAddress,
+          status = 'ONLINE',
+          tenantId = @tenantId,
+          lastSeenAt = @lastSeenAt
+      `).run({
+        id: devId,
+        name: phoneDeviceName,
+        btAddress: phoneBtAddress,
+        osType: phoneOsType,
+        ipAddress: phoneIpAddress,
+        tenantId: tenantId,
+        lastSeenAt: new Date().toISOString()
+      });
     });
-  } catch (err) {
-    console.error('[SessionManager] Device upsert error:', err);
+
+    pairDeviceTxn();
+  } catch (err: any) {
+    if (err.limitRejected) {
+      console.error(`[Pairing] Rejected: ${err.message}`);
+    } else {
+      console.error('[SessionManager] Device upsert error:', err);
+    }
+    return null;
   }
 
   return session;

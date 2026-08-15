@@ -411,13 +411,16 @@ export function signupTenant(input: SignupInput): SignupResult {
       );
     }
 
-    // 3d. Find or ensure a default Plan
-    let plan = db.prepare(`SELECT id FROM plans WHERE status = 'active' ORDER BY priceMonthly ASC LIMIT 1`).get() as { id: string } | undefined;
+    // 3d. Find or ensure the default Public Starter Plan (Never plan_legacy)
+    let plan = db.prepare(`SELECT id FROM plans WHERE id = 'plan_starter' AND status = 'active'`).get() as { id: string } | undefined;
+    if (!plan) {
+      plan = db.prepare(`SELECT id FROM plans WHERE id != 'plan_legacy' AND status = 'active' ORDER BY priceMonthly ASC LIMIT 1`).get() as { id: string } | undefined;
+    }
     if (!plan) {
       const defaultPlanId = 'plan_starter';
       db.prepare(`
         INSERT INTO plans (id, name, priceMonthly, priceYearly, status, createdAt, updatedAt)
-        VALUES (?, 'Starter Plan', 0, 0, 'active', ?, ?)
+        VALUES (?, 'Starter Plan', 29, 290, 'active', ?, ?)
       `).run(defaultPlanId, now, now);
       plan = { id: defaultPlanId };
     }
