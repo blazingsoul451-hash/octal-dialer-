@@ -166,11 +166,11 @@ export default function App() {
     // Check URL parameters for OAuth tokens or auth errors
     const urlParams = new URLSearchParams(window.location.search);
     const oauthToken = urlParams.get('token');
-    const oauthUser = urlParams.get('username');
+    const oauthUser = urlParams.get('username') || urlParams.get('user') || 'Google User';
     const authError = urlParams.get('auth_error');
 
     let currentToken = authToken;
-    if (oauthToken && oauthUser) {
+    if (oauthToken) {
       localStorage.setItem('octal_auth_token', oauthToken);
       localStorage.setItem('octal_auth_user', oauthUser);
       setAuthToken(oauthToken);
@@ -195,8 +195,14 @@ export default function App() {
           signal: controller.signal
         });
         clearTimeout(timeoutId);
-        if (!res.ok) {
-          // Token invalid, clear it
+        if (res.ok) {
+          const data = await res.json();
+          if (data.user?.username) {
+            setAuthUser(data.user.username);
+            localStorage.setItem('octal_auth_user', data.user.username);
+          }
+        } else if (res.status === 401 || res.status === 403) {
+          // Token strictly rejected by server
           localStorage.removeItem('octal_auth_token');
           localStorage.removeItem('octal_auth_user');
           setAuthToken(null);
@@ -204,7 +210,7 @@ export default function App() {
         }
       } catch (err) {
         clearTimeout(timeoutId);
-        console.error('Error verifying token:', err);
+        console.warn('Notice: token verification network check skipped:', err);
       } finally {
         setAuthChecked(true);
       }
