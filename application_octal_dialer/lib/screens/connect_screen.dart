@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'connected_screen.dart';
 
@@ -13,7 +13,6 @@ class ConnectScreen extends StatefulWidget {
 
 class _ConnectScreenState extends State<ConnectScreen> {
   final TextEditingController _uriController = TextEditingController();
-  final _secureStorage = const FlutterSecureStorage();
   String _errorMessage = '';
   bool _isLoading = false;
   bool _showScanner = false;
@@ -25,7 +24,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
   }
 
   Future<void> _checkSavedConnection() async {
-    final savedUri = await _secureStorage.read(key: 'connection_uri');
+    final prefs = await SharedPreferences.getInstance();
+    final savedUri = prefs.getString('connection_uri');
     if (savedUri != null && savedUri.isNotEmpty) {
       _uriController.text = savedUri;
       _connect(savedUri, autoConnect: true);
@@ -57,10 +57,15 @@ class _ConnectScreenState extends State<ConnectScreen> {
       }
 
       final serverUri = Uri.parse(serverUrl);
-      // Require HTTPS for production, allow HTTP only for localhost
-      final isLocalhost = serverUri.host == 'localhost' || serverUri.host == '127.0.0.1';
-      if (serverUri.scheme != 'https' && !isLocalhost) {
-        throw const FormatException('Server URL must use HTTPS (HTTP allowed only for localhost testing)');
+      // Require HTTPS for production, allow HTTP for localhost & local private LAN networks
+      final isLocalhostOrLAN = serverUri.host == 'localhost' ||
+                               serverUri.host == '127.0.0.1' ||
+                               serverUri.host.startsWith('192.168.') ||
+                               serverUri.host.startsWith('10.') ||
+                               serverUri.host.startsWith('172.') ||
+                               serverUri.host.endsWith('.local');
+      if (serverUri.scheme != 'https' && !isLocalhostOrLAN) {
+        throw const FormatException('Server URL must use HTTPS (HTTP allowed only for localhost and private LAN testing)');
       }
       if (!['http', 'https'].contains(serverUri.scheme)) {
         throw const FormatException('Invalid server URL scheme (must be http/https)');
@@ -72,8 +77,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
         throw const FormatException('Invalid token format');
       }
 
-      // Save connection securely
-      await _secureStorage.write(key: 'connection_uri', value: uri);
+      // Save connection
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('connection_uri', uri);
 
       if (mounted) {
         Navigator.pushReplacement(
@@ -94,7 +100,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
       if (autoConnect) {
-        await _secureStorage.delete(key: 'connection_uri');
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('connection_uri');
       }
     } finally {
       if (mounted) {

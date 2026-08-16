@@ -4,19 +4,25 @@ import type { CallLog as CallLogType } from '../types';
 
 interface CallLogProps {
   serverUrl: string;
+  authToken?: string | null;
   isLight?: boolean;
 }
 
-export const CallLog: React.FC<CallLogProps> = ({ serverUrl, isLight }) => {
+export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight }) => {
   const [logs, setLogs] = useState<CallLogType[]>([]);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fetchLogs = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${serverUrl}/logs`);
+      const headers: Record<string, string> = {};
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+      const res = await fetch(`${serverUrl}/logs`, { headers });
       if (!res.ok) throw new Error('Failed to load call log history.');
       const data = await res.json();
       // sort logs by timestamp descending
@@ -31,9 +37,34 @@ export const CallLog: React.FC<CallLogProps> = ({ serverUrl, isLight }) => {
     }
   };
 
+  const handleExportCsv = async () => {
+    setExporting(true);
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+      const res = await fetch(`${serverUrl}/api/logs/export`, { headers });
+      if (!res.ok) throw new Error('Failed to export call logs');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `octal_dialer_call_logs_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      alert('Failed to export CSV: ' + err.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   useEffect(() => {
     fetchLogs();
-  }, [serverUrl]);
+  }, [serverUrl, authToken]);
 
   const getOutcomeBadge = (outcome: string) => {
     const norm = (outcome || '').toUpperCase();
@@ -66,14 +97,14 @@ export const CallLog: React.FC<CallLogProps> = ({ serverUrl, isLight }) => {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <a
-            href={`${serverUrl}/logs/export`}
-            download
-            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md"
+          <button
+            onClick={handleExportCsv}
+            disabled={exporting || logs.length === 0}
+            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export CSV</span>
-          </a>
+            <Download className={`w-3.5 h-3.5 ${exporting ? 'animate-bounce' : ''}`} />
+            <span>{exporting ? 'Exporting...' : 'Export CSV'}</span>
+          </button>
           <button
             onClick={fetchLogs}
             disabled={loading}

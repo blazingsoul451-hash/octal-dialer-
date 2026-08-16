@@ -175,15 +175,15 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       _addLog('[Socket] Connected to backend ?');
       _addLog('[Bridge] Handshaking via Bluetooth token...');
 
-      _socket!.emit('phone:join', {
+      _socket!.emitWithAck('phone:join', {
         'token': widget.token,
         'sessionId': widget.sessionId,
         'deviceName': _deviceName,
         'phoneBtAddress': _deviceBtAddress,
         'phoneOsType': _deviceOs,
         'phoneIpAddress': _deviceIp,
-      }, (response) {
-        if (response == null || response['success'] != true) {
+      }, ack: (response) {
+        if (response == null || (response is Map && response['success'] != true)) {
           _addLog('[Error] Token authentication failed');
           _disconnect();
         }

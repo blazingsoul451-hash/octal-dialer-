@@ -402,7 +402,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
 `);
 
-// Safe column migrations for email_templates and custom_roles
+// Safe column migrations for email_templates, custom_roles, and users
 try {
   const emailCols = db.prepare(`PRAGMA table_info(email_templates)`).all() as any[];
   if (!emailCols.some(c => c.name === 'templateType')) {
@@ -412,13 +412,95 @@ try {
     db.prepare(`ALTER TABLE email_templates ADD COLUMN systemTemplate INTEGER DEFAULT 0`).run();
   }
 
+  // Email Accounts OAuth migrations
+  const emailAccCols = db.prepare(`PRAGMA table_info(email_accounts)`).all() as any[];
+  if (!emailAccCols.some(c => c.name === 'authType')) {
+    try { db.prepare(`ALTER TABLE email_accounts ADD COLUMN authType TEXT DEFAULT 'password'`).run(); } catch (_) {}
+  }
+  if (!emailAccCols.some(c => c.name === 'refreshToken')) {
+    try { db.prepare(`ALTER TABLE email_accounts ADD COLUMN refreshToken TEXT`).run(); } catch (_) {}
+  }
+  if (!emailAccCols.some(c => c.name === 'accessToken')) {
+    try { db.prepare(`ALTER TABLE email_accounts ADD COLUMN accessToken TEXT`).run(); } catch (_) {}
+  }
+
   const roleCols = db.prepare(`PRAGMA table_info(custom_roles)`).all() as any[];
   if (!roleCols.some(c => c.name === 'tenantId')) {
     db.prepare(`ALTER TABLE custom_roles ADD COLUMN tenantId TEXT DEFAULT 'tenant_default'`).run();
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_custom_roles_tenantId ON custom_roles(tenantId)`).run();
   }
+
+  const userCols = db.prepare(`PRAGMA table_info(users)`).all() as any[];
+  const userColNames = new Set(userCols.map(c => c.name));
+  
+  if (!userColNames.has('email')) {
+    try { db.prepare(`ALTER TABLE users ADD COLUMN email TEXT`).run(); } catch (_) {}
+    try { db.prepare(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`).run(); } catch (_) {}
+  }
+  if (!userColNames.has('googleId')) {
+    try { db.prepare(`ALTER TABLE users ADD COLUMN googleId TEXT`).run(); } catch (_) {}
+    try { db.prepare(`CREATE INDEX IF NOT EXISTS idx_users_googleId ON users(googleId)`).run(); } catch (_) {}
+  }
+  if (!userColNames.has('authProvider')) {
+    try { db.prepare(`ALTER TABLE users ADD COLUMN authProvider TEXT DEFAULT 'local'`).run(); } catch (_) {}
+  }
+  if (!userColNames.has('resetToken')) {
+    try { db.prepare(`ALTER TABLE users ADD COLUMN resetToken TEXT`).run(); } catch (_) {}
+  }
+  if (!userColNames.has('resetTokenExpires')) {
+    try { db.prepare(`ALTER TABLE users ADD COLUMN resetTokenExpires TEXT`).run(); } catch (_) {}
+  }
+  if (!userColNames.has('updatedAt')) {
+    try { db.prepare(`ALTER TABLE users ADD COLUMN updatedAt TEXT`).run(); } catch (_) {}
+  }
+  if (!userColNames.has('emailVerified')) {
+    try { 
+      db.prepare(`ALTER TABLE users ADD COLUMN emailVerified INTEGER DEFAULT 0`).run();
+      // Ensure all existing accounts prior to this migration are marked verified
+      db.prepare(`UPDATE users SET emailVerified = 1, emailVerifiedAt = datetime('now') WHERE emailVerified IS NULL OR emailVerified = 0`).run();
+    } catch (_) {}
+  }
+  if (!userColNames.has('emailVerifiedAt')) {
+    try { db.prepare(`ALTER TABLE users ADD COLUMN emailVerifiedAt TEXT`).run(); } catch (_) {}
+  }
+  if (!userColNames.has('needsProfileSetup')) {
+    try { db.prepare(`ALTER TABLE users ADD COLUMN needsProfileSetup INTEGER DEFAULT 0`).run(); } catch (_) {}
+  }
+
+  const tenantCols = db.prepare(`PRAGMA table_info(tenants)`).all() as any[];
+  const tenantColNames = new Set(tenantCols.map(c => c.name));
+  if (!tenantColNames.has('country')) {
+    try { db.prepare(`ALTER TABLE tenants ADD COLUMN country TEXT DEFAULT 'US'`).run(); } catch (_) {}
+  }
+  if (!tenantColNames.has('logoUrl')) {
+    try { db.prepare(`ALTER TABLE tenants ADD COLUMN logoUrl TEXT`).run(); } catch (_) {}
+  }
+  if (!tenantColNames.has('ownerEmail')) {
+    try { db.prepare(`ALTER TABLE tenants ADD COLUMN ownerEmail TEXT`).run(); } catch (_) {}
+  }
+
+  // Pending Signups table for secure OTP email verification
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS pending_signups (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      username TEXT NOT NULL,
+      passwordHash TEXT NOT NULL,
+      codeHash TEXT NOT NULL,
+      attempts INTEGER DEFAULT 0,
+      resendCount INTEGER DEFAULT 0,
+      lastSentAt TEXT NOT NULL,
+      expiresAt TEXT NOT NULL,
+      verifiedAt TEXT,
+      ip TEXT,
+      tenantId TEXT DEFAULT 'tenant_default',
+      createdAt TEXT NOT NULL
+    )
+  `).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_pending_signups_email ON pending_signups(email)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_pending_signups_expiresAt ON pending_signups(expiresAt)`).run();
 } catch (e) {
-  // Ignore migration error
+  console.error('[DB] Migration block warning:', e);
 }
 
 // Initialize standard catalog plans & features (Phase 7)
@@ -426,6 +508,125 @@ try {
   initializeCatalogPlans();
 } catch (e) {
   console.error('[Entitlements] Catalog plans init error:', e);
+}
+
+// Phase 8 Billing schema migrations
+try {
+  const subCols = db.prepare(`PRAGMA table_info(subscriptions)`).all() as any[];
+  if (!subCols.some(c => c.name === 'provider')) {
+    db.prepare(`ALTER TABLE subscriptions ADD COLUMN provider TEXT DEFAULT 'manual'`).run();
+  }
+  if (!subCols.some(c => c.name === 'providerCustomerId')) {
+    db.prepare(`ALTER TABLE subscriptions ADD COLUMN providerCustomerId TEXT`).run();
+  }
+  if (!subCols.some(c => c.name === 'providerSubscriptionId')) {
+    db.prepare(`ALTER TABLE subscriptions ADD COLUMN providerSubscriptionId TEXT`).run();
+  }
+  if (!subCols.some(c => c.name === 'providerCheckoutId')) {
+    db.prepare(`ALTER TABLE subscriptions ADD COLUMN providerCheckoutId TEXT`).run();
+  }
+  if (!subCols.some(c => c.name === 'cancelAtPeriodEnd')) {
+    db.prepare(`ALTER TABLE subscriptions ADD COLUMN cancelAtPeriodEnd INTEGER DEFAULT 0`).run();
+  }
+  if (!subCols.some(c => c.name === 'cancelledAt')) {
+    db.prepare(`ALTER TABLE subscriptions ADD COLUMN cancelledAt TEXT`).run();
+  }
+  if (!subCols.some(c => c.name === 'trialStart')) {
+    db.prepare(`ALTER TABLE subscriptions ADD COLUMN trialStart TEXT`).run();
+  }
+  if (!subCols.some(c => c.name === 'trialEnd')) {
+    db.prepare(`ALTER TABLE subscriptions ADD COLUMN trialEnd TEXT`).run();
+  }
+  if (!subCols.some(c => c.name === 'gracePeriodEnd')) {
+    db.prepare(`ALTER TABLE subscriptions ADD COLUMN gracePeriodEnd TEXT`).run();
+  }
+
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_subscriptions_providerCustId ON subscriptions(providerCustomerId)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_subscriptions_providerSubId ON subscriptions(providerSubscriptionId)`).run();
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS billing_events (
+      id              TEXT PRIMARY KEY,
+      provider        TEXT NOT NULL,
+      providerEventId TEXT NOT NULL,
+      eventType       TEXT NOT NULL,
+      tenantId        TEXT,
+      subscriptionId  TEXT,
+      payload         TEXT,
+      eventTimestamp  TEXT,
+      processedAt     TEXT NOT NULL DEFAULT (datetime('now')),
+      createdAt       TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(provider, providerEventId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_billing_events_tenantId ON billing_events(tenantId);
+    CREATE INDEX IF NOT EXISTS idx_billing_events_provider ON billing_events(provider, providerEventId);
+  `);
+
+  const eventCols = db.prepare(`PRAGMA table_info(billing_events)`).all() as any[];
+  if (!eventCols.some(c => c.name === 'eventTimestamp')) {
+    db.prepare(`ALTER TABLE billing_events ADD COLUMN eventTimestamp TEXT`).run();
+  }
+
+  const planCols = db.prepare(`PRAGMA table_info(plans)`).all() as any[];
+  if (!planCols.some(c => c.name === 'isPublic')) {
+    db.prepare(`ALTER TABLE plans ADD COLUMN isPublic INTEGER DEFAULT 1`).run();
+    db.prepare(`UPDATE plans SET isPublic = 0 WHERE id = 'plan_legacy'`).run();
+  }
+  if (!planCols.some(c => c.name === 'billingInterval')) {
+    db.prepare(`ALTER TABLE plans ADD COLUMN billingInterval TEXT DEFAULT 'monthly'`).run();
+  }
+  if (!planCols.some(c => c.name === 'description')) {
+    db.prepare(`ALTER TABLE plans ADD COLUMN description TEXT DEFAULT ''`).run();
+  }
+  if (!planCols.some(c => c.name === 'sortOrder')) {
+    db.prepare(`ALTER TABLE plans ADD COLUMN sortOrder INTEGER DEFAULT 0`).run();
+  }
+} catch (e) {
+  console.error('[Billing] Phase 8 migrations error:', e);
+}
+
+// ─── Phase E: CRM & Lead Intelligence Tables ─────────────────────────────────
+try {
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS crm_follow_ups (
+      id            TEXT PRIMARY KEY,
+      leadId        TEXT NOT NULL,
+      leadName      TEXT NOT NULL DEFAULT '',
+      leadPhone     TEXT NOT NULL DEFAULT '',
+      campaignId    TEXT,
+      campaignName  TEXT NOT NULL DEFAULT '',
+      tenantId      TEXT NOT NULL,
+      userId        TEXT,
+      assignedAgent TEXT,
+      scheduledAt   TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'pending',
+      notes         TEXT,
+      createdAt     TEXT NOT NULL DEFAULT (datetime('now')),
+      updatedAt     TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_crm_follow_ups_tenant ON crm_follow_ups(tenantId)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_crm_follow_ups_scheduled ON crm_follow_ups(scheduledAt)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_crm_follow_ups_status ON crm_follow_ups(status)`).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS lead_activities (
+      id          TEXT PRIMARY KEY,
+      leadId      TEXT NOT NULL,
+      tenantId    TEXT NOT NULL,
+      userId      TEXT,
+      username    TEXT,
+      eventType   TEXT NOT NULL,
+      description TEXT NOT NULL,
+      metadata    TEXT,
+      createdAt   TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(leadId)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_lead_activities_tenant ON lead_activities(tenantId)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_lead_activities_created ON lead_activities(createdAt)`).run();
+} catch (e) {
+  console.error('[CRM] Phase E table creation error:', e);
 }
 
 console.log('[SQLite] Database initialised at:', DB_FILE);
@@ -944,9 +1145,187 @@ export function getLockedLeads(): Lead[] {
 // Periodically release expired leases every minute
 setInterval(() => releaseExpiredLeases(LEASE_TTL_MINUTES), 60 * 1000);
 
+// ─── Online Database Backup & Disaster Recovery (Phase 11) ───────────────────
+export async function backupDatabase(targetFileName?: string): Promise<{ success: boolean; backupPath: string; sizeBytes: number; timestamp: string }> {
+  const backupsDir = path.join(__dirname, '../data/backups');
+  if (!fs.existsSync(backupsDir)) {
+    fs.mkdirSync(backupsDir, { recursive: true });
+  }
+
+  // Sanitize target filename to prevent directory traversal
+  let safeFileName = targetFileName ? path.basename(targetFileName) : `backup_${new Date().toISOString().replace(/[:.]/g, '-')}.db`;
+  if (!safeFileName.endsWith('.db')) {
+    safeFileName += '.db';
+  }
+
+  const backupPath = path.join(backupsDir, safeFileName);
+
+  // SQLite online backup API ensures safe, non-blocking, transactionally consistent snapshot
+  await db.backup(backupPath);
+
+  // Validate backup file integrity
+  const backupDb = new Database(backupPath);
+  const integrity = backupDb.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
+  const fkCheck = backupDb.prepare('PRAGMA foreign_key_check').all();
+  backupDb.close();
+
+  if (integrity.integrity_check !== 'ok' || fkCheck.length > 0) {
+    if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+    throw new Error('Backup validation failed: database integrity check or foreign key check failed.');
+  }
+
+  const stat = fs.statSync(backupPath);
+  return {
+    success: true,
+    backupPath,
+    sizeBytes: stat.size,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// ─── CRM Workspace & Lead Intelligence Helper Functions (Phase E) ─────────────
+export interface FollowUpItem {
+  id: string;
+  leadId: string;
+  leadName: string;
+  leadPhone: string;
+  campaignId?: string;
+  campaignName?: string;
+  tenantId: string;
+  userId?: string;
+  assignedAgent?: string;
+  scheduledAt: string;
+  status: 'pending' | 'completed' | 'cancelled' | 'rescheduled';
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeadActivity {
+  id: string;
+  leadId: string;
+  tenantId: string;
+  userId?: string;
+  username?: string;
+  eventType: string;
+  description: string;
+  metadata?: string;
+  createdAt: string;
+}
+
+export function createFollowUp(data: {
+  leadId: string;
+  leadName?: string;
+  leadPhone?: string;
+  campaignId?: string;
+  campaignName?: string;
+  tenantId: string;
+  userId?: string;
+  assignedAgent?: string;
+  scheduledAt: string;
+  notes?: string;
+}): FollowUpItem {
+  const id = `fu_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO crm_follow_ups (id, leadId, leadName, leadPhone, campaignId, campaignName, tenantId, userId, assignedAgent, scheduledAt, status, notes, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+  `).run(
+    id, data.leadId, data.leadName || '', data.leadPhone || '', data.campaignId || null,
+    data.campaignName || '', data.tenantId, data.userId || null, data.assignedAgent || null,
+    data.scheduledAt, data.notes || '', now, now
+  );
+
+  return {
+    id,
+    leadId: data.leadId,
+    leadName: data.leadName || '',
+    leadPhone: data.leadPhone || '',
+    campaignId: data.campaignId,
+    campaignName: data.campaignName,
+    tenantId: data.tenantId,
+    userId: data.userId,
+    assignedAgent: data.assignedAgent,
+    scheduledAt: data.scheduledAt,
+    status: 'pending',
+    notes: data.notes,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function getFollowUps(tenantId: string, filter?: { status?: string }): FollowUpItem[] {
+  let query = `SELECT * FROM crm_follow_ups WHERE tenantId = ?`;
+  const params: any[] = [tenantId];
+
+  if (filter?.status) {
+    query += ` AND status = ?`;
+    params.push(filter.status);
+  }
+
+  query += ` ORDER BY scheduledAt ASC`;
+  return db.prepare(query).all(...params) as FollowUpItem[];
+}
+
+export function updateFollowUpStatus(id: string, tenantId: string, status: string, notes?: string): boolean {
+  let query = `UPDATE crm_follow_ups SET status = ?, updatedAt = datetime('now')`;
+  const params: any[] = [status];
+  if (notes !== undefined) {
+    query += `, notes = ?`;
+    params.push(notes);
+  }
+  query += ` WHERE id = ? AND tenantId = ?`;
+  params.push(id, tenantId);
+
+  const res = db.prepare(query).run(...params);
+  return res.changes > 0;
+}
+
+export function recordLeadActivity(data: {
+  leadId: string;
+  tenantId: string;
+  userId?: string;
+  username?: string;
+  eventType: string;
+  description: string;
+  metadata?: any;
+}): void {
+  const id = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const metaStr = data.metadata ? (typeof data.metadata === 'string' ? data.metadata : JSON.stringify(data.metadata)) : null;
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO lead_activities (id, leadId, tenantId, userId, username, eventType, description, metadata, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, data.leadId, data.tenantId, data.userId || null, data.username || null, data.eventType, data.description, metaStr, now);
+}
+
+export function getLeadActivities(leadId: string, tenantId: string): LeadActivity[] {
+  return db.prepare(`
+    SELECT * FROM lead_activities WHERE leadId = ? AND tenantId = ? ORDER BY createdAt DESC, id DESC LIMIT 100
+  `).all(leadId, tenantId) as LeadActivity[];
+}
+
+export const ALL_BUSINESS_MODULES = [
+  'crm',
+  'campaigns',
+  'octalDialer',
+  'leads',
+  'reports',
+  'googleScraper',
+  'autoEmailer',
+  'facebookScraper',
+  'facebookPoster'
+] as const;
+
+export function hasUserModulePermission(userId: string, tenantId: string, moduleId: string): boolean {
+  const perm = db.prepare(`SELECT enabled FROM user_permissions WHERE userId = ? AND tenantId = ? AND moduleId = ?`).get(userId, tenantId, moduleId) as { enabled: number } | undefined;
+  return perm ? perm.enabled === 1 : false;
+}
+
 // ─── Expose the raw db instance for future steps ─────────────────────────────
 export function getDatabase(): Database.Database {
   return db;
 }
 export { db };
+
 

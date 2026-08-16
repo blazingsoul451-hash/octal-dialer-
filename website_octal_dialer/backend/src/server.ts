@@ -2,6 +2,20 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+const originalExit = process.exit;
+(process as any).exit = function(code?: number) {
+  console.error('[Process.exit Trace] Code:', code, new Error().stack);
+  return originalExit.call(process, code);
+};
+
+process.on('beforeExit', (code) => {
+  console.error('[Process beforeExit] Event loop drained with code:', code);
+});
+
+process.on('exit', (code) => {
+  console.error('[Process exit event] Code:', code);
+});
+
 import express from 'express';
 import { spawn } from 'child_process';
 import { createServer } from 'http';
@@ -31,8 +45,15 @@ import {
   deleteLead,
   clearAllLeadsInCampaign,
   clearFakeQueueLeads,
+  backupDatabase,
+  createFollowUp,
+  getFollowUps,
+  updateFollowUpStatus,
+  recordLeadActivity,
+  getLeadActivities,
   db
 } from './databaseManager';
+import { config } from './config';
 
 import {
   reclaimOrCreateSession,
@@ -54,9 +75,25 @@ import {
   changePassword,
   requireAdmin,
   requirePlatformAdmin,
+  requireMasterAdmin,
   requireTenantAdmin,
+  requireModule,
   hashPassword,
-  signupTenant
+  signupTenant,
+  registerPublicUser,
+  initiateEmailSignup,
+  verifyEmailCode,
+  resendVerificationCode,
+  authenticateGoogleSignIn,
+  registerGoogleSignUp,
+  findOrCreateGoogleUser,
+  verifyGoogleIdToken,
+  verifyCaptcha,
+  updateUserRole,
+  requestPasswordReset,
+  resetPasswordWithToken,
+  completeGoogleProfileSetup,
+  AuthUser
 } from './authManager';
 
 import {
@@ -67,6 +104,24 @@ import {
   requireActiveSubscription,
   initializeCatalogPlans
 } from './entitlementManager';
+
+import {
+  getBillingState,
+  getPublicPlans,
+  startCheckout,
+  confirmPayment,
+  failPayment,
+  changePlan,
+  cancelSubscription,
+  reactivateSubscription,
+  suspendSubscription,
+  adminActivateSubscription,
+  getTenantBillingEvents,
+  getTenantInvoices,
+  sanitizePlanId,
+  processWebhookEvent,
+  processGracePeriods
+} from './billingManager';
 
 import {
   checkCallAllowed,
@@ -83,16 +138,29 @@ import {
   getActiveCommands
 } from './safetyController';
 
-const app = express();
+export const app = express();
+
+// Trust Proxy Configuration (Phase 11)
+app.set('trust proxy', config.trustProxy);
 
 const checkOrigin = (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-  // Allow all localhost and 127.0.0.1 origins with any port for development
   if (!origin) {
-    callback(null, true);
-  } else if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+    return callback(null, true);
+  }
+  // Allow localhost, 127.0.0.1, and all private LAN subnets (192.168.x.x, 10.x.x.x, 172.x.x.x, *.local)
+  const isLocalOrLAN = origin.startsWith('http://localhost:') ||
+                       origin.startsWith('http://127.0.0.1:') ||
+                       origin.startsWith('https://localhost:') ||
+                       origin.startsWith('https://127.0.0.1:') ||
+                       /^https?:\/\/192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin) ||
+                       /^https?:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin) ||
+                       /^https?:\/\/172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin) ||
+                       /^https?:\/\/[a-zA-Z0-9-]+\.local(:\d+)?$/.test(origin);
+
+  if (isLocalOrLAN || config.corsAllowedOrigins.includes(origin)) {
     callback(null, true);
   } else {
-    callback(new Error('Not allowed by CORS'));
+    callback(null, false);
   }
 };
 
@@ -103,10 +171,89 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Set request timeout to 30 seconds to prevent slowloris attacks
+// Request Correlation ID Middleware (Phase 11)
 app.use((req, res, next) => {
+  const incomingId = req.headers['x-request-id'];
+  const requestId = (typeof incomingId === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(incomingId))
+    ? incomingId
+    : crypto.randomUUID();
+  (req as any).requestId = requestId;
+  res.setHeader('X-Request-Id', requestId);
+  next();
+});
+
+// Operational Metrics Tracking (Phase 11)
+const metricsData = {
+  httpRequestsTotal: 0,
+  httpErrorsTotal: 0,
+  authFailuresTotal: 0,
+  rateLimitHitsTotal: 0,
+  startTime: Date.now()
+};
+
+app.use((_req, res, next) => {
+  metricsData.httpRequestsTotal++;
+  res.on('finish', () => {
+    if (res.statusCode >= 400) metricsData.httpErrorsTotal++;
+    if (res.statusCode === 401 || res.statusCode === 403) metricsData.authFailuresTotal++;
+    if (res.statusCode === 429) metricsData.rateLimitHitsTotal++;
+  });
+  next();
+});
+
+// HTTP Security Headers (Phase 10 Hardening)
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), camera=(), microphone=()');
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
+
+// Set request timeout to 30 seconds to prevent slowloris attacks
+app.use((req, _res, next) => {
   req.socket.setTimeout(30000);
   next();
+});
+
+// ─── Health, Readiness & Metrics Endpoints (Phase 10 & 11) ────────────────────
+app.get('/health', (_req, res) => {
+  res.json({
+    status: 'healthy',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/ready', (_req, res) => {
+  try {
+    db.prepare('SELECT 1').get();
+    res.json({
+      status: 'ready',
+      database: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch {
+    res.status(503).json({
+      status: 'unready',
+      database: 'disconnected'
+    });
+  }
+});
+
+app.get('/metrics', (_req, res) => {
+  res.json({
+    uptime_seconds: Math.floor((Date.now() - metricsData.startTime) / 1000),
+    http_requests_total: metricsData.httpRequestsTotal,
+    http_errors_total: metricsData.httpErrorsTotal,
+    auth_failures_total: metricsData.authFailuresTotal,
+    rate_limit_hits_total: metricsData.rateLimitHitsTotal,
+    node_memory_rss_bytes: process.memoryUsage().rss
+  });
 });
 
 // Serve compiled frontend dashboard directly on backend port 3000
@@ -128,8 +275,53 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   next();
 }
 
-const httpServer = createServer(app);
-const io = new SocketIOServer(httpServer, {
+// ─── Rate Limiting Middleware (Phase 9 Hardening) ─────────────────────────────
+interface RateLimitBucket {
+  count: number;
+  resetTime: number;
+}
+const rateLimitStores = new Map<string, Map<string, RateLimitBucket>>();
+
+function createRateLimiter(name: string, maxRequests: number, windowMs: number, keyExtractor?: (req: express.Request) => string) {
+  if (!rateLimitStores.has(name)) {
+    rateLimitStores.set(name, new Map());
+  }
+  const store = rateLimitStores.get(name)!;
+
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const key = keyExtractor ? keyExtractor(req) : (req.ip || (req.socket as any)?.remoteAddress || 'unknown');
+    const now = Date.now();
+    let bucket = store.get(key);
+
+    if (!bucket || now > bucket.resetTime) {
+      bucket = { count: 1, resetTime: now + windowMs };
+      store.set(key, bucket);
+    } else {
+      bucket.count++;
+    }
+
+    if (bucket.count > maxRequests) {
+      res.status(429).json({
+        error: 'Too many requests. Please try again later.',
+        retryAfter: Math.ceil((bucket.resetTime - now) / 1000)
+      });
+      return;
+    }
+
+    next();
+  };
+}
+
+const billingRateLimiter = createRateLimiter('billing', 60, 60 * 1000, (req) => {
+  const user = (req as any).user;
+  return user ? `${user.tenantId}:${user.id}` : (req.ip || 'unknown');
+});
+
+const webhookRateLimiter = createRateLimiter('webhook', 120, 60 * 1000);
+const authRateLimiter = createRateLimiter('auth', 30, 60 * 1000);
+
+export const httpServer = createServer(app);
+export const io = new SocketIOServer(httpServer, {
   cors: {
     origin: checkOrigin,
     methods: ['GET', 'POST'],
@@ -165,33 +357,222 @@ function getLocalIP(): string {
   return 'localhost';
 }
 
-// ─── Auth REST Endpoints (no requireAuth — public) ──────────────────────────
+// ─── Auth REST Endpoints (no requireAuth — public, rate-limited) ────────────
 
-// POST /auth/login
-app.post('/auth/login', (req, res) => {
-  const { username, password } = req.body as { username: string; password: string };
+// ─── OAuth State & Session Store (In-Memory with 15-min TTL) ────────────────
+interface OAuthStateRecord {
+  state: string;
+  nonce: string;
+  clientOrigin: string;
+  intent: 'signin' | 'signup';
+  captchaVerified: boolean;
+  createdAt: number;
+}
+const oauthStates = new Map<string, OAuthStateRecord>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of oauthStates.entries()) {
+    if (now - val.createdAt > 15 * 60 * 1000) {
+      oauthStates.delete(key);
+    }
+  }
+}, 10 * 60 * 1000);
+
+// Helper to extract clean frontend origin
+function getClientOrigin(req: express.Request): string {
+  const headerOrigin = req.headers['origin'] || req.headers['referer'] || (req.query.origin as string) || '';
+  if (headerOrigin) {
+    try {
+      const parsed = new URL(String(headerOrigin));
+      return `${parsed.protocol}//${parsed.host}`;
+    } catch (_) {}
+  }
+  return config.corsAllowedOrigins[0] || 'http://localhost:5173';
+}
+
+// ─── Auth REST Endpoints (dual mounted on /auth and /api/auth) ────────────────
+
+// GET /auth/config & GET /api/auth/config — Public client configuration
+app.get(['/auth/config', '/api/auth/config'], (_req, res) => {
+  res.json({
+    googleClientId: config.googleClientId || null,
+    captchaSiteKey: config.captchaSiteKey || null,
+    captchaEnabled: !!(config.captchaSecretKey && config.captchaSecretKey !== 'test' && config.captchaSecretKey !== 'dummy')
+  });
+});
+
+// POST /auth/login & POST /api/auth/login
+app.post(['/auth/login', '/api/auth/login'], authRateLimiter, async (req, res) => {
+  const { username, password, captchaToken } = req.body as { username: string; password: string; captchaToken?: string };
   if (!username || !password) {
     res.status(400).json({ error: 'Username and password required.' });
     return;
   }
-  const token = login(username, password);
-  if (!token) {
-    res.status(401).json({ error: 'Invalid username or password.' });
+
+  // Verify CAPTCHA
+  const captchaCheck = await verifyCaptcha(captchaToken, req.ip);
+  if (!captchaCheck.success) {
+    res.status(400).json({ error: captchaCheck.error || 'CAPTCHA verification failed.' });
     return;
   }
-  res.json({ token, username });
+
+  try {
+    const token = login(username, password);
+    if (!token) {
+      res.status(401).json({ error: 'Invalid username or password.' });
+      return;
+    }
+
+    const user = validateToken(token);
+    res.json({ token, username: user?.username || username, user });
+  } catch (err: any) {
+    if (err.message && err.message.includes('not verified')) {
+      res.status(403).json({ error: err.message, code: 'EMAIL_NOT_VERIFIED' });
+      return;
+    }
+    res.status(400).json({ error: err.message || 'Login failed.' });
+  }
 });
 
-// POST /auth/signup — SaaS Self-Service Tenant Onboarding (Phase 5)
-app.post('/auth/signup', (req, res) => {
+// POST /auth/initiate-signup & POST /api/auth/initiate-signup — Initiates Email Verification Signup (OTP)
+app.post(['/auth/initiate-signup', '/api/auth/initiate-signup'], authRateLimiter, async (req, res) => {
   try {
-    // Explicitly extract ONLY allowed fields — client cannot dictate tenantId, role, planId, or status
-    const { companyName, username, password, email } = req.body as {
+    const { email, username, password, captchaToken } = req.body as {
+      email?: string;
+      username?: string;
+      password?: string;
+      captchaToken?: string;
+    };
+
+    if (!email || !password) {
+      res.status(400).json({ error: 'Email and password are required.' });
+      return;
+    }
+
+    // Verify CAPTCHA
+    const captchaCheck = await verifyCaptcha(captchaToken, req.ip);
+    if (!captchaCheck.success) {
+      res.status(400).json({ error: captchaCheck.error || 'CAPTCHA verification failed.' });
+      return;
+    }
+
+    const result = await initiateEmailSignup({
+      email,
+      username,
+      password,
+      ip: req.ip
+    });
+
+    res.status(200).json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to initiate signup.' });
+  }
+});
+
+// POST /auth/verify-email & POST /api/auth/verify-email — Verifies 6-digit OTP & Activates Account
+app.post(['/auth/verify-email', '/api/auth/verify-email'], authRateLimiter, async (req, res) => {
+  try {
+    const { signupId, email, code } = req.body as {
+      signupId?: string;
+      email?: string;
+      code?: string;
+    };
+
+    if (!email || !code) {
+      res.status(400).json({ error: 'Email address and 6-digit verification code are required.' });
+      return;
+    }
+
+    const result = verifyEmailCode({
+      signupId,
+      email,
+      code
+    });
+
+    res.status(201).json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Email verification failed.' });
+  }
+});
+
+// POST /auth/resend-verification & POST /api/auth/resend-verification — Resends OTP Code with Cooldown
+app.post(['/auth/resend-verification', '/api/auth/resend-verification'], authRateLimiter, async (req, res) => {
+  try {
+    const { signupId, email, captchaToken } = req.body as {
+      signupId?: string;
+      email?: string;
+      captchaToken?: string;
+    };
+
+    if (!email) {
+      res.status(400).json({ error: 'Email address is required.' });
+      return;
+    }
+
+    // Verify CAPTCHA if provided
+    if (captchaToken) {
+      const captchaCheck = await verifyCaptcha(captchaToken, req.ip);
+      if (!captchaCheck.success) {
+        res.status(400).json({ error: captchaCheck.error || 'CAPTCHA verification failed.' });
+        return;
+      }
+    }
+
+    const result = await resendVerificationCode({
+      signupId,
+      email,
+      ip: req.ip
+    });
+
+    res.status(200).json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to resend verification code.' });
+  }
+});
+
+// POST /auth/register & POST /api/auth/register — Public User Registration (ALWAYS role='user')
+app.post(['/auth/register', '/api/auth/register'], authRateLimiter, async (req, res) => {
+  try {
+    const { username, email, password, captchaToken } = req.body as {
+      username: string;
+      email?: string;
+      password: string;
+      captchaToken?: string;
+      role?: string; // Ignored by registerPublicUser
+    };
+
+    // Verify CAPTCHA
+    const captchaCheck = await verifyCaptcha(captchaToken, req.ip);
+    if (!captchaCheck.success) {
+      res.status(400).json({ error: captchaCheck.error || 'CAPTCHA verification failed.' });
+      return;
+    }
+
+    const result = registerPublicUser({ username, email, password });
+    res.status(201).json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Registration failed.' });
+  }
+});
+
+// POST /auth/signup & POST /api/auth/signup — SaaS Self-Service Tenant Onboarding (Phase 5, rate-limited)
+app.post(['/auth/signup', '/api/auth/signup'], authRateLimiter, async (req, res) => {
+  try {
+    const { companyName, username, password, email, captchaToken } = req.body as {
       companyName?: string;
       username?: string;
       password?: string;
       email?: string;
+      captchaToken?: string;
     };
+
+    // Verify CAPTCHA
+    const captchaCheck = await verifyCaptcha(captchaToken, req.ip);
+    if (!captchaCheck.success) {
+      res.status(400).json({ error: captchaCheck.error || 'CAPTCHA verification failed.' });
+      return;
+    }
 
     if (!companyName || !username || !password) {
       res.status(400).json({ error: 'companyName, username, and password are required.' });
@@ -217,16 +598,328 @@ app.post('/auth/signup', (req, res) => {
   }
 });
 
-// POST /auth/logout
-app.post('/auth/logout', (req, res) => {
+// GET /auth/google & GET /api/auth/google — Initiates OAuth Redirect
+// POST /auth/google/initiate & POST /api/auth/google/initiate — Initiates Google OAuth with explicit intent & CAPTCHA
+app.post(['/auth/google/initiate', '/api/auth/google/initiate'], authRateLimiter, async (req, res) => {
+  try {
+    const clientOrigin = getClientOrigin(req);
+    if (!config.googleClientId) {
+      res.status(503).json({ error: 'Google authentication is currently unavailable.' });
+      return;
+    }
+
+    const { intent: rawIntent, captchaToken } = req.body as { intent?: string; captchaToken?: string };
+    const intent: 'signin' | 'signup' = rawIntent === 'signup' ? 'signup' : 'signin';
+
+    // Verify CAPTCHA (Mandatory for signup; or if token is provided)
+    if (intent === 'signup' || captchaToken) {
+      const captchaCheck = await verifyCaptcha(captchaToken, req.ip);
+      if (!captchaCheck.success) {
+        res.status(400).json({ error: captchaCheck.error || 'CAPTCHA verification failed.' });
+        return;
+      }
+    }
+
+    const state = crypto.randomBytes(24).toString('hex');
+    const nonce = crypto.randomBytes(24).toString('hex');
+
+    oauthStates.set(state, {
+      state,
+      nonce,
+      clientOrigin,
+      intent,
+      captchaVerified: true,
+      createdAt: Date.now()
+    });
+
+    const scope = encodeURIComponent('openid email profile');
+    const redirectUri = encodeURIComponent(config.googleRedirectUri);
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(config.googleClientId)}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}&nonce=${nonce}&prompt=select_account`;
+
+    res.json({ authUrl, state, intent });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to initiate Google OAuth.' });
+  }
+});
+
+// GET /auth/google & GET /api/auth/google — Initiates OAuth Redirect with secure intent
+app.get(['/auth/google', '/api/auth/google'], (req, res) => {
+  const clientOrigin = getClientOrigin(req);
+  console.log(`[OAuth] Google login requested. Origin: ${clientOrigin}`);
+
+  if (!config.googleClientId) {
+    console.warn('[OAuth] Warning: GOOGLE_CLIENT_ID is not configured in .env');
+    res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent('Google authentication is currently unavailable.')}`);
+    return;
+  }
+
+  const intent: 'signin' | 'signup' = (req.query.intent as string) === 'signup' ? 'signup' : 'signin';
+  const state = crypto.randomBytes(24).toString('hex');
+  const nonce = crypto.randomBytes(24).toString('hex');
+
+  oauthStates.set(state, {
+    state,
+    nonce,
+    clientOrigin,
+    intent,
+    captchaVerified: true,
+    createdAt: Date.now()
+  });
+
+  const scope = encodeURIComponent('openid email profile');
+  const redirectUri = encodeURIComponent(config.googleRedirectUri);
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(config.googleClientId)}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}&nonce=${nonce}&prompt=select_account`;
+
+  console.log(`[OAuth] Redirecting user to Google OAuth consent screen (intent: ${intent})`);
+  res.redirect(authUrl);
+});
+
+// GET /auth/google/callback & GET /api/auth/google/callback — Handles OAuth Code Exchange with strict intent validation
+app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res) => {
+  const fallbackOrigin = config.corsAllowedOrigins[0] || 'http://localhost:5173';
+  let clientOrigin = fallbackOrigin;
+
+  try {
+    const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
+
+    if (!state || !oauthStates.has(state)) {
+      console.warn(`[OAuth] Warning: Invalid or expired state: ${state}`);
+      res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent('Invalid or expired OAuth session. Please try again.')}`);
+      return;
+    }
+
+    const storedState = oauthStates.get(state)!;
+    clientOrigin = storedState.clientOrigin;
+    const intent = storedState.intent;
+    oauthStates.delete(state);
+
+    if (error || !code) {
+      console.warn(`[OAuth] Google OAuth returned error or no code: ${error}`);
+      res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(error || 'Google authorization cancelled')}`);
+      return;
+    }
+
+    if (!config.googleClientId || !config.googleClientSecret) {
+      res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent('Google OAuth client credentials not configured.')}`);
+      return;
+    }
+
+    console.log('[OAuth] Exchanging authorization code with Google token endpoint...');
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: config.googleClientId,
+        client_secret: config.googleClientSecret,
+        redirect_uri: config.googleRedirectUri,
+        grant_type: 'authorization_code'
+      })
+    });
+
+    const tokenData = await tokenRes.json() as any;
+    if (!tokenData.id_token) {
+      throw new Error(tokenData.error_description || tokenData.error || 'Failed to obtain Google ID token.');
+    }
+
+    console.log('[OAuth] Verifying Google identity token...');
+    const profile = await verifyGoogleIdToken(tokenData.id_token);
+    console.log(`[OAuth] Google identity verified: ${profile.email} (Authenticated intent: ${intent})`);
+
+    let result: { token: string; user: AuthUser; isNewUser: boolean };
+
+    if (intent === 'signin') {
+      // SIGN IN INTENT: Authenticate EXISTING account. NEVER create an account if none exists.
+      try {
+        result = authenticateGoogleSignIn(profile);
+      } catch (signInErr: any) {
+        if (signInErr.code === 'GOOGLE_ACCOUNT_NOT_FOUND') {
+          console.log(`[OAuth] Sign-In rejected: No account found for Google email ${profile.email}`);
+          res.redirect(`${clientOrigin}/?auth_error=GOOGLE_ACCOUNT_NOT_FOUND&email=${encodeURIComponent(profile.email)}`);
+          return;
+        }
+        throw signInErr;
+      }
+    } else {
+      // SIGN UP INTENT: Create NEW account. REJECT if account already exists.
+      try {
+        result = registerGoogleSignUp(profile);
+      } catch (signUpErr: any) {
+        if (signUpErr.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
+          console.log(`[OAuth] Sign-Up rejected: Account already exists for Google email ${profile.email}`);
+          res.redirect(`${clientOrigin}/?auth_error=GOOGLE_ACCOUNT_ALREADY_EXISTS&email=${encodeURIComponent(profile.email)}`);
+          return;
+        }
+        throw signUpErr;
+      }
+    }
+
+    console.log(`[OAuth] User authenticated: ${result.user.username} (role: ${result.user.role}, isNew: ${result.isNewUser})`);
+
+    const safeUserJson = JSON.stringify(result.user.username);
+    const safeToken = JSON.stringify(result.token);
+    const targetUrl = `${clientOrigin}/?token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}`;
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Authenticating with Google...</title>
+          <style>
+            body {
+              background: #090d16;
+              color: #fbbf24;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              height: 100vh;
+              margin: 0;
+            }
+            .card {
+              background: rgba(15, 23, 42, 0.9);
+              border: 1px solid rgba(251, 191, 36, 0.3);
+              border-radius: 16px;
+              padding: 32px 48px;
+              text-align: center;
+              box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+            }
+            .spinner {
+              width: 36px;
+              height: 36px;
+              border: 3px solid rgba(251, 191, 36, 0.2);
+              border-top-color: #fbbf24;
+              border-radius: 50%;
+              animation: spin 1s linear infinite;
+              margin: 0 auto 16px auto;
+            }
+            @keyframes spin { to { transform: rotate(360deg); } }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="spinner"></div>
+            <h2 style="margin: 0 0 8px 0; color: #fff;">Google Authentication Successful</h2>
+            <p style="margin: 0; color: #94a3b8; font-size: 13px;">Transferring session to Octal Dialer...</p>
+          </div>
+          <script>
+            try {
+              localStorage.setItem('octal_auth_token', ${safeToken});
+              localStorage.setItem('octal_auth_user', ${safeUserJson});
+            } catch (e) {
+              console.error('Storage error:', e);
+            }
+            window.location.href = ${JSON.stringify(targetUrl)};
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (err: any) {
+    console.error('[OAuth] Callback processing error:', err.message);
+    res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(err.message || 'Google OAuth failed')}`);
+  }
+});
+
+// POST /auth/google/verify & POST /api/auth/google/verify — Verifies Google ID Token (from Google One Tap or Sign-In button)
+app.post(['/auth/google/verify', '/api/auth/google/verify'], authRateLimiter, async (req, res) => {
+  try {
+    const { credential, intent: rawIntent, captchaToken } = req.body as { credential: string; intent?: string; captchaToken?: string };
+    if (!credential) {
+      res.status(400).json({ error: 'Google credential (id_token) is required.' });
+      return;
+    }
+
+    const intent: 'signin' | 'signup' = rawIntent === 'signup' ? 'signup' : 'signin';
+
+    // Verify CAPTCHA for signup
+    if (intent === 'signup' || captchaToken) {
+      const captchaCheck = await verifyCaptcha(captchaToken, req.ip);
+      if (!captchaCheck.success) {
+        res.status(400).json({ error: captchaCheck.error || 'CAPTCHA verification failed.' });
+        return;
+      }
+    }
+
+    const profile = await verifyGoogleIdToken(credential);
+
+    if (intent === 'signin') {
+      try {
+        const result = authenticateGoogleSignIn(profile);
+        res.json(result);
+      } catch (err: any) {
+        if (err.code === 'GOOGLE_ACCOUNT_NOT_FOUND') {
+          res.status(404).json({ error: err.message, code: 'GOOGLE_ACCOUNT_NOT_FOUND', email: profile.email });
+          return;
+        }
+        throw err;
+      }
+    } else {
+      try {
+        const result = registerGoogleSignUp(profile);
+        res.status(201).json(result);
+      } catch (err: any) {
+        if (err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
+          res.status(409).json({ error: err.message, code: 'GOOGLE_ACCOUNT_ALREADY_EXISTS', email: profile.email });
+          return;
+        }
+        throw err;
+      }
+    }
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Google authentication failed.' });
+  }
+});
+
+// POST /auth/forgot-password & POST /api/auth/forgot-password — Request Password Reset Token (CAPTCHA Protected)
+app.post(['/auth/forgot-password', '/api/auth/forgot-password'], authRateLimiter, async (req, res) => {
+  try {
+    const { identifier, captchaToken } = req.body as { identifier: string; captchaToken?: string };
+    if (!identifier) {
+      res.status(400).json({ error: 'Email or username is required.' });
+      return;
+    }
+
+    const captchaCheck = await verifyCaptcha(captchaToken, req.ip);
+    if (!captchaCheck.success) {
+      res.status(400).json({ error: captchaCheck.error || 'CAPTCHA verification failed.' });
+      return;
+    }
+
+    const result = requestPasswordReset(identifier);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Password reset request failed.' });
+  }
+});
+
+// POST /auth/reset-password & POST /api/auth/reset-password — Complete Password Reset with Token
+app.post(['/auth/reset-password', '/api/auth/reset-password'], authRateLimiter, async (req, res) => {
+  try {
+    const { resetToken, newPassword, captchaToken } = req.body as { resetToken: string; newPassword: string; captchaToken?: string };
+    const captchaCheck = await verifyCaptcha(captchaToken, req.ip);
+    if (!captchaCheck.success) {
+      res.status(400).json({ error: captchaCheck.error || 'CAPTCHA verification failed.' });
+      return;
+    }
+
+    const result = resetPasswordWithToken(resetToken, newPassword);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Password reset failed.' });
+  }
+});
+
+// POST /auth/logout & POST /api/auth/logout
+app.post(['/auth/logout', '/api/auth/logout'], (req, res) => {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (token) logout(token);
   res.json({ success: true });
 });
 
-// POST /auth/change-password  (requires auth)
-app.post('/auth/change-password', requireAuth, (req, res) => {
+// POST /auth/change-password & POST /api/auth/change-password  (requires auth)
+app.post(['/auth/change-password', '/api/auth/change-password'], requireAuth, (req, res) => {
   const { newPassword } = req.body as { newPassword: string };
   if (!newPassword || newPassword.length < 6) {
     res.status(400).json({ error: 'Password must be at least 6 characters.' });
@@ -237,13 +930,34 @@ app.post('/auth/change-password', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-// GET /auth/me — validate token and return current user
-app.get('/auth/me', requireAuth, (req, res) => {
-  res.json({ user: (req as any).user });
+// GET /auth/me & GET /api/auth/me — validate token and return current user
+app.get(['/auth/me', '/api/auth/me'], requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const dbUser = db.prepare(`SELECT needsProfileSetup FROM users WHERE id = ?`).get(user.id) as any;
+  const needsSetup = !!(dbUser && dbUser.needsProfileSetup === 1);
+  res.json({
+    user: {
+      ...user,
+      needsProfileSetup: needsSetup
+    },
+    needsProfileSetup: needsSetup
+  });
 });
 
-// GET /auth/verify — verify token validity
-app.get('/auth/verify', requireAuth, (req, res) => {
+// POST /auth/complete-google-profile & POST /api/auth/complete-google-profile — One-time setup for Google user profile
+app.post(['/auth/complete-google-profile', '/api/auth/complete-google-profile'], requireAuth, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { username, password, skip } = req.body as { username?: string; password?: string; skip?: boolean };
+    const result = completeGoogleProfileSetup(user.id, { username, password, skip });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Profile setup failed.' });
+  }
+});
+
+// GET /auth/verify & GET /api/auth/verify — verify token validity
+app.get(['/auth/verify', '/api/auth/verify'], requireAuth, (req, res) => {
   res.json({ valid: true, user: (req as any).user });
 });
 
@@ -288,12 +1002,26 @@ app.get('/admin/users', requireTenantAdmin, (req, res) => {
   }
 });
 
-// POST /admin/users — create new user in the current tenant (Phase 6: privilege escalation prevented)
+// Full business modules registry supported by Octal Dialer RBAC
+const ALL_BUSINESS_MODULES = [
+  'crm',
+  'campaigns',
+  'octalDialer',
+  'leads',
+  'reports',
+  'googleScraper',
+  'autoEmailer',
+  'facebookScraper',
+  'facebookPoster'
+];
+
+// POST /admin/users — create new user in current tenant (Master Admin -> Admin / Employee; Admin -> Employee only)
 app.post('/admin/users', requireTenantAdmin, (req, res) => {
-  const { username, password, role = 'agent' } = req.body as {
+  const { username, password, role = 'agent', initialPermissions } = req.body as {
     username: string;
     password: string;
-    role?: string
+    role?: string;
+    initialPermissions?: string[];
   };
 
   if (!username || !password) {
@@ -306,17 +1034,30 @@ app.post('/admin/users', requireTenantAdmin, (req, res) => {
     return;
   }
 
-  // Phase 6 Invariant: Tenant Admins may only create 'admin' or 'agent' roles. Never 'platform_admin'.
+  const adminUser = (req as any).user;
+  const isPlatformMaster = adminUser.role === 'platform_admin';
+
+  // Hierarchy enforcement:
+  // Only Master Admin can create 'admin' roles. Normal Admins can ONLY create 'agent' (Employee).
+  if (role === 'platform_admin' || role === 'master_admin') {
+    res.status(403).json({ error: 'Forbidden. Master Admin accounts cannot be created via user API.' });
+    return;
+  }
+
+  if (role === 'admin' && !isPlatformMaster) {
+    res.status(403).json({ error: 'Forbidden. Only Master Admin can create Administrator accounts. Admins may only create Employees.' });
+    return;
+  }
+
   if (!['admin', 'agent'].includes(role)) {
-    res.status(400).json({ error: 'Role must be admin or agent. Cannot assign platform admin privileges.' });
+    res.status(400).json({ error: 'Invalid role. Must be admin or agent.' });
     return;
   }
 
   try {
-    const adminUser = (req as any).user;
     const tenantId = adminUser.tenantId;
 
-    // Phase 7 Invariant: Atomic check + insert within serialized SQLite transaction
+    // Check user limit on plan
     const createUserTxn = db.transaction(() => {
       const userLimitCheck = checkLimit(tenantId, 'maxUsers', 1);
       if (!userLimitCheck.allowed) {
@@ -342,24 +1083,46 @@ app.post('/admin/users', requireTenantAdmin, (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(userId, username, hash, role, tenantId, new Date().toISOString());
 
-      // Grant all permissions by default for new users within this tenant
-      const modules = ['octalDialer', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
-
+      // If initialPermissions provided, validate delegation and grant
       const insertPerm = db.prepare(`
         INSERT INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
         VALUES (?, ?, ?, 1, ?, ?, ?)
       `);
 
-      for (const moduleId of modules) {
-        insertPerm.run(
-          `perm_${userId}_${moduleId}`,
-          userId,
-          moduleId,
-          adminUser.username,
-          tenantId,
-          new Date().toISOString()
-        );
+      if (Array.isArray(initialPermissions) && initialPermissions.length > 0) {
+        const entitlements = getTenantEntitlements(tenantId);
+        const planFeatures = entitlements.isValid ? entitlements.features : {};
+
+        for (const mod of initialPermissions) {
+          if (ALL_BUSINESS_MODULES.includes(mod)) {
+            // If creator is not platform admin, verify creator has entitlement
+            if (!isPlatformMaster && planFeatures[mod] === false) {
+              continue; // cannot delegate what tenant does not have
+            }
+            insertPerm.run(
+              `perm_${userId}_${mod}`,
+              userId,
+              mod,
+              adminUser.username,
+              tenantId,
+              new Date().toISOString()
+            );
+          }
+        }
+      } else if (role === 'admin') {
+        // Admins created by Master Admin receive core modules enabled
+        for (const mod of ALL_BUSINESS_MODULES) {
+          insertPerm.run(
+            `perm_${userId}_${mod}`,
+            userId,
+            mod,
+            adminUser.username,
+            tenantId,
+            new Date().toISOString()
+          );
+        }
       }
+      // Note: For role === 'agent' with no initialPermissions, 0 permissions are inserted (minimal default).
 
       return userId;
     });
@@ -384,6 +1147,7 @@ app.put('/admin/users/:userId', requireTenantAdmin, (req, res) => {
   const { userId } = req.params;
   const { role, newPassword } = req.body as { role?: string; newPassword?: string };
   const adminUser = (req as any).user;
+  const isPlatformMaster = adminUser.role === 'platform_admin';
   const tenantId = adminUser.tenantId;
 
   try {
@@ -393,18 +1157,31 @@ app.put('/admin/users/:userId', requireTenantAdmin, (req, res) => {
       return;
     }
 
-    // Safety: Tenant admins cannot modify platform_admin users
-    if (user.role === 'platform_admin' && adminUser.role !== 'platform_admin') {
-      res.status(403).json({ error: 'Forbidden. Cannot modify platform admin accounts.' });
+    // Safety: Platform Owner accounts cannot be modified or demoted
+    if ((user.role === 'platform_admin' || user.username === 'admin') && role !== undefined && role !== 'platform_admin') {
+      res.status(403).json({ error: 'Forbidden. Platform Owner accounts cannot be demoted.' });
+      return;
+    }
+
+    if (user.role === 'platform_admin' && !isPlatformMaster) {
+      res.status(403).json({ error: 'Forbidden. Cannot modify Master Admin accounts.' });
       return;
     }
 
     if (role !== undefined) {
-      if (!['admin', 'agent'].includes(role)) {
-        res.status(400).json({ error: 'Role must be admin or agent. Cannot escalate to platform admin.' });
+      if (role === 'platform_admin' || role === 'master_admin') {
+        res.status(403).json({ error: 'Forbidden. Cannot escalate to Master Admin.' });
         return;
       }
-      db.prepare(`UPDATE users SET role = ? WHERE id = ? AND tenantId = ?`).run(role, userId, tenantId);
+      if (role === 'admin' && !isPlatformMaster) {
+        res.status(403).json({ error: 'Forbidden. Only Master Admin can promote users to Administrator.' });
+        return;
+      }
+      if (!['admin', 'agent', 'user'].includes(role)) {
+        res.status(400).json({ error: 'Role must be admin, user, or agent.' });
+        return;
+      }
+      db.prepare(`UPDATE users SET role = ?, updatedAt = (datetime('now')) WHERE id = ? AND tenantId = ?`).run(role, userId, tenantId);
     }
 
     if (newPassword !== undefined) {
@@ -413,12 +1190,61 @@ app.put('/admin/users/:userId', requireTenantAdmin, (req, res) => {
         return;
       }
       const { hash } = hashPassword(newPassword);
-      db.prepare(`UPDATE users SET passwordHash = ? WHERE id = ? AND tenantId = ?`).run(hash, userId, tenantId);
+      db.prepare(`UPDATE users SET passwordHash = ?, updatedAt = (datetime('now')) WHERE id = ? AND tenantId = ?`).run(hash, userId, tenantId);
     }
 
-    res.json({ success: true, message: 'User updated successfully.' });
+    const { permissions } = req.body as { permissions?: Record<string, boolean> | string[] };
+    if (permissions !== undefined) {
+      const allModules = ['crm', 'campaigns', 'octalDialer', 'leads', 'reports', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
+      const nowIso = new Date().toISOString();
+      const insertOrUpdatePerm = db.prepare(`
+        INSERT INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
+        VALUES (@id, @userId, @moduleId, @enabled, @grantedBy, @tenantId, @grantedAt)
+        ON CONFLICT(userId, moduleId) DO UPDATE SET
+          enabled = excluded.enabled,
+          grantedBy = excluded.grantedBy,
+          grantedAt = excluded.grantedAt
+      `);
+
+      for (const m of allModules) {
+        let isEnabled = 0;
+        if (Array.isArray(permissions)) {
+          isEnabled = permissions.includes(m) ? 1 : 0;
+        } else if (typeof permissions === 'object' && permissions !== null) {
+          isEnabled = permissions[m] ? 1 : 0;
+        }
+        insertOrUpdatePerm.run({
+          id: `perm_${userId}_${m}`,
+          userId,
+          moduleId: m,
+          enabled: isEnabled,
+          grantedBy: adminUser.username || 'ADMIN',
+          tenantId,
+          grantedAt: nowIso
+        });
+      }
+    }
+
+    res.json({ success: true, message: 'User and module permissions updated successfully.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /admin/users/:userId/role — Dedicated role promotion/demotion endpoint (Master Admin only)
+app.put('/admin/users/:userId/role', requireMasterAdmin, (req, res) => {
+  try {
+    const executor = (req as any).user;
+    const { userId } = req.params;
+    const { role } = req.body as { role: string };
+    if (!role) {
+      res.status(400).json({ error: 'Role is required.' });
+      return;
+    }
+    const result = updateUserRole(executor, userId, role);
+    res.json(result);
+  } catch (err: any) {
+    res.status(err.message.includes('Forbidden') ? 403 : 400).json({ error: err.message });
   }
 });
 
@@ -426,6 +1252,7 @@ app.put('/admin/users/:userId', requireTenantAdmin, (req, res) => {
 app.delete('/admin/users/:userId', requireTenantAdmin, (req, res) => {
   const { userId } = req.params;
   const adminUser = (req as any).user;
+  const isPlatformMaster = adminUser.role === 'platform_admin';
   const tenantId = adminUser.tenantId;
 
   // Prevent self-deletion
@@ -441,8 +1268,8 @@ app.delete('/admin/users/:userId', requireTenantAdmin, (req, res) => {
       return;
     }
 
-    if (user.role === 'platform_admin' && adminUser.role !== 'platform_admin') {
-      res.status(403).json({ error: 'Forbidden. Cannot delete platform admin accounts.' });
+    if (user.role === 'platform_admin' || user.username === 'admin') {
+      res.status(403).json({ error: 'Forbidden. Platform Owner accounts cannot be deleted.' });
       return;
     }
 
@@ -460,7 +1287,7 @@ app.delete('/admin/users/:userId', requireTenantAdmin, (req, res) => {
   }
 });
 
-// POST /admin/permissions — update user module permissions (tenant-scoped)
+// POST /admin/permissions — update user module permissions with delegation boundary checks
 app.post('/admin/permissions', requireTenantAdmin, (req, res) => {
   const { userId, moduleId, enabled } = req.body as {
     userId: string;
@@ -473,21 +1300,41 @@ app.post('/admin/permissions', requireTenantAdmin, (req, res) => {
     return;
   }
 
-  const validModules = ['octalDialer', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
-  if (!validModules.includes(moduleId)) {
-    res.status(400).json({ error: 'Invalid moduleId.' });
+  if (moduleId === 'platform_admin' || moduleId === 'platformAdmin') {
+    res.status(403).json({ error: 'Forbidden. Platform Admin is Master Admin only and cannot be delegated as a module permission.' });
+    return;
+  }
+
+  if (!ALL_BUSINESS_MODULES.includes(moduleId)) {
+    res.status(400).json({ error: `Invalid moduleId "${moduleId}".` });
     return;
   }
 
   try {
     const adminUser = (req as any).user;
+    const isPlatformMaster = adminUser.role === 'platform_admin';
     const tenantId = adminUser.tenantId;
 
     // Verify target user belongs to the requesting admin's tenant
-    const targetUser = db.prepare(`SELECT * FROM users WHERE id = ? AND tenantId = ?`).get(userId, tenantId);
+    const targetUser = db.prepare(`SELECT * FROM users WHERE id = ? AND tenantId = ?`).get(userId, tenantId) as any;
     if (!targetUser) {
       res.status(404).json({ error: 'User not found in your organization.' });
       return;
+    }
+
+    if (targetUser.role === 'platform_admin' && !isPlatformMaster) {
+      res.status(403).json({ error: 'Forbidden. Cannot modify permissions of Master Admin.' });
+      return;
+    }
+
+    // Delegation boundary: Tenant Admins cannot grant modules not enabled in their tenant plan
+    if (!isPlatformMaster && enabled) {
+      const entitlements = getTenantEntitlements(tenantId);
+      const planFeatures = entitlements.isValid ? entitlements.features : {};
+      if (planFeatures[moduleId] === false) {
+        res.status(403).json({ error: `Forbidden. Cannot grant module "${moduleId}" because it is not active in your organization plan.` });
+        return;
+      }
     }
 
     db.prepare(`
@@ -508,7 +1355,7 @@ app.post('/admin/permissions', requireTenantAdmin, (req, res) => {
       new Date().toISOString()
     );
 
-    res.json({ success: true, message: 'Permission updated.' });
+    res.json({ success: true, message: `Permission for module ${moduleId} updated.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -535,20 +1382,18 @@ app.get('/admin/permissions/:userId', requireAuth, (req, res) => {
   }
 });
 
-// GET /auth/permissions — get effective permissions for current user (Phase 7: constrained by plan entitlements)
+// GET /auth/permissions — get effective permissions for current user across all 9 modules
 app.get('/auth/permissions', requireAuth, (req, res) => {
   try {
     const user = (req as any).user;
 
-    // Platform Admins have full access across modules
+    // Platform Admins / Master Admin have full access across all modules
     if (user.role === 'platform_admin') {
-      res.json({
-        octalDialer: true,
-        googleScraper: true,
-        autoEmailer: true,
-        facebookScraper: true,
-        facebookPoster: true
-      });
+      const allTrue: Record<string, boolean> = {};
+      for (const m of ALL_BUSINESS_MODULES) {
+        allTrue[m] = true;
+      }
+      res.json(allTrue);
       return;
     }
 
@@ -558,17 +1403,22 @@ app.get('/auth/permissions', requireAuth, (req, res) => {
 
     // Tenant Admins receive all features enabled in their tenant plan
     if (user.role === 'admin') {
-      res.json({
-        octalDialer: !!planFeatures.octalDialer,
+      const adminPerms: Record<string, boolean> = {
+        crm: planFeatures.crm !== false,
+        campaigns: planFeatures.campaigns !== false,
+        octalDialer: planFeatures.octalDialer !== false,
+        leads: planFeatures.leads !== false,
+        reports: planFeatures.reports !== false,
         googleScraper: !!planFeatures.googleScraper,
         autoEmailer: !!planFeatures.autoEmailer,
         facebookScraper: !!planFeatures.facebookScraper,
         facebookPoster: !!planFeatures.facebookPoster
-      });
+      };
+      res.json(adminPerms);
       return;
     }
 
-    // Agents receive features permitted by BOTH user permission and tenant plan
+    // Employees / Agents receive features permitted by BOTH user permission and tenant plan
     const permissions = db.prepare(`
       SELECT moduleId, enabled
       FROM user_permissions
@@ -580,8 +1430,13 @@ app.get('/auth/permissions', requireAuth, (req, res) => {
       userPermMap[perm.moduleId] = perm.enabled === 1;
     }
 
+    // Strict: default is FALSE for all modules unless explicitly granted
     const effectiveMap: Record<string, boolean> = {
-      octalDialer: (userPermMap.octalDialer !== false) && !!planFeatures.octalDialer,
+      crm: !!userPermMap.crm && planFeatures.crm !== false,
+      campaigns: !!userPermMap.campaigns && planFeatures.campaigns !== false,
+      octalDialer: !!userPermMap.octalDialer && planFeatures.octalDialer !== false,
+      leads: !!userPermMap.leads && planFeatures.leads !== false,
+      reports: !!userPermMap.reports && planFeatures.reports !== false,
       googleScraper: !!userPermMap.googleScraper && !!planFeatures.googleScraper,
       autoEmailer: !!userPermMap.autoEmailer && !!planFeatures.autoEmailer,
       facebookScraper: !!userPermMap.facebookScraper && !!planFeatures.facebookScraper,
@@ -597,6 +1452,64 @@ app.get('/auth/permissions', requireAuth, (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // ADMIN ENDPOINTS — Tool-Level Permissions
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM MODULE CONTROL ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+const GLOBAL_MODULES = [
+  { id: 'crm', name: 'CRM Workspace', description: 'Contacts, accounts, deal pipelines, and relationship tracking', enabled: 1, status: 'operational' },
+  { id: 'campaigns', name: 'Campaigns', description: 'Dialing lists, campaign queues, and workflow orchestration', enabled: 1, status: 'operational' },
+  { id: 'octalDialer', name: 'Octal Dialer', description: 'GSM hardware auto-dialer and paired phone queue', enabled: 1, status: 'operational' },
+  { id: 'leads', name: 'Leads Database', description: 'Dedicated lead explorer, CSV imports, and enrichment', enabled: 1, status: 'operational' },
+  { id: 'reports', name: 'Reports & Analytics', description: 'Call analytics, performance charts, and audit metrics', enabled: 1, status: 'operational' },
+  { id: 'googleScraper', name: 'Google Scraper', description: 'Google Maps B2B lead extractor and contact parser', enabled: 1, status: 'operational' },
+  { id: 'autoEmailer', name: 'Auto Emailer', description: 'Multi-SMTP rotation and automated cold email sequences', enabled: 1, status: 'operational' },
+  { id: 'facebookScraper', name: 'Facebook Scraper', description: 'Facebook group member extractor and lead generator', enabled: 1, status: 'operational' },
+  { id: 'facebookPoster', name: 'FB Auto Poster', description: 'Facebook group scheduler and automated poster', enabled: 1, status: 'operational' }
+];
+
+app.get('/admin/modules', requirePlatformAdmin, (req, res) => {
+  try {
+    const settings = db.prepare(`SELECT settingKey, settingValue FROM system_settings WHERE category = 'modules'`).all() as any[];
+    const map = new Map(settings.map(s => [s.settingKey, s.settingValue]));
+    
+    const modules = GLOBAL_MODULES.map(m => {
+      const override = map.get(m.id);
+      return {
+        ...m,
+        enabled: override !== undefined ? (override === 'true' || override === '1' ? 1 : 0) : m.enabled
+      };
+    });
+    res.json({ modules });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/admin/modules/:id', requirePlatformAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { enabled } = req.body as { enabled?: boolean | number };
+    const validIds = GLOBAL_MODULES.map(m => m.id);
+    if (!validIds.includes(id)) {
+      res.status(400).json({ error: 'Invalid module ID' });
+      return;
+    }
+
+    const isTruthy = enabled === true || enabled === 1 || String(enabled) === 'true' || String(enabled) === '1';
+    const val = isTruthy ? 'true' : 'false';
+    db.prepare(`
+      INSERT INTO system_settings (id, category, settingKey, settingValue, dataType, updatedAt)
+      VALUES (?, 'modules', ?, ?, 'boolean', datetime('now'))
+      ON CONFLICT(category, settingKey) DO UPDATE SET settingValue = excluded.settingValue, updatedAt = excluded.updatedAt
+    `).run(`mod_${id}`, id, val);
+
+    res.json({ success: true, moduleId: id, enabled: val === 'true' ? 1 : 0 });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // GET /admin/tools — list all registered tools (Platform Admin)
 app.get('/admin/tools', requirePlatformAdmin, (req, res) => {
@@ -1307,6 +2220,198 @@ app.get('/api/logs/mobile', (req, res) => {
 
   const logs = getLogs(user.tenantId);
   res.json(logs.slice(0, 100));
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE E: CRM & LEAD INTELLIGENCE ROUTES (Gated by 'crm' module permission)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// GET /api/crm/follow-ups — list follow-ups for tenant
+app.get('/api/crm/follow-ups', requireAuth, requireModule('crm'), (req, res) => {
+  try {
+    const user = (req as any).user;
+    const status = req.query.status as string;
+    const followUps = getFollowUps(user.tenantId, { status });
+    res.json({ followUps });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/crm/follow-ups — schedule a new follow-up
+app.post('/api/crm/follow-ups', requireAuth, requireModule('crm'), (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { leadId, leadName, leadPhone, campaignId, campaignName, scheduledAt, notes, assignedAgent } = req.body;
+
+    if (!leadId || !scheduledAt) {
+      res.status(400).json({ error: 'leadId and scheduledAt are required.' });
+      return;
+    }
+
+    const followUp = createFollowUp({
+      leadId,
+      leadName,
+      leadPhone,
+      campaignId,
+      campaignName,
+      tenantId: user.tenantId,
+      userId: user.id,
+      assignedAgent: assignedAgent || user.username,
+      scheduledAt,
+      notes
+    });
+
+    recordLeadActivity({
+      leadId,
+      tenantId: user.tenantId,
+      userId: user.id,
+      username: user.username,
+      eventType: 'FOLLOW_UP_SCHEDULED',
+      description: `Follow-up scheduled for ${new Date(scheduledAt).toLocaleString()}${notes ? `: ${notes}` : ''}`,
+      metadata: { scheduledAt, notes }
+    });
+
+    res.status(201).json({ success: true, followUp });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/crm/follow-ups/:id/status — update follow-up status
+app.patch('/api/crm/follow-ups/:id/status', requireAuth, requireModule('crm'), (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+    const { status, notes } = req.body;
+
+    if (!status || !['pending', 'completed', 'cancelled', 'rescheduled'].includes(status)) {
+      res.status(400).json({ error: 'Valid status (pending, completed, cancelled, rescheduled) required.' });
+      return;
+    }
+
+    const updated = updateFollowUpStatus(id, user.tenantId, status, notes);
+    if (!updated) {
+      res.status(404).json({ error: 'Follow-up not found.' });
+      return;
+    }
+
+    res.json({ success: true, message: `Follow-up updated to ${status}.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/crm/leads/:id/timeline — get lead activity timeline
+app.get('/api/crm/leads/:id/timeline', requireAuth, requireModule('crm'), (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+    const activities = getLeadActivities(id, user.tenantId);
+    res.json({ activities });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/crm/leads/:id/notes — log a note/activity for lead
+app.post('/api/crm/leads/:id/notes', requireAuth, requireModule('crm'), (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+    const { note } = req.body;
+
+    if (!note || !note.trim()) {
+      res.status(400).json({ error: 'Note text required.' });
+      return;
+    }
+
+    recordLeadActivity({
+      leadId: id,
+      tenantId: user.tenantId,
+      userId: user.id,
+      username: user.username,
+      eventType: 'NOTE_ADDED',
+      description: note.trim()
+    });
+
+    res.status(201).json({ success: true, message: 'Note recorded in timeline.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/crm/leads/:id/profile — full lead profile with timeline & history
+app.get('/api/crm/leads/:id/profile', requireAuth, requireModule('crm'), (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+
+    // Search in leads table
+    let lead = db.prepare('SELECT * FROM leads WHERE id = ? AND tenantId = ?').get(id, user.tenantId) as any;
+    if (!lead) {
+      // Search in scraped_leads
+      lead = db.prepare('SELECT * FROM scraped_leads WHERE id = ? AND tenantId = ?').get(id, user.tenantId) as any;
+    }
+
+    if (!lead) {
+      res.status(404).json({ error: 'Lead not found in your organization.' });
+      return;
+    }
+
+    const activities = getLeadActivities(id, user.tenantId);
+    const callLogs = db.prepare('SELECT * FROM call_logs WHERE leadId = ? AND tenantId = ? ORDER BY timestamp DESC').all(id, user.tenantId) as any[];
+    const followUps = db.prepare('SELECT * FROM crm_follow_ups WHERE leadId = ? AND tenantId = ? ORDER BY scheduledAt ASC').all(id, user.tenantId) as any[];
+
+    res.json({
+      lead,
+      activities,
+      callLogs,
+      followUps
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/crm/campaigns/:id/workspace — detailed campaign metrics
+app.get('/api/crm/campaigns/:id/workspace', requireAuth, requireModule('crm'), (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+
+    const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ? AND tenantId = ?').get(id, user.tenantId) as any;
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found in your organization.' });
+      return;
+    }
+
+    const leads = db.prepare('SELECT * FROM leads WHERE campaignId = ? AND tenantId = ?').all(id, user.tenantId) as any[];
+    const totalLeads = leads.length;
+    const completedLeads = leads.filter(l => l.status === 'COMPLETED').length;
+    const pendingLeads = leads.filter(l => l.status === 'PENDING').length;
+    const callingLeads = leads.filter(l => l.status === 'CALLING').length;
+    const answeredLeads = leads.filter(l => (l.outcome || '').toUpperCase() === 'ANSWERED').length;
+    const noAnswerLeads = leads.filter(l => (l.outcome || '').toUpperCase() === 'NO_ANSWER').length;
+    const voicemailLeads = leads.filter(l => (l.outcome || '').toUpperCase() === 'VOICEMAIL').length;
+
+    res.json({
+      campaign,
+      stats: {
+        totalLeads,
+        completedLeads,
+        pendingLeads,
+        callingLeads,
+        answeredLeads,
+        noAnswerLeads,
+        voicemailLeads,
+        answerRate: completedLeads > 0 ? ((answeredLeads / completedLeads) * 100).toFixed(1) : '0.0'
+      },
+      leads: leads.slice(0, 100)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // REST: Scan sibling scraper folders (Feature-Gated)
@@ -2021,6 +3126,8 @@ const serveApkHandler = (_req: express.Request, res: express.Response): void => 
     path.join(__dirname, '../../OctalDialer.apk'),
     path.join(__dirname, '../public/OctalDialer.apk'),
     path.join(__dirname, '../../frontend/public/OctalDialer.apk'),
+    path.join(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-debug.apk'),
+    path.join(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-release.apk'),
     path.join(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-release.apk'),
     path.join(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-debug.apk')
   ];
@@ -2534,43 +3641,365 @@ app.delete('/email/leads', requireAuth, requireFeature('autoEmailer'), (req: exp
 app.get('/email/accounts', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
-  const rows = emailDb.prepare('SELECT id, email, senderName, smtpHost, smtpPort, status, tenantId FROM email_accounts WHERE tenantId = ?').all(tenantId);
+  const rows = emailDb.prepare('SELECT id, email, senderName, smtpHost, smtpPort, status, tenantId, authType, createdAt FROM email_accounts WHERE tenantId = ?').all(tenantId);
   res.json(rows);
+});
+
+// ── DELETE /email/accounts/:id (Feature-Gated)
+app.delete('/email/accounts/:id', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
+  const user = (req as any).user;
+  const tenantId = user.tenantId;
+  const id = req.params.id;
+  emailDb.prepare('DELETE FROM email_accounts WHERE id = ? AND tenantId = ?').run(id, tenantId);
+  res.json({ success: true });
 });
 
 // ── POST /email/accounts (Feature-Gated)
 app.post('/email/accounts', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
-  const { accounts } = req.body as { accounts: { email: string; password: string; senderName?: string; smtpHost?: string; smtpPort?: number; status?: string }[] };
+  const { accounts } = req.body as { accounts: { email: string; password?: string; senderName?: string; smtpHost?: string; smtpPort?: number; status?: string; authType?: string; refreshToken?: string; accessToken?: string }[] };
   if (!Array.isArray(accounts)) {
     res.status(400).json({ error: 'accounts array required' });
     return;
   }
   const upsert = emailDb.prepare(`
-    INSERT INTO email_accounts (email, password, senderName, smtpHost, smtpPort, status, tenantId)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO email_accounts (email, password, senderName, smtpHost, smtpPort, status, tenantId, authType, refreshToken, accessToken)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(email) DO UPDATE SET
       password = CASE WHEN excluded.password = '***keep***' THEN password ELSE excluded.password END,
       senderName = excluded.senderName,
       smtpHost = excluded.smtpHost,
       smtpPort = excluded.smtpPort,
       status = excluded.status,
-      tenantId = excluded.tenantId
+      tenantId = excluded.tenantId,
+      authType = excluded.authType,
+      refreshToken = CASE WHEN excluded.refreshToken IS NOT NULL THEN excluded.refreshToken ELSE refreshToken END,
+      accessToken = CASE WHEN excluded.accessToken IS NOT NULL THEN excluded.accessToken ELSE accessToken END
   `);
   for (const acc of accounts) {
     upsert.run(
-      acc.email.toLowerCase(),
-      acc.password,
+      acc.email.toLowerCase().trim(),
+      acc.password || '',
       acc.senderName || null,
-      acc.smtpHost || 'smtp.office365.com',
+      acc.smtpHost || 'smtp.gmail.com',
       acc.smtpPort || 587,
       acc.status || 'active',
-      tenantId
+      tenantId,
+      acc.authType || 'password',
+      acc.refreshToken || null,
+      acc.accessToken || null
     );
   }
   res.json({ success: true });
 });
+
+// ── GET /email/oauth/google/connect — 1-Click Google OAuth Mailbox Authorization
+app.get(['/email/oauth/google/connect', '/api/email/oauth/google/connect'], requireAuth, (req: express.Request, res: express.Response) => {
+  const clientOrigin = getClientOrigin(req);
+  if (!config.googleClientId) {
+    res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent('Google Client ID is not configured in .env')}`);
+    return;
+  }
+  const user = (req as any).user;
+  const state = crypto.randomBytes(24).toString('hex');
+  const nonce = crypto.randomBytes(24).toString('hex');
+
+  oauthStates.set(state, {
+    state,
+    nonce,
+    clientOrigin,
+    intent: 'email_connect' as any,
+    provider: 'google',
+    tenantId: user.tenantId,
+    username: user.username,
+    createdAt: Date.now()
+  } as any);
+
+  const serverBase = `http://${req.headers.host || 'localhost:3000'}`;
+  const scope = encodeURIComponent('openid email profile https://mail.google.com/');
+  const redirectUri = encodeURIComponent(`${serverBase}/email/oauth/google/callback`);
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(config.googleClientId)}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}&access_type=offline&prompt=consent`;
+
+  res.redirect(authUrl);
+});
+
+// ── GET /email/oauth/google/callback — Google OAuth Mailbox callback
+app.get(['/email/oauth/google/callback', '/api/email/oauth/google/callback'], async (req: express.Request, res: express.Response) => {
+  const fallbackOrigin = config.corsAllowedOrigins[0] || 'http://localhost:5173';
+  let clientOrigin = fallbackOrigin;
+  try {
+    const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
+    if (!state || !oauthStates.has(state)) {
+      res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent('Invalid or expired OAuth state.')}`);
+      return;
+    }
+    const storedState = oauthStates.get(state) as any;
+    clientOrigin = storedState.clientOrigin || fallbackOrigin;
+    const tenantId = storedState.tenantId || 'tenant_default';
+    oauthStates.delete(state);
+
+    if (error || !code) {
+      res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent(error || 'Google access cancelled.')}`);
+      return;
+    }
+
+    const serverBase = `http://${req.headers.host || 'localhost:3000'}`;
+    const redirectUri = `${serverBase}/email/oauth/google/callback`;
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: config.googleClientId,
+        client_secret: config.googleClientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code'
+      })
+    });
+
+    const tokenData: any = await tokenRes.json();
+    if (!tokenRes.ok || !tokenData.access_token) {
+      throw new Error(tokenData.error_description || 'Failed to exchange Google OAuth code');
+    }
+
+    const userRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    });
+    const profile: any = await userRes.json();
+    const email = (profile.email || '').toLowerCase().trim();
+    const senderName = profile.name || email.split('@')[0];
+
+    if (!email) throw new Error('Could not retrieve email from Google profile');
+
+    const upsert = emailDb.prepare(`
+      INSERT INTO email_accounts (email, password, senderName, smtpHost, smtpPort, status, tenantId, authType, refreshToken, accessToken)
+      VALUES (?, ?, ?, 'smtp.gmail.com', 465, 'active', ?, 'oauth_google', ?, ?)
+      ON CONFLICT(email) DO UPDATE SET
+        senderName = excluded.senderName,
+        smtpHost = 'smtp.gmail.com',
+        smtpPort = 465,
+        status = 'active',
+        tenantId = excluded.tenantId,
+        authType = 'oauth_google',
+        refreshToken = CASE WHEN excluded.refreshToken IS NOT NULL THEN excluded.refreshToken ELSE refreshToken END,
+        accessToken = excluded.accessToken
+    `);
+
+    upsert.run(email, '***oauth***', senderName, tenantId, tokenData.refresh_token || null, tokenData.access_token);
+    res.redirect(`${clientOrigin}/?email_connected=${encodeURIComponent(email)}`);
+  } catch (err: any) {
+    console.error('[Email OAuth Error]:', err);
+    res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent(err.message || 'Failed to connect Google account')}`);
+  }
+});
+
+// ── GET /email/oauth/microsoft/connect — 1-Click Microsoft Outlook / 365 OAuth
+app.get(['/email/oauth/microsoft/connect', '/api/email/oauth/microsoft/connect'], requireAuth, (req: express.Request, res: express.Response) => {
+  const clientOrigin = getClientOrigin(req);
+  const clientId = config.microsoftClientId;
+  if (!clientId) {
+    res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent('Microsoft Client ID (MICROSOFT_CLIENT_ID) is not configured in .env')}`);
+    return;
+  }
+  const user = (req as any).user;
+  const state = crypto.randomBytes(24).toString('hex');
+  const nonce = crypto.randomBytes(24).toString('hex');
+
+  oauthStates.set(state, {
+    state,
+    nonce,
+    clientOrigin,
+    intent: 'email_connect' as any,
+    provider: 'microsoft',
+    tenantId: user.tenantId,
+    username: user.username,
+    createdAt: Date.now()
+  } as any);
+
+  const serverBase = `http://${req.headers.host || 'localhost:3000'}`;
+  const scope = encodeURIComponent('openid profile email offline_access https://outlook.office.com/SMTP.Send');
+  const redirectUri = encodeURIComponent(`${serverBase}/email/oauth/microsoft/callback`);
+  const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}&response_mode=query&prompt=select_account`;
+
+  res.redirect(authUrl);
+});
+
+// ── GET /email/oauth/microsoft/callback — Microsoft OAuth Mailbox callback
+app.get(['/email/oauth/microsoft/callback', '/api/email/oauth/microsoft/callback'], async (req: express.Request, res: express.Response) => {
+  const fallbackOrigin = config.corsAllowedOrigins[0] || 'http://localhost:5173';
+  let clientOrigin = fallbackOrigin;
+  try {
+    const { code, state, error, error_description } = req.query as { code?: string; state?: string; error?: string; error_description?: string };
+    if (!state || !oauthStates.has(state)) {
+      res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent('Invalid or expired Microsoft OAuth session.')}`);
+      return;
+    }
+    const storedState = oauthStates.get(state) as any;
+    clientOrigin = storedState.clientOrigin || fallbackOrigin;
+    const tenantId = storedState.tenantId || 'tenant_default';
+    oauthStates.delete(state);
+
+    if (error || !code) {
+      res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent(error_description || error || 'Microsoft access cancelled.')}`);
+      return;
+    }
+
+    const serverBase = `http://${req.headers.host || 'localhost:3000'}`;
+    const redirectUri = `${serverBase}/email/oauth/microsoft/callback`;
+    const tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: config.microsoftClientId,
+        client_secret: config.microsoftClientSecret,
+        code,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code'
+      })
+    });
+
+    const tokenData: any = await tokenRes.json();
+    if (!tokenRes.ok || !tokenData.access_token) {
+      throw new Error(tokenData.error_description || 'Failed to exchange Microsoft OAuth code');
+    }
+
+    const userRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    });
+    const profile: any = await userRes.json();
+    const email = (profile.mail || profile.userPrincipalName || '').toLowerCase().trim();
+    const senderName = profile.displayName || email.split('@')[0];
+
+    if (!email) throw new Error('Could not retrieve email from Microsoft profile');
+
+    const upsert = emailDb.prepare(`
+      INSERT INTO email_accounts (email, password, senderName, smtpHost, smtpPort, status, tenantId, authType, refreshToken, accessToken)
+      VALUES (?, ?, ?, 'smtp.office365.com', 587, 'active', ?, 'oauth_microsoft', ?, ?)
+      ON CONFLICT(email) DO UPDATE SET
+        senderName = excluded.senderName,
+        smtpHost = 'smtp.office365.com',
+        smtpPort = 587,
+        status = 'active',
+        tenantId = excluded.tenantId,
+        authType = 'oauth_microsoft',
+        refreshToken = CASE WHEN excluded.refreshToken IS NOT NULL THEN excluded.refreshToken ELSE refreshToken END,
+        accessToken = excluded.accessToken
+    `);
+
+    upsert.run(email, '***oauth***', senderName, tenantId, tokenData.refresh_token || null, tokenData.access_token);
+    res.redirect(`${clientOrigin}/?email_connected=${encodeURIComponent(email)}`);
+  } catch (err: any) {
+    console.error('[Microsoft OAuth Error]:', err);
+    res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent(err.message || 'Failed to connect Microsoft Outlook account')}`);
+  }
+});
+
+// ── GET /email/oauth/yahoo/connect — 1-Click Yahoo Mail OAuth
+app.get(['/email/oauth/yahoo/connect', '/api/email/oauth/yahoo/connect'], requireAuth, (req: express.Request, res: express.Response) => {
+  const clientOrigin = getClientOrigin(req);
+  const clientId = config.yahooClientId;
+  if (!clientId) {
+    res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent('Yahoo Client ID (YAHOO_CLIENT_ID) is not configured in .env')}`);
+    return;
+  }
+  const user = (req as any).user;
+  const state = crypto.randomBytes(24).toString('hex');
+  const nonce = crypto.randomBytes(24).toString('hex');
+
+  oauthStates.set(state, {
+    state,
+    nonce,
+    clientOrigin,
+    intent: 'email_connect' as any,
+    provider: 'yahoo',
+    tenantId: user.tenantId,
+    username: user.username,
+    createdAt: Date.now()
+  } as any);
+
+  const serverBase = `http://${req.headers.host || 'localhost:3000'}`;
+  const redirectUri = encodeURIComponent(`${serverBase}/email/oauth/yahoo/callback`);
+  const scope = encodeURIComponent('openid email profile mail-w');
+  const authUrl = `https://api.login.yahoo.com/oauth2/request_auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}&nonce=${nonce}`;
+
+  res.redirect(authUrl);
+});
+
+// ── GET /email/oauth/yahoo/callback — Yahoo OAuth Mailbox callback
+app.get(['/email/oauth/yahoo/callback', '/api/email/oauth/yahoo/callback'], async (req: express.Request, res: express.Response) => {
+  const fallbackOrigin = config.corsAllowedOrigins[0] || 'http://localhost:5173';
+  let clientOrigin = fallbackOrigin;
+  try {
+    const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
+    if (!state || !oauthStates.has(state)) {
+      res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent('Invalid or expired Yahoo OAuth state.')}`);
+      return;
+    }
+    const storedState = oauthStates.get(state) as any;
+    clientOrigin = storedState.clientOrigin || fallbackOrigin;
+    const tenantId = storedState.tenantId || 'tenant_default';
+    oauthStates.delete(state);
+
+    if (error || !code) {
+      res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent(error || 'Yahoo access cancelled.')}`);
+      return;
+    }
+
+    const serverBase = `http://${req.headers.host || 'localhost:3000'}`;
+    const redirectUri = `${serverBase}/email/oauth/yahoo/callback`;
+    const credentials = Buffer.from(`${config.yahooClientId}:${config.yahooClientSecret}`).toString('base64');
+    
+    const tokenRes = await fetch('https://api.login.yahoo.com/oauth2/get_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': `Basic ${credentials}`
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri,
+        code
+      })
+    });
+
+    const tokenData: any = await tokenRes.json();
+    if (!tokenRes.ok || !tokenData.access_token) {
+      throw new Error(tokenData.error_description || 'Failed to exchange Yahoo OAuth code');
+    }
+
+    const userRes = await fetch('https://api.login.yahoo.com/openid/v1/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    });
+    const profile: any = await userRes.json();
+    const email = (profile.email || '').toLowerCase().trim();
+    const senderName = profile.name || profile.nickname || email.split('@')[0];
+
+    if (!email) throw new Error('Could not retrieve email from Yahoo profile');
+
+    const upsert = emailDb.prepare(`
+      INSERT INTO email_accounts (email, password, senderName, smtpHost, smtpPort, status, tenantId, authType, refreshToken, accessToken)
+      VALUES (?, ?, ?, 'smtp.mail.yahoo.com', 465, 'active', ?, 'oauth_yahoo', ?, ?)
+      ON CONFLICT(email) DO UPDATE SET
+        senderName = excluded.senderName,
+        smtpHost = 'smtp.mail.yahoo.com',
+        smtpPort = 465,
+        status = 'active',
+        tenantId = excluded.tenantId,
+        authType = 'oauth_yahoo',
+        refreshToken = CASE WHEN excluded.refreshToken IS NOT NULL THEN excluded.refreshToken ELSE refreshToken END,
+        accessToken = excluded.accessToken
+    `);
+
+    upsert.run(email, '***oauth***', senderName, tenantId, tokenData.refresh_token || null, tokenData.access_token);
+    res.redirect(`${clientOrigin}/?email_connected=${encodeURIComponent(email)}`);
+  } catch (err: any) {
+    console.error('[Yahoo OAuth Error]:', err);
+    res.redirect(`${clientOrigin}/?oauth_error=${encodeURIComponent(err.message || 'Failed to connect Yahoo account')}`);
+  }
+});
+
+
 
 // ── GET /email/templates (Feature-Gated)
 app.get('/email/templates', requireAuth, requireFeature('autoEmailer'), (req: express.Request, res: express.Response): void => {
@@ -2609,7 +4038,7 @@ app.post('/email/start', requireAuth, requireFeature('autoEmailer'), (req: expre
   }
   const user = (req as any).user;
   const tenantId = user.tenantId;
-  const { limit = 300 } = req.body as { limit?: number };
+  const { limit = 200, accountIds } = req.body as { limit?: number; accountIds?: number[] };
 
   emailerJob.running = true;
   emailerJob.stop = false;
@@ -2618,12 +4047,19 @@ app.post('/email/start', requireAuth, requireFeature('autoEmailer'), (req: expre
     try {
       const { default: nodemailer } = await import('nodemailer');
       const leads = emailDb.prepare(`SELECT * FROM email_leads WHERE tenantId = ? AND status IN ('pending','sent')`).all(tenantId) as any[];
-      const accounts = emailDb.prepare(`SELECT * FROM email_accounts WHERE tenantId = ? AND status = 'active'`).all(tenantId) as any[];
+      let accounts = emailDb.prepare(`SELECT * FROM email_accounts WHERE tenantId = ? AND status = 'active'`).all(tenantId) as any[];
+      
+      // Filter by user-selected account IDs if specified
+      if (Array.isArray(accountIds) && accountIds.length > 0) {
+        const idSet = new Set(accountIds.map(Number));
+        accounts = accounts.filter((a: any) => idSet.has(Number(a.id)));
+      }
+
       const templates = emailDb.prepare(`SELECT * FROM email_templates WHERE tenantId = ? ORDER BY stage ASC, id ASC`).all(tenantId) as any[];
 
       emailLog(`=== Campaign Started [Tenant: ${tenantId}]: ${leads.length} eligible leads, ${accounts.length} accounts, ${templates.length} templates ===`);
 
-      if (!accounts.length) { emailLog('❌ No active SMTP accounts for this tenant!'); return; }
+      if (!accounts.length) { emailLog('❌ No active SMTP accounts available for this campaign selection!'); return; }
       if (!templates.length) { emailLog('❌ No email templates for this tenant!'); return; }
 
       const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
@@ -2648,14 +4084,60 @@ app.post('/email/start', requireAuth, requireFeature('autoEmailer'), (req: expre
       for (const acc of accounts) {
         if (leadIdx >= eligible.length || emailerJob.stop) break;
 
-        emailLog(`Using sender: ${acc.email}`);
-        const transporter = nodemailer.createTransport({
-          host: acc.smtpHost,
-          port: acc.smtpPort,
-          secure: false,
-          auth: { user: acc.email, pass: acc.password },
-          tls: { rejectUnauthorized: false }
-        });
+        const isSecure = Number(acc.smtpPort) === 465;
+        emailLog(`Using sender: ${acc.email} (${acc.smtpHost}:${acc.smtpPort || 587}, type: ${acc.authType || 'password'})`);
+        
+        let transporter: any;
+        if (acc.authType === 'oauth_google' && (acc.refreshToken || acc.accessToken)) {
+          transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+              type: 'OAuth2',
+              user: acc.email,
+              clientId: config.googleClientId,
+              clientSecret: config.googleClientSecret,
+              refreshToken: acc.refreshToken,
+              accessToken: acc.accessToken
+            }
+          });
+        } else if (acc.authType === 'oauth_microsoft' && (acc.refreshToken || acc.accessToken)) {
+          transporter = nodemailer.createTransport({
+            host: 'smtp.office365.com',
+            port: 587,
+            secure: false,
+            auth: {
+              type: 'OAuth2',
+              user: acc.email,
+              clientId: config.microsoftClientId,
+              clientSecret: config.microsoftClientSecret,
+              refreshToken: acc.refreshToken,
+              accessToken: acc.accessToken
+            },
+            tls: { ciphers: 'SSLv3' }
+          });
+        } else if (acc.authType === 'oauth_yahoo' && (acc.refreshToken || acc.accessToken)) {
+          transporter = nodemailer.createTransport({
+            host: 'smtp.mail.yahoo.com',
+            port: 465,
+            secure: true,
+            auth: {
+              type: 'OAuth2',
+              user: acc.email,
+              clientId: config.yahooClientId,
+              clientSecret: config.yahooClientSecret,
+              refreshToken: acc.refreshToken,
+              accessToken: acc.accessToken
+            }
+          });
+        } else {
+          transporter = nodemailer.createTransport({
+            host: acc.smtpHost,
+            port: Number(acc.smtpPort) || 587,
+            secure: isSecure,
+            auth: { user: acc.email, pass: acc.password },
+            tls: { rejectUnauthorized: false }
+          });
+        }
 
         let sent = 0;
         while (sent < limit && leadIdx < eligible.length && !emailerJob.stop) {
@@ -2675,7 +4157,7 @@ app.post('/email/start', requireAuth, requireFeature('autoEmailer'), (req: expre
             });
             const newStage = Math.min(lead.stage + 1, 3);
             const newStatus = newStage >= 3 ? 'completed' : 'sent';
-            updateLead.run(newStatus, newStage, new Date().toISOString(), lead.id);
+            updateLead.run(newStatus, newStage, new Date().toISOString(), lead.id, tenantId);
             emailLog(`✅ Sent to ${lead.email} (Stage ${lead.stage})`);
             sent++;
             const delay = 30000 + Math.random() * 30000;
@@ -2683,13 +4165,13 @@ app.post('/email/start', requireAuth, requireFeature('autoEmailer'), (req: expre
           } catch (err: unknown) {
             emailLog(`❌ Failed: ${lead.email} — ${(err as Error).message}`);
             if ((err as Error).message?.includes('Authentication') || (err as Error).message?.includes('Username and Password')) {
-              disableAcc.run(acc.id);
+              disableAcc.run(acc.id, tenantId);
               emailLog(`⚠️ Disabled account ${acc.email} (auth failure)`);
               break;
             }
           }
         }
-        transporter.close();
+        if (transporter && typeof transporter.close === 'function') transporter.close();
       }
 
       emailLog(`=== Campaign Completed ===`);
@@ -2702,6 +4184,7 @@ app.post('/email/start', requireAuth, requireFeature('autoEmailer'), (req: expre
 
   res.json({ success: true, message: 'Campaign started in background.' });
 });
+
 
 // ── POST /emailer/stop (Feature-Gated)
 app.post('/emailer/stop', requireAuth, requireFeature('autoEmailer'), (_req: express.Request, res: express.Response): void => {
@@ -2834,21 +4317,380 @@ app.get('/auth/entitlements', requireAuth, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// BILLING & SUBSCRIPTION LIFECYCLE ENDPOINTS (Phase 8 & 9 - Hardened)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// GET /billing/plans — public plan catalog for purchasable plans
+app.get('/billing/plans', (_req, res) => {
+  try {
+    const plans = getPublicPlans();
+    res.json({ plans });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /billing/subscription — get full billing state (subscription + plan + over-limit status)
+app.get('/billing/subscription', requireAuth, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const billingState = getBillingState(user.tenantId);
+    const entitlements = getTenantEntitlements(user.tenantId);
+    const usage = getTenantUsage(user.tenantId);
+
+    res.json({
+      tenantId: user.tenantId,
+      ...billingState,
+      entitlements,
+      usage
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /billing/events — get tenant billing event history (Tenant Admin only)
+app.get('/billing/events', requireTenantAdmin, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const events = getTenantBillingEvents(user.tenantId);
+    res.json({ events });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /billing/invoices — get tenant invoice summary (Tenant Admin only)
+app.get('/billing/invoices', requireTenantAdmin, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const invoices = getTenantInvoices(user.tenantId);
+    res.json({ invoices });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /billing/checkout — start checkout session for a plan (server authoritative, rate-limited)
+app.post('/billing/checkout', requireAuth, billingRateLimiter, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { planId } = req.body as { planId?: string };
+
+    if (!planId || typeof planId !== 'string') {
+      res.status(400).json({ error: 'planId is required and must be a string.' });
+      return;
+    }
+
+    const cleanPlanId = sanitizePlanId(planId);
+    const checkout = startCheckout(user.tenantId, cleanPlanId);
+    res.json({
+      success: true,
+      ...checkout
+    });
+  } catch (err: any) {
+    const isClientError = err.message && (
+      err.message.includes('not found') ||
+      err.message.includes('cannot be purchased') ||
+      err.message.includes('not available') ||
+      err.message.includes('required') ||
+      err.message.includes('Invalid planId')
+    );
+    res.status(isClientError ? 400 : 500).json({ error: err.message });
+  }
+});
+
+// POST /billing/change-plan — upgrade/downgrade plan for authenticated tenant (rate-limited)
+app.post('/billing/change-plan', requireTenantAdmin, billingRateLimiter, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { planId } = req.body as { planId?: string };
+
+    if (!planId || typeof planId !== 'string') {
+      res.status(400).json({ error: 'planId is required and must be a string.' });
+      return;
+    }
+
+    const cleanPlanId = sanitizePlanId(planId);
+    const isPlatformAdmin = user.role === 'platform_admin';
+    const updatedSub = changePlan(user.tenantId, cleanPlanId, isPlatformAdmin);
+
+    res.json({
+      success: true,
+      subscription: updatedSub,
+      message: `Plan changed to ${cleanPlanId} successfully.`
+    });
+  } catch (err: any) {
+    const isClientError = err.message && (
+      err.message.includes('not found') ||
+      err.message.includes('not available') ||
+      err.message.includes('Already subscribed') ||
+      err.message.includes('cannot be purchased') ||
+      err.message.includes('Invalid planId')
+    );
+    res.status(isClientError ? 400 : 500).json({ error: err.message });
+  }
+});
+
+// POST /billing/cancel — schedule cancellation at current period end (rate-limited)
+app.post('/billing/cancel', requireTenantAdmin, billingRateLimiter, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const cancelledSub = cancelSubscription(user.tenantId);
+
+    res.json({
+      success: true,
+      subscription: cancelledSub,
+      message: 'Subscription scheduled for cancellation at period end.'
+    });
+  } catch (err: any) {
+    res.status(err.message?.includes('No active') ? 400 : 500).json({ error: err.message });
+  }
+});
+
+// POST /billing/reactivate — undo scheduled cancellation before period end (rate-limited)
+app.post('/billing/reactivate', requireTenantAdmin, billingRateLimiter, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const reactivatedSub = reactivateSubscription(user.tenantId);
+
+    res.json({
+      success: true,
+      subscription: reactivatedSub,
+      message: 'Subscription successfully reactivated.'
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// POST /billing/webhook — authoritative payment provider webhook handler (HMAC-verified, rate-limited)
+app.post('/billing/webhook', webhookRateLimiter, (req, res) => {
+  try {
+    const signature = (req.headers['x-webhook-signature'] || req.headers['stripe-signature'] || '') as string;
+    const payload = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+
+    const result = processWebhookEvent(payload, signature);
+
+    if (!result.processed) {
+      if (result.error?.includes('signature')) {
+        res.status(401).json({ error: result.error });
+        return;
+      }
+      if (result.error?.includes('Malformed') || result.error?.includes('Missing')) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      // Idempotency: duplicate event is safe 200
+      res.json({ success: true, message: result.error || 'Event already processed' });
+      return;
+    }
+
+    res.json({ success: true, eventId: result.eventId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PLATFORM ADMIN ENDPOINTS (Super Admin only — platform-wide authority)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// GET /admin/tenants — list all tenants across the platform (Platform Admin only)
-app.get('/admin/tenants', requirePlatformAdmin, (req, res) => {
+// Emergency State Tracker
+let emergencyState = {
+  isPaused: false,
+  pausedAt: null as string | null,
+  pausedBy: null as string | null,
+  reason: null as string | null
+};
+
+app.get('/admin/emergency/status', requirePlatformAdmin, (req, res) => {
+  res.json(emergencyState);
+});
+
+app.post('/admin/emergency/pause', requirePlatformAdmin, (req, res) => {
+  const adminUser = (req as any).user;
+  const { reason } = req.body as { reason?: string };
+  emergencyState = {
+    isPaused: true,
+    pausedAt: new Date().toISOString(),
+    pausedBy: adminUser.username || 'admin',
+    reason: reason || 'Platform Admin Emergency Stop'
+  };
+  res.json({ success: true, message: 'Platform emergency stop activated.', emergencyState });
+});
+
+app.post('/admin/emergency/resume', requirePlatformAdmin, (req, res) => {
+  emergencyState = {
+    isPaused: false,
+    pausedAt: null,
+    pausedBy: null,
+    reason: null
+  };
+  res.json({ success: true, message: 'Platform operations resumed.', emergencyState });
+});
+
+// GET /admin/platform/overview — Global platform overview KPIs
+app.get('/admin/platform/overview', requirePlatformAdmin, (req, res) => {
   try {
-    const tenants = db.prepare(`
-      SELECT 
-        t.id, t.name, t.slug, t.status, t.createdAt, t.updatedAt,
-        (SELECT COUNT(*) FROM users u WHERE u.tenantId = t.id) as userCount,
-        (SELECT s.planId FROM subscriptions s WHERE s.tenantId = t.id AND s.status = 'active' ORDER BY s.createdAt DESC LIMIT 1) as planId,
-        (SELECT s.status FROM subscriptions s WHERE s.tenantId = t.id ORDER BY s.createdAt DESC LIMIT 1) as subscriptionStatus
+    const totalTenants = (db.prepare(`SELECT COUNT(*) as count FROM tenants`).get() as any)?.count || 0;
+    const activeTenants = (db.prepare(`SELECT COUNT(*) as count FROM tenants WHERE status = 'active'`).get() as any)?.count || 0;
+    const suspendedTenants = (db.prepare(`SELECT COUNT(*) as count FROM tenants WHERE status = 'suspended'`).get() as any)?.count || 0;
+
+    const totalUsers = (db.prepare(`SELECT COUNT(*) as count FROM users`).get() as any)?.count || 0;
+    const adminUsers = (db.prepare(`SELECT COUNT(*) as count FROM users WHERE role = 'admin' OR role = 'platform_admin'`).get() as any)?.count || 0;
+    const agentUsers = (db.prepare(`SELECT COUNT(*) as count FROM users WHERE role = 'agent' OR role = 'user'`).get() as any)?.count || 0;
+
+    const activeSubscriptions = (db.prepare(`SELECT COUNT(*) as count FROM subscriptions WHERE status = 'active'`).get() as any)?.count || 0;
+    const trialTenants = (db.prepare(`SELECT COUNT(*) as count FROM subscriptions WHERE status = 'trialing' OR planId = 'plan_starter'`).get() as any)?.count || 0;
+
+    const totalDevices = (db.prepare(`SELECT COUNT(*) as count FROM devices`).get() as any)?.count || 0;
+    const onlineDevices = (db.prepare(`SELECT COUNT(*) as count FROM devices WHERE status = 'ONLINE'`).get() as any)?.count || 0;
+
+    const callsToday = (db.prepare(`SELECT COUNT(*) as count FROM call_logs WHERE timestamp >= date('now')`).get() as any)?.count || 0;
+    const totalLeads = (db.prepare(`SELECT COUNT(*) as count FROM leads`).get() as any)?.count || 0;
+    const totalCampaigns = (db.prepare(`SELECT COUNT(*) as count FROM campaigns`).get() as any)?.count || 0;
+
+    const recentTenants = db.prepare(`
+      SELECT t.id, t.name, t.country, t.status, t.createdAt,
+             (SELECT p.name FROM subscriptions s JOIN plans p ON p.id = s.planId WHERE s.tenantId = t.id ORDER BY s.createdAt DESC LIMIT 1) as planName
       FROM tenants t
       ORDER BY t.createdAt DESC
-    `).all() as any[];
+      LIMIT 5
+    `).all();
+
+    res.json({
+      metrics: {
+        totalTenants,
+        activeTenants,
+        suspendedTenants,
+        trialTenants,
+        totalUsers,
+        adminUsers,
+        agentUsers,
+        activeSubscriptions,
+        totalDevices,
+        onlineDevices,
+        callsToday,
+        totalLeads,
+        totalCampaigns
+      },
+      recentTenants,
+      emergencyState
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/platform/users — Global cross-tenant users list
+app.get('/admin/platform/users', requirePlatformAdmin, (req, res) => {
+  try {
+    const { search, role, tenantId } = req.query as { search?: string; role?: string; tenantId?: string };
+
+    let query = `
+      SELECT 
+        u.id, u.username, u.email, u.role, u.tenantId, u.createdAt, u.updatedAt,
+        t.name as tenantName, t.country as tenantCountry, t.status as tenantStatus
+      FROM users u
+      LEFT JOIN tenants t ON t.id = u.tenantId
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (search && search.trim()) {
+      query += ` AND (u.username LIKE ? OR u.email LIKE ? OR t.name LIKE ?)`;
+      const s = `%${search.trim()}%`;
+      params.push(s, s, s);
+    }
+    if (role && role !== 'ALL') {
+      query += ` AND u.role = ?`;
+      params.push(role);
+    }
+    if (tenantId && tenantId !== 'ALL') {
+      query += ` AND u.tenantId = ?`;
+      params.push(tenantId);
+    }
+
+    query += ` ORDER BY u.createdAt DESC`;
+
+    const users = db.prepare(query).all(...params) as any[];
+
+    const usersWithPerms = users.map(u => {
+      const perms = db.prepare(`SELECT moduleId, enabled FROM user_permissions WHERE userId = ?`).all(u.id);
+      return {
+        ...u,
+        permissions: perms,
+        activePermsCount: perms.filter((p: any) => p.enabled === 1).length
+      };
+    });
+
+    res.json({ users: usersWithPerms });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/platform/devices — Global devices list
+app.get('/admin/platform/devices', requirePlatformAdmin, (req, res) => {
+  try {
+    const devices = db.prepare(`
+      SELECT 
+        d.id, d.name as phoneName, d.btAddress, d.osType, d.ipAddress, d.status, d.lastSeenAt, d.createdAt, d.tenantId,
+        t.name as tenantName,
+        (SELECT u.username FROM users u WHERE u.tenantId = d.tenantId LIMIT 1) as assignedUser
+      FROM devices d
+      LEFT JOIN tenants t ON t.id = d.tenantId
+      ORDER BY d.lastSeenAt DESC
+    `).all();
+
+    res.json({ devices });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/tenants — list all tenants across the platform with rich metadata
+app.get('/admin/tenants', requirePlatformAdmin, (req, res) => {
+  try {
+    const { search, status, country, plan } = req.query as { search?: string; status?: string; country?: string; plan?: string };
+
+    let query = `
+      SELECT 
+        t.id, t.name, t.slug, t.country, t.logoUrl, t.ownerEmail, t.status, t.createdAt, t.updatedAt,
+        (SELECT u.username FROM users u WHERE u.tenantId = t.id AND (u.role = 'admin' OR u.role = 'platform_admin') ORDER BY u.createdAt ASC LIMIT 1) as ownerUsername,
+        (SELECT u.email FROM users u WHERE u.tenantId = t.id AND (u.role = 'admin' OR u.role = 'platform_admin') ORDER BY u.createdAt ASC LIMIT 1) as userEmail,
+        (SELECT COUNT(*) FROM users u WHERE u.tenantId = t.id) as userCount,
+        (SELECT COUNT(DISTINCT d.id) FROM devices d WHERE d.tenantId = t.id) as deviceCount,
+        (SELECT s.planId FROM subscriptions s WHERE s.tenantId = t.id AND s.status = 'active' ORDER BY s.createdAt DESC LIMIT 1) as planId,
+        (SELECT p.name FROM subscriptions s JOIN plans p ON p.id = s.planId WHERE s.tenantId = t.id AND s.status = 'active' ORDER BY s.createdAt DESC LIMIT 1) as planName,
+        (SELECT s.status FROM subscriptions s WHERE s.tenantId = t.id ORDER BY s.createdAt DESC LIMIT 1) as subscriptionStatus
+      FROM tenants t
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (search && search.trim()) {
+      query += ` AND (t.name LIKE ? OR t.slug LIKE ? OR t.ownerEmail LIKE ?)`;
+      const s = `%${search.trim()}%`;
+      params.push(s, s, s);
+    }
+    if (status && status !== 'ALL') {
+      query += ` AND t.status = ?`;
+      params.push(status);
+    }
+    if (country && country !== 'ALL') {
+      query += ` AND t.country = ?`;
+      params.push(country);
+    }
+
+    query += ` ORDER BY t.createdAt DESC`;
+
+    let tenants = db.prepare(query).all(...params) as any[];
+
+    if (plan && plan !== 'ALL') {
+      tenants = tenants.filter(t => (t.planId === plan || t.planName === plan));
+    }
 
     res.json({ tenants });
   } catch (err: any) {
@@ -2856,7 +4698,7 @@ app.get('/admin/tenants', requirePlatformAdmin, (req, res) => {
   }
 });
 
-// GET /admin/tenants/:id — get specific tenant detail (Platform Admin only)
+// GET /admin/tenants/:id — get full business detail with users, devices, subscription & usage
 app.get('/admin/tenants/:id', requirePlatformAdmin, (req, res) => {
   try {
     const { id } = req.params;
@@ -2866,10 +4708,71 @@ app.get('/admin/tenants/:id', requirePlatformAdmin, (req, res) => {
       return;
     }
 
-    const users = db.prepare(`SELECT id, username, role, createdAt FROM users WHERE tenantId = ?`).all(id);
-    const subscriptions = db.prepare(`SELECT * FROM subscriptions WHERE tenantId = ? ORDER BY createdAt DESC`).all(id);
+    const owner = db.prepare(`SELECT id, username, email, role, createdAt FROM users WHERE tenantId = ? AND (role = 'admin' OR role = 'platform_admin') ORDER BY createdAt ASC LIMIT 1`).get(id) as any;
 
-    res.json({ tenant, users, subscriptions });
+    const users = db.prepare(`SELECT id, username, email, role, createdAt FROM users WHERE tenantId = ? ORDER BY createdAt DESC`).all(id);
+
+    const subscriptions = db.prepare(`
+      SELECT s.*, p.name as planName, p.priceMonthly, p.priceYearly
+      FROM subscriptions s
+      JOIN plans p ON p.id = s.planId
+      WHERE s.tenantId = ?
+      ORDER BY s.createdAt DESC
+    `).all(id);
+
+    // Devices & Sessions mapping (User -> Computer/Session -> Phone)
+    const devices = db.prepare(`
+      SELECT 
+        d.id, d.name as phoneName, d.btAddress, d.osType, d.ipAddress, d.status, d.lastSeenAt, d.createdAt,
+        (SELECT s.id FROM sessions_store s JOIN users u ON u.id = s.userId WHERE u.tenantId = d.tenantId LIMIT 1) as sessionId,
+        (SELECT u.username FROM users u WHERE u.tenantId = d.tenantId LIMIT 1) as username
+      FROM devices d
+      WHERE d.tenantId = ?
+      ORDER BY d.lastSeenAt DESC
+    `).all(id);
+
+    // Usage & Entitlements
+    const leadCount = (db.prepare(`SELECT COUNT(*) as count FROM leads WHERE campaignId IN (SELECT id FROM campaigns WHERE tenantId = ?)`).get(id) as any)?.count || 0;
+    const campaignCount = (db.prepare(`SELECT COUNT(*) as count FROM campaigns WHERE tenantId = ?`).get(id) as any)?.count || 0;
+    const apiKeyCount = (db.prepare(`SELECT COUNT(*) as count FROM api_keys WHERE userId IN (SELECT id FROM users WHERE tenantId = ?)`).get(id) as any)?.count || 0;
+    const userCount = users.length;
+    const deviceCount = devices.length;
+
+    let entitlements: any = { limits: { max_users: 10, max_devices: 5, max_campaigns: 25, max_leads_per_campaign: 5000 } };
+    try {
+      entitlements = getTenantEntitlements(id);
+    } catch (_) {}
+
+    const usage = {
+      users: { current: userCount, max: entitlements.limits?.max_users || 10 },
+      devices: { current: deviceCount, max: entitlements.limits?.max_devices || 5 },
+      campaigns: { current: campaignCount, max: entitlements.limits?.max_campaigns || 25 },
+      leads: { current: leadCount, max: (entitlements.limits?.max_leads_per_campaign || 2500) * 10 },
+      apiKeys: { current: apiKeyCount, max: 5 }
+    };
+
+    // Recent Audit / Activity logs for this tenant
+    const auditLogs = db.prepare(`
+      SELECT id, action, entityType, performedBy, details, timestamp
+      FROM audit_logs
+      WHERE details LIKE ? OR performedBy IN (SELECT username FROM users WHERE tenantId = ?)
+      ORDER BY timestamp DESC
+      LIMIT 20
+    `).all(`%${id}%`, id);
+
+    res.json({
+      tenant: {
+        ...tenant,
+        ownerUsername: owner?.username || tenant.ownerEmail || 'Unknown Owner',
+        ownerEmail: owner?.email || tenant.ownerEmail || null
+      },
+      users,
+      devices,
+      subscriptions,
+      usage,
+      entitlements,
+      auditLogs
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2987,6 +4890,19 @@ app.get('/admin/subscriptions', requirePlatformAdmin, (req, res) => {
   }
 });
 
+// POST /admin/database/backup — trigger consistent online database snapshot (Platform Admin only - Phase 11)
+app.post('/admin/database/backup', requirePlatformAdmin, async (_req, res) => {
+  try {
+    const result = await backupDatabase();
+    res.json({
+      message: 'Database backup created and verified successfully.',
+      ...result
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Audit Logs: Get paginated logs (Platform Admin only)
 app.get('/admin/audit-logs', requirePlatformAdmin, (req, res) => {
   try {
@@ -3046,7 +4962,7 @@ app.put('/admin/system-settings', requirePlatformAdmin, (req, res) => {
     }
 
     const user = (req as any).user;
-    const update = db.prepare('UPDATE system_settings SET settingValue = ?, updatedBy = ?, updatedAt = datetime("now") WHERE id = ?');
+    const update = db.prepare("UPDATE system_settings SET settingValue = ?, updatedBy = ?, updatedAt = datetime('now') WHERE id = ?");
 
     const updateTxn = db.transaction(() => {
       for (const s of settings) {
@@ -3066,7 +4982,7 @@ app.get('/admin/health/status', requirePlatformAdmin, (req, res) => {
   try {
     const uptime = process.uptime();
     const memUsage = process.memoryUsage();
-    const activeSessions = db.prepare('SELECT COUNT(*) as count FROM sessions_store WHERE expiresAt > datetime("now")').get() as { count: number };
+    const activeSessions = db.prepare("SELECT COUNT(*) as count FROM sessions_store WHERE expiresAt > datetime('now')").get() as { count: number };
 
     res.json({
       uptime,
@@ -3077,6 +4993,52 @@ app.get('/admin/health/status', requirePlatformAdmin, (req, res) => {
       activeSessions: activeSessions.count,
       timestamp: new Date().toISOString()
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Platform Admin: View all subscriptions across platform
+app.get('/admin/billing/subscriptions', requirePlatformAdmin, (req, res) => {
+  try {
+    const subscriptions = db.prepare(`
+      SELECT s.*, t.name as tenantName, p.name as planName, p.priceMonthly, p.priceYearly
+      FROM subscriptions s
+      JOIN tenants t ON t.id = s.tenantId
+      JOIN plans p ON p.id = s.planId
+      ORDER BY s.createdAt DESC
+    `).all() as any[];
+    res.json({ subscriptions });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Platform Admin: Manually activate a subscription
+app.post('/admin/billing/activate', requirePlatformAdmin, (req, res) => {
+  try {
+    const { subscriptionId } = req.body as { subscriptionId?: string };
+    if (!subscriptionId) {
+      res.status(400).json({ error: 'subscriptionId is required.' });
+      return;
+    }
+    adminActivateSubscription(subscriptionId);
+    res.json({ success: true, message: 'Subscription activated.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Platform Admin: Manually suspend a subscription
+app.post('/admin/billing/suspend', requirePlatformAdmin, (req, res) => {
+  try {
+    const { tenantId, reason } = req.body as { tenantId?: string; reason?: string };
+    if (!tenantId) {
+      res.status(400).json({ error: 'tenantId is required.' });
+      return;
+    }
+    suspendSubscription(tenantId, reason || 'manual_admin_suspension');
+    res.json({ success: true, message: `Subscription for tenant ${tenantId} suspended.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -3213,9 +5175,102 @@ app.delete('/admin/api-keys/:keyId', requireTenantAdmin, requireFeature('api_key
   }
 });
 
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Octal Backend] Server running on http://0.0.0.0:${PORT}`);
-  console.log(`[Local IP Address] Detected: http://${getLocalIP()}:${PORT}`);
-  console.log(`[Phone must use this URL] http://${getLocalIP()}:${PORT}`);
-  console.log(`[QR will auto-encode this URL in the pairing link]`);
+// Periodic background processor for grace periods and cancellations (Phase 8)
+const gracePeriodTimer = setInterval(() => {
+  try {
+    const processed = processGracePeriods();
+    if (processed > 0) {
+      console.log(`[Billing] Processed ${processed} expired grace/cancellation subscriptions.`);
+    }
+  } catch (err) {
+    console.error('[Billing] Grace period check error:', err);
+  }
+}, 60 * 60 * 1000); // Check hourly
+
+// SPA Fallback: Serve index.html for all non-API GET requests on port 3000
+app.get('*', (req, res, next) => {
+  if (
+    req.path.startsWith('/api') ||
+    req.path.startsWith('/auth') ||
+    req.path.startsWith('/admin') ||
+    req.path.startsWith('/download') ||
+    req.path.startsWith('/socket.io') ||
+    req.path.startsWith('/health') ||
+    req.path.startsWith('/ready') ||
+    req.path.startsWith('/metrics') ||
+    req.path.startsWith('/campaigns') ||
+    req.path.startsWith('/leads') ||
+    req.path.startsWith('/logs') ||
+    req.path.startsWith('/settings') ||
+    req.path.startsWith('/info') ||
+    req.path.startsWith('/crm')
+  ) {
+    return next();
+  }
+  const indexPath = path.join(frontendDist, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    next();
+  }
+});
+
+// Centralized Safe Error Handling Middleware (Phase 10 Hardening)
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[Server] Unhandled Error:', err?.message || err);
+  const status = err.status || err.statusCode || 500;
+  // Never expose internal stack traces or database errors to client
+  res.status(status).json({
+    error: status === 500 ? 'An unexpected error occurred. Please try again.' : err.message
+  });
+});
+
+if (process.env.NODE_ENV !== 'test') {
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Octal Backend] Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[Local IP Address] Detected: http://${getLocalIP()}:${PORT}`);
+    console.log(`[Phone must use this URL] http://${getLocalIP()}:${PORT}`);
+    console.log(`[QR will auto-encode this URL in the pairing link]`);
+    console.log(`[Billing] Lifecycle manager ready`);
+  });
+}
+
+// Graceful Shutdown Handler (Phase 10 Hardening)
+function handleGracefulShutdown(signal: string) {
+  console.log(`[Server] Received ${signal}. Starting graceful shutdown...`);
+  clearInterval(gracePeriodTimer);
+
+  httpServer.close(() => {
+    console.log('[Server] HTTP server closed.');
+    try {
+      db.close();
+      console.log('[Database] SQLite database connection closed cleanly.');
+    } catch (err) {
+      console.error('[Database] Error closing SQLite connection:', err);
+    }
+    process.exit(0);
+  });
+
+  // Force exit if shutdown hangs
+  setTimeout(() => {
+    console.error('[Server] Forced shutdown after 10s timeout.');
+    process.exit(1);
+  }, 10000);
+}
+
+process.on('SIGTERM', () => {
+  if (process.env.NODE_ENV !== 'production' && process.env.ALLOW_SHUTDOWN !== 'true') return;
+  handleGracefulShutdown('SIGTERM');
+});
+process.on('SIGINT', () => {
+  if (process.env.NODE_ENV !== 'production' && process.env.ALLOW_SHUTDOWN !== 'true') return;
+  handleGracefulShutdown('SIGINT');
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Process] Uncaught Exception caught safely:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Process] Unhandled Rejection at:', promise, 'reason:', reason);
 });

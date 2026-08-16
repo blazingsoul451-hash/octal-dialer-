@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Database, Download, Filter, RefreshCw, CheckSquare, Square } from 'lucide-react';
+import { LeadProfileDrawer } from './crm/LeadProfileDrawer';
 
 interface Lead {
   id: string;
@@ -26,6 +27,7 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedLeads, setSelectedLeads] = useState<Set<string>>(new Set());
+  const [selectedLeadForDrawer, setSelectedLeadForDrawer] = useState<string | null>(null);
 
   // Filters
   const [sourceFilter, setSourceFilter] = useState(contextSource || '');
@@ -311,7 +313,12 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
                         </button>
                       </td>
                       <td className={`px-4 py-3 ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                        <div className="font-medium">{lead.businessName || 'N/A'}</div>
+                        <button
+                          onClick={() => setSelectedLeadForDrawer(lead.id)}
+                          className="font-medium text-amber-500 hover:underline cursor-pointer text-left block"
+                        >
+                          {lead.businessName || 'Unnamed Lead'}
+                        </button>
                         {lead.website && (
                           <div className="text-xs text-blue-500 hover:underline">
                             <a href={lead.website} target="_blank" rel="noopener noreferrer">
@@ -377,6 +384,16 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
           </div>
         )}
       </div>
+
+      {/* ── Lead Intelligence Profile Drawer ── */}
+      <LeadProfileDrawer
+        isLight={isLight}
+        leadId={selectedLeadForDrawer}
+        isOpen={Boolean(selectedLeadForDrawer)}
+        onClose={() => setSelectedLeadForDrawer(null)}
+        serverUrl={serverUrl}
+        authToken={authToken}
+      />
     </div>
   );
 };
