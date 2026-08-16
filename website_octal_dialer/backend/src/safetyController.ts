@@ -185,6 +185,9 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
     if (!lead) {
       return { allowed: false, reason: 'LEAD_NOT_FOUND', message: 'Lead record not found in your tenant.' };
     }
+    if (req.campaignId && lead.campaignId && lead.campaignId !== req.campaignId) {
+      return { allowed: false, reason: 'LEAD_NOT_FOUND', message: 'Lead does not belong to the requested campaign.' };
+    }
     if (lead.status === 'CALLING') {
       return { allowed: false, reason: 'LEAD_ALREADY_CALLING', message: 'This lead is already being called.' };
     }
@@ -272,19 +275,21 @@ export interface SuppressionEntry {
   addedAt: string;
 }
 
-export function addToSuppressionList(phone: string, reason: string, source: string, addedBy: string): boolean {
+export function addToSuppressionList(phone: string, reason: string, source: string, addedBy: string, tenantId: string = 'tenant_default'): boolean {
   const normalized = normalizePhone(phone);
   if (!normalized) return false;
+  const tId = tenantId || 'tenant_default';
   
   const result = stmts.addSuppressed.run({
     id: 'dnc_' + Math.random().toString(36).substring(2, 11),
     phone: normalized,
     reason: reason || 'Manual DNC',
     source: source || 'dashboard',
+    tenantId: tId,
     addedAt: new Date().toISOString()
   });
   if (result.changes > 0) {
-    writeAuditLog('DNC_ADD', 'suppression_list', normalized, addedBy, `Reason: ${reason}`);
+    writeAuditLog('DNC_ADD', 'suppression_list', normalized, addedBy, `Reason: ${reason} (Tenant: ${tId})`);
     return true;
   }
   return false;
@@ -293,10 +298,12 @@ export function addToSuppressionList(phone: string, reason: string, source: stri
 export function bulkAddToSuppressionList(
   entries: { phone: string; reason?: string }[],
   source: string,
-  addedBy: string
+  addedBy: string,
+  tenantId: string = 'tenant_default'
 ): { added: number; skipped: number } {
   let added = 0;
   let skipped = 0;
+  const tId = tenantId || 'tenant_default';
 
   const insertTx = db.transaction(() => {
     for (const entry of entries) {
@@ -308,6 +315,7 @@ export function bulkAddToSuppressionList(
         phone: norm,
         reason: entry.reason || 'Bulk DNC Import',
         source: source || 'csv_import',
+        tenantId: tId,
         addedAt: new Date().toISOString()
       });
 
@@ -320,24 +328,31 @@ export function bulkAddToSuppressionList(
   });
 
   insertTx();
-  writeAuditLog('DNC_BULK_ADD', 'suppression_list', `${added}_added`, addedBy, `Imported ${added} entries, ${skipped} skipped`);
+  writeAuditLog('DNC_BULK_ADD', 'suppression_list', `${added}_added`, addedBy, `Imported ${added} entries, ${skipped} skipped (Tenant: ${tId})`);
   return { added, skipped };
 }
 
-export function isPhoneSuppressed(phone: string): boolean {
+export function isPhoneSuppressed(phone: string, tenantId: string = 'tenant_default'): boolean {
   const norm = normalizePhone(phone);
   if (!norm) return false;
-  const suppressed = stmts.isSuppressed.get({ phone: norm }) as any;
+  const tId = tenantId || 'tenant_default';
+  const suppressed = stmts.isSuppressed.get({ phone: norm, tenantId: tId }) as any;
   return !!suppressed;
 }
 
-export function removeFromSuppressionList(id: string, removedBy: string): void {
-  stmts.removeSuppressed.run({ id });
-  writeAuditLog('DNC_REMOVE', 'suppression_list', id, removedBy);
+export function removeFromSuppressionList(id: string, removedBy: string, tenantId: string = 'tenant_default'): boolean {
+  const tId = tenantId || 'tenant_default';
+  const result = stmts.removeSuppressed.run({ id, tenantId: tId });
+  if (result.changes > 0) {
+    writeAuditLog('DNC_REMOVE', 'suppression_list', id, removedBy, `Tenant: ${tId}`);
+    return true;
+  }
+  return false;
 }
 
-export function getSuppressionList(): SuppressionEntry[] {
-  return stmts.listSuppressed.all() as SuppressionEntry[];
+export function getSuppressionList(tenantId: string = 'tenant_default'): SuppressionEntry[] {
+  const tId = tenantId || 'tenant_default';
+  return stmts.listSuppressed.all({ tenantId: tId }) as SuppressionEntry[];
 }
 
 // ─── Command ID & Idempotency Management ─────────────────────────────────────

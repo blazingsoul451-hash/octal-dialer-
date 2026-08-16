@@ -806,7 +806,9 @@ app.get('/auth/me', requireAuth, (req, res) => {
 
 // GET /api/suppression-list — list all DNC numbers
 app.get('/api/suppression-list', requireAuth, (req, res) => {
-  res.json(getSuppressionList());
+  const user = (req as any).user;
+  const tenantId = user?.tenantId || 'tenant_default';
+  res.json(getSuppressionList(tenantId));
 });
 
 // POST /api/suppression-list — add a number to DNC
@@ -817,7 +819,8 @@ app.post('/api/suppression-list', requireAuth, (req, res) => {
     return;
   }
   const user = (req as any).user;
-  const added = addToSuppressionList(phone.trim(), reason || 'Manual DNC', 'dashboard', user.username);
+  const tenantId = user?.tenantId || 'tenant_default';
+  const added = addToSuppressionList(phone.trim(), reason || 'Manual DNC', 'dashboard', user.username, tenantId);
   if (added) {
     res.json({ success: true, message: `${phone} added to suppression list.` });
   } else {
@@ -833,10 +836,12 @@ app.post('/api/suppression-list/import', requireAuth, (req, res) => {
     return;
   }
   const user = (req as any).user;
+  const tenantId = user?.tenantId || 'tenant_default';
   const result = bulkAddToSuppressionList(
     entries.map(e => ({ phone: e.phone, reason: e.reason || reason || 'Bulk DNC Import' })),
     'dashboard_import',
-    user.username
+    user.username,
+    tenantId
   );
   res.json({ success: true, addedCount: result.added, skippedCount: result.skipped });
 });
@@ -844,8 +849,13 @@ app.post('/api/suppression-list/import', requireAuth, (req, res) => {
 // DELETE /api/suppression-list/:id — remove from DNC
 app.delete('/api/suppression-list/:id', requireAuth, (req, res) => {
   const user = (req as any).user;
-  removeFromSuppressionList(req.params.id, user.username);
-  res.json({ success: true });
+  const tenantId = user?.tenantId || 'tenant_default';
+  const success = removeFromSuppressionList(req.params.id, user.username, tenantId);
+  if (success) {
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: 'DNC entry not found in your tenant.' });
+  }
 });
 
 // POST /api/emergency-stop — halt all dialing immediately
@@ -1037,7 +1047,6 @@ app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, (req, res) => {
   const success = deleteLead(req.params.id, tenantId);
   if (success) {
     io.to(`tenant_${tenantId}`).emit('leads:updated');
-    io.emit('leads:updated');
     res.json({ success: true, message: `Lead ${req.params.id} deleted.` });
   } else {
     res.status(404).json({ error: 'Lead not found.' });
@@ -1049,7 +1058,6 @@ app.post('/api/leads/purge-fake', requireAuth, (req, res) => {
   const tenantId = (req as any).user?.tenantId || 'tenant_default';
   const count = clearFakeQueueLeads(tenantId);
   io.to(`tenant_${tenantId}`).emit('leads:updated');
-  io.emit('leads:updated');
   res.json({ success: true, count, message: `Removed ${count} fake/sample leads.` });
 });
 
@@ -1058,7 +1066,6 @@ app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, (r
   const tenantId = (req as any).user?.tenantId || 'tenant_default';
   const count = clearAllLeadsInCampaign(req.params.id, tenantId);
   io.to(`tenant_${tenantId}`).emit('leads:updated');
-  io.emit('leads:updated');
   res.json({ success: true, count, message: `Cleared ${count} leads in campaign ${req.params.id}.` });
 });
 
@@ -1090,7 +1097,6 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, (req, res) => {
 
   if (updated) {
     io.to(`tenant_${tenantId}`).emit('leads:updated');
-    io.emit('leads:updated');
     res.json({ success: true, message: 'Disposition saved successfully.' });
   } else {
     res.status(404).json({ error: 'Lead or log record not found in tenant.' });
@@ -1381,10 +1387,23 @@ app.post('/api/scraper/stop', requireAuth, (req, res) => {
 
 // GET /api/admin/overview
 app.get('/api/admin/overview', requireAuth, requireAdmin, (req, res) => {
-  const totalUsers = (db.prepare(`SELECT COUNT(*) as c FROM users`).get() as any).c;
-  const totalCampaigns = (db.prepare(`SELECT COUNT(*) as c FROM campaigns`).get() as any).c;
-  const totalLeads = (db.prepare(`SELECT COUNT(*) as c FROM leads`).get() as any).c;
-  const totalLogs = (db.prepare(`SELECT COUNT(*) as c FROM call_logs`).get() as any).c;
+  const user = (req as any).user;
+  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const tenantId = user.tenantId;
+
+  const totalUsers = isPlatform 
+    ? (db.prepare(`SELECT COUNT(*) as c FROM users`).get() as any).c
+    : (db.prepare(`SELECT COUNT(*) as c FROM users WHERE tenantId = ?`).get(tenantId) as any).c;
+  const totalCampaigns = isPlatform
+    ? (db.prepare(`SELECT COUNT(*) as c FROM campaigns`).get() as any).c
+    : (db.prepare(`SELECT COUNT(*) as c FROM campaigns WHERE tenantId = ?`).get(tenantId) as any).c;
+  const totalLeads = isPlatform
+    ? (db.prepare(`SELECT COUNT(*) as c FROM leads`).get() as any).c
+    : (db.prepare(`SELECT COUNT(*) as c FROM leads WHERE tenantId = ?`).get(tenantId) as any).c;
+  const totalLogs = isPlatform
+    ? (db.prepare(`SELECT COUNT(*) as c FROM call_logs`).get() as any).c
+    : (db.prepare(`SELECT COUNT(*) as c FROM call_logs WHERE tenantId = ?`).get(tenantId) as any).c;
+
   res.json({
     totalUsers,
     totalCampaigns,
@@ -1397,21 +1416,32 @@ app.get('/api/admin/overview', requireAuth, requireAdmin, (req, res) => {
 
 // GET /api/admin/users
 app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
-  const users = db.prepare(`SELECT id, username, email, role, tenantId, createdAt, updatedAt FROM users ORDER BY createdAt DESC`).all();
+  const user = (req as any).user;
+  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const users = isPlatform
+    ? db.prepare(`SELECT id, username, email, role, tenantId, createdAt, updatedAt FROM users ORDER BY createdAt DESC`).all()
+    : db.prepare(`SELECT id, username, email, role, tenantId, createdAt, updatedAt FROM users WHERE tenantId = ? ORDER BY createdAt DESC`).all(user.tenantId);
   res.json(users);
 });
 
 // POST /api/admin/users
 app.post('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
   try {
+    const caller = (req as any).user;
     const { username, password, email, role } = req.body;
     if (!username || !password) {
       res.status(400).json({ error: 'Username and password required.' });
       return;
     }
-    const result = registerPublicUser({ username, password, email, requestedRole: role });
+    const result = registerPublicUser({ 
+      username, 
+      password, 
+      email, 
+      requestedRole: role,
+      tenantId: caller.role === 'platform_admin' ? (req.body.tenantId || caller.tenantId) : caller.tenantId 
+    });
     if (role && role !== 'user') {
-      updateUserRole((req as any).user, result.user.id, role);
+      updateUserRole(caller, result.user.id, role);
     }
     res.json({ success: true, user: result.user });
   } catch (err: any) {
@@ -1426,16 +1456,39 @@ app.put('/api/admin/users/:id/role', requireAuth, requireAdmin, (req, res) => {
     res.status(400).json({ error: 'Role is required.' });
     return;
   }
-  const result = updateUserRole((req as any).user, req.params.id, role);
-  if (result && result.success) {
-    res.json({ success: true, message: `User role updated to ${role}.` });
-  } else {
-    res.status(404).json({ error: 'User not found or update failed.' });
+  try {
+    const result = updateUserRole((req as any).user, req.params.id, role);
+    if (result && result.success) {
+      res.json({ success: true, message: `User role updated to ${role}.` });
+    } else {
+      res.status(403).json({ error: 'User not found or update unauthorized.' });
+    }
+  } catch (err: any) {
+    res.status(403).json({ error: err.message || 'User not found or update unauthorized.' });
   }
 });
 
 // POST /api/admin/users/:id/password
 app.post('/api/admin/users/:id/password', requireAuth, requireAdmin, (req, res) => {
+  const caller = (req as any).user;
+  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+  const targetUser = db.prepare(`SELECT id, role, tenantId FROM users WHERE id = ?`).get(req.params.id) as any;
+
+  if (!targetUser) {
+    res.status(404).json({ error: 'User not found.' });
+    return;
+  }
+
+  if (!isPlatform && targetUser.tenantId !== caller.tenantId) {
+    res.status(403).json({ error: 'Forbidden: Cannot reset password for a user from another organization.' });
+    return;
+  }
+
+  if (!isPlatform && (targetUser.role === 'platform_admin' || targetUser.role === 'master_admin')) {
+    res.status(403).json({ error: 'Forbidden: Cannot reset password for platform administrators.' });
+    return;
+  }
+
   const { newPassword } = req.body;
   if (!newPassword || newPassword.length < 4) {
     res.status(400).json({ error: 'New password must be at least 4 characters.' });
@@ -1447,6 +1500,25 @@ app.post('/api/admin/users/:id/password', requireAuth, requireAdmin, (req, res) 
 
 // DELETE /api/admin/users/:id
 app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req, res) => {
+  const caller = (req as any).user;
+  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+  const targetUser = db.prepare(`SELECT id, role, tenantId FROM users WHERE id = ?`).get(req.params.id) as any;
+
+  if (!targetUser) {
+    res.status(404).json({ error: 'User not found.' });
+    return;
+  }
+
+  if (!isPlatform && targetUser.tenantId !== caller.tenantId) {
+    res.status(403).json({ error: 'Forbidden: Cannot delete a user from another organization.' });
+    return;
+  }
+
+  if (!isPlatform && (targetUser.role === 'platform_admin' || targetUser.role === 'master_admin')) {
+    res.status(403).json({ error: 'Forbidden: Cannot delete platform administrators.' });
+    return;
+  }
+
   const info = db.prepare(`DELETE FROM users WHERE id = ?`).run(req.params.id);
   if (info.changes > 0) {
     res.json({ success: true, message: 'User deleted.' });
@@ -1682,34 +1754,6 @@ app.post('/api/leads/import/mobile', (req, res) => {
   } catch (err: any) {
     console.error('Mobile manual import error:', err);
     res.status(500).json({ error: err.message });
-  }
-});
-
-// REST: Update Log outcome / Disposition (protected)
-app.post('/api/logs/update', requireAuth, (req, res) => {
-  try {
-    const { leadId, outcome, notes } = req.body as { leadId: string; outcome: string; notes?: string };
-    const db = loadDb();
-    
-    // find log
-    const log = db.logs.find(l => l.leadId === leadId);
-    if (log) {
-      log.outcome = outcome;
-    }
-    
-    // find lead
-    const lead = db.leads.find(l => l.id === leadId);
-    if (lead) {
-      lead.status = 'COMPLETED';
-      lead.outcome = outcome;
-    }
-    
-    saveDb(db);
-    io.emit('leads:updated');
-    res.json({ success: true });
-  } catch (err: any) {
-    console.error('Disposition error:', err);
-    res.status(550).json({ error: err.message });
   }
 });
 
@@ -2044,6 +2088,7 @@ io.on('connection', (socket) => {
     const session = reclaimOrCreateSession(socket.id, data?.previousSessionId, tenantId);
     if (userId && !session.userId) session.userId = userId;
     socket.join(session.id);
+    socket.join(`tenant_${tenantId}`);
     socket.data.sessionId = session.id;
     console.log(`[Socket] Laptop registered: ${session.id} | Tenant: ${tenantId} | User: ${userId || 'anonymous'} | Status: ${session.status}`);
 
@@ -2384,7 +2429,6 @@ io.on('connection', (socket) => {
     // Include leadId and commandId in call:finished broadcast so web knows exact completed lead!
     socket.to(sessionId).emit('call:finished', { reason, duration, leadId, commandId });
     io.to(`tenant_${tenantId}`).emit('leads:updated');
-    io.emit('leads:updated');
     console.log(`[Socket] Call finished in session ${sessionId} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
   });
 
@@ -2452,13 +2496,15 @@ function emailLog(msg: string) {
 }
 
 // ── GET /email/leads
-app.get('/email/leads', requireAuth, (_req: express.Request, res: express.Response): void => {
-  const rows = emailDb.prepare('SELECT * FROM email_leads ORDER BY createdAt ASC').all();
+app.get('/email/leads', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const rows = emailDb.prepare('SELECT * FROM email_leads WHERE tenantId = ? ORDER BY createdAt ASC').all(tenantId);
   res.json(rows);
 });
 
 // ── POST /email/upload
 app.post('/email/upload', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
   const { leads } = req.body as { leads: { email: string; name?: string; company?: string }[] };
   if (!Array.isArray(leads) || !leads.length) {
     res.status(400).json({ error: 'leads array required' });
@@ -2467,45 +2513,49 @@ app.post('/email/upload', requireAuth, (req: express.Request, res: express.Respo
   let added = 0;
   let skipped = 0;
   const insert = emailDb.prepare(`
-    INSERT OR IGNORE INTO email_leads (email, name, company, status, stage)
-    VALUES (?, ?, ?, 'pending', 1)
+    INSERT OR IGNORE INTO email_leads (email, name, company, status, stage, tenantId)
+    VALUES (?, ?, ?, 'pending', 1, ?)
   `);
   for (const lead of leads) {
     if (!lead.email?.includes('@')) continue;
-    const result = insert.run(lead.email.toLowerCase().trim(), lead.name || 'Client', lead.company || '');
+    const result = insert.run(lead.email.toLowerCase().trim(), lead.name || 'Client', lead.company || '', tenantId);
     if ((result as any).changes > 0) added++; else skipped++;
   }
   res.json({ success: true, added, duplicates: skipped });
 });
 
 // ── DELETE /email/leads
-app.delete('/email/leads', requireAuth, (_req: express.Request, res: express.Response): void => {
-  emailDb.prepare('DELETE FROM email_leads').run();
+app.delete('/email/leads', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  emailDb.prepare('DELETE FROM email_leads WHERE tenantId = ?').run(tenantId);
   res.json({ success: true });
 });
 
 // ── GET /email/accounts
-app.get('/email/accounts', requireAuth, (_req: express.Request, res: express.Response): void => {
-  const rows = emailDb.prepare('SELECT id, email, senderName, smtpHost, smtpPort, status FROM email_accounts').all();
+app.get('/email/accounts', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const rows = emailDb.prepare('SELECT id, email, senderName, smtpHost, smtpPort, status FROM email_accounts WHERE tenantId = ?').all(tenantId);
   res.json(rows);
 });
 
 // ── POST /email/accounts
 app.post('/email/accounts', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
   const { accounts } = req.body as { accounts: { email: string; password: string; senderName?: string; smtpHost?: string; smtpPort?: number; status?: string }[] };
   if (!Array.isArray(accounts)) {
     res.status(400).json({ error: 'accounts array required' });
     return;
   }
   const upsert = emailDb.prepare(`
-    INSERT INTO email_accounts (email, password, senderName, smtpHost, smtpPort, status)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO email_accounts (email, password, senderName, smtpHost, smtpPort, status, tenantId)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(email) DO UPDATE SET
       password = CASE WHEN excluded.password = '***keep***' THEN password ELSE excluded.password END,
       senderName = excluded.senderName,
       smtpHost = excluded.smtpHost,
       smtpPort = excluded.smtpPort,
-      status = excluded.status
+      status = excluded.status,
+      tenantId = excluded.tenantId
   `);
   for (const acc of accounts) {
     upsert.run(
@@ -2514,35 +2564,39 @@ app.post('/email/accounts', requireAuth, (req: express.Request, res: express.Res
       acc.senderName || null,
       acc.smtpHost || 'smtp.office365.com',
       acc.smtpPort || 587,
-      acc.status || 'active'
+      acc.status || 'active',
+      tenantId
     );
   }
   res.json({ success: true });
 });
 
 // ── GET /email/templates
-app.get('/email/templates', requireAuth, (_req: express.Request, res: express.Response): void => {
-  const rows = emailDb.prepare('SELECT * FROM email_templates ORDER BY stage ASC, id ASC').all();
+app.get('/email/templates', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const rows = emailDb.prepare('SELECT * FROM email_templates WHERE (tenantId = ? OR systemTemplate = 1) ORDER BY stage ASC, id ASC').all(tenantId);
   res.json(rows);
 });
 
 // ── POST /email/templates
 app.post('/email/templates', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
   const { templates } = req.body as { templates: { subject: string; body: string; stage?: number }[] };
   if (!Array.isArray(templates)) {
     res.status(400).json({ error: 'templates array required' });
     return;
   }
-  emailDb.prepare('DELETE FROM email_templates').run();
-  const insert = emailDb.prepare('INSERT INTO email_templates (subject, body, stage) VALUES (?, ?, ?)');
+  emailDb.prepare('DELETE FROM email_templates WHERE tenantId = ?').run(tenantId);
+  const insert = emailDb.prepare('INSERT INTO email_templates (subject, body, stage, tenantId) VALUES (?, ?, ?, ?)');
   for (const t of templates) {
-    insert.run(t.subject, t.body, t.stage || 1);
+    insert.run(t.subject, t.body, t.stage || 1, tenantId);
   }
   res.json({ success: true });
 });
 
 // ── POST /email/start — fire-and-forget campaign runner
 app.post('/email/start', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
   if (emailerJob.running) {
     res.json({ success: true, message: 'Campaign already running.' });
     return;
@@ -2555,14 +2609,14 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
   (async () => {
     try {
       const { default: nodemailer } = await import('nodemailer');
-      const leads = emailDb.prepare(`SELECT * FROM email_leads WHERE status IN ('pending','sent')`).all() as any[];
-      const accounts = emailDb.prepare(`SELECT * FROM email_accounts WHERE status = 'active'`).all() as any[];
-      const templates = emailDb.prepare(`SELECT * FROM email_templates ORDER BY stage ASC, id ASC`).all() as any[];
+      const leads = emailDb.prepare(`SELECT * FROM email_leads WHERE tenantId = ? AND status IN ('pending','sent')`).all(tenantId) as any[];
+      const accounts = emailDb.prepare(`SELECT * FROM email_accounts WHERE tenantId = ? AND status = 'active'`).all(tenantId) as any[];
+      const templates = emailDb.prepare(`SELECT * FROM email_templates WHERE (tenantId = ? OR systemTemplate = 1) ORDER BY stage ASC, id ASC`).all(tenantId) as any[];
 
-      emailLog(`=== Campaign Started: ${leads.length} eligible leads, ${accounts.length} accounts, ${templates.length} templates ===`);
+      emailLog(`=== Campaign Started [Tenant: ${tenantId}]: ${leads.length} eligible leads, ${accounts.length} accounts, ${templates.length} templates ===`);
 
-      if (!accounts.length) { emailLog('❌ No active SMTP accounts!'); return; }
-      if (!templates.length) { emailLog('❌ No email templates!'); return; }
+      if (!accounts.length) { emailLog('❌ No active SMTP accounts for tenant!'); return; }
+      if (!templates.length) { emailLog('❌ No email templates for tenant!'); return; }
 
       const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
       const now = Date.now();
@@ -2580,8 +2634,8 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
       let leadIdx = 0;
       let tplIdx = 0;
 
-      const updateLead = emailDb.prepare(`UPDATE email_leads SET status=?, stage=?, lastSentAt=? WHERE id=?`);
-      const disableAcc = emailDb.prepare(`UPDATE email_accounts SET status='disabled' WHERE id=?`);
+      const updateLead = emailDb.prepare(`UPDATE email_leads SET status=?, stage=?, lastSentAt=? WHERE id=? AND tenantId=?`);
+      const disableAcc = emailDb.prepare(`UPDATE email_accounts SET status='disabled' WHERE id=? AND tenantId=?`);
 
       for (const acc of accounts) {
         if (leadIdx >= eligible.length || emailerJob.stop) break;
@@ -2613,7 +2667,7 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
             });
             const newStage = Math.min(lead.stage + 1, 3);
             const newStatus = newStage >= 3 ? 'completed' : 'sent';
-            updateLead.run(newStatus, newStage, new Date().toISOString(), lead.id);
+            updateLead.run(newStatus, newStage, new Date().toISOString(), lead.id, tenantId);
             emailLog(`✅ Sent to ${lead.email} (Stage ${lead.stage})`);
             sent++;
             const delay = 30000 + Math.random() * 30000;
@@ -2621,7 +2675,7 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
           } catch (err: unknown) {
             emailLog(`❌ Failed: ${lead.email} — ${(err as Error).message}`);
             if ((err as Error).message?.includes('Authentication') || (err as Error).message?.includes('Username and Password')) {
-              disableAcc.run(acc.id);
+              disableAcc.run(acc.id, tenantId);
               emailLog(`⚠️ Disabled account ${acc.email} (auth failure)`);
               break;
             }
@@ -2630,7 +2684,7 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
         transporter.close();
       }
 
-      emailLog(`=== Campaign Completed ===`);
+      emailLog(`=== Campaign Completed [Tenant: ${tenantId}] ===`);
     } catch (err: unknown) {
       emailLog(`❌ Campaign error: ${(err as Error).message}`);
     } finally {

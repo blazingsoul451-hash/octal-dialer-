@@ -666,7 +666,7 @@ export async function resendVerificationCode(params: {
 }
 
 /** Public User Registration: STRICTLY defaults to role='user' regardless of request payload */
-export function registerPublicUser(params: { username: string; email?: string; password: string; requestedRole?: string }): { token: string; user: AuthUser } {
+export function registerPublicUser(params: { username: string; email?: string; password: string; requestedRole?: string; tenantId?: string }): { token: string; user: AuthUser } {
   const username = params.username.trim().toLowerCase();
   const email = params.email ? params.email.trim().toLowerCase() : null;
   const password = params.password;
@@ -695,7 +695,7 @@ export function registerPublicUser(params: { username: string; email?: string; p
 
   // SECURITY RULE: Public signups NEVER receive admin or master_admin. Always role = 'user'.
   const role = 'user';
-  const tenantId = 'tenant_default';
+  const tenantId = params.tenantId || 'tenant_default';
   const userId = 'user_' + crypto.randomBytes(8).toString('hex');
   const { hash } = hashPassword(password);
   const now = new Date().toISOString();
