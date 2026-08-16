@@ -254,12 +254,14 @@ export default function App() {
     fetchUserData();
   }, [authToken, lanServerUrl]);
 
-  // Fetch Server Info (LAN IP) on mount
+  // Fetch Server Info (Public Tunnel / LAN IP) on mount
   useEffect(() => {
     fetch(`${SERVER_URL}/info`)
       .then(res => res.json())
       .then(data => {
-        if (data.localIP && data.localIP !== 'localhost') {
+        if (data.serverUrl) {
+          setLanServerUrl(data.serverUrl);
+        } else if (data.localIP && data.localIP !== 'localhost') {
           setLanServerUrl(`http://${data.localIP}:3000`);
         }
       })
@@ -1317,7 +1319,7 @@ export default function App() {
               phoneIpAddress={socketData.phoneIpAddress}
               laptopBtAddress={socketData.laptopBtAddress}
               revokePhone={socketData.revokePhone}
-              serverUrl={lanServerUrl || SERVER_URL}
+              serverUrl={socketData.qrPayload?.serverUrl || lanServerUrl || SERVER_URL}
             />
           )}
 

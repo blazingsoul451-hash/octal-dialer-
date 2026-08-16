@@ -40,11 +40,13 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   const currentHost = window.location.hostname;
   const currentOrigin = window.location.origin;
   
-  // Dynamic API server URL: use provided serverUrl, or construct from current domain/hostname
+  // Dynamic API server URL: prioritize authoritative backend qrPayload.serverUrl, then prop, then host
   const apiProtocol = window.location.protocol;
-  const safeServerUrl = serverUrl && serverUrl.startsWith('http') 
-    ? serverUrl 
-    : (currentHost === 'localhost' || currentHost === '127.0.0.1' ? `${apiProtocol}//${currentHost}:3000` : `${apiProtocol}//${currentHost}:3000`);
+  const safeServerUrl = (qrPayload && qrPayload.serverUrl && qrPayload.serverUrl.startsWith('http'))
+    ? qrPayload.serverUrl
+    : (serverUrl && serverUrl.startsWith('http') 
+      ? serverUrl 
+      : (currentHost === 'localhost' || currentHost === '127.0.0.1' ? `${apiProtocol}//${currentHost}:3000` : `${apiProtocol}//${currentHost}:3000`));
 
   // Direct APK download link from backend server
   const directApkUrl = `${safeServerUrl}/download/apk`;

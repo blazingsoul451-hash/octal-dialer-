@@ -37,18 +37,14 @@ import {
   deleteLead,
   clearAllLeadsInCampaign,
   clearFakeQueueLeads,
-  getUserQuota,
-  recordUserScrapedLeads,
-  getAllUsers,
-  updateUserQuota,
-  updateUserRole,
-  updateUserStatus,
-  resetUserScrapedCount,
-  deleteUser as dbDeleteUser,
-  getSystemSettings,
-  updateSystemSetting,
-  getAdminOverviewStats,
   releaseExpiredLeases,
+  backupDatabase,
+  createFollowUp,
+  getFollowUps,
+  updateFollowUpStatus,
+  recordLeadActivity,
+  getLeadActivities,
+  hasUserModulePermission,
   db
 } from './databaseManager';
 
@@ -58,7 +54,6 @@ import {
   pairPhone,
   revokePhone,
   setSessionStatus,
-  setPhoneStatus,
   getSessionBySocketId,
   handleLaptopDisconnect,
   handlePhoneDisconnect,
@@ -73,8 +68,13 @@ import {
   logout,
   validateToken,
   changePassword,
-  registerUser,
-  handleGoogleAuth
+  registerPublicUser,
+  findOrCreateGoogleUser,
+  updateUserRole,
+  requirePlatformAdmin,
+  requireTenantAdmin,
+  requireModule,
+  signupTenant
 } from './authManager';
 
 import {
@@ -254,14 +254,12 @@ app.post('/auth/register', (req, res) => {
   }
 
   try {
-    const defaultSettings = getSystemSettings();
-    const freeLimit = parseInt(defaultSettings['default_free_scraper_limit'] || '1000', 10);
-    const result = registerUser(username, password, email, 'user', freeLimit);
+    const result = registerPublicUser(username, password, email);
     res.status(201).json({
       success: true,
       token: result.token,
-      username: result.username,
-      role: result.role,
+      username: result.user.username,
+      role: result.user.role,
       user: result.user
     });
   } catch (err: any) {
@@ -288,9 +286,8 @@ app.get(['/auth/verify', '/api/auth/verify'], (req, res) => {
       id: user.id,
       username: user.username,
       role: user.role,
-      leadLimit: user.leadLimit,
-      leadsScraped: user.leadsScraped,
-      status: user.status
+      tenantId: user.tenantId,
+      email: user.email
     }
   });
 });
@@ -421,7 +418,7 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
       throw new Error('Could not retrieve verified email from Google.');
     }
 
-    const result = handleGoogleAuth({
+    const result = findOrCreateGoogleUser({
       email,
       name,
       googleId,
@@ -474,7 +471,7 @@ app.post('/auth/google', (req, res) => {
   }
 
   try {
-    const result = handleGoogleAuth({
+    const result = findOrCreateGoogleUser({
       email: targetEmail,
       name: targetName,
       googleId: targetGoogleId,
