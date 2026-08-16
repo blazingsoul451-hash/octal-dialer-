@@ -49,6 +49,7 @@ import {
   hasUserModulePermission,
   getUserPermissions,
   updateLogDisposition,
+  getNextPendingLead,
   ALL_BUSINESS_MODULES,
   registerOrUpdateDevice,
   getDevicesForUser,
@@ -62,6 +63,7 @@ import {
 import {
   reclaimOrCreateSession,
   getSessionById,
+  getSessionByToken,
   pairPhone,
   pairAuthenticatedDevice,
   revokePhone,
@@ -1079,12 +1081,19 @@ app.get(['/logs', '/api/logs'], requireAuth, (req, res) => {
 app.post(['/api/logs/update', '/logs/update'], requireAuth, (req, res) => {
   const { leadId, outcome, notes } = req.body as { leadId?: string; outcome?: string; notes?: string };
   const user = (req as any).user;
-  const tenantId = user?.tenantId || 'tenant_default';
+  const tenantId = user?.tenantId;
+
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
 
   if (!leadId || !outcome) {
     res.status(400).json({ error: 'leadId and outcome are required.' });
     return;
   }
+
+  const leadRow = db.prepare('SELECT campaignId FROM leads WHERE id = ? AND tenantId = ?').get(leadId, tenantId) as any;
 
   const updated = updateLogDisposition({
     leadId,
@@ -1096,11 +1105,33 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, (req, res) => {
   });
 
   if (updated) {
+    const nextLead = leadRow?.campaignId ? getNextPendingLead(leadRow.campaignId, tenantId, leadId) : null;
     io.to(`tenant_${tenantId}`).emit('leads:updated');
-    res.json({ success: true, message: 'Disposition saved successfully.' });
+    res.json({
+      success: true,
+      message: 'Disposition saved successfully.',
+      nextLeadId: nextLead ? nextLead.id : null,
+      nextLead: nextLead || null
+    });
   } else {
     res.status(404).json({ error: 'Lead or log record not found in tenant.' });
   }
+});
+
+// GET /api/campaigns/:id/next-lead — Authoritative backend next lead query (protected)
+app.get('/api/campaigns/:id/next-lead', requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const tenantId = user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const nextLead = getNextPendingLead(req.params.id, tenantId);
+  res.json({
+    success: true,
+    nextLeadId: nextLead ? nextLead.id : null,
+    nextLead: nextLead || null
+  });
 });
 
 // REST: Scan sibling scraper folders (protected)
@@ -1711,7 +1742,13 @@ app.post('/api/leads/import', requireAuth, (req, res) => {
       return;
     }
 
-    const result = createCampaign(campaignName, fileName, leads);
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const result = createCampaign(campaignName, fileName, leads, tenantId);
     res.json({
       success: true,
       campaignId: result.campaign.id,
@@ -1741,7 +1778,8 @@ app.post('/api/leads/import/mobile', (req, res) => {
       return;
     }
 
-    const result = createCampaign(campaignName, fileName, leads);
+    const targetTenantId = (req.headers['x-tenant-id'] as string) || (req.body.tenantId as string) || 'tenant_default';
+    const result = createCampaign(campaignName, fileName, leads, targetTenantId);
     res.json({
       success: true,
       campaignId: result.campaign.id,
@@ -1760,7 +1798,12 @@ app.post('/api/leads/import/mobile', (req, res) => {
 // REST: Export logs to CSV (protected)
 app.get('/api/logs/export', requireAuth, (req, res) => {
   try {
-    const logs = getLogs(); // use SQLite directly — no loadDb() needed
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const logs = getLogs(tenantId); // use SQLite directly — no loadDb() needed
 
     const header = ['Time', 'Lead Name', 'Phone', 'Campaign', 'Outcome', 'Duration (s)'];
     const rows = logs.map(l => [
@@ -2165,6 +2208,17 @@ io.on('connection', (socket) => {
     if (!targetTenantId && data.authToken) {
       const u = validateToken(data.authToken);
       if (u) targetTenantId = u.tenantId;
+    }
+
+    const cleanKey = tokenOrSessionId ? tokenOrSessionId.trim() : '';
+    const existingSession = getSessionByToken(cleanKey) || (data.sessionId ? getSessionById(data.sessionId) : null) || getSessionById(cleanKey);
+    if (existingSession && existingSession.phoneDeviceId != null) {
+      console.warn(`[Socket Pairing Warning] Phone ${socket.id} attempted phone:join on authenticated session ${existingSession.id}`);
+      socket.emit('error', { 
+        code: 'ALREADY_AUTHENTICATED_SESSION', 
+        message: 'This session is paired with an authenticated device and cannot be joined via anonymous phone:join.' 
+      });
+      return;
     }
 
     let session = pairPhone(

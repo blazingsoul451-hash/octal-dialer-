@@ -1,0 +1,386 @@
+import 'dart:async';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:socket_io_client/socket_io_client.dart' as io;
+
+enum PairingMode {
+  authenticated,
+  qr,
+}
+
+enum BridgeStatus {
+  disconnected,
+  connecting,
+  online,
+  paired,
+  calling,
+  error,
+}
+
+class PhoneBridgeService extends ChangeNotifier {
+  static final PhoneBridgeService _instance = PhoneBridgeService._internal();
+  static PhoneBridgeService get instance => _instance;
+  PhoneBridgeService._internal();
+
+  io.Socket? _socket;
+  io.Socket? get socket => _socket;
+
+  PairingMode _mode = PairingMode.authenticated;
+  PairingMode get mode => _mode;
+
+  BridgeStatus _status = BridgeStatus.disconnected;
+  BridgeStatus get status => _status;
+
+  String _statusMessage = 'Disconnected';
+  String get statusMessage => _statusMessage;
+
+  String _errorMessage = '';
+  String get errorMessage => _errorMessage;
+
+  String _serverUrl = 'http://localhost:3000';
+  String get serverUrl => _serverUrl;
+
+  String _authToken = '';
+  String get authToken => _authToken;
+
+  String _username = '';
+  String get username => _username;
+
+  String _email = '';
+  String get email => _email;
+
+  String _role = 'user';
+  String get role => _role;
+
+  String _tenantId = '';
+  String get tenantId => _tenantId;
+
+  String _deviceId = '';
+  String get deviceId => _deviceId;
+
+  String _deviceUid = '';
+  String get deviceUid => _deviceUid;
+
+  String _deviceName = 'Android Device';
+  String get deviceName => _deviceName;
+
+  String _deviceOs = 'Android';
+  String get deviceOs => _deviceOs;
+
+  String _deviceBtAddress = '48:D2:24:D3:5F:AA';
+  String get deviceBtAddress => _deviceBtAddress;
+
+  String _deviceIp = '127.0.0.1';
+  String get deviceIp => _deviceIp;
+
+  // Active Session State
+  String? _currentSessionId;
+  String? get currentSessionId => _currentSessionId;
+
+  String? _currentLaptopName;
+  String? get currentLaptopName => _currentLaptopName;
+
+  String? _currentLaptopBtAddress;
+  String? get currentLaptopBtAddress => _currentLaptopBtAddress;
+
+  String? _sessionToken;
+  String? get sessionToken => _sessionToken;
+
+  Timer? _heartbeatTimer;
+  static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
+
+  // Event callbacks
+  void Function(Map<String, dynamic> data)? onBridgePaired;
+  void Function(String reason)? onBridgeUnpaired;
+  void Function(Map<String, dynamic> data)? onPhoneDial;
+  void Function(Map<String, dynamic> data)? onUpdateAvailable;
+
+  bool get isConnected => _socket != null && _socket!.connected;
+  bool get isPaired => _status == BridgeStatus.paired || _currentSessionId != null;
+
+  /// Initialize and authenticate the single persistent phone bridge socket
+  Future<void> initializeAuthenticated() async {
+    final prefs = await SharedPreferences.getInstance();
+    _authToken = prefs.getString('auth_token') ?? '';
+    _username = prefs.getString('username') ?? 'Octal User';
+    _email = prefs.getString('user_email') ?? '';
+    _role = prefs.getString('user_role') ?? 'user';
+    _tenantId = prefs.getString('tenant_id') ?? '';
+    _serverUrl = prefs.getString('server_url') ?? 'http://localhost:3000';
+    _deviceUid = prefs.getString('octal_device_uid') ?? '';
+    _mode = PairingMode.authenticated;
+
+    if (_authToken.isEmpty) {
+      _setStatus(BridgeStatus.disconnected, 'Not authenticated');
+      return;
+    }
+
+    await _gatherDeviceInfo();
+    _connectAuthenticatedSocket();
+  }
+
+  /// Gather hardware & network identifiers
+  Future<void> _gatherDeviceInfo() async {
+    _deviceOs = Platform.isAndroid ? 'Android' : (Platform.isIOS ? 'iOS' : 'Desktop');
+    if (Platform.isAndroid) {
+      try {
+        final Map? info = await _nativeChannel.invokeMethod('getDeviceInfo');
+        if (info != null) {
+          final manufacturer = (info['manufacturer'] ?? '').toString().trim();
+          final model = (info['model'] ?? '').toString().trim();
+          if (manufacturer.isNotEmpty || model.isNotEmpty) {
+            _deviceName = '$manufacturer $model'.trim();
+          }
+        }
+      } catch (_) {}
+    }
+
+    try {
+      final interfaces = await NetworkInterface.list(includeLoopback: false, type: InternetAddressType.IPv4);
+      for (var interface in interfaces) {
+        for (var address in interface.addresses) {
+          if (!address.isLoopback) {
+            _deviceIp = address.address;
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+
+    int hash = 0;
+    for (int i = 0; i < _deviceName.length; i++) {
+      hash = _deviceName.codeUnitAt(i) + ((hash << 5) - hash);
+    }
+    final mac = ['48', 'D2', '24', 'D3'];
+    mac.add((hash & 0xFF).toRadixString(16).padLeft(2, '0').toUpperCase());
+    mac.add(((hash >> 8) & 0xFF).toRadixString(16).padLeft(2, '0').toUpperCase());
+    _deviceBtAddress = mac.join(':');
+  }
+
+  /// Connect the single authenticated socket
+  void _connectAuthenticatedSocket() {
+    if (_socket != null) {
+      _socket!.disconnect();
+      _socket!.dispose();
+      _socket = null;
+    }
+
+    _setStatus(BridgeStatus.connecting, 'Connecting to Octal Bridge...');
+
+    _socket = io.io(
+      _serverUrl,
+      io.OptionBuilder()
+          .setTransports(['websocket', 'polling'])
+          .enableAutoConnect()
+          .enableReconnection()
+          .setReconnectionAttempts(9999)
+          .setReconnectionDelay(2000)
+          .build(),
+    );
+
+    _socket!.onConnect((_) {
+      debugPrint('[PhoneBridge] Connected to server. Registering authenticated device...');
+      _setStatus(BridgeStatus.connecting, 'Registering device with backend...');
+
+      _socket!.emit('phone:auth-register', {
+        'token': _authToken,
+        'deviceUid': _deviceUid,
+        'deviceName': _deviceName,
+        'btAddress': _deviceBtAddress,
+        'osType': _deviceOs,
+        'ipAddress': _deviceIp,
+        'platform': 'android',
+        'appVersion': '1.2.0',
+      });
+    });
+
+    _socket!.on('phone:auth-success', (data) {
+      debugPrint('[PhoneBridge] Auth registration successful: $data');
+      if (data != null && data['deviceId'] != null) {
+        _deviceId = data['deviceId'];
+      }
+      _errorMessage = '';
+      _setStatus(BridgeStatus.online, '● Device Online & Ready to Connect');
+      _startHeartbeat();
+      _checkOtaUpdate();
+    });
+
+    _socket!.on('phone:auth-error', (data) {
+      final err = data != null ? data['error'] : 'Authentication failed.';
+      debugPrint('[PhoneBridge] Auth error: $err');
+      _errorMessage = err?.toString() ?? 'Auth failed';
+      _setStatus(BridgeStatus.error, 'Authentication error: $_errorMessage');
+    });
+
+    _socket!.on('bridge:paired', (data) {
+      debugPrint('[PhoneBridge] bridge:paired received: $data');
+      _handlePairingData(data);
+    });
+
+    _socket!.on('phone:paired', (data) {
+      debugPrint('[PhoneBridge] phone:paired received: $data');
+      _handlePairingData(data);
+    });
+
+    _socket!.on('bridge:unpaired', (data) {
+      final reason = data != null ? data['reason'] : 'Unpaired by dashboard';
+      debugPrint('[PhoneBridge] bridge:unpaired: $reason');
+      _handleUnpaired(reason?.toString() ?? 'Unpaired');
+    });
+
+    _socket!.on('phone:kicked', (data) {
+      final reason = data != null ? data['reason'] : 'Revoked by dashboard';
+      debugPrint('[PhoneBridge] phone:kicked: $reason');
+      _handleUnpaired(reason?.toString() ?? 'Revoked');
+    });
+
+    _socket!.on('phone:dial', (data) {
+      debugPrint('[PhoneBridge] phone:dial received: $data');
+      if (onPhoneDial != null && data != null) {
+        onPhoneDial!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket!.on('phone:ping', (data) {
+      final timestamp = data != null ? data['timestamp'] : null;
+      _socket?.emit('phone:pong', {
+        'sessionId': _currentSessionId,
+        'timestamp': timestamp,
+      });
+    });
+
+    _socket!.on('app:update_available', (data) {
+      if (onUpdateAvailable != null && data != null) {
+        onUpdateAvailable!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket!.onDisconnect((_) {
+      debugPrint('[PhoneBridge] Socket disconnected');
+      if (_status != BridgeStatus.error) {
+        _setStatus(BridgeStatus.disconnected, 'Disconnected from server');
+      }
+    });
+
+    _socket!.onConnectError((err) {
+      debugPrint('[PhoneBridge] Connect error: $err');
+      _setStatus(BridgeStatus.error, 'Connect error: $err');
+    });
+  }
+
+  void _handlePairingData(dynamic data) {
+    if (data == null) return;
+    final map = Map<String, dynamic>.from(data);
+    _currentSessionId = map['sessionId']?.toString();
+    _currentLaptopName = map['laptopName']?.toString() ?? 'Laptop Dashboard';
+    _currentLaptopBtAddress = map['laptopBtAddress']?.toString() ?? '00:1A:7D:DA:71:11';
+    _sessionToken = map['token']?.toString();
+
+    _setStatus(BridgeStatus.paired, '● Paired with $_currentLaptopName');
+
+    if (onBridgePaired != null) {
+      onBridgePaired!(map);
+    }
+  }
+
+  void _handleUnpaired(String reason) {
+    _currentSessionId = null;
+    _currentLaptopName = null;
+    _currentLaptopBtAddress = null;
+    _sessionToken = null;
+    _setStatus(BridgeStatus.online, '● Device Online & Ready to Connect');
+
+    if (onBridgeUnpaired != null) {
+      onBridgeUnpaired!(reason);
+    }
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_socket != null && _socket!.connected) {
+        _socket!.emit('phone:ping');
+      }
+    });
+  }
+
+  void _checkOtaUpdate() {
+    if (_socket != null && _socket!.connected) {
+      _socket!.emit('app:version_check', {'currentVersion': '1.2.0'});
+    }
+  }
+
+  void _setStatus(BridgeStatus newStatus, String message) {
+    _status = newStatus;
+    _statusMessage = message;
+    notifyListeners();
+  }
+
+  /// Request manual pairing to laptop session in authenticated mode
+  void requestPairWithActiveLaptop() {
+    if (_socket != null && _socket!.connected) {
+      _setStatus(BridgeStatus.connecting, 'Pairing with active laptop session...');
+      _socket!.emit('phone:join', {
+        'authToken': _authToken,
+        'deviceName': _deviceName,
+        'phoneBtAddress': _deviceBtAddress,
+        'phoneOsType': _deviceOs,
+        'phoneIpAddress': _deviceIp,
+      });
+    }
+  }
+
+  /// Explicit disconnect from current session
+  void disconnectSession() {
+    if (_currentSessionId != null && _socket != null && _socket!.connected) {
+      _socket!.emit('phone:disconnect-session', {
+        'sessionId': _currentSessionId,
+      });
+    }
+    _handleUnpaired('Disconnected by user');
+  }
+
+  /// Full logout cleanup
+  Future<void> logout() async {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+
+    if (_socket != null) {
+      if (_currentSessionId != null) {
+        _socket!.emit('phone:disconnect-session', {'sessionId': _currentSessionId});
+      }
+      _socket!.disconnect();
+      _socket!.dispose();
+      _socket = null;
+    }
+
+    _authToken = '';
+    _username = '';
+    _email = '';
+    _role = 'user';
+    _tenantId = '';
+    _deviceId = '';
+    _currentSessionId = null;
+    _currentLaptopName = null;
+    _currentLaptopBtAddress = null;
+    _sessionToken = null;
+    _setStatus(BridgeStatus.disconnected, 'Logged out');
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('auth_token');
+    await prefs.remove('user_id');
+    await prefs.remove('username');
+    await prefs.remove('user_email');
+    await prefs.remove('user_role');
+    await prefs.remove('tenant_id');
+  }
+
+  /// Emit event over the authoritative bridge socket
+  void emit(String event, [dynamic data]) {
+    if (_socket != null && _socket!.connected) {
+      _socket!.emit(event, data);
+    }
+  }
+}

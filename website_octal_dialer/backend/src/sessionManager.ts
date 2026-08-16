@@ -72,6 +72,7 @@ export function createSession(laptopSocketId: string, tenantId?: string, userId?
     phoneBtAddress: null,
     phoneOsType: null,
     phoneIpAddress: null,
+    phoneDeviceId: null,
     status: 'WAITING',
     lastHeartbeat: null,
     tenantId: tenantId || undefined,
@@ -169,9 +170,15 @@ export function pairPhone(
     return null;
   }
 
-  // If another phone is already paired, explicitly handle it (prevent silent orphaning)
+  // Hardened Invariant: If session is paired with an authenticated device, reject anonymous/QR phone:join attempts
+  if (session.phoneDeviceId != null) {
+    console.warn(`[Pairing] Rejected: Session ${session.id} is paired with authenticated device ${session.phoneDeviceId} and cannot be hijacked via phone:join.`);
+    return null;
+  }
+
+  // If another phone is already paired in QR mode, explicitly handle it (prevent silent orphaning)
   if (session.phoneSocketId && session.phoneSocketId !== phoneSocketId) {
-    console.warn(`[Pairing] Replacing phone ${session.phoneSocketId} with ${phoneSocketId} in session ${session.id}`);
+    console.warn(`[Pairing] Replacing QR phone ${session.phoneSocketId} with ${phoneSocketId} in session ${session.id}`);
     // The old phone will be notified via socket events by the caller (server.ts)
   }
 

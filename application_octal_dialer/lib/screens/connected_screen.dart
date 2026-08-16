@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import '../services/phone_bridge_service.dart';
 import 'connect_screen.dart';
 import 'device_dashboard_screen.dart';
 import 'calling_screen.dart';
@@ -19,6 +20,7 @@ class ConnectedScreen extends StatefulWidget {
   final String serverUrl;
   final String laptopName;
   final String laptopBtAddress;
+  final PairingMode mode;
 
   const ConnectedScreen({
     super.key,
@@ -27,6 +29,7 @@ class ConnectedScreen extends StatefulWidget {
     required this.serverUrl,
     required this.laptopName,
     required this.laptopBtAddress,
+    this.mode = PairingMode.qr,
   });
 
   @override
@@ -68,7 +71,10 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pingTimer?.cancel();
-    _socket?.dispose();
+    if (widget.mode == PairingMode.qr) {
+      _socket?.disconnect();
+      _socket?.dispose();
+    }
     super.dispose();
   }
 
@@ -160,7 +166,24 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   }
 
   void _initSocket() {
-    _addLog('[System] Initializing Socket.IO Bridge...');
+    if (widget.mode == PairingMode.authenticated) {
+      _addLog('[System] Using Authenticated Phone Bridge socket...');
+      _socket = PhoneBridgeService.instance.socket;
+      _isConnected = PhoneBridgeService.instance.isConnected;
+      if (_socket == null || !_socket!.connected) {
+        _addLog('[Bridge] Warning: Authenticated socket not connected. Re-connecting...');
+        PhoneBridgeService.instance.initializeAuthenticated();
+        _socket = PhoneBridgeService.instance.socket;
+      }
+      _attachSocketListeners();
+      _addLog('[Bridge] Bluetooth Link Channel Active! Ready for calls.');
+      _startHeartbeat();
+      _checkOtaUpdate();
+      return;
+    }
+
+    // QR Mode: Create dedicated QR socket and emit phone:join
+    _addLog('[System] Initializing QR Socket.IO Bridge...');
     _addLog('[System] Target: ${widget.serverUrl}');
 
     _socket = io.io(widget.serverUrl, io.OptionBuilder()
@@ -191,13 +214,19 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       });
     });
 
+    _attachSocketListeners();
+  }
+
+  void _attachSocketListeners() {
+    if (_socket == null) return;
+
     _socket!.onDisconnect((_) {
       if (mounted) {
         setState(() {
           _isConnected = false;
         });
       }
-      _addLog('[Socket] Disconnected from server ?');
+      _addLog('[Socket] Disconnected from server');
     });
 
     _socket!.onConnectError((err) {
@@ -319,6 +348,14 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   }
 
   Future<void> _disconnect() async {
+    if (widget.mode == PairingMode.authenticated) {
+      PhoneBridgeService.instance.disconnectSession();
+      if (mounted) {
+        Navigator.pop(context);
+      }
+      return;
+    }
+
     _socket?.disconnect();
     _socket?.dispose();
     

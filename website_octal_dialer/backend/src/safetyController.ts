@@ -35,7 +35,8 @@ export type BlockReason =
   | 'LEAD_LOCKED'
   | 'DUPLICATE_COMMAND'
   | 'NO_PHONE'
-  | 'DEVICE_BUSY';
+  | 'DEVICE_BUSY'
+  | 'UNAUTHORIZED_TENANT';
 
 export interface SafetyResult {
   allowed: boolean;
@@ -89,8 +90,10 @@ export function clearEmergencyStop(tenantId?: string, campaignId?: string): void
 const rateLimitMap = new Map<string, number[]>();
 
 const DEFAULT_MAX_CALLS_PER_HOUR = 120; // conservative default
+export const GLOBAL_DNC_SCOPE = 'system_global';
 
-function checkRateLimit(campaignId: string, tenantId: string = 'tenant_default', maxPerHour: number = DEFAULT_MAX_CALLS_PER_HOUR): boolean {
+function checkRateLimit(campaignId: string, tenantId: string, maxPerHour: number = DEFAULT_MAX_CALLS_PER_HOUR): boolean {
+  if (!tenantId) return false;
   const now = Date.now();
   const windowMs = 60 * 60 * 1000; // 1 hour
   const key = `${tenantId}_${campaignId}`;
@@ -103,14 +106,16 @@ function checkRateLimit(campaignId: string, tenantId: string = 'tenant_default',
   return timestamps.length < maxPerHour;
 }
 
-function recordCall(campaignId: string, tenantId: string = 'tenant_default'): void {
+function recordCall(campaignId: string, tenantId: string): void {
+  if (!tenantId) return;
   const key = `${tenantId}_${campaignId}`;
   const timestamps = rateLimitMap.get(key) || [];
   timestamps.push(Date.now());
   rateLimitMap.set(key, timestamps);
 }
 
-export function getCallsInLastHour(campaignId: string, tenantId: string = 'tenant_default'): number {
+export function getCallsInLastHour(campaignId: string, tenantId: string): number {
+  if (!tenantId) return 0;
   const now = Date.now();
   const windowMs = 60 * 60 * 1000;
   const key = `${tenantId}_${campaignId}`;
@@ -123,7 +128,7 @@ const stmts = {
   getCampaign:      db.prepare(`SELECT * FROM campaigns WHERE id = @id AND tenantId = @tenantId`),
   getLead:          db.prepare(`SELECT * FROM leads WHERE id = @id AND tenantId = @tenantId`),
   getLeadByPhone:   db.prepare(`SELECT * FROM leads WHERE phone = @phone AND tenantId = @tenantId LIMIT 1`),
-  isSuppressed:     db.prepare(`SELECT id FROM suppression_list WHERE phone = @phone AND (tenantId = @tenantId OR tenantId = 'tenant_default') LIMIT 1`),
+  isSuppressed:     db.prepare(`SELECT id FROM suppression_list WHERE phone = @phone AND (tenantId = @tenantId OR tenantId = '${GLOBAL_DNC_SCOPE}' OR tenantId = 'tenant_default') LIMIT 1`),
   addSuppressed:    db.prepare(`INSERT OR IGNORE INTO suppression_list (id, phone, reason, source, tenantId, addedAt) VALUES (@id, @phone, @reason, @source, @tenantId, @addedAt)`),
   removeSuppressed: db.prepare(`DELETE FROM suppression_list WHERE id = @id AND tenantId = @tenantId`),
   listSuppressed:   db.prepare(`SELECT * FROM suppression_list WHERE tenantId = @tenantId ORDER BY addedAt DESC`),
@@ -147,7 +152,10 @@ export interface CallRequest {
 }
 
 export function checkCallAllowed(req: CallRequest): SafetyResult {
-  const tenantId = req.tenantId || 'tenant_default';
+  const tenantId = req.tenantId;
+  if (!tenantId) {
+    return { allowed: false, reason: 'UNAUTHORIZED_TENANT', message: 'Missing tenant identity for dial request (fail-closed).' };
+  }
 
   // ── Layer 1: Emergency stop checks ─────────────────────────────────────────
   if (isEmergencyStopped(tenantId, req.campaignId)) {
@@ -275,21 +283,21 @@ export interface SuppressionEntry {
   addedAt: string;
 }
 
-export function addToSuppressionList(phone: string, reason: string, source: string, addedBy: string, tenantId: string = 'tenant_default'): boolean {
+export function addToSuppressionList(phone: string, reason: string, source: string, addedBy: string, tenantId: string): boolean {
+  if (!tenantId) return false;
   const normalized = normalizePhone(phone);
   if (!normalized) return false;
-  const tId = tenantId || 'tenant_default';
   
   const result = stmts.addSuppressed.run({
     id: 'dnc_' + Math.random().toString(36).substring(2, 11),
     phone: normalized,
     reason: reason || 'Manual DNC',
     source: source || 'dashboard',
-    tenantId: tId,
+    tenantId,
     addedAt: new Date().toISOString()
   });
   if (result.changes > 0) {
-    writeAuditLog('DNC_ADD', 'suppression_list', normalized, addedBy, `Reason: ${reason} (Tenant: ${tId})`);
+    writeAuditLog('DNC_ADD', 'suppression_list', normalized, addedBy, `Reason: ${reason} (Tenant: ${tenantId})`);
     return true;
   }
   return false;
@@ -299,11 +307,11 @@ export function bulkAddToSuppressionList(
   entries: { phone: string; reason?: string }[],
   source: string,
   addedBy: string,
-  tenantId: string = 'tenant_default'
+  tenantId: string
 ): { added: number; skipped: number } {
+  if (!tenantId) return { added: 0, skipped: entries.length };
   let added = 0;
   let skipped = 0;
-  const tId = tenantId || 'tenant_default';
 
   const insertTx = db.transaction(() => {
     for (const entry of entries) {
@@ -315,7 +323,7 @@ export function bulkAddToSuppressionList(
         phone: norm,
         reason: entry.reason || 'Bulk DNC Import',
         source: source || 'csv_import',
-        tenantId: tId,
+        tenantId,
         addedAt: new Date().toISOString()
       });
 
@@ -328,31 +336,31 @@ export function bulkAddToSuppressionList(
   });
 
   insertTx();
-  writeAuditLog('DNC_BULK_ADD', 'suppression_list', `${added}_added`, addedBy, `Imported ${added} entries, ${skipped} skipped (Tenant: ${tId})`);
+  writeAuditLog('DNC_BULK_ADD', 'suppression_list', `${added}_added`, addedBy, `Imported ${added} entries, ${skipped} skipped (Tenant: ${tenantId})`);
   return { added, skipped };
 }
 
-export function isPhoneSuppressed(phone: string, tenantId: string = 'tenant_default'): boolean {
+export function isPhoneSuppressed(phone: string, tenantId: string): boolean {
+  if (!tenantId) return true; // fail-closed on missing tenant
   const norm = normalizePhone(phone);
   if (!norm) return false;
-  const tId = tenantId || 'tenant_default';
-  const suppressed = stmts.isSuppressed.get({ phone: norm, tenantId: tId }) as any;
+  const suppressed = stmts.isSuppressed.get({ phone: norm, tenantId }) as any;
   return !!suppressed;
 }
 
-export function removeFromSuppressionList(id: string, removedBy: string, tenantId: string = 'tenant_default'): boolean {
-  const tId = tenantId || 'tenant_default';
-  const result = stmts.removeSuppressed.run({ id, tenantId: tId });
+export function removeFromSuppressionList(id: string, removedBy: string, tenantId: string): boolean {
+  if (!tenantId || !id) return false;
+  const result = stmts.removeSuppressed.run({ id, tenantId });
   if (result.changes > 0) {
-    writeAuditLog('DNC_REMOVE', 'suppression_list', id, removedBy, `Tenant: ${tId}`);
+    writeAuditLog('DNC_REMOVE', 'suppression_list', id, removedBy, `Tenant: ${tenantId}`);
     return true;
   }
   return false;
 }
 
-export function getSuppressionList(tenantId: string = 'tenant_default'): SuppressionEntry[] {
-  const tId = tenantId || 'tenant_default';
-  return stmts.listSuppressed.all({ tenantId: tId }) as SuppressionEntry[];
+export function getSuppressionList(tenantId: string): SuppressionEntry[] {
+  if (!tenantId) return [];
+  return stmts.listSuppressed.all({ tenantId }) as SuppressionEntry[];
 }
 
 // ─── Command ID & Idempotency Management ─────────────────────────────────────
