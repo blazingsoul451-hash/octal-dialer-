@@ -96,7 +96,7 @@ export const ModuleSettings: React.FC<ModuleSettingsProps> = ({
           { key: 'delayBetweenRequestsMs', label: 'Delay Between Requests (ms)', type: 'number', default: 2000 },
           { key: 'duplicateHandling', label: 'Duplicate Handling', type: 'select', options: ['skip', 'update'], default: 'skip' },
         ];
-      case: 'autoEmailer':
+      case 'autoEmailer':
         return [
           { key: 'sendRatePerHour', label: 'Send Rate Per Hour', type: 'number', default: 50 },
           { key: 'unsubscribeLinkRequired', label: 'Unsubscribe Link Required', type: 'boolean', default: true },

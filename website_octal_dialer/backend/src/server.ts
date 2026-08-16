@@ -153,7 +153,7 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
 
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const user = (req as any).user;
-  if (!user || user.role !== 'admin') {
+  if (!user || (user.role !== 'admin' && user.role !== 'platform_admin')) {
     res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
     return;
   }

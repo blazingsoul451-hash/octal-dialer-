@@ -149,11 +149,10 @@ export default function App() {
     localStorage.removeItem('octal_session_id');
     setAuthToken(null);
     setAuthUser(null);
-    setUserRole('user');
+    setUserRole('agent');
     setUserPermissions({} as any);
     setCampaigns([]);
     setDispOpen(false);
-    setSelectedCampaignId(null);
     setActiveTab('dashboard');
   };
 
@@ -1165,7 +1164,7 @@ export default function App() {
                 authToken={authToken || ''}
                 campaigns={campaigns}
                 onDialLead={(phone, leadId, leadName) => {
-                  socketData.dialLead(phone, leadId, leadName);
+                  socketData.dialLead(phone, leadName, 30, leadId);
                   setActiveTab('dialer');
                 }}
                 onNavigateTab={(tab) => setActiveTab(tab as any)}
@@ -1211,7 +1210,7 @@ export default function App() {
                 campaigns={campaigns}
                 initialSubTab="follow-ups"
                 onDialLead={(phone, leadId, leadName) => {
-                  socketData.dialLead(phone, leadId, leadName);
+                  socketData.dialLead(phone, leadName, 30, leadId);
                   setActiveTab('dialer');
                 }}
                 onNavigateTab={(tab) => setActiveTab(tab as any)}

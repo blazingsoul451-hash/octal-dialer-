@@ -1,0 +1,254 @@
+diff --git "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\backend\\src\\authManager.ts" "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\backend\\src\\authManager.ts"
+index 90e7e99..736a73c 100644
+--- "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\backend\\src\\authManager.ts"
++++ "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\backend\\src\\authManager.ts"
+@@ -734,12 +734,12 @@ export function ensureDefaultAdmin(): void {
+   const count = (stmts.countUsers.get() as { c: number }).c;
+   if (count > 0) return;
+ 
+-  const defaultPassword = 'octal' + Math.random().toString(36).substring(2, 8).toUpperCase();
++  const defaultPassword = 'octal' + crypto.randomBytes(6).toString('hex').toUpperCase();
+   const { hash } = hashPassword(defaultPassword);
+ 
+   db.prepare(`
+     INSERT INTO users (id, username, email, passwordHash, role, tenantId, authProvider, createdAt, updatedAt)
+-    VALUES (?, ?, 'admin@octaldialer.local', ?, 'user', 'tenant_default', 'local', ?, ?)
++    VALUES (?, ?, 'admin@octaldialer.local', ?, 'platform_admin', 'tenant_default', 'local', ?, ?)
+   `).run('user_admin_' + crypto.randomBytes(4).toString('hex'), 'admin', hash, new Date().toISOString(), new Date().toISOString());
+ 
+   console.log('');
+
+diff --git "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\backend\\src\\safetyController.ts" "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\backend\\src\\safetyController.ts"
+index 76f8ff5..a523705 100644
+--- "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\backend\\src\\safetyController.ts"
++++ "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\backend\\src\\safetyController.ts"
+@@ -19,7 +19,7 @@
+  * ─────────────────────────────────────────────────────────────────────────────
+  */
+ 
+-import { db, reserveLead, normalizePhone } from './databaseManager';
++import { db, reserveLead, releaseLeadLock, normalizePhone } from './databaseManager';
+ import { getSessionById } from './sessionManager';
+ 
+ // ─── Types ────────────────────────────────────────────────────────────────────
+@@ -220,10 +220,12 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
+   const session = getSessionById(req.sessionId);
+ 
+   if (!session || !session.phoneSocketId) {
++    if (req.leadId) releaseLeadLock(req.leadId, req.sessionId);
+     return { allowed: false, reason: 'NO_PHONE', message: 'No paired phone is connected to this session.' };
+   }
+ 
+   if (session.status === 'CALLING') {
++    if (req.leadId) releaseLeadLock(req.leadId, req.sessionId);
+     return { allowed: false, reason: 'DEVICE_BUSY', message: 'Device is already mid-call. Wait for it to finish.' };
+   }
+ 
+
+diff --git "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\backend\\src\\server.ts" "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\backend\\src\\server.ts"
+index 0a7eb7f..7d06c58 100644
+--- "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\backend\\src\\server.ts"
++++ "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\backend\\src\\server.ts"
+@@ -153,7 +153,7 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
+ 
+ function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
+   const user = (req as any).user;
+-  if (!user || user.role !== 'admin') {
++  if (!user || (user.role !== 'admin' && user.role !== 'platform_admin')) {
+     res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
+     return;
+   }
+@@ -1013,24 +1013,6 @@ app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, (req,
+   res.json(getLeads(req.params.id, tenantId));
+ });
+ 
+-// GET /download/apk — serve APK binary file to mobile clients
+-app.get('/download/apk', (req, res) => {
+-  const apkPaths = [
+-    path.join(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-release.apk'),
+-    path.join(__dirname, '../../mobile/build/app/outputs/apk/release/app-release.apk'),
+-    path.join(__dirname, '../public/OctalDialer.apk'),
+-    path.join(__dirname, '../data/OctalDialer.apk')
+-  ];
+-
+-  for (const p of apkPaths) {
+-    if (fs.existsSync(p)) {
+-      return res.download(p, 'OctalDialer.apk');
+-    }
+-  }
+-
+-  res.status(404).send('APK build file not found on host.');
+-});
+-
+ // REST: Delete single lead (protected)
+ app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, (req, res) => {
+   const tenantId = (req as any).user?.tenantId || 'tenant_default';
+@@ -1501,24 +1483,6 @@ app.post('/api/admin/system/unlock-all-leads', requireAuth, requireAdmin, (req,
+   res.json({ success: true, count, message: `Unlocked ${count} locked lead(s).` });
+ });
+ 
+-// REST: Scraper Status (protected)
+-app.get('/api/scraper/status', requireAuth, (req, res) => {
+-  res.json(activeScrapeTask);
+-});
+-
+-// REST: Stop Scraper (protected)
+-app.post('/api/scraper/stop', requireAuth, (req, res) => {
+-  if (activeScrapeProcess) {
+-    activeScrapeProcess.kill('SIGINT');
+-    activeScrapeTask.status = 'failed';
+-    activeScrapeTask.logs.push('🛑 Scraper stopped by user request.');
+-    activeScrapeProcess = null;
+-    res.json({ success: true, message: 'Scraper task killed.' });
+-  } else {
+-    res.status(400).json({ error: 'No active scraper task is running.' });
+-  }
+-});
+-
+ // REST: App Version & OTA Update Check with SHA-256 integrity verification
+ app.get('/api/app-version', (req, res) => {
+   const localIP = getLocalIP();
+@@ -1639,7 +1603,8 @@ app.post('/api/leads/import', requireAuth, (req, res) => {
+       return;
+     }
+ 
+-    const result = createCampaign(campaignName, fileName, leads);
++    const tenantId = (req as any).user?.tenantId || 'tenant_default';
++    const result = createCampaign(campaignName, fileName, leads, tenantId);
+     res.json({
+       success: true,
+       campaignId: result.campaign.id,
+@@ -1655,8 +1620,8 @@ app.post('/api/leads/import', requireAuth, (req, res) => {
+   }
+ });
+ 
+-// REST: Manual leads import for mobile (no requireAuth)
+-app.post('/api/leads/import/mobile', (req, res) => {
++// REST: Manual leads import for mobile (protected)
++app.post('/api/leads/import/mobile', requireAuth, (req, res) => {
+   try {
+     const { campaignName, fileName, leads } = req.body as {
+       campaignName: string;
+@@ -1669,7 +1634,8 @@ app.post('/api/leads/import/mobile', (req, res) => {
+       return;
+     }
+ 
+-    const result = createCampaign(campaignName, fileName, leads);
++    const tenantId = (req as any).user?.tenantId || 'tenant_default';
++    const result = createCampaign(campaignName, fileName, leads, tenantId);
+     res.json({
+       success: true,
+       campaignId: result.campaign.id,
+
+diff --git "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\App.tsx" "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\App.tsx"
+index 51b5c8b..e83c8dc 100644
+--- "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\App.tsx"
++++ "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\App.tsx"
+@@ -149,11 +149,10 @@ export default function App() {
+     localStorage.removeItem('octal_session_id');
+     setAuthToken(null);
+     setAuthUser(null);
+-    setUserRole('user');
++    setUserRole('agent');
+     setUserPermissions({} as any);
+     setCampaigns([]);
+     setDispOpen(false);
+-    setSelectedCampaignId(null);
+     setActiveTab('dashboard');
+   };
+ 
+@@ -1165,7 +1164,7 @@ export default function App() {
+                 authToken={authToken || ''}
+                 campaigns={campaigns}
+                 onDialLead={(phone, leadId, leadName) => {
+-                  socketData.dialLead(phone, leadId, leadName);
++                  socketData.dialLead(phone, leadName, 30, leadId);
+                   setActiveTab('dialer');
+                 }}
+                 onNavigateTab={(tab) => setActiveTab(tab as any)}
+@@ -1211,7 +1210,7 @@ export default function App() {
+                 campaigns={campaigns}
+                 initialSubTab="follow-ups"
+                 onDialLead={(phone, leadId, leadName) => {
+-                  socketData.dialLead(phone, leadId, leadName);
++                  socketData.dialLead(phone, leadName, 30, leadId);
+                   setActiveTab('dialer');
+                 }}
+                 onNavigateTab={(tab) => setActiveTab(tab as any)}
+@@ -1290,8 +1289,6 @@ export default function App() {
+                 isLight={isLight}
+                 serverUrl={lanServerUrl}
+                 authToken={authToken || ''}
+-                onSelectCampaign={() => {}}
+-                onNavigateTab={(tab) => setActiveTab(tab)}
+               />
+             ) : (
+               <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
+
+diff --git "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\components\\AutoEmailer.tsx" "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\components\\AutoEmailer.tsx"
+index c42206a..3edca03 100644
+--- "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\components\\AutoEmailer.tsx"
++++ "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\components\\AutoEmailer.tsx"
+@@ -94,7 +94,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
+   const [showAdvancedSmtp, setShowAdvancedSmtp] = useState(false);
+   
+   // Comprehensive Business Email Presets
+-  type BusinessPresetType = 'cpanel' | 'zoho' | 'godaddy' | 'hostinger' | 'namecheap' | 'titan' | 'amazon_ses' | 'sendgrid' | 'brevo' | 'yandex' | 'custom';
++  type BusinessPresetType = 'office365' | 'cpanel' | 'zoho' | 'godaddy' | 'hostinger' | 'namecheap' | 'titan' | 'amazon_ses' | 'sendgrid' | 'brevo' | 'yandex' | 'custom';
+   const [businessPreset, setBusinessPreset] = useState<BusinessPresetType>('cpanel');
+ 
+   // --- Account form
+
+diff --git "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\components\\ErrorBoundary.tsx" "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\components\\ErrorBoundary.tsx"
+index 44ef290..f4e81da 100644
+--- "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\components\\ErrorBoundary.tsx"
++++ "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\components\\ErrorBoundary.tsx"
+@@ -1,4 +1,5 @@
+-import React, { Component, ErrorInfo, ReactNode } from 'react';
++import { Component } from 'react';
++import type { ErrorInfo, ReactNode } from 'react';
+ 
+ interface Props {
+   children: ReactNode;
+@@ -53,7 +54,7 @@ export class ErrorBoundary extends Component<Props, State> {
+             )}
+ 
+             <button
+-              onClick={() => window.location.reload()}
++              onClick={this.handleReset}
+               className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-lg shadow-amber-500/20"
+             >
+               Reload Dashboard
+
+diff --git "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\components\\LeadQueue.tsx" "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\components\\LeadQueue.tsx"
+index 91c76ed..872ee11 100644
+--- "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\components\\LeadQueue.tsx"
++++ "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\components\\LeadQueue.tsx"
+@@ -49,6 +49,12 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
+ 
+   // Call ticker state — only ticks after call is picked up (ACTIVE)
+   const [callDuration, setCallDuration] = useState(0);
++
++  const formatTimer = (secs: number) => {
++    const mins = Math.floor(secs / 60);
++    const s = Math.floor(secs % 60);
++    return `${mins}:${s.toString().padStart(2, '0')}`;
++  };
+   const tickerRef = useRef<any>(null);
+   // Ring/dial timeout — auto-hangup if no pickup within ringing period
+   const ringTimeoutRef = useRef<any>(null);
+
+diff --git "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\components\\ModuleSettings.tsx" "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\components\\ModuleSettings.tsx"
+index c75c7f6..647eb2d 100644
+--- "a/C:\\Users\\ice\\Desktop\\OCTAL_DIALER_PROJECT\\website_octal_dialer\\frontend\\src\\components\\ModuleSettings.tsx"
++++ "b/C:\\Users\\ice\\Downloads\\temp_inspect_claude_fixes\\website_octal_dialer\\frontend\\src\\components\\ModuleSettings.tsx"
+@@ -96,7 +96,7 @@ export const ModuleSettings: React.FC<ModuleSettingsProps> = ({
+           { key: 'delayBetweenRequestsMs', label: 'Delay Between Requests (ms)', type: 'number', default: 2000 },
+           { key: 'duplicateHandling', label: 'Duplicate Handling', type: 'select', options: ['skip', 'update'], default: 'skip' },
+         ];
+-      case: 'autoEmailer':
++      case 'autoEmailer':
+         return [
+           { key: 'sendRatePerHour', label: 'Send Rate Per Hour', type: 'number', default: 50 },
+           { key: 'unsubscribeLinkRequired', label: 'Unsubscribe Link Required', type: 'boolean', default: true },
+

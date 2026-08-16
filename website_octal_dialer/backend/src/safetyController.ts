@@ -19,7 +19,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { db, reserveLead, normalizePhone } from './databaseManager';
+import { db, reserveLead, releaseLeadLock, normalizePhone } from './databaseManager';
 import { getSessionById } from './sessionManager';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -220,10 +220,12 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
   const session = getSessionById(req.sessionId);
 
   if (!session || !session.phoneSocketId) {
+    if (req.leadId) releaseLeadLock(req.leadId, req.sessionId);
     return { allowed: false, reason: 'NO_PHONE', message: 'No paired phone is connected to this session.' };
   }
 
   if (session.status === 'CALLING') {
+    if (req.leadId) releaseLeadLock(req.leadId, req.sessionId);
     return { allowed: false, reason: 'DEVICE_BUSY', message: 'Device is already mid-call. Wait for it to finish.' };
   }
 

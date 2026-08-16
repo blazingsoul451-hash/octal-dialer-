@@ -94,7 +94,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
   const [showAdvancedSmtp, setShowAdvancedSmtp] = useState(false);
   
   // Comprehensive Business Email Presets
-  type BusinessPresetType = 'cpanel' | 'zoho' | 'godaddy' | 'hostinger' | 'namecheap' | 'titan' | 'amazon_ses' | 'sendgrid' | 'brevo' | 'yandex' | 'custom';
+  type BusinessPresetType = 'office365' | 'cpanel' | 'zoho' | 'godaddy' | 'hostinger' | 'namecheap' | 'titan' | 'amazon_ses' | 'sendgrid' | 'brevo' | 'yandex' | 'custom';
   const [businessPreset, setBusinessPreset] = useState<BusinessPresetType>('cpanel');
 
   // --- Account form
