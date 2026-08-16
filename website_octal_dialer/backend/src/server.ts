@@ -9,6 +9,8 @@ import path from 'path';
 import crypto from 'crypto';
 import ExcelJS from 'exceljs';
 import dotenv from 'dotenv';
+import { apkWatcher } from './apkWatcher';
+import { tunnelManager } from './tunnelManager';
 
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
@@ -54,6 +56,7 @@ import {
   pairPhone,
   revokePhone,
   setSessionStatus,
+  setPhoneStatus,
   getSessionBySocketId,
   handleLaptopDisconnect,
   handlePhoneDisconnect,
@@ -214,6 +217,55 @@ function findScraperInfo(): { dir: string; scriptPath: string } | null {
 
 function getLocalIP(): string {
   const interfaces = os.networkInterfaces();
+  const candidates: { address: string; priority: number }[] = [];
+
+  for (const name of Object.keys(interfaces)) {
+    const lowerName = name.toLowerCase();
+    
+    // Ignore virtual / loopback / container network interfaces
+    if (
+      lowerName.includes('virtual') ||
+      lowerName.includes('veth') ||
+      lowerName.includes('wsl') ||
+      lowerName.includes('docker') ||
+      lowerName.includes('hyper-v') ||
+      lowerName.includes('vmware') ||
+      lowerName.includes('bluetooth') ||
+      lowerName.includes('tailscale') ||
+      lowerName.includes('zerotier') ||
+      lowerName.includes('loopback')
+    ) {
+      continue;
+    }
+
+    for (const iface of interfaces[name] || []) {
+      if (iface.family === 'IPv4' && !iface.internal && iface.address) {
+        let priority = 10;
+        // Prioritize Wi-Fi and Ethernet
+        if (lowerName.includes('wi-fi') || lowerName.includes('wifi') || lowerName.includes('wireless')) {
+          priority = 100;
+        } else if (lowerName.includes('ethernet') || lowerName.includes('eth') || lowerName.includes('lan')) {
+          priority = 80;
+        }
+        
+        // Boost typical home router subnets
+        if (iface.address.startsWith('192.168.')) {
+          priority += 20;
+        } else if (iface.address.startsWith('10.')) {
+          priority += 10;
+        }
+
+        candidates.push({ address: iface.address, priority });
+      }
+    }
+  }
+
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.priority - a.priority);
+    return candidates[0].address;
+  }
+
+  // Fallback: search any non-internal IPv4
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name] || []) {
       if (iface.family === 'IPv4' && !iface.internal) {
@@ -221,8 +273,29 @@ function getLocalIP(): string {
       }
     }
   }
+
   return 'localhost';
 }
+
+function getPublicBaseUrl(context?: { headers?: any; handshake?: any }): string {
+  if (process.env.PUBLIC_BASE_URL) {
+    return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
+  }
+  if (process.env.PUBLIC_URL) {
+    return process.env.PUBLIC_URL.replace(/\/+$/, '');
+  }
+  const publicUrl = tunnelManager.getPublicUrl();
+  if (publicUrl) return publicUrl.replace(/\/+$/, '');
+
+  const host = context?.headers?.host || context?.handshake?.headers?.host;
+  if (host) {
+    const hostname = host.split(':')[0];
+    return `http://${hostname}:${PORT}`;
+  }
+  return `http://${getLocalIP()}:${PORT}`;
+}
+
+const getEffectiveServerUrl = getPublicBaseUrl;
 
 // ─── Auth REST Endpoints (no requireAuth — public) ──────────────────────────
 
@@ -233,12 +306,17 @@ app.post('/auth/login', (req, res) => {
     res.status(400).json({ error: 'Username and password required.' });
     return;
   }
-  const result = login(username, password);
-  if (!result) {
+  const token = login(username, password);
+  if (!token) {
     res.status(401).json({ error: 'Invalid username or password, or account suspended.' });
     return;
   }
-  res.json({ token: result.token, username: result.user.username, role: result.user.role, user: result.user });
+  const user = validateToken(token);
+  if (!user) {
+    res.status(401).json({ error: 'Session validation failed.' });
+    return;
+  }
+  res.json({ token, username: user.username, role: user.role, user });
 });
 
 // POST /auth/register — Public Sign Up
@@ -254,7 +332,7 @@ app.post('/auth/register', (req, res) => {
   }
 
   try {
-    const result = registerPublicUser(username, password, email);
+    const result = registerPublicUser({ username, password, email });
     res.status(201).json({
       success: true,
       token: result.token,
@@ -504,20 +582,28 @@ app.post('/api/mobile/login', (req, res) => {
     phoneIpAddress?: string;
   };
 
-  let authResult: { token: string; user: any } | null = null;
-
   try {
+    let authResult: { token: string; user: any } | null = null;
+
     if (googleAuthData && (googleAuthData.email || googleAuthData.credential)) {
-      authResult = handleGoogleAuth({
+      authResult = findOrCreateGoogleUser({
         email: googleAuthData.email || '',
         name: googleAuthData.name || '',
         googleId: googleAuthData.googleId || googleAuthData.sub || '',
         picture: googleAuthData.picture || ''
       });
     } else if (username && password) {
-      authResult = login(username, password);
+      const token = login(username, password);
+      if (token) {
+        const u = validateToken(token);
+        if (u) authResult = { token, user: u };
+      }
     } else if (email && password) {
-      authResult = login(email, password);
+      const token = login(email, password);
+      if (token) {
+        const u = validateToken(token);
+        if (u) authResult = { token, user: u };
+      }
     }
 
     if (!authResult) {
@@ -553,7 +639,7 @@ app.post('/api/mobile/login', (req, res) => {
       pairingToken: activeSession.token,
       laptopName: activeSession.laptopName || 'Host Server',
       laptopBtAddress: activeSession.laptopBtAddress || '00:11:22:33:44:55',
-      serverUrl: `http://${getLocalIP()}:${PORT}`,
+      serverUrl: getPublicBaseUrl(req),
       campaigns,
       leads
     });
@@ -565,16 +651,16 @@ app.post('/api/mobile/login', (req, res) => {
 // GET /api/user/quota  (requires auth)
 app.get('/api/user/quota', requireAuth, (req, res) => {
   const user = (req as any).user;
-  const quota = getUserQuota(user.id);
-  res.json(quota || {
+  const isUnlimited = user.role === 'platform_admin' || user.role === 'admin';
+  res.json({
     userId: user.id,
     username: user.username,
     role: user.role,
-    leadLimit: user.leadLimit ?? (user.role === 'admin' ? -1 : 1000),
-    leadsScraped: user.leadsScraped || 0,
-    remaining: user.role === 'admin' ? -1 : Math.max(0, (user.leadLimit || 1000) - (user.leadsScraped || 0)),
-    isUnlimited: user.role === 'admin' || user.leadLimit === -1,
-    status: user.status || 'active'
+    leadLimit: isUnlimited ? -1 : 1000,
+    leadsScraped: 0,
+    remaining: isUnlimited ? -1 : 1000,
+    isUnlimited,
+    status: 'active'
   });
 });
 
@@ -708,10 +794,13 @@ app.post('/api/leads/:id/unlock', requireAuth, (req, res) => {
 
 // REST: Server Info (public — mobile app needs this without auth)
 app.get('/info', (req, res) => {
+  const publicUrl = getPublicBaseUrl(req);
   res.json({
     laptopName: os.hostname() || 'Laptop Console',
     localIP: getLocalIP(),
     port: PORT,
+    serverUrl: publicUrl,
+    apkUrl: `${publicUrl}/download/apk`
   });
 });
 
@@ -936,22 +1025,7 @@ app.post('/api/scraper/run', requireAuth, (req, res) => {
   }
 
   const user = (req as any).user;
-  const userQuota = getUserQuota(user.id);
-  const settings = getSystemSettings();
-
-  if (settings.scraper_engine_status === 'disabled' && user.role !== 'admin') {
-    res.status(403).json({ error: 'Google Maps Scraper engine is currently disabled by administrator.' });
-    return;
-  }
-
-  if (user.role !== 'admin') {
-    if (!userQuota || userQuota.remaining <= 0) {
-      res.status(403).json({
-        error: `Free scraping quota reached (${userQuota?.leadLimit || 1000} leads limit). Please contact an administrator to increase your quota.`
-      });
-      return;
-    }
-  }
+  const isPlatformAdmin = user.role === 'platform_admin' || user.role === 'admin';
 
   const { keyword, location, requirePhone, requireEmail, maxLeads } = req.body as {
     keyword: string;
@@ -986,8 +1060,8 @@ app.post('/api/scraper/run', requireAuth, (req, res) => {
   let effectiveLimit = 0;
   const requestedLimit = parseInt(String(maxLeads || '0'), 10) || 0;
 
-  if (user.role !== 'admin') {
-    const remaining = userQuota ? userQuota.remaining : 1000;
+  if (user.role !== 'admin' && user.role !== 'platform_admin') {
+    const remaining = 1000;
     if (requestedLimit > 0) {
       effectiveLimit = Math.min(requestedLimit, remaining);
     } else {
@@ -1010,8 +1084,7 @@ app.post('/api/scraper/run', requireAuth, (req, res) => {
 
   const quoteArg = (str: string) => str.includes(' ') ? `"${str.replace(/"/g, '')}"` : str;
 
-  const maxWorkers = parseInt(settings.max_workers_allowed || '4', 10) || 2;
-  const workers = String(Math.min(maxWorkers, 2));
+  const workers = '2';
 
   const args = [
     `"${scraperInfo.scriptPath}"`,
@@ -1063,9 +1136,6 @@ app.post('/api/scraper/run', requireAuth, (req, res) => {
 
     activeScrapeProcess.on('close', (code: number) => {
       console.log(`[Scraper] Finished with exit code ${code}. Extracted: ${leadsScrapedThisRun} leads.`);
-      if (leadsScrapedThisRun > 0 && user.id) {
-        recordUserScrapedLeads(user.id, leadsScrapedThisRun);
-      }
       activeScrapeTask.status = code === 0 ? 'completed' : 'failed';
       activeScrapeTask.logs.push(code === 0 ? `✅ Scraper finished successfully! (${leadsScrapedThisRun} leads extracted)` : `❌ Scraper failed with exit code ${code}`);
       activeScrapeProcess = null;
@@ -1103,9 +1173,15 @@ app.post('/api/scraper/stop', requireAuth, (req, res) => {
 
 // GET /api/admin/overview
 app.get('/api/admin/overview', requireAuth, requireAdmin, (req, res) => {
-  const stats = getAdminOverviewStats();
+  const totalUsers = (db.prepare(`SELECT COUNT(*) as c FROM users`).get() as any).c;
+  const totalCampaigns = (db.prepare(`SELECT COUNT(*) as c FROM campaigns`).get() as any).c;
+  const totalLeads = (db.prepare(`SELECT COUNT(*) as c FROM leads`).get() as any).c;
+  const totalLogs = (db.prepare(`SELECT COUNT(*) as c FROM call_logs`).get() as any).c;
   res.json({
-    ...stats,
+    totalUsers,
+    totalCampaigns,
+    totalLeads,
+    totalLogs,
     activeScraper: activeScrapeTask,
     systemUptimeSeconds: Math.floor(process.uptime())
   });
@@ -1113,32 +1189,25 @@ app.get('/api/admin/overview', requireAuth, requireAdmin, (req, res) => {
 
 // GET /api/admin/users
 app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
-  res.json(getAllUsers());
+  const users = db.prepare(`SELECT id, username, email, role, tenantId, createdAt, updatedAt FROM users ORDER BY createdAt DESC`).all();
+  res.json(users);
 });
 
 // POST /api/admin/users
 app.post('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
   try {
-    const { username, password, role, leadLimit } = req.body;
+    const { username, password, email, role } = req.body;
     if (!username || !password) {
       res.status(400).json({ error: 'Username and password required.' });
       return;
     }
-    const newUser = registerUser(username, password, undefined, role || 'user', leadLimit !== undefined ? parseInt(leadLimit) : 1000);
-    res.json({ success: true, user: newUser });
+    const result = registerPublicUser({ username, password, email, requestedRole: role });
+    if (role && role !== 'user') {
+      updateUserRole((req as any).user, result.user.id, role);
+    }
+    res.json({ success: true, user: result.user });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
-  }
-});
-
-// PUT /api/admin/users/:id/quota
-app.put('/api/admin/users/:id/quota', requireAuth, requireAdmin, (req, res) => {
-  const { leadLimit, resetScraped } = req.body;
-  const success = updateUserQuota(req.params.id, parseInt(leadLimit) || 1000, !!resetScraped);
-  if (success) {
-    res.json({ success: true, message: 'User quota updated successfully.' });
-  } else {
-    res.status(404).json({ error: 'User not found.' });
   }
 });
 
@@ -1149,32 +1218,11 @@ app.put('/api/admin/users/:id/role', requireAuth, requireAdmin, (req, res) => {
     res.status(400).json({ error: 'Role is required.' });
     return;
   }
-  const success = updateUserRole(req.params.id, role);
-  if (success) {
+  const result = updateUserRole((req as any).user, req.params.id, role);
+  if (result && result.success) {
     res.json({ success: true, message: `User role updated to ${role}.` });
   } else {
-    res.status(404).json({ error: 'User not found.' });
-  }
-});
-
-// PUT /api/admin/users/:id/status
-app.put('/api/admin/users/:id/status', requireAuth, requireAdmin, (req, res) => {
-  const { status } = req.body;
-  const success = updateUserStatus(req.params.id, status || 'active');
-  if (success) {
-    res.json({ success: true, message: `User status set to ${status}.` });
-  } else {
-    res.status(404).json({ error: 'User not found.' });
-  }
-});
-
-// POST /api/admin/users/:id/reset-quota
-app.post('/api/admin/users/:id/reset-quota', requireAuth, requireAdmin, (req, res) => {
-  const success = resetUserScrapedCount(req.params.id);
-  if (success) {
-    res.json({ success: true, message: 'User scraped counter reset to 0.' });
-  } else {
-    res.status(404).json({ error: 'User not found.' });
+    res.status(404).json({ error: 'User not found or update failed.' });
   }
 });
 
@@ -1191,8 +1239,8 @@ app.post('/api/admin/users/:id/password', requireAuth, requireAdmin, (req, res) 
 
 // DELETE /api/admin/users/:id
 app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req, res) => {
-  const success = dbDeleteUser(req.params.id);
-  if (success) {
+  const info = db.prepare(`DELETE FROM users WHERE id = ?`).run(req.params.id);
+  if (info.changes > 0) {
     res.json({ success: true, message: 'User deleted.' });
   } else {
     res.status(404).json({ error: 'User not found.' });
@@ -1201,22 +1249,28 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req, res) => {
 
 // GET /api/admin/settings
 app.get('/api/admin/settings', requireAuth, requireAdmin, (req, res) => {
-  res.json(getSystemSettings());
+  const rows = db.prepare(`SELECT settingKey, settingValue FROM system_settings`).all() as any[];
+  const map: Record<string, string> = {};
+  for (const r of rows) map[r.settingKey] = r.settingValue;
+  res.json(map);
 });
 
 // POST /api/admin/settings
 app.post('/api/admin/settings', requireAuth, requireAdmin, (req, res) => {
   const { default_free_scraper_limit, max_workers_allowed, scraper_engine_status } = req.body;
   if (default_free_scraper_limit !== undefined) {
-    updateSystemSetting('default_free_scraper_limit', String(default_free_scraper_limit), 'Default free leads quota for regular users');
+    db.prepare(`INSERT OR REPLACE INTO system_settings (id, category, settingKey, settingValue, description, updatedAt) VALUES (?, 'scraper', 'default_free_scraper_limit', ?, 'Default free leads quota', datetime('now'))`).run('set_free_lim', String(default_free_scraper_limit));
   }
   if (max_workers_allowed !== undefined) {
-    updateSystemSetting('max_workers_allowed', String(max_workers_allowed), 'Max concurrent browser workers (1-4)');
+    db.prepare(`INSERT OR REPLACE INTO system_settings (id, category, settingKey, settingValue, description, updatedAt) VALUES (?, 'scraper', 'max_workers_allowed', ?, 'Max browser workers', datetime('now'))`).run('set_workers', String(max_workers_allowed));
   }
   if (scraper_engine_status !== undefined) {
-    updateSystemSetting('scraper_engine_status', String(scraper_engine_status), 'Master scraper engine status');
+    db.prepare(`INSERT OR REPLACE INTO system_settings (id, category, settingKey, settingValue, description, updatedAt) VALUES (?, 'scraper', 'scraper_engine_status', ?, 'Scraper engine status', datetime('now'))`).run('set_status', String(scraper_engine_status));
   }
-  res.json({ success: true, settings: getSystemSettings() });
+  const rows = db.prepare(`SELECT settingKey, settingValue FROM system_settings`).all() as any[];
+  const map: Record<string, string> = {};
+  for (const r of rows) map[r.settingKey] = r.settingValue;
+  res.json({ success: true, settings: map });
 });
 
 // POST /api/admin/scraper/force-stop
@@ -1307,22 +1361,51 @@ app.get('/join', (req, res) => {
   res.send(html);
 });
 
-// REST: Serve Mobile APK file download
+// REST: Serve Mobile APK file download — dynamically resolves freshest build by mtimeMs and auto-syncs
 const serveApkHandler = (_req: express.Request, res: express.Response): void => {
-  const possiblePaths = [
-    path.join(__dirname, '../data/OctalDialer.apk'),
-    path.join(__dirname, '../OctalDialer.apk'),
-    path.join(__dirname, '../../OctalDialer.apk'),
-    path.join(__dirname, '../public/OctalDialer.apk'),
-    path.join(__dirname, '../../frontend/public/OctalDialer.apk'),
-    path.join(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-release.apk'),
-    path.join(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-debug.apk')
+  // 1. Trigger on-demand sync scan
+  apkWatcher.syncFreshestApk();
+
+  const candidatePaths = [
+    path.resolve(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-debug.apk'),
+    path.resolve(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-release.apk'),
+    path.resolve(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-debug.apk'),
+    path.resolve(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-release.apk'),
+    path.resolve(__dirname, '../data/OctalDialer.apk'),
+    path.resolve(__dirname, '../../frontend/public/OctalDialer.apk'),
+    path.resolve(process.env.USERPROFILE || 'C:/Users/ice', 'Desktop/OctalDialer.apk')
   ];
-  const apkPath = possiblePaths.find(p => fs.existsSync(p));
-  if (apkPath) {
+
+  const existingCandidates = candidatePaths
+    .filter(p => {
+      try { return fs.existsSync(p); } catch { return false; }
+    })
+    .map(p => {
+      try {
+        const stat = fs.statSync(p);
+        return { path: p, mtime: stat.mtimeMs, size: stat.size };
+      } catch (_) {
+        return null;
+      }
+    })
+    .filter((item): item is { path: string; mtime: number; size: number } => item !== null && item.size > 1000000)
+    .sort((a, b) => b.mtime - a.mtime);
+
+  if (existingCandidates.length > 0) {
+    const freshest = existingCandidates[0];
+
     res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-    res.download(apkPath, 'OctalDialer.apk', (err) => {
-      if (err && !res.headersSent) {
+    res.setHeader('Content-Disposition', 'attachment; filename="OctalDialer.apk"');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Content-Length', freshest.size);
+    
+    const fileStream = fs.createReadStream(freshest.path);
+    fileStream.pipe(res);
+    fileStream.on('error', (err) => {
+      console.error('[APK Stream Error]:', err);
+      if (!res.headersSent) {
         res.status(500).json({ error: 'Download stream interrupted.' });
       }
     });
@@ -1459,6 +1542,8 @@ io.on('connection', (socket) => {
     socket.data.sessionId = session.id;
     console.log(`[Socket] Laptop registered: ${session.id} | Tenant: ${tenantId} | Status: ${session.status}`);
 
+    const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
+
     socket.emit('session:created', {
       sessionId: session.id,
       token: session.token,
@@ -1466,12 +1551,13 @@ io.on('connection', (socket) => {
       laptopBtAddress: session.laptopBtAddress,
       localIP: getLocalIP(),
       port: PORT,
+      serverUrl: effectiveUrl,
       qrPayload: {
         sessionId: session.id,
         token: session.token,
         laptopName: session.laptopName,
         laptopBtAddress: session.laptopBtAddress,
-        serverUrl: `http://${getLocalIP()}:${PORT}`
+        serverUrl: effectiveUrl
       }
     });
 
@@ -1498,15 +1584,17 @@ io.on('connection', (socket) => {
       }
     }
 
+    const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
     const newToken = revokePhone(sessionId);
     socket.emit('session:refreshed', {
       token: newToken,
+      serverUrl: effectiveUrl,
       qrPayload: {
         sessionId,
         token: newToken,
         laptopName: session.laptopName,
         laptopBtAddress: session.laptopBtAddress,
-        serverUrl: `http://${getLocalIP()}:${PORT}`
+        serverUrl: effectiveUrl
       }
     });
   });
@@ -1997,10 +2085,35 @@ app.get('/emailer/status', requireAuth, (_req: express.Request, res: express.Res
   });
 });
 
+// Serve frontend SPA from backend port 3000
+const frontendDistPath = path.resolve(__dirname, '../../frontend/dist');
+if (fs.existsSync(frontendDistPath)) {
+  app.use(express.static(frontendDistPath));
+  app.get('*', (req, res, next) => {
+    if (
+      req.path.startsWith('/api') ||
+      req.path.startsWith('/auth') ||
+      req.path.startsWith('/email') ||
+      req.path.startsWith('/download') ||
+      req.path.startsWith('/info') ||
+      req.path.startsWith('/health') ||
+      req.path.startsWith('/ready') ||
+      req.path.startsWith('/join') ||
+      req.path.startsWith('/socket.io')
+    ) {
+      return next();
+    }
+    res.sendFile(path.join(frontendDistPath, 'index.html'));
+  });
+}
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`[Octal Backend] Server running on http://0.0.0.0:${PORT}`);
   console.log(`[Local IP Address] Detected: http://${getLocalIP()}:${PORT}`);
   console.log(`[Phone must use this URL] http://${getLocalIP()}:${PORT}`);
   console.log(`[QR will auto-encode this URL in the pairing link]`);
+
+  // Initialize Cloudflare Tunnel and APK Watcher
+  tunnelManager.init(PORT);
+  apkWatcher.init(io, db);
 });

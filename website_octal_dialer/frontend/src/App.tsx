@@ -236,14 +236,28 @@ export default function App() {
             setShowProfileSetupModal(true);
           }
 
-          // Fetch module permissions
-          const permRes = await fetch(`${lanServerUrl}/auth/permissions`, {
-            headers: { 'Authorization': `Bearer ${authToken}` }
-          });
+          if (data.user.role === 'platform_admin') {
+            setUserPermissions({
+              octalDialer: true,
+              googleScraper: true,
+              autoEmailer: true,
+              facebookScraper: true,
+              facebookPoster: true,
+              crm: true,
+              campaigns: true,
+              leads: true,
+              reports: true
+            });
+          } else {
+            // Fetch module permissions
+            const permRes = await fetch(`${lanServerUrl}/auth/permissions`, {
+              headers: { 'Authorization': `Bearer ${authToken}` }
+            });
 
-          if (permRes.ok) {
-            const permissions = await permRes.json();
-            setUserPermissions(permissions);
+            if (permRes.ok) {
+              const permissions = await permRes.json();
+              setUserPermissions(permissions);
+            }
           }
         }
       } catch (err) {
@@ -715,7 +729,7 @@ export default function App() {
               <div className="space-y-3 text-left overflow-y-auto flex-1 min-h-0 pr-1 pt-2 no-scrollbar">
                 
                 {/* OCTAL Dialer Group */}
-                {(userRole === 'admin' || userPermissions.octalDialer) && (
+                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.octalDialer) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('octalDialer', e)}
@@ -784,7 +798,7 @@ export default function App() {
                 )}
 
                 {/* Google Scraper Group */}
-                {(userRole === 'admin' || userPermissions.googleScraper) && (
+                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.googleScraper) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('googleScraper', e)}
@@ -851,7 +865,7 @@ export default function App() {
                 )}
 
                 {/* Auto Emailer Group */}
-                {(userRole === 'admin' || userPermissions.autoEmailer) && (
+                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.autoEmailer) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('autoEmailer', e)}
@@ -919,7 +933,7 @@ export default function App() {
                 )}
 
                 {/* Facebook Scraper Group */}
-                {(userRole === 'admin' || userPermissions.facebookScraper) && (
+                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.facebookScraper) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('facebookScraper', e)}
@@ -985,7 +999,7 @@ export default function App() {
                 )}
 
                 {/* Facebook Poster Group */}
-                {(userRole === 'admin' || userPermissions.facebookPoster) && (
+                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.facebookPoster) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('facebookPoster', e)}

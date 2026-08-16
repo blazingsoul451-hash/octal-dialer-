@@ -15,6 +15,7 @@ export interface Session {
   phoneBtAddress: string | null;
   phoneOsType: string | null;
   phoneIpAddress: string | null;
+  phoneStatus?: string;
   status: 'WAITING' | 'PAIRED' | 'CALLING';
   lastHeartbeat: Date | null;
   tenantId?: string;
@@ -229,6 +230,14 @@ export function setSessionStatus(sessionId: string, status: 'WAITING' | 'PAIRED'
   const session = sessions.get(sessionId);
   if (session) {
     session.status = status;
+    session.updatedAt = new Date();
+  }
+}
+
+export function setPhoneStatus(sessionId: string, phoneStatus: string): void {
+  const session = sessions.get(sessionId);
+  if (session) {
+    session.phoneStatus = phoneStatus;
     session.updatedAt = new Date();
   }
 }

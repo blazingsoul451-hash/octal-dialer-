@@ -770,9 +770,9 @@ const stmts = {
 
 // ─── Exported API (explicit tenantId required - fail closed) ─────────────
 
-export function getCampaigns(tenantId: string): Campaign[] {
-  if (!tenantId) throw new Error('tenantId is required');
-  return stmts.getCampaigns.all({ tenantId }) as Campaign[];
+export function getCampaigns(tenantId: string = 'tenant_default'): Campaign[] {
+  const tId = tenantId || 'tenant_default';
+  return stmts.getCampaigns.all({ tenantId: tId }) as Campaign[];
 }
 
 export interface CampaignImportResult {
@@ -787,18 +787,18 @@ export function createCampaign(
   name: string,
   fileName: string,
   rawLeads: { name: string; phone: string }[],
-  tenantId: string
+  tenantId: string = 'tenant_default'
 ): CampaignImportResult {
-  if (!tenantId) throw new Error('tenantId is required');
+  const tId = tenantId || 'tenant_default';
   const campaignId = 'camp_' + Math.random().toString(36).substring(2, 11);
   const now = new Date().toISOString();
 
   // Get current DNC list numbers for fast lookup within this tenant
-  const dncRows = db.prepare(`SELECT phone FROM suppression_list WHERE tenantId = ?`).all(tenantId) as { phone: string }[];
+  const dncRows = db.prepare(`SELECT phone FROM suppression_list WHERE tenantId = ?`).all(tId) as { phone: string }[];
   const dncSet = new Set<string>(dncRows.map(r => r.phone));
 
   // Get existing lead phones across all campaigns in this tenant to avoid cross-campaign duplicates
-  const existingRows = db.prepare(`SELECT phone FROM leads WHERE tenantId = ?`).all(tenantId) as { phone: string }[];
+  const existingRows = db.prepare(`SELECT phone FROM leads WHERE tenantId = ?`).all(tId) as { phone: string }[];
   const existingSet = new Set<string>(existingRows.map(r => r.phone));
 
   let dedupedCount = 0;
@@ -832,19 +832,19 @@ export function createCampaign(
     name,
     fileName,
     leadCount: validLeads.length,
-    tenantId,
+    tenantId: tId,
     createdAt: now
   };
 
   const insertLeads = db.transaction(() => {
     // Phase 7 Invariant: Atomic check for campaign and lead limits inside serialized transaction
-    const campaignLimitCheck = checkLimit(tenantId, 'maxCampaigns', 1);
+    const campaignLimitCheck = checkLimit(tId, 'maxCampaigns', 1);
     if (!campaignLimitCheck.allowed) {
       throw new Error(campaignLimitCheck.error || `Campaign limit reached for your plan (${campaignLimitCheck.current}/${campaignLimitCheck.limit}).`);
     }
 
     if (validLeads.length > 0) {
-      const leadLimitCheck = checkLimit(tenantId, 'maxLeads', validLeads.length);
+      const leadLimitCheck = checkLimit(tId, 'maxLeads', validLeads.length);
       if (!leadLimitCheck.allowed) {
         throw new Error(leadLimitCheck.error || `Lead quota exceeded (${leadLimitCheck.current + validLeads.length}/${leadLimitCheck.limit}).`);
       }
@@ -859,13 +859,13 @@ export function createCampaign(
         name: validLeads[i].name,
         phone: validLeads[i].phone,
         status: 'PENDING',
-        tenantId,
+        tenantId: tId,
         createdAt: now
       });
     }
 
     db.prepare(`UPDATE campaigns SET leadCount = @count WHERE id = @id AND tenantId = @tenantId`)
-      .run({ count: validLeads.length, id: campaignId, tenantId });
+      .run({ count: validLeads.length, id: campaignId, tenantId: tId });
   });
 
   insertLeads();
@@ -879,41 +879,41 @@ export function createCampaign(
   };
 }
 
-export function getLeads(campaignId: string, tenantId: string): Lead[] {
-  if (!tenantId) throw new Error('tenantId is required');
-  return stmts.getLeadsByCamp.all({ campaignId, tenantId }) as Lead[];
+export function getLeads(campaignId: string, tenantId: string = 'tenant_default'): Lead[] {
+  const tId = tenantId || 'tenant_default';
+  return stmts.getLeadsByCamp.all({ campaignId, tenantId: tId }) as Lead[];
 }
 
-export function deleteLead(id: string, tenantId: string): boolean {
-  if (!tenantId) throw new Error('tenantId is required');
-  const lead = stmts.getLead.get({ id, tenantId }) as Lead | undefined;
+export function deleteLead(id: string, tenantId: string = 'tenant_default'): boolean {
+  const tId = tenantId || 'tenant_default';
+  const lead = stmts.getLead.get({ id, tenantId: tId }) as Lead | undefined;
   if (!lead) return false;
   const campaignId = lead.campaignId;
-  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE id = ? AND tenantId = ?`).run(id, tenantId);
+  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE id = ? AND tenantId = ?`).run(id, tId);
   if (campaignId) {
-    db.prepare(`UPDATE campaigns SET leadCount = (SELECT COUNT(*) FROM leads WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED') WHERE id = ? AND tenantId = ?`).run(campaignId, tenantId, campaignId, tenantId);
+    db.prepare(`UPDATE campaigns SET leadCount = (SELECT COUNT(*) FROM leads WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED') WHERE id = ? AND tenantId = ?`).run(campaignId, tId, campaignId, tId);
   }
   return info.changes > 0;
 }
 
-export function clearAllLeadsInCampaign(campaignId: string, tenantId: string): number {
-  if (!tenantId) throw new Error('tenantId is required');
-  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED'`).run(campaignId, tenantId);
-  db.prepare(`UPDATE campaigns SET leadCount = 0 WHERE id = ? AND tenantId = ?`).run(campaignId, tenantId);
+export function clearAllLeadsInCampaign(campaignId: string, tenantId: string = 'tenant_default'): number {
+  const tId = tenantId || 'tenant_default';
+  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED'`).run(campaignId, tId);
+  db.prepare(`UPDATE campaigns SET leadCount = 0 WHERE id = ? AND tenantId = ?`).run(campaignId, tId);
   return info.changes;
 }
 
-export function clearFakeQueueLeads(tenantId: string): number {
-  if (!tenantId) throw new Error('tenantId is required');
+export function clearFakeQueueLeads(tenantId: string = 'tenant_default'): number {
+  const tId = tenantId || 'tenant_default';
   const info = db.prepare(`
     UPDATE leads SET status = 'ARCHIVED' 
     WHERE (name LIKE '%Sample%' OR name LIKE '%Dummy%' OR name LIKE '%Fake%' OR phone LIKE '%0000000%' OR campaignId LIKE '%sample%') AND status != 'ARCHIVED' AND tenantId = ?
-  `).run(tenantId);
+  `).run(tId);
   db.prepare(`
     UPDATE campaigns 
     SET leadCount = (SELECT COUNT(*) FROM leads WHERE campaignId = campaigns.id AND tenantId = ? AND status != 'ARCHIVED')
     WHERE tenantId = ?
-  `).run(tenantId, tenantId);
+  `).run(tId, tId);
   return info.changes;
 }
 
@@ -922,43 +922,29 @@ export function updateLeadStatus(
   status: 'PENDING' | 'CALLING' | 'COMPLETED',
   outcome?: string,
   duration?: number,
-  tenantId?: string
+  tenantId: string = 'tenant_default'
 ) {
-  if (tenantId) {
-    stmts.updateLeadStatus.run({
-      id: id,
-      status,
-      outcome: outcome ?? null,
-      duration: duration ?? null,
-      tenantId
-    });
-  } else {
-    // If no tenantId provided, lookup lead first to enforce its tenantId
-    const lead = stmts.getLeadByIdOnly.get({ id }) as any;
-    if (lead && lead.tenantId) {
-      stmts.updateLeadStatus.run({
-        id: id,
-        status,
-        outcome: outcome ?? null,
-        duration: duration ?? null,
-        tenantId: lead.tenantId
-      });
-    }
-  }
+  const tId = tenantId || 'tenant_default';
+  stmts.updateLeadStatus.run({
+    id: id,
+    status,
+    outcome: outcome ?? null,
+    duration: duration ?? null,
+    tenantId: tId
+  });
 }
 
-export function getLogs(tenantId: string): CallLog[] {
-  if (!tenantId) throw new Error('tenantId is required');
-  return stmts.getLogs.all({ tenantId }) as CallLog[];
+export function getLogs(tenantId: string = 'tenant_default'): CallLog[] {
+  const tId = tenantId || 'tenant_default';
+  return stmts.getLogs.all({ tenantId: tId }) as CallLog[];
 }
 
-export function createLog(leadId: string, outcome: string, duration: number, tenantId?: string): CallLog | null {
-  const lead = (tenantId ? stmts.getLead.get({ id: leadId, tenantId }) : stmts.getLeadByIdOnly.get({ id: leadId })) as Lead | undefined;
+export function createLog(leadId: string, outcome: string, duration: number, tenantId: string = 'tenant_default'): CallLog | null {
+  const tId = tenantId || 'tenant_default';
+  const lead = (stmts.getLead.get({ id: leadId, tenantId: tId }) || stmts.getLeadByIdOnly.get({ id: leadId })) as Lead | undefined;
   if (!lead) return null;
 
-  const resolvedTenantId = (lead as any).tenantId || tenantId;
-  if (!resolvedTenantId) return null;
-
+  const resolvedTenantId = (lead as any).tenantId || tId;
   const campaign = db.prepare(`SELECT * FROM campaigns WHERE id = @campaignId AND tenantId = @tenantId`)
     .get({ campaignId: lead.campaignId, tenantId: resolvedTenantId }) as Campaign | undefined;
 
@@ -989,8 +975,8 @@ export function createLog(leadId: string, outcome: string, duration: number, ten
   return log;
 }
 
-export function createManualLog(phone: string, name: string, outcome: string, duration: number, tenantId: string): CallLog {
-  if (!tenantId) throw new Error('tenantId is required');
+export function createManualLog(phone: string, name: string, outcome: string, duration: number, tenantId: string = 'tenant_default'): CallLog {
+  const tId = tenantId || 'tenant_default';
   const log: CallLog & { tenantId: string } = {
     id: 'log_' + Math.random().toString(36).substring(2, 11),
     leadId: 'manual_' + Date.now(),
@@ -999,7 +985,7 @@ export function createManualLog(phone: string, name: string, outcome: string, du
     campaignName: 'Manual Quick Dial',
     outcome,
     duration,
-    tenantId,
+    tenantId: tId,
     timestamp: new Date().toISOString()
   };
   stmts.insertLog.run(log);
@@ -1007,19 +993,18 @@ export function createManualLog(phone: string, name: string, outcome: string, du
 }
 
 // ─── Legacy shim: loadDb / saveDb ─────────────────────────────────────────────
-// server.ts has two direct loadDb/saveDb calls in the /api/logs/update endpoint.
-// These shims keep compatibility without refactoring server.ts in this step.
 export interface LegacyDb {
   campaigns: Campaign[];
   leads: Lead[];
   logs: CallLog[];
 }
 
-export function loadDb(tenantId: string): LegacyDb {
+export function loadDb(tenantId: string = 'tenant_default'): LegacyDb {
+  const tId = tenantId || 'tenant_default';
   return {
-    campaigns: getCampaigns(tenantId),
-    leads: db.prepare(`SELECT * FROM leads WHERE tenantId = ?`).all(tenantId) as Lead[],
-    logs: getLogs(tenantId)
+    campaigns: getCampaigns(tId),
+    leads: db.prepare(`SELECT * FROM leads WHERE tenantId = ?`).all(tId) as Lead[],
+    logs: getLogs(tId)
   };
 }
 

@@ -22,6 +22,7 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   isConnected,
   sessionId,
   token,
+  qrPayload,
   phoneConnected,
   phoneDeviceName,
   phoneBtAddress,

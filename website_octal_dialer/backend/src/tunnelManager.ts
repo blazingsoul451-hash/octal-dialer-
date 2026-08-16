@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
-import http from 'http';
+import path from 'path';
+import fs from 'fs';
 
 export interface TunnelState {
   enabled: boolean;
@@ -30,9 +31,9 @@ export class TunnelManager {
 
   public init(port: number): void {
     this.port = port;
-    
+
     // Check if user specified a custom public domain in .env
-    const customDomain = process.env.PUBLIC_DOMAIN || process.env.PUBLIC_URL || '';
+    const customDomain = process.env.PUBLIC_BASE_URL || process.env.PUBLIC_DOMAIN || process.env.PUBLIC_URL || '';
     if (customDomain) {
       this.state = {
         enabled: true,
@@ -45,10 +46,8 @@ export class TunnelManager {
       return;
     }
 
-    // If AUTO_TUNNEL is explicitly set to true in .env, start tunnel
-    if (process.env.AUTO_TUNNEL === 'true') {
-      this.startCloudflareTunnel();
-    }
+    // Automatically launch Cloudflare Quick Tunnel by default
+    this.startCloudflareTunnel();
   }
 
   public getState(): TunnelState {
@@ -76,57 +75,61 @@ export class TunnelManager {
     }
 
     return new Promise((resolve) => {
-      console.log('[Tunnel] Launching Cloudflare Quick Tunnel for port ' + this.port + '...');
-      
-      // Try spawning cloudflared if available in PATH or local tools
+      console.log(`[Tunnel] Launching Cloudflare Quick Tunnel for port ${this.port}...`);
+
+      const cloudflaredPath = path.resolve(__dirname, '../bin/cloudflared.exe');
+      const hasBinary = fs.existsSync(cloudflaredPath);
+
+      const command = hasBinary ? cloudflaredPath : 'npx';
+      const args = hasBinary
+        ? ['tunnel', '--url', `http://127.0.0.1:${this.port}`, '--no-autoupdate']
+        : ['-y', 'localtunnel', '--port', String(this.port)];
+
       try {
-        const proc = spawn('npx', ['-y', 'localtunnel', '--port', String(this.port)], {
-          shell: true,
+        const proc = spawn(command, args, {
+          shell: !hasBinary,
           windowsHide: true
         });
 
         this.tunnelProcess = proc;
-
         let resolved = false;
 
-        proc.stdout?.on('data', (data: Buffer) => {
+        const handleOutput = (data: Buffer) => {
           const text = data.toString();
-          const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.loca\.lt/) || text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/);
+          // Match trycloudflare.com or loca.lt
+          const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/) || text.match(/https:\/\/[a-zA-Z0-9-]+\.loca\.lt/);
           if (match && !resolved) {
             resolved = true;
             const url = match[0];
             this.state = {
               enabled: true,
               publicUrl: url,
-              provider: 'localtunnel',
+              provider: hasBinary ? 'cloudflare' : 'localtunnel',
               connectedAt: new Date().toISOString(),
               error: null
             };
-            console.log(`[Tunnel] ✅ Public HTTPS Tunnel Active: ${url}`);
+            console.log(`[Tunnel] ✅ Global Public HTTPS URL Active: ${url}`);
             resolve(url);
           }
-        });
+        };
 
-        proc.stderr?.on('data', (data: Buffer) => {
-          const errText = data.toString();
-          if (errText.includes('error') && !resolved) {
-            this.state.error = errText;
-          }
-        });
+        proc.stdout?.on('data', handleOutput);
+        proc.stderr?.on('data', handleOutput);
 
         proc.on('close', (code) => {
-          console.log(`[Tunnel] Tunnel process exited with code ${code}`);
+          console.log(`[Tunnel] Tunnel process closed with exit code ${code}`);
+          if (!resolved) resolve(null);
           this.state.enabled = false;
           this.state.publicUrl = null;
         });
 
-        // 12-second timeout fallback to LAN mode if tunnel cannot be spawned
+        // 15-second timeout fallback
         setTimeout(() => {
           if (!resolved) {
-            console.log('[Tunnel] Tunnel initialization timed out, using local network mode.');
+            console.log('[Tunnel] Tunnel negotiation timeout. Using LAN fallback.');
             resolve(null);
           }
-        }, 12000);
+        }, 15000);
 
       } catch (err: any) {
         console.warn('[Tunnel] Could not launch tunnel provider:', err.message);
