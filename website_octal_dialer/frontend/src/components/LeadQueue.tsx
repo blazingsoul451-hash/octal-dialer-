@@ -44,6 +44,9 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   
+  const dispositionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const processedCallRef = useRef<string | null>(null); // Track last processed call to prevent duplicate processing
+
   // Call ticker state — only ticks after call is picked up (ACTIVE)
   const [callDuration, setCallDuration] = useState(0);
   const tickerRef = useRef<any>(null);
@@ -183,6 +186,11 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   // Handle post-call routing trigger & 5-second auto-dial progression
   useEffect(() => {
     if (lastCallFinished && leads[currentIndex]) {
+      // Guard: process each call completion exactly once
+      const callKey = `${leads[currentIndex].id}_${lastCallFinished.reason}_${lastCallFinished.duration}`;
+      if (processedCallRef.current === callKey) return;
+      processedCallRef.current = callKey;
+
       const currentLead = leads[currentIndex];
       const wasAnswered = lastCallFinished.duration > 3; // answered = connected for >3s
 
@@ -243,6 +251,21 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     }
   }, [lastBlockedReason]);
 
+  // Stop auto-dialing on emergency stop
+  useEffect(() => {
+    if (!socket) return;
+    const handler = () => {
+      setIsAutoDialing(false);
+      if (dispositionTimerRef.current) {
+        clearTimeout(dispositionTimerRef.current);
+        dispositionTimerRef.current = null;
+      }
+      setLogs(prev => [...prev, '[Emergency Stop] Auto-dialing halted.']);
+    };
+    socket.on('campaign:emergency_stopped', handler);
+    return () => { socket.off('campaign:emergency_stopped', handler); };
+  }, [socket]);
+
   const activeLead = leads[currentIndex] || null;
 
   const handleDial = () => {
@@ -293,10 +316,11 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         setCurrentIndex(nextPendingIdx);
         const nextLead = currentLeads[nextPendingIdx];
         setLogs(prev => [...prev, `[Auto Dialer] Remarks saved. Dialing next: ${nextLead.name} (${nextLead.phone})`]);
-        setTimeout(() => {
+        dispositionTimerRef.current = setTimeout(() => {
           if (phoneConnected) {
             dialLead(nextLead.phone, nextLead.name, autoDialTimeout, nextLead.id, selectedCampId);
           }
+          dispositionTimerRef.current = null;
         }, 1500);
       } else {
         setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete!`]);
@@ -345,6 +369,15 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     ]);
     dialLead(manualPhone, 'Manual Dial', 35);
   };
+
+  // Cleanup tracked timers on unmount
+  useEffect(() => {
+    return () => {
+      if (dispositionTimerRef.current) {
+        clearTimeout(dispositionTimerRef.current);
+      }
+    };
+  }, []);
 
   // Compute REAL campaign metrics
   const totalLeadsCount = leads.length;

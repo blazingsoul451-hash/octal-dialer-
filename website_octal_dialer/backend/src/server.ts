@@ -741,7 +741,13 @@ app.post('/api/emergency-stop', requireAuth, (req, res) => {
   triggerEmergencyStop();
   writeAuditLog('EMERGENCY_STOP', 'global', 'all', user.username, 'Dashboard triggered emergency stop');
   // Broadcast hangup to ALL connected sockets
-  io.emit('phone:hangup');
+  // Send hangup to all active sessions' phones (admin action affects all)
+  for (const [, sess] of getSessions()) {
+    if (sess.phoneSocketId) {
+      const ps = io.sockets.sockets.get(sess.phoneSocketId);
+      if (ps) ps.emit('phone:hangup');
+    }
+  }
   io.emit('campaign:emergency_stopped', { stoppedBy: user.username, timestamp: new Date().toISOString() });
   console.warn(`[EmergencyStop] Triggered by ${user.username}`);
   res.json({ success: true, message: 'Emergency stop activated. All dialing halted.' });
@@ -1344,7 +1350,7 @@ app.get('/api/app-version', (req, res) => {
   res.json({
     version: '1.4.0',
     buildNumber: 4,
-    apkUrl: `http://${localIP}:3000/download/apk`,
+    apkUrl: `${getPublicBaseUrl({ headers: req.headers })}/download/apk`,
     sha256Hash,
     signature: 'OCTAL_KEY_SIG_V1',
     forceUpdate: false,
@@ -1537,7 +1543,7 @@ io.on('connection', (socket) => {
 
   socket.on('laptop:register', (data?: { previousSessionId?: string }) => {
     const tenantId = socket.data.tenantId || (socket.data.user ? socket.data.user.id : 'user_admin_e38eeed3');
-    const session = reclaimOrCreateSession(socket.id, tenantId, data?.previousSessionId);
+    const session = reclaimOrCreateSession(socket.id, data?.previousSessionId, tenantId);
     socket.join(session.id);
     socket.data.sessionId = session.id;
     console.log(`[Socket] Laptop registered: ${session.id} | Tenant: ${tenantId} | Status: ${session.status}`);
@@ -1711,11 +1717,10 @@ io.on('connection', (socket) => {
 
   socket.on('app:version_check', ({ currentVersion }: { currentVersion: string }) => {
     const SERVER_APP_VERSION = '1.2.0'; // Latest released version
-    const localIP = getLocalIP();
     if (currentVersion !== SERVER_APP_VERSION) {
       socket.emit('app:update_available', {
         latestVersion: SERVER_APP_VERSION,
-        apkUrl: `http://${localIP}:3000/download/apk`,
+        apkUrl: `${getPublicBaseUrl({ handshake: socket.handshake })}/download/apk`,
         forceUpdate: false,
         releaseNotes: 'v1.2.0 Fixes: Auto-dialer now ACTUALLY dials (ACTION_CALL), Ring timeout with auto-hangup, NO_ANSWER tracking, Dashboard tab fix, BT Link tab moved to last.'
       });
@@ -1779,15 +1784,21 @@ io.on('connection', (socket) => {
     }
     const dialPayload = { phone, name, leadId: leadId || '', timeout, commandId: check.commandId };
     phoneSocket.emit('phone:dial', dialPayload);
-    // Also broadcast to room so any other listeners get it
-    io.to(sessionId).emit('phone:dial', dialPayload);
+    // Notify laptop that dial command was dispatched (do NOT re-emit phone:dial to room — causes duplicates)
+    socket.emit('dial:dispatched', { commandId: check.commandId, leadId, phone, name });
     console.log(`[SafetyController] ✅ DIAL SENT TO PHONE SOCKET ${session.phoneSocketId} | ${name} (${phone}) | Session: ${sessionId} | Cmd: ${check.commandId}`);
   });
 
   // Emergency stop from socket (in addition to REST endpoint)
   socket.on('campaign:emergency_stop', ({ sessionId }: { sessionId: string }) => {
     triggerEmergencyStop();
-    io.emit('phone:hangup');
+    // Scope hangup to the requesting session's phone only — not all sockets globally
+    const session = getSessionById(sessionId);
+    if (session?.phoneSocketId) {
+      const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
+      if (phoneSocket) phoneSocket.emit('phone:hangup');
+    }
+    // Notify all dashboards that emergency stop is active (safety flag is global)
     io.emit('campaign:emergency_stopped', { stoppedBy: 'dashboard-socket', timestamp: new Date().toISOString() });
     console.warn(`[SafetyController] Emergency stop via socket from session ${sessionId}`);
   });
@@ -1799,10 +1810,18 @@ io.on('connection', (socket) => {
 
   socket.on('dial:hangup', ({ sessionId }: { sessionId: string }) => {
     const session = getSessionById(sessionId);
-    if (!session || !session.phoneSocketId) return;
-
-    socket.to(sessionId).emit('phone:hangup');
-    setSessionStatus(sessionId, 'PAIRED');
+    if (!session) return;
+    // Verify caller owns this session
+    if (session.laptopSocketId !== socket.id) {
+      console.warn(`[Socket] Rejected hangup from unauthorized socket ${socket.id} for session ${sessionId}`);
+      return;
+    }
+    if (session.phoneSocketId) {
+      const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
+      if (phoneSocket) phoneSocket.emit('phone:hangup');
+    }
+    // Do NOT set session to PAIRED here — wait for call:ended from phone
+    // The hangup is a command, not a confirmation
     console.log(`[Socket] Hangup command sent to phone in session ${sessionId}`);
   });
 
@@ -1821,12 +1840,18 @@ io.on('connection', (socket) => {
     duration: number;
     commandId?: string;
   }) => {
+    // Verify the emitting socket actually owns this session (phone socket check)
+    const session = getSessionById(sessionId);
+    if (!session || session.phoneSocketId !== socket.id) {
+      console.warn(`[Socket] Rejected call:ended from unauthorized socket ${socket.id} for session ${sessionId}`);
+      return;
+    }
     setSessionStatus(sessionId, 'PAIRED');
     if (commandId) {
       expireCommand(commandId);
     }
     if (leadId) {
-      releaseLeadLock(leadId);
+      releaseLeadLock(leadId, sessionId);
       createLog(leadId, reason, duration);
       updateLeadStatus(leadId, 'COMPLETED', reason, duration);
     } else if (phone) {

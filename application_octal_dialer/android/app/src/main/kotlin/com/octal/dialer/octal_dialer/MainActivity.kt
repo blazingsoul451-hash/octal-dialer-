@@ -52,11 +52,18 @@ class MainActivity: FlutterActivity() {
                 }
                 "endCall" -> {
                     try {
-                        val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
                         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                            telecomManager.endCall()
+                            val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                            @Suppress("DEPRECATION")
+                            val ended = telecomManager.endCall()
+                            result.success(ended)
+                        } else {
+                            // Pre-Pie: no reliable programmatic hangup without system permissions
+                            result.success(false)
                         }
-                        result.success(true)
+                    } catch (e: SecurityException) {
+                        // Expected on Android 9+ if app is not the default dialer
+                        result.success(false)
                     } catch (e: Exception) {
                         result.error("END_CALL_ERROR", e.message, null)
                     }

@@ -98,11 +98,17 @@ export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId
   // 1. Reclaim the exact same session by ID
   if (previousSessionId && sessions.has(previousSessionId)) {
     const s = sessions.get(previousSessionId)!;
-    s.laptopSocketId = laptopSocketId;
-    if (tenantId) s.tenantId = tenantId;
-    s.updatedAt = new Date();
-    console.log(`[Session] Laptop reclaimed session ${s.id} (tenant: ${s.tenantId || 'unassigned'})`);
-    return s;
+    // Tenant isolation: reject cross-tenant session reclaim
+    if (tenantId && s.tenantId && s.tenantId !== tenantId) {
+      console.warn(`[Session] Cross-tenant reclaim rejected: session ${s.id} belongs to ${s.tenantId}, requester is ${tenantId}`);
+      // Fall through to create a new session instead
+    } else {
+      s.laptopSocketId = laptopSocketId;
+      if (tenantId) s.tenantId = tenantId;
+      s.updatedAt = new Date();
+      console.log(`[Session] Laptop reclaimed session ${s.id} (tenant: ${s.tenantId || 'unassigned'})`);
+      return s;
+    }
   }
 
   // 2. Reclaim any session that has no active laptop socket (laptop reconnect)
@@ -151,6 +157,12 @@ export function pairPhone(
   if (!tenantId) {
     console.error(`[Pairing] Failed: Session ${session.id} has no assigned tenantId. Pairing rejected (fail-closed).`);
     return null;
+  }
+
+  // If another phone is already paired, explicitly handle it (prevent silent orphaning)
+  if (session.phoneSocketId && session.phoneSocketId !== phoneSocketId) {
+    console.warn(`[Pairing] Replacing phone ${session.phoneSocketId} with ${phoneSocketId} in session ${session.id}`);
+    // The old phone will be notified via socket events by the caller (server.ts)
   }
 
   session.phoneSocketId = phoneSocketId;

@@ -35,6 +35,7 @@ class _CallingScreenState extends State<CallingScreen> {
   Timer? _ringingTimer;
   Timer? _talkTimer;
   bool _isAnswered = false;
+  bool _callEnded = false;
 
   @override
   void initState() {
@@ -50,6 +51,18 @@ class _CallingScreenState extends State<CallingScreen> {
           _handleCallStateChange(state);
         }
       }
+    });
+
+    // Listen for remote hangup command from web dashboard
+    widget.socket.on('phone:hangup', (_) {
+      debugPrint('CallingScreen: Received remote hangup command');
+      // Attempt native call termination (may fail on Android 9+ without default dialer privilege)
+      _nativeChannel.invokeMethod('endCall').then((_) {
+        debugPrint('CallingScreen: Native endCall succeeded');
+      }).catchError((e) {
+        debugPrint('CallingScreen: Native endCall failed (expected on Android 9+): $e');
+      });
+      _endCall('CANCELLED');
     });
 
     _placeGsmCall();
@@ -122,6 +135,8 @@ class _CallingScreenState extends State<CallingScreen> {
   }
 
   void _endCall(String reason) {
+    if (_callEnded) return; // Guard against duplicate terminal events (timeout + IDLE + hangup race)
+    _callEnded = true;
     _ringingTimer?.cancel();
     _talkTimer?.cancel();
 
@@ -148,7 +163,10 @@ class _CallingScreenState extends State<CallingScreen> {
   void dispose() {
     _ringingTimer?.cancel();
     _talkTimer?.cancel();
-    _nativeChannel.setMethodCallHandler(null);
+    widget.socket.off('phone:hangup');
+    // Do NOT null out MethodChannel handler — it would strip the listener
+    // from StandaloneDialerScreen if it registered one. The handler is
+    // scoped to the channel, and the native side continues to emit.
     super.dispose();
   }
 

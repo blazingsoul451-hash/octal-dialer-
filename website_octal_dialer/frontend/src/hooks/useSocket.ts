@@ -173,14 +173,16 @@ export function useSocket(serverUrl: string = 'http://localhost:3000', authToken
   const hangupCall = () => {
     if (socketRef.current && sessionId) {
       socketRef.current.emit('dial:hangup', { sessionId });
-      setCallState('IDLE');
+      // Do NOT set IDLE here — wait for server's call:finished event
+      // This prevents the UI from showing 'IDLE' while the phone is still ringing/connected
     }
   };
 
   const emergencyStop = () => {
     if (socketRef.current && sessionId) {
       socketRef.current.emit('campaign:emergency_stop', { sessionId });
-      setCallState('IDLE');
+      // Do NOT set IDLE here — wait for call:finished from server
+      // The emergency_stopped event will still be received and can update UI accordingly
     }
   };
 

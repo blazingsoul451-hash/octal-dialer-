@@ -1073,6 +1073,11 @@ const lockStmts = {
     SET lockedBy = NULL, lockedAt = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END 
     WHERE id = @leadId
   `),
+  releaseLeadLockOwned: db.prepare(`
+    UPDATE leads 
+    SET lockedBy = NULL, lockedAt = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END 
+    WHERE id = @leadId AND lockedBy = @sessionId
+  `),
   unlockSessionLeads: db.prepare(`
     UPDATE leads 
     SET lockedBy = NULL, lockedAt = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END 
@@ -1102,8 +1107,17 @@ export function reserveLead(leadId: string, sessionId: string, leaseMinutes: num
   return result.changes > 0;
 }
 
-export function releaseLeadLock(leadId: string): void {
-  lockStmts.releaseLeadLock.run({ leadId });
+export function releaseLeadLock(leadId: string, sessionId?: string): void {
+  if (sessionId) {
+    // Ownership-verified release: only release if this session holds the lock
+    const result = lockStmts.releaseLeadLockOwned.run({ leadId, sessionId });
+    if (result.changes === 0) {
+      console.warn(`[LeadLock] Rejected lock release for lead ${leadId} — not owned by session ${sessionId}`);
+    }
+  } else {
+    // Unverified release (admin/cleanup path)
+    lockStmts.releaseLeadLock.run({ leadId });
+  }
 }
 
 export function unlockLeadsForSession(sessionId: string): void {

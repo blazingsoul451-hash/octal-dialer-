@@ -44,6 +44,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   late String _deviceIp;
   late String _deviceName;
   late String _deviceOs;
+  bool _isInCall = false;
 
   static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
 
@@ -257,7 +258,14 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
 
       _addLog('[Bridge] LAPTOP REQUEST CALL -> $name ($phone)');
       
+      // Guard: prevent pushing duplicate CallingScreen if already in a call
+      if (_isInCall) {
+        _addLog('[Bridge] Ignoring duplicate phone:dial — already in call');
+        return;
+      }
+      
       if (mounted) {
+        _isInCall = true;
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -271,7 +279,9 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
               sessionId: widget.sessionId,
             ),
           ),
-        );
+        ).then((_) {
+          _isInCall = false;
+        });
       }
     });
   }
