@@ -49,6 +49,7 @@ const JWT_EXPIRES_IN = 86400;
 export interface AuthUser {
   id: string;
   username: string;
+  displayName?: string;
   role: string;
   tenantId: string;
   email?: string;
@@ -184,7 +185,9 @@ export function authenticateGoogleSignIn(profile: { googleId: string; email: str
     user = db.prepare(`SELECT * FROM users WHERE email = ? OR username = ?`).get(email, email) as any;
     if (user) {
       // Link googleId to existing internal account without altering permissions or existing role!
-      db.prepare(`UPDATE users SET googleId = ?, authProvider = 'google_linked', updatedAt = ? WHERE id = ?`).run(googleId, now, user.id);
+      const updateDisplayName = (!user.displayName && profile.name) ? profile.name : user.displayName;
+      db.prepare(`UPDATE users SET googleId = ?, authProvider = 'google_linked', displayName = COALESCE(?, displayName), updatedAt = ? WHERE id = ?`).run(googleId, updateDisplayName, now, user.id);
+      if (updateDisplayName) user.displayName = updateDisplayName;
     }
   }
 
@@ -209,6 +212,7 @@ export function authenticateGoogleSignIn(profile: { googleId: string; email: str
     user: {
       id: user.id,
       username: user.username,
+      displayName: user.displayName || profile.name || user.username,
       role: user.role,
       tenantId: user.tenantId,
       email: user.email || email
@@ -241,6 +245,7 @@ export function registerGoogleSignUp(profile: { googleId: string; email: string;
   let candidateUsername = cleanBase.length >= 3 ? cleanBase : 'user';
   const existingWithUsername = db.prepare(`SELECT id FROM users WHERE username = ?`).get(candidateUsername) as any;
   const username = existingWithUsername ? `${candidateUsername}_${crypto.randomBytes(2).toString('hex')}` : candidateUsername;
+  const displayName = profile.name || cleanBase;
   const tenantId = 'tenant_' + crypto.randomBytes(8).toString('hex');
   const tenantSlug = candidateUsername.substring(0, 30);
   const companyName = profile.name ? `${profile.name}'s Organization` : `${candidateUsername}'s Team`;
@@ -255,9 +260,9 @@ export function registerGoogleSignUp(profile: { googleId: string; email: string;
 
     // 2b. Insert User
     db.prepare(`
-      INSERT INTO users (id, username, email, passwordHash, role, tenantId, googleId, authProvider, emailVerified, emailVerifiedAt, needsProfileSetup, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, 'user', ?, ?, 'google', 1, ?, 1, ?, ?)
-    `).run(userId, username, email, hash, tenantId, googleId, now, now, now);
+      INSERT INTO users (id, username, displayName, email, passwordHash, role, tenantId, googleId, authProvider, emailVerified, emailVerifiedAt, needsProfileSetup, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, 'user', ?, ?, 'google', 1, ?, 1, ?, ?)
+    `).run(userId, username, displayName, email, hash, tenantId, googleId, now, now, now);
 
     // 2c. Provision standard starter subscription
     const subId = 'sub_' + crypto.randomBytes(8).toString('hex');
@@ -377,6 +382,7 @@ export function completeGoogleProfileSetup(userId: string, params: { username?: 
     user: {
       id: user.id,
       username: user.username,
+      displayName: user.displayName || user.username,
       role: user.role,
       tenantId: user.tenantId,
       email: user.email
@@ -809,6 +815,7 @@ export function validateToken(token: string): AuthUser | null {
       return {
         id: dbUser.id,
         username: dbUser.username,
+        displayName: dbUser.displayName || dbUser.username,
         role: dbUser.role, // Use authoritative current database role
         tenantId: dbUser.tenantId, // Use authoritative current database tenant
         email: dbUser.email

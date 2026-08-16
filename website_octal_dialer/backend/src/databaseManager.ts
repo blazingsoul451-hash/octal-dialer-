@@ -466,6 +466,9 @@ try {
   if (!userColNames.has('needsProfileSetup')) {
     try { db.prepare(`ALTER TABLE users ADD COLUMN needsProfileSetup INTEGER DEFAULT 0`).run(); } catch (_) {}
   }
+  if (!userColNames.has('displayName')) {
+    try { db.prepare(`ALTER TABLE users ADD COLUMN displayName TEXT`).run(); } catch (_) {}
+  }
 
   const tenantCols = db.prepare(`PRAGMA table_info(tenants)`).all() as any[];
   const tenantColNames = new Set(tenantCols.map(c => c.name));

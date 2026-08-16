@@ -517,7 +517,7 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
       picture
     }, authIntent);
 
-    res.redirect(`${clientOrigin}/?token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
+    res.redirect(`${clientOrigin}/?token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&displayName=${encodeURIComponent((result.user as any).displayName || result.user.username)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
   } catch (err: any) {
     console.error('[Google OAuth Callback Error]:', err);
     const code = err.code || '';
@@ -725,9 +725,9 @@ app.post('/api/mobile/login', (req, res) => {
     }
 
     // Allocate or reclaim an active calling session scoped strictly to caller's tenantId
-    const tenantId = authResult.user.id;
+    const tenantId = authResult.user.tenantId || 'tenant_default';
     const tenantSessions = (Array.from(getSessions().values()) as Session[]).filter(s => s.tenantId === tenantId);
-    const activeSession = tenantSessions.length > 0 ? tenantSessions[0] : reclaimOrCreateSession('laptop_mobile_host', tenantId);
+    const activeSession = tenantSessions.length > 0 ? tenantSessions[0] : reclaimOrCreateSession('laptop_mobile_host', undefined, tenantId);
 
     // Automatically pair device
     pairPhone(
@@ -741,8 +741,8 @@ app.post('/api/mobile/login', (req, res) => {
     );
 
     // Retrieve database campaigns & leads summary
-    const campaigns = db.prepare(`SELECT * FROM campaigns ORDER BY createdAt DESC`).all();
-    const leads = db.prepare(`SELECT id, campaignId, name, phone, status, outcome, duration FROM leads LIMIT 100`).all();
+    const campaigns = db.prepare(`SELECT * FROM campaigns WHERE tenantId = ? ORDER BY createdAt DESC`).all(tenantId);
+    const leads = db.prepare(`SELECT id, campaignId, name, phone, status, outcome, duration FROM leads WHERE tenantId = ? LIMIT 100`).all(tenantId);
 
     res.json({
       success: true,
@@ -2119,7 +2119,7 @@ io.on('connection', (socket) => {
 
     if (!targetTenantId && data.authToken) {
       const u = validateToken(data.authToken);
-      if (u) targetTenantId = u.id;
+      if (u) targetTenantId = u.tenantId;
     }
 
     let session = pairPhone(
@@ -2135,9 +2135,9 @@ io.on('connection', (socket) => {
     if (!session && tokenOrSessionId) {
       const user = validateToken(tokenOrSessionId);
       if (user) {
-        targetTenantId = user.id;
-        const tenantSessions = Array.from(getSessions().values()).filter((s: any) => s.tenantId === user.id);
-        const active = tenantSessions.length > 0 ? tenantSessions[0] : reclaimOrCreateSession('laptop_mobile_host', user.id);
+        targetTenantId = user.tenantId;
+        const tenantSessions = Array.from(getSessions().values()).filter((s: any) => s.tenantId === user.tenantId);
+        const active = tenantSessions.length > 0 ? tenantSessions[0] : reclaimOrCreateSession('laptop_mobile_host', undefined, user.tenantId);
         session = pairPhone(
           active.token,
           socket.id,
