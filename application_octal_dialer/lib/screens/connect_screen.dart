@@ -51,7 +51,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
       if (serverUrl == null && (parsed.scheme == 'http' || parsed.scheme == 'https') && parsed.host.isNotEmpty) {
         final portStr = parsed.hasPort ? ':${parsed.port}' : (parsed.scheme == 'https' ? '' : ':3000');
-        serverUrl = '${parsed.scheme}://${parsed.host}${portStr}';
+        serverUrl = '${parsed.scheme}://${parsed.host}$portStr';
       }
 
       if (sessionId == null || sessionId.isEmpty || token == null || token.isEmpty || serverUrl == null || serverUrl.isEmpty) {
@@ -88,8 +88,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
           context,
           MaterialPageRoute(
             builder: (context) => ConnectedScreen(
-              sessionId: sessionId!,
-              token: token!,
+              sessionId: sessionId,
+              token: token,
               serverUrl: serverUrl!,
               laptopName: laptopName,
               laptopBtAddress: laptopBtAddress,

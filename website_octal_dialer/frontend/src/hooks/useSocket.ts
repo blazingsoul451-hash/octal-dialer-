@@ -105,14 +105,20 @@ export function useSocket(serverUrl: string = 'http://localhost:3000', authToken
 
     socket.on('device:error', (data: { error: string }) => {
       setDeviceError(data.error);
+      setCallState('IDLE');
       setTimeout(() => setDeviceError(null), 6000);
+    });
+
+    socket.on('error', (err: any) => {
+      setCallState('IDLE');
+      console.warn('[Socket Error]:', err);
     });
 
     socket.on('call:started', () => {
       setCallState('ACTIVE');
     });
 
-    socket.on('call:finished', (data: { reason: string; duration: number }) => {
+    socket.on('call:finished', (data: { reason: string; duration: number; leadId?: string; commandId?: string }) => {
       setCallState('IDLE');
       setLastCallFinished(data);
     });

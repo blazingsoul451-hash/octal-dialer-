@@ -1,4 +1,4 @@
-﻿# Dependencies
+# Dependencies
 node_modules/
 
 # Build & Output files
@@ -28,3 +28,8 @@ build/
 .env
 aws_credentials.txt
 supabase_credentials
+
+# Archives & Review Bundles
+*.zip
+FOR_GPT_REVIEW/
+

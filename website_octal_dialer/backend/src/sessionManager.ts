@@ -53,7 +53,7 @@ export function generateToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
-export function createSession(laptopSocketId: string, tenantId?: string): Session {
+export function createSession(laptopSocketId: string, tenantId?: string, userId?: string): Session {
   const sessionId = 'sess_' + Math.random().toString(36).substring(2, 11);
   const token = generateToken();
   const now = new Date();
@@ -75,6 +75,7 @@ export function createSession(laptopSocketId: string, tenantId?: string): Sessio
     status: 'WAITING',
     lastHeartbeat: null,
     tenantId: tenantId || undefined,
+    userId: userId || undefined,
     createdAt: now,
     updatedAt: now
   };
@@ -96,7 +97,9 @@ export function getSessionBySocketId(socketId: string): Session | undefined {
   );
 }
 
-export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId?: string, tenantId?: string): Session {
+export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId?: string, tenantId?: string): Session;
+export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId?: string, tenantId?: string, userId?: string): Session;
+export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId?: string, tenantId?: string, userId?: string): Session {
   // 1. Reclaim the exact same session by ID
   if (previousSessionId && sessions.has(previousSessionId)) {
     const s = sessions.get(previousSessionId)!;
@@ -107,24 +110,29 @@ export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId
     } else {
       s.laptopSocketId = laptopSocketId;
       if (tenantId) s.tenantId = tenantId;
+      if (userId && !s.userId) s.userId = userId;
       s.updatedAt = new Date();
       console.log(`[Session] Laptop reclaimed session ${s.id} (tenant: ${s.tenantId || 'unassigned'})`);
       return s;
     }
   }
 
-  // 2. Reclaim any session that has no active laptop socket (laptop reconnect)
-  const orphaned = Array.from(sessions.values()).find(s => !s.laptopSocketId);
-  if (orphaned) {
-    orphaned.laptopSocketId = laptopSocketId;
-    if (tenantId) orphaned.tenantId = tenantId;
-    orphaned.updatedAt = new Date();
-    console.log(`[Session] Laptop reclaimed orphaned session ${orphaned.id} (tenant: ${orphaned.tenantId || 'unassigned'})`);
-    return orphaned;
+  // 2. Reclaim any session for THIS TENANT & USER that has no active laptop socket (laptop reconnect)
+  if (tenantId) {
+    const orphaned = Array.from(sessions.values()).find(
+      s => !s.laptopSocketId && s.tenantId === tenantId && (!userId || !s.userId || s.userId === userId)
+    );
+    if (orphaned) {
+      orphaned.laptopSocketId = laptopSocketId;
+      if (userId && !orphaned.userId) orphaned.userId = userId;
+      orphaned.updatedAt = new Date();
+      console.log(`[Session] Laptop reclaimed orphaned session ${orphaned.id} (tenant: ${orphaned.tenantId || 'unassigned'})`);
+      return orphaned;
+    }
   }
 
   // 3. Create fresh session
-  return createSession(laptopSocketId, tenantId);
+  return createSession(laptopSocketId, tenantId, userId);
 }
 
 export function pairPhone(
@@ -180,7 +188,7 @@ export function pairPhone(
   try {
     const pairDeviceTxn = db.transaction(() => {
       const devId = phoneBtAddress || 'dev_' + phoneDeviceName.replace(/\s+/g, '_');
-      const existingDevice = db.prepare(`SELECT id FROM devices WHERE id = ? AND tenantId = ?`).get(devId, tenantId);
+      const existingDevice = db.prepare(`SELECT id FROM devices WHERE (id = ? OR (btAddress IS NOT NULL AND btAddress = ?)) AND tenantId = ?`).get(devId, phoneBtAddress || '', tenantId) as { id: string } | undefined;
       if (!existingDevice) {
         const limitCheck = checkLimit(tenantId, 'maxDevices', 1);
         if (!limitCheck.allowed) {
@@ -189,6 +197,8 @@ export function pairPhone(
           throw err;
         }
       }
+
+      const targetId = existingDevice ? existingDevice.id : devId;
 
       db.prepare(`
         INSERT INTO devices (id, name, btAddress, osType, ipAddress, status, tenantId, lastSeenAt)
@@ -201,7 +211,7 @@ export function pairPhone(
           tenantId = @tenantId,
           lastSeenAt = @lastSeenAt
       `).run({
-        id: devId,
+        id: targetId,
         name: phoneDeviceName,
         btAddress: phoneBtAddress,
         osType: phoneOsType,

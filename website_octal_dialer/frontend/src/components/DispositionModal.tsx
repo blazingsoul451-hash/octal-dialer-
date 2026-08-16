@@ -7,6 +7,7 @@ interface DispositionModalProps {
   leadName: string;
   onClose: () => void;
   serverUrl: string;
+  authToken?: string;
   onSaveSuccess: () => void;
   isLight?: boolean;
 }
@@ -17,6 +18,7 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
   leadName,
   onClose,
   serverUrl,
+  authToken,
   onSaveSuccess,
   isLight
 }) => {
@@ -29,9 +31,13 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
   const handleSave = async () => {
     setSaving(true);
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
       const res = await fetch(`${serverUrl}/api/logs/update`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ leadId, outcome, notes })
       });
       if (res.ok) {

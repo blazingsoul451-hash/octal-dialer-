@@ -44,63 +44,89 @@ export interface SafetyResult {
   commandId?: string;   // populated when allowed === true
 }
 
-// ─── Global emergency stop flag ───────────────────────────────────────────────
-let emergencyStopped = false;
+// ─── Scoped emergency stop flags ─────────────────────────────────────────────
+let globalEmergencyStopped = false;
+const emergencyStoppedTenants = new Set<string>();
+const emergencyStoppedCampaigns = new Set<string>();
 
-export function isEmergencyStopped(): boolean {
-  return emergencyStopped;
+export function isEmergencyStopped(tenantId?: string, campaignId?: string): boolean {
+  if (globalEmergencyStopped) return true;
+  if (tenantId && emergencyStoppedTenants.has(tenantId)) return true;
+  if (campaignId && emergencyStoppedCampaigns.has(campaignId)) return true;
+  return false;
 }
 
-export function triggerEmergencyStop(): void {
-  emergencyStopped = true;
-  console.warn('[SafetyController] ⛔ EMERGENCY STOP ACTIVATED — all dialing blocked');
+export function triggerEmergencyStop(tenantId?: string, campaignId?: string): void {
+  if (campaignId) {
+    emergencyStoppedCampaigns.add(campaignId);
+    console.warn(`[SafetyController] ⛔ EMERGENCY STOP ACTIVATED for campaign ${campaignId}`);
+  } else if (tenantId) {
+    emergencyStoppedTenants.add(tenantId);
+    console.warn(`[SafetyController] ⛔ EMERGENCY STOP ACTIVATED for tenant ${tenantId}`);
+  } else {
+    globalEmergencyStopped = true;
+    console.warn('[SafetyController] ⛔ GLOBAL EMERGENCY STOP ACTIVATED — all dialing blocked');
+  }
 }
 
-export function clearEmergencyStop(): void {
-  emergencyStopped = false;
-  console.log('[SafetyController] ✅ Emergency stop cleared — dialing re-enabled');
+export function clearEmergencyStop(tenantId?: string, campaignId?: string): void {
+  if (campaignId) {
+    emergencyStoppedCampaigns.delete(campaignId);
+    console.log(`[SafetyController] ✅ Emergency stop cleared for campaign ${campaignId}`);
+  } else if (tenantId) {
+    emergencyStoppedTenants.delete(tenantId);
+    console.log(`[SafetyController] ✅ Emergency stop cleared for tenant ${tenantId}`);
+  } else {
+    globalEmergencyStopped = false;
+    emergencyStoppedTenants.clear();
+    emergencyStoppedCampaigns.clear();
+    console.log('[SafetyController] ✅ Emergency stop cleared globally');
+  }
 }
 
-// ─── Rate limiting (in-memory rolling 60-min window per campaign) ─────────────
-// Map<campaignId, timestamps[]>
+// ─── Rate limiting (in-memory rolling 60-min window per campaign/tenant) ─────
+// Map<scopedKey, timestamps[]>
 const rateLimitMap = new Map<string, number[]>();
 
 const DEFAULT_MAX_CALLS_PER_HOUR = 120; // conservative default
 
-function checkRateLimit(campaignId: string, maxPerHour: number = DEFAULT_MAX_CALLS_PER_HOUR): boolean {
+function checkRateLimit(campaignId: string, tenantId: string = 'tenant_default', maxPerHour: number = DEFAULT_MAX_CALLS_PER_HOUR): boolean {
   const now = Date.now();
   const windowMs = 60 * 60 * 1000; // 1 hour
+  const key = `${tenantId}_${campaignId}`;
 
-  let timestamps = rateLimitMap.get(campaignId) || [];
+  let timestamps = rateLimitMap.get(key) || [];
   // Drop entries older than 1 hour
   timestamps = timestamps.filter(t => now - t < windowMs);
-  rateLimitMap.set(campaignId, timestamps);
+  rateLimitMap.set(key, timestamps);
 
   return timestamps.length < maxPerHour;
 }
 
-function recordCall(campaignId: string): void {
-  const timestamps = rateLimitMap.get(campaignId) || [];
+function recordCall(campaignId: string, tenantId: string = 'tenant_default'): void {
+  const key = `${tenantId}_${campaignId}`;
+  const timestamps = rateLimitMap.get(key) || [];
   timestamps.push(Date.now());
-  rateLimitMap.set(campaignId, timestamps);
+  rateLimitMap.set(key, timestamps);
 }
 
-export function getCallsInLastHour(campaignId: string): number {
+export function getCallsInLastHour(campaignId: string, tenantId: string = 'tenant_default'): number {
   const now = Date.now();
   const windowMs = 60 * 60 * 1000;
-  const timestamps = rateLimitMap.get(campaignId) || [];
+  const key = `${tenantId}_${campaignId}`;
+  const timestamps = rateLimitMap.get(key) || [];
   return timestamps.filter(t => now - t < windowMs).length;
 }
 
 // ─── Prepared statements ──────────────────────────────────────────────────────
 const stmts = {
-  getCampaign:      db.prepare(`SELECT * FROM campaigns WHERE id = @id`),
-  getLead:          db.prepare(`SELECT * FROM leads WHERE id = @id`),
-  getLeadByPhone:   db.prepare(`SELECT * FROM leads WHERE phone = @phone LIMIT 1`),
-  isSuppressed:     db.prepare(`SELECT id FROM suppression_list WHERE phone = @phone LIMIT 1`),
-  addSuppressed:    db.prepare(`INSERT OR IGNORE INTO suppression_list (id, phone, reason, source, addedAt) VALUES (@id, @phone, @reason, @source, @addedAt)`),
-  removeSuppressed: db.prepare(`DELETE FROM suppression_list WHERE id = @id`),
-  listSuppressed:   db.prepare(`SELECT * FROM suppression_list ORDER BY addedAt DESC`),
+  getCampaign:      db.prepare(`SELECT * FROM campaigns WHERE id = @id AND tenantId = @tenantId`),
+  getLead:          db.prepare(`SELECT * FROM leads WHERE id = @id AND tenantId = @tenantId`),
+  getLeadByPhone:   db.prepare(`SELECT * FROM leads WHERE phone = @phone AND tenantId = @tenantId LIMIT 1`),
+  isSuppressed:     db.prepare(`SELECT id FROM suppression_list WHERE phone = @phone AND (tenantId = @tenantId OR tenantId = 'tenant_default') LIMIT 1`),
+  addSuppressed:    db.prepare(`INSERT OR IGNORE INTO suppression_list (id, phone, reason, source, tenantId, addedAt) VALUES (@id, @phone, @reason, @source, @tenantId, @addedAt)`),
+  removeSuppressed: db.prepare(`DELETE FROM suppression_list WHERE id = @id AND tenantId = @tenantId`),
+  listSuppressed:   db.prepare(`SELECT * FROM suppression_list WHERE tenantId = @tenantId ORDER BY addedAt DESC`),
   logAudit:         db.prepare(`INSERT INTO audit_logs (id, action, entityType, entityId, performedBy, details, timestamp) VALUES (@id, @action, @entityType, @entityId, @performedBy, @details, @timestamp)`),
   // Command ID idempotency
   insertCommand:       db.prepare(`INSERT OR IGNORE INTO commands (id, leadId, sessionId, issuedAt, expiresAt) VALUES (@id, @leadId, @sessionId, @issuedAt, @expiresAt)`),
@@ -117,22 +143,25 @@ export interface CallRequest {
   leadId?: string;   // optional — if provided, lead-level checks run
   phone: string;
   campaignId?: string;
+  tenantId?: string;
 }
 
 export function checkCallAllowed(req: CallRequest): SafetyResult {
-  // ── Layer 1: Global emergency stop ────────────────────────────────────────
-  if (emergencyStopped) {
-    return { allowed: false, reason: 'EMERGENCY_STOPPED', message: 'Emergency stop is active. Dialing blocked globally.' };
+  const tenantId = req.tenantId || 'tenant_default';
+
+  // ── Layer 1: Emergency stop checks ─────────────────────────────────────────
+  if (isEmergencyStopped(tenantId, req.campaignId)) {
+    return { allowed: false, reason: 'EMERGENCY_STOPPED', message: 'Emergency stop is active for your tenant/campaign.' };
   }
 
   // ── Layer 1: Campaign checks ──────────────────────────────────────────────
   if (req.campaignId) {
-    const campaign = stmts.getCampaign.get({ id: req.campaignId }) as any;
+    const campaign = stmts.getCampaign.get({ id: req.campaignId, tenantId }) as any;
     if (!campaign) {
-      return { allowed: false, reason: 'CAMPAIGN_NOT_FOUND', message: 'Campaign not found.' };
+      return { allowed: false, reason: 'CAMPAIGN_NOT_FOUND', message: 'Campaign not found or not owned by your tenant.' };
     }
 
-    if (!checkRateLimit(req.campaignId)) {
+    if (!checkRateLimit(req.campaignId, tenantId)) {
       return {
         allowed: false,
         reason: 'CAMPAIGN_RATE_LIMIT',
@@ -145,16 +174,16 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
   const normalizedPhone = normalizePhone(req.phone || '');
 
   if (normalizedPhone) {
-    const suppressed = stmts.isSuppressed.get({ phone: normalizedPhone }) as any;
+    const suppressed = stmts.isSuppressed.get({ phone: normalizedPhone, tenantId }) as any;
     if (suppressed) {
       return { allowed: false, reason: 'LEAD_SUPPRESSED', message: `Number ${req.phone} (${normalizedPhone}) is on the suppression list (DNC).` };
     }
   }
 
   if (req.leadId) {
-    const lead = stmts.getLead.get({ id: req.leadId }) as any;
+    const lead = stmts.getLead.get({ id: req.leadId, tenantId }) as any;
     if (!lead) {
-      return { allowed: false, reason: 'LEAD_NOT_FOUND', message: 'Lead record not found.' };
+      return { allowed: false, reason: 'LEAD_NOT_FOUND', message: 'Lead record not found in your tenant.' };
     }
     if (lead.status === 'CALLING') {
       return { allowed: false, reason: 'LEAD_ALREADY_CALLING', message: 'This lead is already being called.' };
@@ -177,7 +206,7 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
     }
 
     // ── Layer 2.6: Lead Reservation & Lock Check ─────────────────────────────
-    const reserved = reserveLead(req.leadId, req.sessionId);
+    const reserved = reserveLead(req.leadId, req.sessionId, tenantId);
     if (!reserved) {
       return {
         allowed: false,
@@ -200,7 +229,7 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
 
   // ── All checks passed — issue command ID ─────────────────────────────────
   if (req.campaignId) {
-    recordCall(req.campaignId);
+    recordCall(req.campaignId, tenantId);
   }
 
   const commandId = issueCommandId(req.leadId || req.phone, req.sessionId);

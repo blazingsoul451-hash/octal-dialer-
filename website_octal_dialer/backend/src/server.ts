@@ -47,6 +47,9 @@ import {
   recordLeadActivity,
   getLeadActivities,
   hasUserModulePermission,
+  getUserPermissions,
+  updateLogDisposition,
+  ALL_BUSINESS_MODULES,
   registerOrUpdateDevice,
   getDevicesForUser,
   getDeviceById,
@@ -80,6 +83,7 @@ import {
   changePassword,
   registerPublicUser,
   findOrCreateGoogleUser,
+  handleGoogleAuthWithIntent,
   updateUserRole,
   requirePlatformAdmin,
   requireTenantAdmin,
@@ -156,8 +160,8 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
   next();
 }
 
-const httpServer = createServer(app);
-const io = new SocketIOServer(httpServer, {
+export const httpServer = createServer(app);
+export const io = new SocketIOServer(httpServer, {
   cors: {
     origin: checkOrigin,
     methods: ['GET', 'POST'],
@@ -306,9 +310,10 @@ const getEffectiveServerUrl = getPublicBaseUrl;
 
 // ─── Auth REST Endpoints (no requireAuth — public) ──────────────────────────
 
-// POST /auth/login
-app.post('/auth/login', (req, res) => {
-  const { username, password } = req.body as { username: string; password: string };
+// POST /auth/login & /api/auth/login
+app.post(['/auth/login', '/api/auth/login'], (req, res) => {
+  const username = (req.body?.username || req.body?.identifier || '').trim();
+  const password = req.body?.password || '';
   if (!username || !password) {
     res.status(400).json({ error: 'Username and password required.' });
     return;
@@ -326,8 +331,8 @@ app.post('/auth/login', (req, res) => {
   res.json({ token, username: user.username, role: user.role, user });
 });
 
-// POST /auth/register — Public Sign Up
-app.post('/auth/register', (req, res) => {
+// POST /auth/register & /api/auth/register — Public Sign Up
+app.post(['/auth/register', '/api/auth/register'], (req, res) => {
   const { username, password, email } = req.body as { username: string; password: string; email?: string };
   if (!username || !password) {
     res.status(400).json({ error: 'Username and password are required.' });
@@ -439,9 +444,11 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
   try {
     const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
 
+    let authIntent: 'signin' | 'signup' = 'signin';
     if (state && oauthStates.has(state)) {
       const stored = oauthStates.get(state)!;
       clientOrigin = stored.clientOrigin;
+      authIntent = (stored as any).intent || 'signin';
       oauthStates.delete(state);
     }
 
@@ -503,28 +510,94 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
       throw new Error('Could not retrieve verified email from Google.');
     }
 
-    const result = findOrCreateGoogleUser({
+    const result = handleGoogleAuthWithIntent({
       email,
       name,
       googleId,
       picture
-    });
+    }, authIntent);
 
-    res.redirect(`${clientOrigin}/?token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&user=${encodeURIComponent(result.user.username)}`);
+    res.redirect(`${clientOrigin}/?token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
   } catch (err: any) {
     console.error('[Google OAuth Callback Error]:', err);
-    res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(err.message || 'Google authentication failed.')}`);
+    const code = err.code || '';
+    const emailParam = err.email ? `&email=${encodeURIComponent(err.email)}` : '';
+    res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(code || err.message || 'Google authentication failed.')}${emailParam}`);
+  }
+});
+
+// POST /auth/google/verify & /api/auth/google/verify — Google One-Tap / Pop-up verification with intent
+app.post(['/auth/google/verify', '/api/auth/google/verify'], (req, res) => {
+  const { credential, intent = 'signin' } = req.body as {
+    credential?: string;
+    intent?: 'signin' | 'signup';
+    captchaToken?: string;
+  };
+
+  if (!credential || typeof credential !== 'string') {
+    res.status(400).json({ error: 'Google credential token is required.' });
+    return;
+  }
+
+  let email = '';
+  let name = '';
+  let googleId = '';
+  let picture = '';
+
+  try {
+    const parts = credential.split('.');
+    if (parts.length >= 2) {
+      const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const payloadJson = Buffer.from(payloadBase64, 'base64').toString('utf-8');
+      const payload = JSON.parse(payloadJson);
+      if (payload.email) email = payload.email;
+      if (payload.name) name = payload.name;
+      if (payload.sub) googleId = payload.sub;
+      if (payload.picture) picture = payload.picture;
+    }
+  } catch (e) {
+    console.warn('[Google OAuth Verify] Failed to decode Google JWT credential:', e);
+  }
+
+  if (!email) {
+    res.status(400).json({ error: 'Could not extract valid email from Google credential token.' });
+    return;
+  }
+
+  try {
+    const result = handleGoogleAuthWithIntent({
+      email,
+      name,
+      googleId,
+      picture
+    }, intent);
+
+    res.json({
+      success: true,
+      token: result.token,
+      username: result.user.username,
+      role: result.user.role,
+      user: result.user,
+      isNewUser: result.isNewUser
+    });
+  } catch (err: any) {
+    if (err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
+      res.status(400).json({ code: err.code, error: err.message, email: err.email });
+      return;
+    }
+    res.status(400).json({ error: err.message || 'Google authentication failed.' });
   }
 });
 
 // POST /auth/google — Google OAuth 2.0 Sign In & Sign Up (One-Tap & Direct)
-app.post('/auth/google', (req, res) => {
-  const { credential, email, name, googleId, picture } = req.body as {
+app.post(['/auth/google', '/api/auth/google'], (req, res) => {
+  const { credential, email, name, googleId, picture, intent = 'signin' } = req.body as {
     credential?: string;
     email?: string;
     name?: string;
     googleId?: string;
     picture?: string;
+    intent?: 'signin' | 'signup';
   };
 
   let targetEmail = email || '';
@@ -556,12 +629,12 @@ app.post('/auth/google', (req, res) => {
   }
 
   try {
-    const result = findOrCreateGoogleUser({
+    const result = handleGoogleAuthWithIntent({
       email: targetEmail,
       name: targetName,
       googleId: targetGoogleId,
       picture: targetPicture
-    });
+    }, intent);
 
     res.json({
       success: true,
@@ -572,8 +645,41 @@ app.post('/auth/google', (req, res) => {
       isNewUser: result.isNewUser
     });
   } catch (err: any) {
+    if (err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
+      res.status(400).json({ code: err.code, error: err.message, email: err.email });
+      return;
+    }
     res.status(400).json({ error: err.message || 'Google authentication failed.' });
   }
+});
+
+// GET /auth/permissions & /api/auth/permissions — Module permissions for authenticated user
+app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, (req, res) => {
+  const user = (req as any).user;
+  if (!user) {
+    res.status(401).json({ error: 'Unauthorized.' });
+    return;
+  }
+
+  if (user.role === 'platform_admin' || user.role === 'admin') {
+    const allPerms: Record<string, boolean> = {};
+    for (const m of ALL_BUSINESS_MODULES) {
+      allPerms[m] = true;
+    }
+    res.json({
+      success: true,
+      permissions: allPerms,
+      userRole: user.role
+    });
+    return;
+  }
+
+  const perms = getUserPermissions(user.id, user.tenantId);
+  res.json({
+    success: true,
+    permissions: perms,
+    userRole: user.role
+  });
 });
 
 // POST /api/mobile/login — Dedicated Mobile App Login & Instant Session Sync
@@ -896,23 +1002,15 @@ app.get('/info', (req, res) => {
 });
 
 // REST: Campaigns (protected)
-app.get('/campaigns', requireAuth, (req, res) => {
-  res.json(getCampaigns());
+app.get(['/campaigns', '/api/campaigns'], requireAuth, (req, res) => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  res.json(getCampaigns(tenantId));
 });
 
 // REST: Get leads for a campaign (protected)
-app.get('/campaigns/:id/leads', requireAuth, (req, res) => {
-  res.json(getLeads(req.params.id));
-});
-
-// REST: Public fallback for leads
-app.get('/api/campaigns/:id/leads', (req, res) => {
-  res.json(getLeads(req.params.id));
-});
-
-// GET /api/campaigns/mobile — public endpoint for mobile dashboard
-app.get('/api/campaigns/mobile', (req, res) => {
-  res.json(getCampaigns());
+app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, (req, res) => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  res.json(getLeads(req.params.id, tenantId));
 });
 
 // GET /download/apk — serve APK binary file to mobile clients
@@ -934,20 +1032,11 @@ app.get('/download/apk', (req, res) => {
 });
 
 // REST: Delete single lead (protected)
-app.delete('/api/leads/:id', requireAuth, (req, res) => {
-  const success = deleteLead(req.params.id);
+app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, (req, res) => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const success = deleteLead(req.params.id, tenantId);
   if (success) {
-    io.emit('leads:updated');
-    res.json({ success: true, message: `Lead ${req.params.id} deleted.` });
-  } else {
-    res.status(404).json({ error: 'Lead not found.' });
-  }
-});
-
-// REST: Delete single lead shortcut without /api prefix
-app.delete('/leads/:id', requireAuth, (req, res) => {
-  const success = deleteLead(req.params.id);
-  if (success) {
+    io.to(`tenant_${tenantId}`).emit('leads:updated');
     io.emit('leads:updated');
     res.json({ success: true, message: `Lead ${req.params.id} deleted.` });
   } else {
@@ -957,28 +1046,55 @@ app.delete('/leads/:id', requireAuth, (req, res) => {
 
 // REST: Purge all fake/sample leads across queue (protected)
 app.post('/api/leads/purge-fake', requireAuth, (req, res) => {
-  const count = clearFakeQueueLeads();
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const count = clearFakeQueueLeads(tenantId);
+  io.to(`tenant_${tenantId}`).emit('leads:updated');
   io.emit('leads:updated');
   res.json({ success: true, count, message: `Removed ${count} fake/sample leads.` });
 });
 
 // REST: Clear all leads in a campaign (protected)
-app.delete('/campaigns/:id/leads', requireAuth, (req, res) => {
-  const count = clearAllLeadsInCampaign(req.params.id);
+app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, (req, res) => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const count = clearAllLeadsInCampaign(req.params.id, tenantId);
+  io.to(`tenant_${tenantId}`).emit('leads:updated');
   io.emit('leads:updated');
   res.json({ success: true, count, message: `Cleared ${count} leads in campaign ${req.params.id}.` });
 });
 
 // REST: Call logs history (protected — for dashboard)
-app.get('/logs', requireAuth, (req, res) => {
-  res.json(getLogs());
+app.get(['/logs', '/api/logs'], requireAuth, (req, res) => {
+  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  res.json(getLogs(tenantId));
 });
 
-// REST: Call logs — public mobile-friendly endpoint (no auth needed, phone is already paired via socket)
-app.get('/api/logs/mobile', (req, res) => {
-  const logs = getLogs();
-  // Return last 100 only for mobile
-  res.json(logs.slice(0, 100));
+// POST /api/logs/update & /logs/update — Update call disposition (protected)
+app.post(['/api/logs/update', '/logs/update'], requireAuth, (req, res) => {
+  const { leadId, outcome, notes } = req.body as { leadId?: string; outcome?: string; notes?: string };
+  const user = (req as any).user;
+  const tenantId = user?.tenantId || 'tenant_default';
+
+  if (!leadId || !outcome) {
+    res.status(400).json({ error: 'leadId and outcome are required.' });
+    return;
+  }
+
+  const updated = updateLogDisposition({
+    leadId,
+    outcome,
+    notes: notes || '',
+    tenantId,
+    userId: user?.id,
+    username: user?.username
+  });
+
+  if (updated) {
+    io.to(`tenant_${tenantId}`).emit('leads:updated');
+    io.emit('leads:updated');
+    res.json({ success: true, message: 'Disposition saved successfully.' });
+  } else {
+    res.status(404).json({ error: 'Lead or log record not found in tenant.' });
+  }
 });
 
 // REST: Scan sibling scraper folders (protected)
@@ -1011,6 +1127,7 @@ app.get('/api/scraper-files', requireAuth, (req, res) => {
 // REST: Import leads from scraped file (protected)
 app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
   try {
+    const tenantId = (req as any).user?.tenantId || 'tenant_default';
     const { filePath, campaignName } = req.body as { filePath: string; campaignName?: string };
     if (!filePath || !fs.existsSync(filePath)) {
       res.status(404).json({ error: 'File not found on system.' });
@@ -1083,7 +1200,7 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
       return;
     }
 
-    const result = createCampaign(finalCampaignName, fileName, leads);
+    const result = createCampaign(finalCampaignName, fileName, leads, tenantId);
     res.json({
       success: true,
       campaignId: result.campaign.id,
@@ -1637,6 +1754,19 @@ interface ActivePhoneSocket {
 }
 const authenticatedPhoneSockets = new Map<string, ActivePhoneSocket>();
 
+// Socket.IO Handshake Auth Middleware
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token || (socket.handshake.headers?.authorization ? socket.handshake.headers.authorization.replace('Bearer ', '') : undefined);
+  if (token) {
+    const user = validateToken(token);
+    if (user) {
+      socket.data.user = user;
+      socket.data.tenantId = user.tenantId;
+    }
+  }
+  next();
+});
+
 // WebSocket Event Handlers
 io.on('connection', (socket) => {
   console.log(`[Socket] Connected: ${socket.id}`);
@@ -1707,6 +1837,7 @@ io.on('connection', (socket) => {
     });
 
     socket.emit('phone:auth-success', {
+      success: true,
       deviceId: device.id,
       status: 'ONLINE',
       user: {
@@ -1727,12 +1858,17 @@ io.on('connection', (socket) => {
       lastSeenAt: new Date().toISOString()
     });
   });
-
   // ─── LAPTOP EXPLICIT CONNECT TO REGISTERED DEVICE ─────────────────────────────
   socket.on('laptop:connect-device', ({ sessionId, deviceId }: { sessionId: string; deviceId: string }) => {
     const session = getSessionById(sessionId);
     if (!session) {
       socket.emit('device:error', { error: 'Session not found.' });
+      return;
+    }
+
+    // Verify emitting socket is the authorized laptop socket for this session
+    if (session.laptopSocketId !== socket.id) {
+      socket.emit('device:error', { error: 'Unauthorized: Emitting socket is not the owner of this session.' });
       return;
     }
 
@@ -1828,6 +1964,12 @@ io.on('connection', (socket) => {
     const session = getSessionById(sessionId);
     if (!session) return;
 
+    // Verify emitting socket is the authorized laptop socket
+    if (session.laptopSocketId !== socket.id) {
+      console.warn(`[Socket] Rejected laptop:disconnect-device from unauthorized socket ${socket.id}`);
+      return;
+    }
+
     const targetDevId = deviceId || session.phoneDeviceId;
 
     if (session.phoneSocketId) {
@@ -1884,12 +2026,26 @@ io.on('connection', (socket) => {
     console.log(`[Phone Unlinked] Phone socket ${socket.id} disconnected from session ${sid}`);
   });
 
-  socket.on('laptop:register', (data?: { previousSessionId?: string }) => {
-    const tenantId = socket.data.tenantId || (socket.data.user ? socket.data.user.id : 'user_admin_e38eeed3');
+  socket.on('laptop:register', (data?: { previousSessionId?: string; authToken?: string }) => {
+    let tenantId = socket.data.tenantId;
+    let userId = socket.data.user?.id;
+    if (data?.authToken) {
+      const user = validateToken(data.authToken);
+      if (user) {
+        socket.data.user = user;
+        socket.data.tenantId = user.tenantId;
+        tenantId = user.tenantId;
+        userId = user.id;
+      }
+    }
+    if (!tenantId) {
+      tenantId = socket.data.user ? (socket.data.user.tenantId || socket.data.user.id) : 'user_admin_e38eeed3';
+    }
     const session = reclaimOrCreateSession(socket.id, data?.previousSessionId, tenantId);
+    if (userId && !session.userId) session.userId = userId;
     socket.join(session.id);
     socket.data.sessionId = session.id;
-    console.log(`[Socket] Laptop registered: ${session.id} | Tenant: ${tenantId} | Status: ${session.status}`);
+    console.log(`[Socket] Laptop registered: ${session.id} | Tenant: ${tenantId} | User: ${userId || 'anonymous'} | Status: ${session.status}`);
 
     const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
 
@@ -1916,7 +2072,8 @@ io.on('connection', (socket) => {
         phoneBtAddress: session.phoneBtAddress,
         phoneOsType: session.phoneOsType,
         phoneIpAddress: session.phoneIpAddress,
-        phoneStatus: session.phoneStatus || 'READY'
+        phoneStatus: session.phoneStatus || 'READY',
+        deviceId: session.phoneDeviceId
       });
     }
   });
@@ -2080,8 +2237,46 @@ io.on('connection', (socket) => {
     campaignId?: string;
     timeout: number;
   }) => {
-    // ─── Route through Safety Controller before touching the device ───
-    const check = checkCallAllowed({ sessionId, phone, leadId, campaignId });
+    // 1. Validate session existence
+    const session = getSessionById(sessionId);
+    if (!session) {
+      socket.emit('error', { code: 'INVALID_SESSION', message: 'No active session found.' });
+      return;
+    }
+
+    // 2. Validate laptop socket ownership of this session
+    if (session.laptopSocketId !== socket.id) {
+      socket.emit('error', { code: 'UNAUTHORIZED_LAPTOP', message: 'Unauthorized session emitter socket.' });
+      return;
+    }
+
+    // 3. Validate phone connection & reachability
+    if (!session.phoneSocketId) {
+      socket.emit('error', { code: 'NO_PHONE', message: 'No paired phone active.' });
+      return;
+    }
+
+    const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
+    if (!phoneSocket) {
+      socket.emit('error', { code: 'PHONE_UNREACHABLE', message: 'Phone socket not reachable. Reconnect your phone.' });
+      return;
+    }
+
+    if (session.phoneStatus === 'PERMISSION_REQUIRED') {
+      socket.emit('error', { code: 'PERMISSION_REQUIRED', message: 'Phone call permission is required. Please grant permission on your phone.' });
+      socket.emit('dial:blocked', {
+        reason: 'PERMISSION_REQUIRED',
+        message: 'Phone call permission is required. Please grant permission on your phone.',
+        phone,
+        name
+      });
+      return;
+    }
+
+    const tenantId = session.tenantId || 'tenant_default';
+
+    // 4. Route through Safety Controller & Atomic Lead Reservation (only AFTER authorization checks!)
+    const check = checkCallAllowed({ sessionId, phone, leadId, campaignId, tenantId });
 
     if (!check.allowed) {
       console.warn(`[SafetyController] BLOCKED dial to ${phone} | Reason: ${check.reason} | ${check.message}`);
@@ -2094,67 +2289,44 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const session = getSessionById(sessionId);
-    if (!session) {
-      socket.emit('error', { code: 'INVALID_SESSION', message: 'No active session found.' });
-      return;
-    }
-    if (session.laptopSocketId !== socket.id) {
-      socket.emit('error', { code: 'UNAUTHORIZED_LAPTOP', message: 'Unauthorized session emitter socket.' });
-      return;
-    }
-    if (!session.phoneSocketId) {
-      socket.emit('error', { code: 'NO_PHONE', message: 'No paired phone active.' });
-      return;
-    }
-    if (session.phoneStatus === 'PERMISSION_REQUIRED') {
-      socket.emit('error', { code: 'PERMISSION_REQUIRED', message: 'Phone call permission is required. Please grant permission on your phone.' });
-      socket.emit('dial:blocked', {
-        reason: 'PERMISSION_REQUIRED',
-        message: 'Phone call permission is required. Please grant permission on your phone.',
-        phone,
-        name
-      });
-      return;
-    }
-
     setSessionStatus(sessionId, 'CALLING');
-    // Send DIRECTLY to the phone socket — do not use room broadcast which can miss the phone
-    const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
-    if (!phoneSocket) {
-      socket.emit('error', { code: 'PHONE_UNREACHABLE', message: 'Phone socket not reachable. Reconnect your phone.' });
-      return;
-    }
     const dialPayload = { phone, name, leadId: leadId || '', timeout, commandId: check.commandId };
-    phoneSocket.emit('phone:dial', dialPayload);
-    // Notify laptop that dial command was dispatched (do NOT re-emit phone:dial to room — causes duplicates)
-    socket.emit('dial:dispatched', { commandId: check.commandId, leadId, phone, name });
-    console.log(`[SafetyController] ✅ DIAL SENT TO PHONE SOCKET ${session.phoneSocketId} | ${name} (${phone}) | Session: ${sessionId} | Cmd: ${check.commandId}`);
+    
+    try {
+      phoneSocket.emit('phone:dial', dialPayload);
+      socket.emit('dial:dispatched', { commandId: check.commandId, leadId, phone, name });
+      console.log(`[SafetyController] ✅ DIAL SENT TO PHONE SOCKET ${session.phoneSocketId} | ${name} (${phone}) | Session: ${sessionId} | Cmd: ${check.commandId}`);
+    } catch (err: any) {
+      if (leadId) releaseLeadLock(leadId, sessionId);
+      socket.emit('error', { code: 'DISPATCH_ERROR', message: 'Failed to dispatch call to phone socket.' });
+    }
   });
 
-  // Emergency stop from socket (in addition to REST endpoint)
+  // Emergency stop from socket
   socket.on('campaign:emergency_stop', ({ sessionId }: { sessionId: string }) => {
-    triggerEmergencyStop();
-    // Scope hangup to the requesting session's phone only — not all sockets globally
     const session = getSessionById(sessionId);
+    const tenantId = session?.tenantId || socket.data.tenantId || 'tenant_default';
+    triggerEmergencyStop(tenantId);
+
     if (session?.phoneSocketId) {
       const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
       if (phoneSocket) phoneSocket.emit('phone:hangup');
     }
-    // Notify all dashboards that emergency stop is active (safety flag is global)
-    io.emit('campaign:emergency_stopped', { stoppedBy: 'dashboard-socket', timestamp: new Date().toISOString() });
-    console.warn(`[SafetyController] Emergency stop via socket from session ${sessionId}`);
+
+    io.to(sessionId).emit('campaign:emergency_stopped', { stoppedBy: 'dashboard-socket', timestamp: new Date().toISOString() });
+    io.to(`tenant_${tenantId}`).emit('campaign:emergency_stopped', { stoppedBy: 'dashboard-socket', timestamp: new Date().toISOString() });
+    console.warn(`[SafetyController] Emergency stop via socket for tenant ${tenantId} / session ${sessionId}`);
   });
 
   socket.on('campaign:clear_emergency_stop', () => {
-    clearEmergencyStop();
-    io.emit('campaign:emergency_cleared', { clearedBy: 'dashboard-socket' });
+    const tenantId = socket.data.tenantId || 'tenant_default';
+    clearEmergencyStop(tenantId);
+    io.to(`tenant_${tenantId}`).emit('campaign:emergency_cleared', { clearedBy: 'dashboard-socket' });
   });
 
   socket.on('dial:hangup', ({ sessionId }: { sessionId: string }) => {
     const session = getSessionById(sessionId);
     if (!session) return;
-    // Verify caller owns this session
     if (session.laptopSocketId !== socket.id) {
       console.warn(`[Socket] Rejected hangup from unauthorized socket ${socket.id} for session ${sessionId}`);
       return;
@@ -2163,15 +2335,22 @@ io.on('connection', (socket) => {
       const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
       if (phoneSocket) phoneSocket.emit('phone:hangup');
     }
-    // Do NOT set session to PAIRED here — wait for call:ended from phone
-    // The hangup is a command, not a confirmation
     console.log(`[Socket] Hangup command sent to phone in session ${sessionId}`);
   });
 
   socket.on('call:picked-up', ({ sessionId }: { sessionId: string }) => {
+    const session = getSessionById(sessionId);
+    if (!session) return;
+    // Verify event originated from authorized paired phone socket
+    const isAuthorizedPhone = session.phoneSocketId === socket.id ||
+      (Boolean(session.phoneDeviceId) && Boolean(socket.data.deviceId) && socket.data.deviceId === session.phoneDeviceId);
+    if (!isAuthorizedPhone) {
+      console.warn(`[Socket] Rejected call:picked-up from unauthorized socket ${socket.id} (expected ${session.phoneSocketId})`);
+      return;
+    }
     setSessionStatus(sessionId, 'CALLING');
     socket.to(sessionId).emit('call:started');
-    console.log(`[Socket] Phone picked up call in session ${sessionId}`);
+    console.log(`[Socket] Verified Phone ${socket.id} picked up call in session ${sessionId}`);
   });
 
   socket.on('call:ended', ({ sessionId, leadId, phone, name, reason, duration, commandId }: {
@@ -2183,41 +2362,50 @@ io.on('connection', (socket) => {
     duration: number;
     commandId?: string;
   }) => {
-    // Verify the emitting socket actually owns this session (phone socket check)
     const session = getSessionById(sessionId);
-    if (!session || session.phoneSocketId !== socket.id) {
+    const isAuthorizedPhone = session && (session.phoneSocketId === socket.id ||
+      (Boolean(session.phoneDeviceId) && Boolean(socket.data.deviceId) && socket.data.deviceId === session.phoneDeviceId));
+    if (!session || (session.phoneSocketId !== socket.id && !isAuthorizedPhone)) {
       console.warn(`[Socket] Rejected call:ended from unauthorized socket ${socket.id} for session ${sessionId}`);
       return;
     }
+    const tenantId = session.tenantId || 'tenant_default';
     setSessionStatus(sessionId, 'PAIRED');
     if (commandId) {
       expireCommand(commandId);
     }
     if (leadId) {
       releaseLeadLock(leadId, sessionId);
-      createLog(leadId, reason, duration);
-      updateLeadStatus(leadId, 'COMPLETED', reason, duration);
+      createLog(leadId, reason, duration, tenantId);
+      updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
     } else if (phone) {
-      createManualLog(phone, name || 'Manual Quick Dial', reason, duration);
+      createManualLog(phone, name || 'Manual Quick Dial', reason, duration, tenantId);
     }
-    socket.to(sessionId).emit('call:finished', { reason, duration });
+    // Include leadId and commandId in call:finished broadcast so web knows exact completed lead!
+    socket.to(sessionId).emit('call:finished', { reason, duration, leadId, commandId });
+    io.to(`tenant_${tenantId}`).emit('leads:updated');
     io.emit('leads:updated');
-    console.log(`[Socket] Call finished in session ${sessionId} | Phone: ${phone || leadId} | Reason: ${reason} | Duration: ${duration}s`);
+    console.log(`[Socket] Call finished in session ${sessionId} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
   });
 
   socket.on('disconnect', () => {
     // If it was an authenticated phone socket
     if (socket.data.isPhone && socket.data.deviceId) {
       const devId = socket.data.deviceId;
-      authenticatedPhoneSockets.delete(devId);
-      updateDeviceStatus(devId, 'OFFLINE');
-      io.emit('device:status-changed', {
-        deviceId: devId,
-        status: 'OFFLINE',
-        isSocketOnline: false,
-        lastSeenAt: new Date().toISOString()
-      });
-      console.log(`[Auth Phone Disconnect] Device ${devId} went OFFLINE`);
+      // Guard: Only delete from active map if it still points to THIS socket ID (prevents stale disconnects from dropping new sockets!)
+      if (authenticatedPhoneSockets.get(devId)?.socketId === socket.id) {
+        authenticatedPhoneSockets.delete(devId);
+        updateDeviceStatus(devId, 'OFFLINE');
+        io.emit('device:status-changed', {
+          deviceId: devId,
+          status: 'OFFLINE',
+          isSocketOnline: false,
+          lastSeenAt: new Date().toISOString()
+        });
+        console.log(`[Auth Phone Disconnect] Device ${devId} went OFFLINE`);
+      } else {
+        console.log(`[Auth Phone Disconnect] Stale disconnect ignored for device ${devId}`);
+      }
     }
 
     const session = getSessionBySocketId(socket.id);

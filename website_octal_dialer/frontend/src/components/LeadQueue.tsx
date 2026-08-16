@@ -12,7 +12,7 @@ interface LeadQueueProps {
   emergencyStop: () => void;
   clearEmergencyStop: () => void;
   callState: 'IDLE' | 'CALLING' | 'ACTIVE';
-  lastCallFinished: { reason: string; duration: number } | null;
+  lastCallFinished: { reason: string; duration: number; leadId?: string; commandId?: string } | null;
   lastBlockedReason: { reason: string; message: string } | null;
   triggerDisposition: (leadId: string, leadName: string) => void;
   isLight?: boolean;
@@ -185,23 +185,28 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
   // Handle post-call routing trigger & 5-second auto-dial progression
   useEffect(() => {
-    if (lastCallFinished && leads[currentIndex]) {
+    if (lastCallFinished) {
+      const targetLead = lastCallFinished.leadId 
+        ? leads.find(l => l.id === lastCallFinished.leadId) 
+        : leads[currentIndex];
+
+      if (!targetLead) return;
+
       // Guard: process each call completion exactly once
-      const callKey = `${leads[currentIndex].id}_${lastCallFinished.reason}_${lastCallFinished.duration}`;
+      const callKey = `${targetLead.id}_${lastCallFinished.reason}_${lastCallFinished.duration}_${lastCallFinished.commandId || ''}`;
       if (processedCallRef.current === callKey) return;
       processedCallRef.current = callKey;
 
-      const currentLead = leads[currentIndex];
       const wasAnswered = lastCallFinished.duration > 3; // answered = connected for >3s
 
       setLogs(prev => [
         ...prev,
-        `[Call Outcome] ${currentLead.name}: ${lastCallFinished.reason} | Duration: ${lastCallFinished.duration}s | ${wasAnswered ? 'ANSWERED' : 'NOT ANSWERED'}`
+        `[Call Outcome] ${targetLead.name}: ${lastCallFinished.reason} | Duration: ${lastCallFinished.duration}s | ${wasAnswered ? 'ANSWERED' : 'NOT ANSWERED'}`
       ]);
 
       // Mark lead completed locally first
-      setLeads(prev => prev.map((l, idx) => 
-        idx === currentIndex 
+      setLeads(prev => prev.map((l) => 
+        l.id === targetLead.id 
           ? { ...l, status: 'COMPLETED', outcome: wasAnswered ? lastCallFinished.reason : 'NO ANSWER', duration: lastCallFinished.duration }
           : l
       ));
@@ -209,24 +214,21 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       // Open disposition modal ONLY if the call was answered (connected for >3s)
       // For unanswered calls — skip remarks and auto-dial next immediately
       if (wasAnswered) {
-        triggerDisposition(currentLead.id, currentLead.name);
+        triggerDisposition(targetLead.id, targetLead.name);
         setLogs(prev => [...prev, `[Dialer] Call answered — waiting for remarks before dialing next lead...`]);
-        // Don't auto-advance — user must submit remarks then we advance
-        // The disposition modal close/save should trigger next dial if isAutoDialing
       } else {
         // Not answered — auto-advance after 2 seconds
         setLogs(prev => [...prev, `[Auto Dialer] Not answered — advancing to next lead in 2s...`]);
         const timerId = setTimeout(() => {
           setLeads(currentLeads => {
             const nextPendingIdx = currentLeads.findIndex(
-              (l, idx) => idx > currentIndex && l.status === 'PENDING'
+              (l) => l.status === 'PENDING' && l.id !== targetLead.id
             );
             if (nextPendingIdx !== -1) {
               setCurrentIndex(nextPendingIdx);
               const nextLead = currentLeads[nextPendingIdx];
               setLogs(prev => [...prev, `[Auto Dialer] Dialing: ${nextLead.name} (${nextLead.phone})`]);
               if (phoneConnected && selectedCampId && isAutoDialing) {
-                // FIX: correct argument order — dialLead(phone, name, timeout, leadId, campaignId)
                 dialLead(nextLead.phone, nextLead.name, autoDialTimeout, nextLead.id, selectedCampId);
               }
             } else {
@@ -239,7 +241,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         return () => clearTimeout(timerId);
       }
     }
-  }, [lastCallFinished, currentIndex, phoneConnected, selectedCampId, isAutoDialing, autoDialTimeout, dialLead]);
+  }, [lastCallFinished, currentIndex, leads, phoneConnected, selectedCampId, isAutoDialing, autoDialTimeout, dialLead]);
 
   // Handle Safety Controller block feedback
   useEffect(() => {

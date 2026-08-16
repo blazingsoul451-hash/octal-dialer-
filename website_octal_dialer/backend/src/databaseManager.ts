@@ -1126,10 +1126,22 @@ const lockStmts = {
   `)
 };
 
-export function reserveLead(leadId: string, sessionId: string, leaseMinutes: number = LEASE_TTL_MINUTES): boolean {
+export function reserveLead(leadId: string, sessionId: string, tenantId?: string, leaseMinutes: number = LEASE_TTL_MINUTES): boolean {
   const now = new Date();
   const cutoff = new Date(now.getTime() - leaseMinutes * 60 * 1000).toISOString();
   
+  if (tenantId) {
+    const res = db.prepare(`
+      UPDATE leads 
+      SET lockedBy = @sessionId, lockedAt = @now, status = 'CALLING'
+      WHERE id = @leadId 
+        AND tenantId = @tenantId
+        AND status != 'COMPLETED'
+        AND (lockedBy IS NULL OR lockedBy = @sessionId OR lockedAt < @cutoff)
+    `).run({ leadId, sessionId, tenantId, now: now.toISOString(), cutoff });
+    return res.changes > 0;
+  }
+
   const result = lockStmts.reserveLead.run({
     leadId,
     sessionId,
@@ -1352,6 +1364,71 @@ export const ALL_BUSINESS_MODULES = [
 export function hasUserModulePermission(userId: string, tenantId: string, moduleId: string): boolean {
   const perm = db.prepare(`SELECT enabled FROM user_permissions WHERE userId = ? AND tenantId = ? AND moduleId = ?`).get(userId, tenantId, moduleId) as { enabled: number } | undefined;
   return perm ? perm.enabled === 1 : false;
+}
+
+export function getUserPermissions(userId: string, tenantId: string): Record<string, boolean> {
+  const rows = db.prepare(`SELECT moduleId, enabled FROM user_permissions WHERE userId = ? AND tenantId = ?`).all(userId, tenantId) as { moduleId: string; enabled: number }[];
+  const permissions: Record<string, boolean> = {};
+  for (const row of rows) {
+    permissions[row.moduleId] = row.enabled === 1;
+  }
+  return permissions;
+}
+
+export function updateLogDisposition(data: {
+  leadId: string;
+  outcome: string;
+  notes?: string;
+  tenantId: string;
+  userId?: string;
+  username?: string;
+}): boolean {
+  const { leadId, outcome, notes, tenantId, userId, username } = data;
+  if (!leadId || !tenantId) return false;
+
+  const lead = stmts.getLead.get({ id: leadId, tenantId }) as Lead | undefined;
+  if (!lead) return false;
+
+  const now = new Date().toISOString();
+  const updateTxn = db.transaction(() => {
+    // 1. Update Lead status and outcome
+    stmts.updateLeadStatus.run({
+      id: leadId,
+      status: 'COMPLETED',
+      outcome,
+      duration: lead.duration || 0,
+      tenantId
+    });
+
+    // 2. Update existing call log or create disposition log
+    const existingLog = stmts.getLogByLeadId.get({ leadId, tenantId }) as any;
+    if (existingLog) {
+      db.prepare(`UPDATE call_logs SET outcome = ? WHERE leadId = ? AND tenantId = ?`).run(outcome, leadId, tenantId);
+    } else {
+      createLog(leadId, outcome, lead.duration || 0, tenantId);
+    }
+
+    // 3. Record in dispositions table
+    const dispId = 'disp_' + Math.random().toString(36).substring(2, 11);
+    db.prepare(`
+      INSERT INTO dispositions (id, leadId, outcome, notes, loggedAt)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(dispId, leadId, outcome, notes || '', now);
+
+    // 4. Record in lead activities
+    recordLeadActivity({
+      leadId,
+      tenantId,
+      userId,
+      username,
+      eventType: 'DISPOSITION_SAVED',
+      description: `Call disposition marked as "${outcome}"${notes ? ': ' + notes : ''}`,
+      metadata: { outcome, notes, dispId }
+    });
+  });
+
+  updateTxn();
+  return true;
 }
 
 export interface DeviceRecord {

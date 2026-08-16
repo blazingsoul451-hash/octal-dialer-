@@ -19,7 +19,6 @@ class DeviceDashboardScreen extends StatefulWidget {
 
 class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with WidgetsBindingObserver {
   io.Socket? _socket;
-  bool _isConnecting = true;
   bool _isSocketOnline = false;
   String _statusMessage = 'Connecting to Octal Bridge...';
   String _errorMessage = '';
@@ -149,7 +148,6 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
     _socket!.onConnect((_) {
       if (mounted) {
         setState(() {
-          _isConnecting = false;
           _isSocketOnline = true;
           _statusMessage = 'Registering device with backend...';
         });

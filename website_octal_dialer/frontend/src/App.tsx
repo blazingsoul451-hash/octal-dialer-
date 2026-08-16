@@ -146,8 +146,15 @@ export default function App() {
     }
     localStorage.removeItem('octal_auth_token');
     localStorage.removeItem('octal_auth_user');
+    localStorage.removeItem('octal_session_id');
     setAuthToken(null);
     setAuthUser(null);
+    setUserRole('user');
+    setUserPermissions({} as any);
+    setCampaigns([]);
+    setDispOpen(false);
+    setSelectedCampaignId(null);
+    setActiveTab('dashboard');
   };
 
   // Bright Mode / Dark Mode state
@@ -1456,6 +1463,7 @@ export default function App() {
         leadName={dispLeadName}
         onClose={() => setDispOpen(false)}
         serverUrl={SERVER_URL}
+        authToken={authToken || ''}
         onSaveSuccess={() => {
           showToast('Call disposition logged successfully.', 'success');
           fetchCampaigns();

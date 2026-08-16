@@ -277,7 +277,7 @@ export function getTenantUsage(tenantId: string): TenantUsage {
   const db = getDatabase();
 
   const userCount = db.prepare(`SELECT COUNT(*) as c FROM users WHERE tenantId = ?`).get(tenantId) as { c: number };
-  const deviceCount = db.prepare(`SELECT COUNT(*) as c FROM devices WHERE tenantId = ?`).get(tenantId) as { c: number };
+  const deviceCount = db.prepare(`SELECT COUNT(*) as c FROM devices WHERE tenantId = ? AND isRevoked = 0`).get(tenantId) as { c: number };
   const campaignCount = db.prepare(`SELECT COUNT(*) as c FROM campaigns WHERE tenantId = ?`).get(tenantId) as { c: number };
   const apiKeyCount = db.prepare(`SELECT COUNT(*) as c FROM api_keys WHERE tenantId = ? AND revokedAt IS NULL`).get(tenantId) as { c: number };
   const leadCount = db.prepare(`SELECT COUNT(*) as c FROM scraped_leads WHERE tenantId = ?`).get(tenantId) as { c: number };

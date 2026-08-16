@@ -235,29 +235,50 @@ export function registerGoogleSignUp(profile: { googleId: string; email: string;
     throw err;
   }
 
-  // 2. New User Registration: STRICTLY force role = 'user'
+  // 2. New User Registration: STRICTLY force role = 'user' and generate dedicated tenant
   const userId = 'user_' + crypto.randomBytes(8).toString('hex');
   const cleanBase = (profile.name || email.split('@')[0]).toLowerCase().replace(/[^a-z0-9_]/g, '');
   let candidateUsername = cleanBase.length >= 3 ? cleanBase : 'user';
   const existingWithUsername = db.prepare(`SELECT id FROM users WHERE username = ?`).get(candidateUsername) as any;
   const username = existingWithUsername ? `${candidateUsername}_${crypto.randomBytes(2).toString('hex')}` : candidateUsername;
-  const tenantId = 'tenant_default';
+  const tenantId = 'tenant_' + crypto.randomBytes(8).toString('hex');
+  const tenantSlug = candidateUsername.substring(0, 30);
+  const companyName = profile.name ? `${profile.name}'s Organization` : `${candidateUsername}'s Team`;
   const { hash } = hashPassword(crypto.randomBytes(32).toString('hex'));
 
-  db.prepare(`
-    INSERT INTO users (id, username, email, passwordHash, role, tenantId, googleId, authProvider, emailVerified, emailVerifiedAt, needsProfileSetup, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, 'user', ?, ?, 'google', 1, ?, 1, ?, ?)
-  `).run(userId, username, email, hash, tenantId, googleId, now, now, now);
+  const signupTransaction = db.transaction(() => {
+    // 2a. Insert Tenant
+    db.prepare(`
+      INSERT INTO tenants (id, name, slug, country, logoUrl, ownerEmail, status, createdAt, updatedAt)
+      VALUES (?, ?, ?, 'US', ?, ?, 'active', ?, ?)
+    `).run(tenantId, companyName, `${tenantSlug}_${crypto.randomBytes(3).toString('hex')}`, profile.picture || null, email, now, now);
 
-  // Provision standard default permissions (all modules except admin & crm which require admin elevation)
-  const modules = ['octalDialer', 'campaigns', 'leads', 'reports', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
-  const insertPerm = db.prepare(`
-    INSERT OR IGNORE INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
-    VALUES (?, ?, ?, 1, 'SYSTEM_GOOGLE_SIGNUP', ?, ?)
-  `);
-  for (const m of modules) {
-    insertPerm.run(`perm_${userId}_${m}`, userId, m, tenantId, now);
-  }
+    // 2b. Insert User
+    db.prepare(`
+      INSERT INTO users (id, username, email, passwordHash, role, tenantId, googleId, authProvider, emailVerified, emailVerifiedAt, needsProfileSetup, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, 'user', ?, ?, 'google', 1, ?, 1, ?, ?)
+    `).run(userId, username, email, hash, tenantId, googleId, now, now, now);
+
+    // 2c. Provision standard starter subscription
+    const subId = 'sub_' + crypto.randomBytes(8).toString('hex');
+    const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare(`
+      INSERT INTO subscriptions (id, tenantId, planId, status, currentPeriodStart, currentPeriodEnd, createdAt, updatedAt)
+      VALUES (?, ?, 'plan_starter', 'active', ?, ?, ?, ?)
+    `).run(subId, tenantId, now, periodEnd, now, now);
+
+    // 2d. Provision standard default permissions (all modules except admin & crm which require admin elevation)
+    const modules = ['octalDialer', 'campaigns', 'leads', 'reports', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
+    const insertPerm = db.prepare(`
+      INSERT OR IGNORE INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
+      VALUES (?, ?, ?, 1, 'SYSTEM_GOOGLE_SIGNUP', ?, ?)
+    `);
+    for (const m of modules) {
+      insertPerm.run(`perm_${userId}_${m}`, userId, m, tenantId, now);
+    }
+  });
+
+  signupTransaction();
 
   const authUser: AuthUser = {
     id: userId,
@@ -280,6 +301,18 @@ export function registerGoogleSignUp(profile: { googleId: string; email: string;
     user: authUser,
     isNewUser: true
   };
+}
+
+/** Handle Google OAuth with explicit intent */
+export function handleGoogleAuthWithIntent(
+  profile: { googleId: string; email: string; name?: string; picture?: string },
+  intent: 'signin' | 'signup' = 'signin'
+): { token: string; user: AuthUser; isNewUser: boolean } {
+  if (intent === 'signup') {
+    return registerGoogleSignUp(profile);
+  } else {
+    return authenticateGoogleSignIn(profile);
+  }
 }
 
 /**
