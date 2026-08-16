@@ -11,10 +11,12 @@ export function useSocket(serverUrl: string = 'http://localhost:3000', authToken
   const [phoneBtAddress, setPhoneBtAddress] = useState<string | null>(null);
   const [phoneOsType, setPhoneOsType] = useState<string | null>(null);
   const [phoneIpAddress, setPhoneIpAddress] = useState<string | null>(null);
+  const [phoneDeviceId, setPhoneDeviceId] = useState<string | null>(null);
   const [laptopBtAddress, setLaptopBtAddress] = useState<string | null>(null);
   const [callState, setCallState] = useState<'IDLE' | 'CALLING' | 'ACTIVE'>('IDLE');
   const [lastCallFinished, setLastCallFinished] = useState<{ reason: string; duration: number } | null>(null);
   const [lastBlockedReason, setLastBlockedReason] = useState<{ reason: string; message: string } | null>(null);
+  const [deviceError, setDeviceError] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
@@ -81,12 +83,14 @@ export function useSocket(serverUrl: string = 'http://localhost:3000', authToken
       phoneBtAddress: string;
       phoneOsType: string;
       phoneIpAddress: string;
+      deviceId?: string;
     }) => {
       setPhoneConnected(true);
       setPhoneDeviceName(data.deviceName);
       setPhoneBtAddress(data.phoneBtAddress);
       setPhoneOsType(data.phoneOsType);
       setPhoneIpAddress(data.phoneIpAddress);
+      if (data.deviceId) setPhoneDeviceId(data.deviceId);
     });
 
     socket.on('phone:disconnected', () => {
@@ -95,7 +99,13 @@ export function useSocket(serverUrl: string = 'http://localhost:3000', authToken
       setPhoneBtAddress(null);
       setPhoneOsType(null);
       setPhoneIpAddress(null);
+      setPhoneDeviceId(null);
       setCallState('IDLE');
+    });
+
+    socket.on('device:error', (data: { error: string }) => {
+      setDeviceError(data.error);
+      setTimeout(() => setDeviceError(null), 6000);
     });
 
     socket.on('call:started', () => {
@@ -132,6 +142,7 @@ export function useSocket(serverUrl: string = 'http://localhost:3000', authToken
       setPhoneBtAddress(null);
       setPhoneOsType(null);
       setPhoneIpAddress(null);
+      setPhoneDeviceId(null);
       setCallState('IDLE');
       localStorage.removeItem('octal_session_id');
     });
@@ -153,6 +164,26 @@ export function useSocket(serverUrl: string = 'http://localhost:3000', authToken
       setPhoneBtAddress(null);
       setPhoneOsType(null);
       setPhoneIpAddress(null);
+      setPhoneDeviceId(null);
+    }
+  };
+
+  const connectDevice = (deviceId: string) => {
+    if (socketRef.current && sessionId) {
+      setDeviceError(null);
+      socketRef.current.emit('laptop:connect-device', { sessionId, deviceId });
+    }
+  };
+
+  const disconnectDevice = (deviceId?: string) => {
+    if (socketRef.current && sessionId) {
+      socketRef.current.emit('laptop:disconnect-device', { sessionId, deviceId });
+      setPhoneConnected(false);
+      setPhoneDeviceName(null);
+      setPhoneBtAddress(null);
+      setPhoneOsType(null);
+      setPhoneIpAddress(null);
+      setPhoneDeviceId(null);
     }
   };
 
@@ -202,12 +233,16 @@ export function useSocket(serverUrl: string = 'http://localhost:3000', authToken
     phoneBtAddress,
     phoneOsType,
     phoneIpAddress,
+    phoneDeviceId,
     laptopBtAddress,
     callState,
     lastCallFinished,
     lastBlockedReason,
+    deviceError,
     latencyMs,
     revokePhone,
+    connectDevice,
+    disconnectDevice,
     dialLead,
     hangupCall,
     emergencyStop,

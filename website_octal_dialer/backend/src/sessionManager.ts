@@ -15,10 +15,12 @@ export interface Session {
   phoneBtAddress: string | null;
   phoneOsType: string | null;
   phoneIpAddress: string | null;
+  phoneDeviceId?: string | null;
   phoneStatus?: string;
   status: 'WAITING' | 'PAIRED' | 'CALLING';
   lastHeartbeat: Date | null;
   tenantId?: string;
+  userId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -222,15 +224,78 @@ export function pairPhone(
   return session;
 }
 
+export function pairAuthenticatedDevice(
+  sessionId: string,
+  deviceId: string,
+  phoneSocketId: string,
+  phoneDeviceName: string,
+  phoneBtAddress: string,
+  phoneOsType: string,
+  phoneIpAddress: string,
+  userId: string,
+  tenantId: string
+): Session | null {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    console.warn(`[Pairing] Failed: Session ${sessionId} not found`);
+    return null;
+  }
+
+  // Tenant isolation check
+  if (!session.tenantId || session.tenantId !== tenantId) {
+    console.error(`[Pairing] Rejected: Session tenant ${session.tenantId} != device tenant ${tenantId}`);
+    return null;
+  }
+
+  // If another phone is already paired, cleanly replace it
+  if (session.phoneSocketId && session.phoneSocketId !== phoneSocketId) {
+    console.warn(`[Pairing] Replacing phone ${session.phoneSocketId} with ${phoneSocketId} in session ${session.id}`);
+  }
+
+  session.phoneSocketId = phoneSocketId;
+  session.phoneDeviceName = phoneDeviceName || 'Android Device';
+  session.phoneBtAddress = phoneBtAddress || '48:D2:24:D3:5F:AA';
+  session.phoneOsType = phoneOsType || 'Android';
+  session.phoneIpAddress = phoneIpAddress || '127.0.0.1';
+  session.phoneDeviceId = deviceId;
+  session.status = 'PAIRED';
+  session.lastHeartbeat = new Date();
+  session.updatedAt = new Date();
+
+  try {
+    db.prepare(`
+      UPDATE devices 
+      SET status = 'PAIRED', lastSeenAt = @now, updatedAt = @now 
+      WHERE id = @id AND tenantId = @tenantId
+    `).run({
+      id: deviceId,
+      tenantId,
+      now: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('[SessionManager] Error updating device status:', err);
+  }
+
+  return session;
+}
+
 export function revokePhone(sessionId: string): string | null {
   const session = sessions.get(sessionId);
   if (!session) return null;
+
+  const prevDevId = session.phoneDeviceId || session.phoneBtAddress;
+  if (prevDevId) {
+    try {
+      db.prepare(`UPDATE devices SET status = 'ONLINE', updatedAt = datetime('now') WHERE id = ?`).run(prevDevId);
+    } catch {}
+  }
 
   session.phoneSocketId = null;
   session.phoneDeviceName = null;
   session.phoneBtAddress = null;
   session.phoneOsType = null;
   session.phoneIpAddress = null;
+  session.phoneDeviceId = null;
   session.status = 'WAITING';
   session.token = generateToken();
   session.tokenExpiresAt = new Date(Date.now() + 5 * 60 * 1000);

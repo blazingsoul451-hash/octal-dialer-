@@ -47,6 +47,12 @@ import {
   recordLeadActivity,
   getLeadActivities,
   hasUserModulePermission,
+  registerOrUpdateDevice,
+  getDevicesForUser,
+  getDeviceById,
+  revokeDevice,
+  updateDeviceStatus,
+  DeviceRecord,
   db
 } from './databaseManager';
 
@@ -54,6 +60,7 @@ import {
   reclaimOrCreateSession,
   getSessionById,
   pairPhone,
+  pairAuthenticatedDevice,
   revokePhone,
   setSessionStatus,
   setPhoneStatus,
@@ -780,10 +787,88 @@ app.get('/api/leads/locked', requireAuth, (req, res) => {
   res.json(getLockedLeads());
 });
 
-// GET /api/devices — list all registered devices and status
+// POST /api/devices/register — register or update a mobile device
+app.post('/api/devices/register', requireAuth, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id, name, btAddress, osType, ipAddress, platform, appVersion, deviceUid } = req.body;
+    if (!name && !deviceUid) {
+      res.status(400).json({ error: 'Device name or device UID is required.' });
+      return;
+    }
+    const device = registerOrUpdateDevice({
+      id,
+      name: name || 'Android Device',
+      userId: user.id,
+      tenantId: user.tenantId,
+      btAddress,
+      osType,
+      ipAddress,
+      platform: platform || 'android',
+      appVersion: appVersion || '1.2.0',
+      deviceUid
+    });
+    res.json({ success: true, device });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to register device.' });
+  }
+});
+
+// GET /api/devices — list registered devices for current user and tenant
 app.get('/api/devices', requireAuth, (req, res) => {
-  const devices = db.prepare(`SELECT * FROM devices ORDER BY lastSeenAt DESC`).all();
-  res.json(devices);
+  try {
+    const user = (req as any).user;
+    let devices: DeviceRecord[] = [];
+    if (req.query.all === 'true' && (user.role === 'platform_admin' || user.role === 'admin')) {
+      devices = db.prepare(`SELECT * FROM devices WHERE tenantId = ? AND isRevoked = 0 ORDER BY lastSeenAt DESC`).all(user.tenantId) as DeviceRecord[];
+    } else {
+      devices = getDevicesForUser(user.id, user.tenantId);
+    }
+
+    const augmented = devices.map(d => {
+      const activeSocket = authenticatedPhoneSockets.get(d.id);
+      const isOnline = !!activeSocket;
+      return {
+        ...d,
+        isSocketOnline: isOnline,
+        status: isOnline ? (d.status === 'PAIRED' || d.status === 'IN_CALL' ? d.status : 'ONLINE') : 'OFFLINE'
+      };
+    });
+
+    res.json(augmented);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch devices.' });
+  }
+});
+
+// POST /api/devices/:id/revoke — revoke device access
+app.post('/api/devices/:id/revoke', requireAuth, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const deviceId = req.params.id;
+    const isAdmin = user.role === 'platform_admin' || user.role === 'admin';
+    const success = revokeDevice(deviceId, user.id, user.tenantId, isAdmin);
+    if (!success) {
+      res.status(404).json({ error: 'Device not found or not authorized.' });
+      return;
+    }
+
+    const active = authenticatedPhoneSockets.get(deviceId);
+    if (active) {
+      const sock = io.sockets.sockets.get(active.socketId);
+      if (sock) {
+        sock.emit('phone:kicked', { reason: 'Device has been revoked.' });
+        sock.disconnect(true);
+      }
+      authenticatedPhoneSockets.delete(deviceId);
+    }
+
+    io.emit('device:status-changed', { deviceId, status: 'REVOKED', isSocketOnline: false });
+
+    res.json({ success: true, message: `Device ${deviceId} revoked.` });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to revoke device.' });
+  }
 });
 
 // GET /api/audit-logs — view system audit logs
@@ -1537,9 +1622,267 @@ app.get('/api/logs/export', requireAuth, (req, res) => {
   }
 });
 
+// ─── Authenticated Phone Sockets Registry ───────────────────────────────────────
+interface ActivePhoneSocket {
+  socketId: string;
+  deviceId: string;
+  userId: string;
+  tenantId: string;
+  deviceName: string;
+  osType: string;
+  btAddress: string;
+  ipAddress: string;
+  platform?: string;
+  appVersion?: string;
+}
+const authenticatedPhoneSockets = new Map<string, ActivePhoneSocket>();
+
 // WebSocket Event Handlers
 io.on('connection', (socket) => {
   console.log(`[Socket] Connected: ${socket.id}`);
+
+  // ─── AUTHENTICATED PHONE REGISTRATION ──────────────────────────────────────────
+  socket.on('phone:auth-register', (data: {
+    token: string;
+    deviceId?: string;
+    deviceUid?: string;
+    deviceName?: string;
+    btAddress?: string;
+    osType?: string;
+    ipAddress?: string;
+    platform?: string;
+    appVersion?: string;
+  }) => {
+    if (!data || !data.token) {
+      socket.emit('phone:auth-error', { error: 'Authentication token is required.' });
+      return;
+    }
+
+    const user = validateToken(data.token);
+    if (!user) {
+      socket.emit('phone:auth-error', { error: 'Invalid or expired session token. Please log in again.' });
+      return;
+    }
+
+    let device: DeviceRecord;
+    try {
+      device = registerOrUpdateDevice({
+        id: data.deviceId,
+        name: data.deviceName || 'Android Device',
+        userId: user.id,
+        tenantId: user.tenantId,
+        btAddress: data.btAddress,
+        osType: data.osType || 'Android',
+        ipAddress: data.ipAddress || '127.0.0.1',
+        platform: data.platform || 'android',
+        appVersion: data.appVersion || '1.2.0',
+        deviceUid: data.deviceUid
+      });
+    } catch (err: any) {
+      socket.emit('phone:auth-error', { error: err.message || 'Failed to register device.' });
+      return;
+    }
+
+    if (device.isRevoked === 1) {
+      socket.emit('phone:auth-error', { error: 'Device access has been revoked.' });
+      return;
+    }
+
+    socket.data.user = user;
+    socket.data.tenantId = user.tenantId;
+    socket.data.deviceId = device.id;
+    socket.data.isPhone = true;
+
+    authenticatedPhoneSockets.set(device.id, {
+      socketId: socket.id,
+      deviceId: device.id,
+      userId: user.id,
+      tenantId: user.tenantId,
+      deviceName: device.name,
+      osType: device.osType || 'Android',
+      btAddress: device.btAddress || '48:D2:24:D3:5F:AA',
+      ipAddress: device.ipAddress || '127.0.0.1',
+      platform: device.platform || 'android',
+      appVersion: device.appVersion || '1.2.0'
+    });
+
+    socket.emit('phone:auth-success', {
+      deviceId: device.id,
+      status: 'ONLINE',
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        tenantId: user.tenantId
+      }
+    });
+
+    console.log(`[Auth Phone Connected] Device: ${device.name} (${device.id}) | User: ${user.username} | Tenant: ${user.tenantId}`);
+
+    io.emit('device:status-changed', {
+      deviceId: device.id,
+      status: 'ONLINE',
+      isSocketOnline: true,
+      lastSeenAt: new Date().toISOString()
+    });
+  });
+
+  // ─── LAPTOP EXPLICIT CONNECT TO REGISTERED DEVICE ─────────────────────────────
+  socket.on('laptop:connect-device', ({ sessionId, deviceId }: { sessionId: string; deviceId: string }) => {
+    const session = getSessionById(sessionId);
+    if (!session) {
+      socket.emit('device:error', { error: 'Session not found.' });
+      return;
+    }
+
+    const tenantId = socket.data.tenantId || session.tenantId;
+    const user = socket.data.user;
+
+    const device = getDeviceById(deviceId, tenantId);
+    if (!device) {
+      socket.emit('device:error', { error: 'Device not found or not in your tenant.' });
+      return;
+    }
+
+    if (device.isRevoked === 1) {
+      socket.emit('device:error', { error: 'This device is no longer authorized (revoked).' });
+      return;
+    }
+
+    if (user && user.role !== 'platform_admin' && user.role !== 'admin') {
+      if (device.userId && device.userId !== user.id) {
+        socket.emit('device:error', { error: 'You are not authorized to connect to this device.' });
+        return;
+      }
+    }
+
+    const phoneRecord = authenticatedPhoneSockets.get(deviceId);
+    if (!phoneRecord) {
+      socket.emit('device:error', { error: 'This phone is currently offline. Please open the Octal Dialer app.' });
+      return;
+    }
+
+    const phoneSocket = io.sockets.sockets.get(phoneRecord.socketId);
+    if (!phoneSocket) {
+      authenticatedPhoneSockets.delete(deviceId);
+      socket.emit('device:error', { error: 'Phone socket connection was lost.' });
+      return;
+    }
+
+    const pairedSession = pairAuthenticatedDevice(
+      sessionId,
+      deviceId,
+      phoneSocket.id,
+      phoneRecord.deviceName,
+      phoneRecord.btAddress,
+      phoneRecord.osType,
+      phoneRecord.ipAddress,
+      user ? user.id : 'unknown',
+      tenantId || 'tenant_default'
+    );
+
+    if (!pairedSession) {
+      socket.emit('device:error', { error: 'Unable to connect to device.' });
+      return;
+    }
+
+    phoneSocket.join(session.id);
+    phoneSocket.data.sessionId = session.id;
+
+    socket.emit('phone:connected', {
+      deviceName: phoneRecord.deviceName,
+      phoneBtAddress: phoneRecord.btAddress,
+      phoneOsType: phoneRecord.osType,
+      phoneIpAddress: phoneRecord.ipAddress,
+      phoneStatus: 'READY',
+      deviceId: deviceId
+    });
+
+    phoneSocket.emit('bridge:paired', {
+      sessionId: session.id,
+      token: session.token,
+      laptopName: session.laptopName,
+      laptopBtAddress: session.laptopBtAddress,
+      serverUrl: getPublicBaseUrl({ handshake: socket.handshake })
+    });
+
+    phoneSocket.emit('phone:paired', {
+      sessionId: session.id,
+      laptopName: session.laptopName,
+      laptopBtAddress: session.laptopBtAddress
+    });
+
+    console.log(`[Device Bridge Success] Laptop ${socket.id} paired with phone ${deviceId} in session ${sessionId}`);
+
+    io.emit('device:status-changed', {
+      deviceId,
+      status: 'PAIRED',
+      isSocketOnline: true,
+      sessionId: session.id
+    });
+  });
+
+  // ─── LAPTOP DISCONNECT DEVICE ────────────────────────────────────────────────
+  socket.on('laptop:disconnect-device', ({ sessionId, deviceId }: { sessionId: string; deviceId?: string }) => {
+    const session = getSessionById(sessionId);
+    if (!session) return;
+
+    const targetDevId = deviceId || session.phoneDeviceId;
+
+    if (session.phoneSocketId) {
+      const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
+      if (phoneSocket) {
+        phoneSocket.emit('bridge:unpaired', { reason: 'Disconnected by laptop dashboard.' });
+        phoneSocket.leave(sessionId);
+        delete phoneSocket.data.sessionId;
+      }
+    }
+
+    revokePhone(sessionId);
+
+    socket.emit('phone:disconnected');
+
+    if (targetDevId) {
+      updateDeviceStatus(targetDevId, 'ONLINE');
+      io.emit('device:status-changed', {
+        deviceId: targetDevId,
+        status: 'ONLINE',
+        isSocketOnline: authenticatedPhoneSockets.has(targetDevId)
+      });
+    }
+
+    console.log(`[Device Disconnected] Laptop unlinked phone in session ${sessionId}`);
+  });
+
+  // ─── PHONE DISCONNECT SESSION ────────────────────────────────────────────────
+  socket.on('phone:disconnect-session', ({ sessionId }: { sessionId?: string }) => {
+    const sid = sessionId || socket.data.sessionId;
+    if (sid) {
+      const session = getSessionById(sid);
+      if (session) {
+        revokePhone(sid);
+        if (session.laptopSocketId) {
+          io.to(session.laptopSocketId).emit('phone:disconnected');
+        }
+        socket.leave(sid);
+        delete socket.data.sessionId;
+      }
+    }
+
+    const devId = socket.data.deviceId;
+    if (devId) {
+      updateDeviceStatus(devId, 'ONLINE');
+      io.emit('device:status-changed', {
+        deviceId: devId,
+        status: 'ONLINE',
+        isSocketOnline: true
+      });
+    }
+
+    socket.emit('bridge:unpaired', { reason: 'Disconnected by phone.' });
+    console.log(`[Phone Unlinked] Phone socket ${socket.id} disconnected from session ${sid}`);
+  });
 
   socket.on('laptop:register', (data?: { previousSessionId?: string }) => {
     const tenantId = socket.data.tenantId || (socket.data.user ? socket.data.user.id : 'user_admin_e38eeed3');
@@ -1863,6 +2206,20 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    // If it was an authenticated phone socket
+    if (socket.data.isPhone && socket.data.deviceId) {
+      const devId = socket.data.deviceId;
+      authenticatedPhoneSockets.delete(devId);
+      updateDeviceStatus(devId, 'OFFLINE');
+      io.emit('device:status-changed', {
+        deviceId: devId,
+        status: 'OFFLINE',
+        isSocketOnline: false,
+        lastSeenAt: new Date().toISOString()
+      });
+      console.log(`[Auth Phone Disconnect] Device ${devId} went OFFLINE`);
+    }
+
     const session = getSessionBySocketId(socket.id);
     if (!session) return;
 

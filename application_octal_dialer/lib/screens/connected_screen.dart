@@ -8,6 +8,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'connect_screen.dart';
+import 'device_dashboard_screen.dart';
+import 'login_screen.dart';
 import 'calling_screen.dart';
 import 'standalone_dialer_screen.dart';
 import 'call_log_screen.dart';
@@ -244,6 +246,11 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       _disconnect();
     });
 
+    _socket!.on('bridge:unpaired', (_) {
+      _addLog('[Bridge] Unpaired by laptop dashboard.');
+      _disconnect();
+    });
+
     _socket!.on('session:ended', (_) {
       _addLog('[Bridge] Session ended by laptop.');
       _disconnect();
@@ -319,12 +326,20 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('connection_uri');
+    final authToken = prefs.getString('auth_token');
 
     if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const ConnectScreen()),
-      );
+      if (authToken != null && authToken.isNotEmpty) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const DeviceDashboardScreen()),
+        );
+      } else {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const ConnectScreen()),
+        );
+      }
     }
   }
 

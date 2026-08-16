@@ -629,6 +629,39 @@ try {
   console.error('[CRM] Phase E table creation error:', e);
 }
 
+// ─── Authenticated Devices Schema Migrations ─────────────────────────────────
+try {
+  const devCols = db.prepare(`PRAGMA table_info(devices)`).all() as any[];
+  const devColNames = new Set(devCols.map(c => c.name));
+
+  if (!devColNames.has('userId')) {
+    try { db.prepare(`ALTER TABLE devices ADD COLUMN userId TEXT REFERENCES users(id) ON DELETE SET NULL`).run(); } catch (_) {}
+    try { db.prepare(`CREATE INDEX IF NOT EXISTS idx_devices_userId ON devices(userId)`).run(); } catch (_) {}
+  }
+  if (!devColNames.has('tenantId')) {
+    try { db.prepare(`ALTER TABLE devices ADD COLUMN tenantId TEXT DEFAULT 'tenant_default'`).run(); } catch (_) {}
+    try { db.prepare(`CREATE INDEX IF NOT EXISTS idx_devices_tenantId ON devices(tenantId)`).run(); } catch (_) {}
+  }
+  if (!devColNames.has('platform')) {
+    try { db.prepare(`ALTER TABLE devices ADD COLUMN platform TEXT DEFAULT 'android'`).run(); } catch (_) {}
+  }
+  if (!devColNames.has('appVersion')) {
+    try { db.prepare(`ALTER TABLE devices ADD COLUMN appVersion TEXT DEFAULT '1.0.0'`).run(); } catch (_) {}
+  }
+  if (!devColNames.has('deviceUid')) {
+    try { db.prepare(`ALTER TABLE devices ADD COLUMN deviceUid TEXT`).run(); } catch (_) {}
+    try { db.prepare(`CREATE INDEX IF NOT EXISTS idx_devices_deviceUid ON devices(deviceUid)`).run(); } catch (_) {}
+  }
+  if (!devColNames.has('isRevoked')) {
+    try { db.prepare(`ALTER TABLE devices ADD COLUMN isRevoked INTEGER DEFAULT 0`).run(); } catch (_) {}
+  }
+  if (!devColNames.has('updatedAt')) {
+    try { db.prepare(`ALTER TABLE devices ADD COLUMN updatedAt TEXT`).run(); } catch (_) {}
+  }
+} catch (e) {
+  console.error('[Devices] Migration block error:', e);
+}
+
 console.log('[SQLite] Database initialised at:', DB_FILE);
 
 // ─── One-time migration from legacy db.json ──────────────────────────────────
@@ -1319,6 +1352,138 @@ export const ALL_BUSINESS_MODULES = [
 export function hasUserModulePermission(userId: string, tenantId: string, moduleId: string): boolean {
   const perm = db.prepare(`SELECT enabled FROM user_permissions WHERE userId = ? AND tenantId = ? AND moduleId = ?`).get(userId, tenantId, moduleId) as { enabled: number } | undefined;
   return perm ? perm.enabled === 1 : false;
+}
+
+export interface DeviceRecord {
+  id: string;
+  name: string;
+  btAddress?: string | null;
+  osType?: string | null;
+  ipAddress?: string | null;
+  status: string;
+  userId?: string | null;
+  tenantId?: string;
+  platform?: string;
+  appVersion?: string;
+  deviceUid?: string | null;
+  isRevoked?: number;
+  lastSeenAt?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export function registerOrUpdateDevice(data: {
+  id?: string;
+  name: string;
+  userId: string;
+  tenantId: string;
+  btAddress?: string;
+  osType?: string;
+  ipAddress?: string;
+  platform?: string;
+  appVersion?: string;
+  deviceUid?: string;
+}): DeviceRecord {
+  const now = new Date().toISOString();
+  let deviceId = data.id;
+  if (!deviceId && data.deviceUid) {
+    const existing = db.prepare(`SELECT id FROM devices WHERE deviceUid = ? AND tenantId = ?`).get(data.deviceUid, data.tenantId) as { id: string } | undefined;
+    if (existing) {
+      deviceId = existing.id;
+    }
+  }
+  if (!deviceId) {
+    deviceId = 'dev_' + (data.deviceUid ? data.deviceUid.replace(/[^a-zA-Z0-9_-]/g, '_') : Math.random().toString(36).substring(2, 11));
+  }
+
+  const existingDevice = db.prepare(`SELECT * FROM devices WHERE id = ?`).get(deviceId) as any;
+
+  if (existingDevice) {
+    if (existingDevice.tenantId && existingDevice.tenantId !== data.tenantId) {
+      throw new Error(`Device belongs to another tenant.`);
+    }
+
+    db.prepare(`
+      UPDATE devices
+      SET name = @name,
+          userId = @userId,
+          tenantId = @tenantId,
+          btAddress = COALESCE(@btAddress, btAddress),
+          osType = COALESCE(@osType, osType),
+          ipAddress = COALESCE(@ipAddress, ipAddress),
+          platform = COALESCE(@platform, platform),
+          appVersion = COALESCE(@appVersion, appVersion),
+          deviceUid = COALESCE(@deviceUid, deviceUid),
+          status = 'ONLINE',
+          isRevoked = 0,
+          lastSeenAt = @now,
+          updatedAt = @now
+      WHERE id = @id
+    `).run({
+      id: deviceId,
+      name: data.name || 'Android Device',
+      userId: data.userId,
+      tenantId: data.tenantId,
+      btAddress: data.btAddress || null,
+      osType: data.osType || 'Android',
+      ipAddress: data.ipAddress || '127.0.0.1',
+      platform: data.platform || 'android',
+      appVersion: data.appVersion || '1.2.0',
+      deviceUid: data.deviceUid || null,
+      now
+    });
+  } else {
+    db.prepare(`
+      INSERT INTO devices (id, name, btAddress, osType, ipAddress, status, userId, tenantId, platform, appVersion, deviceUid, isRevoked, lastSeenAt, createdAt, updatedAt)
+      VALUES (@id, @name, @btAddress, @osType, @ipAddress, 'ONLINE', @userId, @tenantId, @platform, @appVersion, @deviceUid, 0, @now, @now, @now)
+    `).run({
+      id: deviceId,
+      name: data.name || 'Android Device',
+      btAddress: data.btAddress || null,
+      osType: data.osType || 'Android',
+      ipAddress: data.ipAddress || '127.0.0.1',
+      userId: data.userId,
+      tenantId: data.tenantId,
+      platform: data.platform || 'android',
+      appVersion: data.appVersion || '1.2.0',
+      deviceUid: data.deviceUid || null,
+      now
+    });
+  }
+
+  return db.prepare(`SELECT * FROM devices WHERE id = ?`).get(deviceId) as DeviceRecord;
+}
+
+export function getDevicesForUser(userId: string, tenantId: string): DeviceRecord[] {
+  return db.prepare(`
+    SELECT * FROM devices 
+    WHERE tenantId = ? AND (userId = ? OR userId IS NULL) AND isRevoked = 0
+    ORDER BY lastSeenAt DESC, createdAt DESC
+  `).all(tenantId, userId) as DeviceRecord[];
+}
+
+export function getDeviceById(id: string, tenantId?: string): DeviceRecord | undefined {
+  if (tenantId) {
+    return db.prepare(`SELECT * FROM devices WHERE id = ? AND tenantId = ?`).get(id, tenantId) as DeviceRecord | undefined;
+  }
+  return db.prepare(`SELECT * FROM devices WHERE id = ?`).get(id) as DeviceRecord | undefined;
+}
+
+export function revokeDevice(id: string, userId: string, tenantId: string, isAdmin: boolean = false): boolean {
+  let query = `UPDATE devices SET isRevoked = 1, status = 'OFFLINE', updatedAt = datetime('now') WHERE id = ? AND tenantId = ?`;
+  const params: any[] = [id, tenantId];
+  if (!isAdmin) {
+    query += ` AND userId = ?`;
+    params.push(userId);
+  }
+  const result = db.prepare(query).run(...params);
+  return result.changes > 0;
+}
+
+export function updateDeviceStatus(id: string, status: string, lastSeenAt?: string): boolean {
+  const now = lastSeenAt || new Date().toISOString();
+  const result = db.prepare(`UPDATE devices SET status = ?, lastSeenAt = ?, updatedAt = ? WHERE id = ?`).run(status, now, now, id);
+  return result.changes > 0;
 }
 
 // ─── Expose the raw db instance for future steps ─────────────────────────────

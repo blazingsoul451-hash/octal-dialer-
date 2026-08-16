@@ -1331,8 +1331,14 @@ export default function App() {
               phoneBtAddress={socketData.phoneBtAddress}
               phoneOsType={socketData.phoneOsType}
               phoneIpAddress={socketData.phoneIpAddress}
+              phoneDeviceId={socketData.phoneDeviceId}
               laptopBtAddress={socketData.laptopBtAddress}
               revokePhone={socketData.revokePhone}
+              connectDevice={socketData.connectDevice}
+              disconnectDevice={socketData.disconnectDevice}
+              deviceError={socketData.deviceError}
+              authToken={authToken || ''}
+              socket={socketData.socket}
               serverUrl={socketData.qrPayload?.serverUrl || lanServerUrl || SERVER_URL}
             />
           )}

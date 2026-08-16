@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'connected_screen.dart';
+import 'login_screen.dart';
+import 'device_dashboard_screen.dart';
 
 class ConnectScreen extends StatefulWidget {
   const ConnectScreen({super.key});
@@ -368,6 +370,33 @@ class _ConnectScreenState extends State<ConnectScreen> {
                     fontSize: 11,
                     color: Color(0xFF94A3B8),
                     height: 1.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Center(
+                child: TextButton.icon(
+                  onPressed: () async {
+                    final prefs = await SharedPreferences.getInstance();
+                    final authToken = prefs.getString('auth_token');
+                    if (context.mounted) {
+                      if (authToken != null && authToken.isNotEmpty) {
+                        Navigator.pushReplacement(
+                          context,
+                          MaterialPageRoute(builder: (context) => const DeviceDashboardScreen()),
+                        );
+                      } else {
+                        Navigator.pushReplacement(
+                          context,
+                          MaterialPageRoute(builder: (context) => const LoginScreen()),
+                        );
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.account_circle_outlined, size: 16, color: Color(0xFFFFB800)),
+                  label: const Text(
+                    'Return to Account Login / Device Dashboard',
+                    style: TextStyle(color: Color(0xFFFFB800), fontSize: 12, fontWeight: FontWeight.bold),
                   ),
                 ),
               ),
