@@ -300,6 +300,9 @@ function getLocalIP(): string {
 }
 
 function getPublicBaseUrl(context?: { headers?: any; handshake?: any }): string {
+  if (process.env.DEVICE_SERVER_URL) {
+    return process.env.DEVICE_SERVER_URL.replace(/\/+$/, '');
+  }
   if (process.env.PUBLIC_BASE_URL) {
     return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
   }

@@ -248,7 +248,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       controller: _serverController,
                       style: const TextStyle(fontSize: 13, fontFamily: 'monospace', color: Colors.white),
                       decoration: InputDecoration(
-                        hintText: 'http://192.168.1.35:3000 or https://yourdomain.com',
+                        hintText: 'https://dialer.yourdomain.com or https://tunnel.trycloudflare.com',
                         hintStyle: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 11),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         fillColor: const Color(0xFF020617),

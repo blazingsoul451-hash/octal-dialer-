@@ -32,21 +32,21 @@ export class TunnelManager {
   public init(port: number): void {
     this.port = port;
 
-    // Check if user specified a custom public domain in .env
-    const customDomain = process.env.PUBLIC_BASE_URL || process.env.PUBLIC_DOMAIN || process.env.PUBLIC_URL || '';
-    if (customDomain) {
+    // Check if user specified a canonical public domain or permanent tunnel in .env
+    const canonicalDomain = process.env.DEVICE_SERVER_URL || process.env.PUBLIC_BASE_URL || process.env.PUBLIC_DOMAIN || process.env.PUBLIC_URL || '';
+    if (canonicalDomain) {
       this.state = {
         enabled: true,
-        publicUrl: customDomain.startsWith('http') ? customDomain : `https://${customDomain}`,
+        publicUrl: canonicalDomain.startsWith('http') ? canonicalDomain : `https://${canonicalDomain}`,
         provider: 'custom',
         connectedAt: new Date().toISOString(),
         error: null
       };
-      console.log(`[Tunnel] Configured Custom Public URL: ${this.state.publicUrl}`);
+      console.log(`[Tunnel] Configured Canonical Public URL: ${this.state.publicUrl}`);
       return;
     }
 
-    // Automatically launch Cloudflare Quick Tunnel by default
+    // Automatically launch Cloudflare Tunnel by default
     this.startCloudflareTunnel();
   }
 

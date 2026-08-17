@@ -3,10 +3,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Single source of truth for the Octal Dialer Android application backend configuration.
 class AppConfig {
   /// Default backend URL if none configured via --dart-define or preferences.
-  /// For development LAN testing, default to the local test server.
   static const String defaultBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://192.168.1.35:3000',
+    defaultValue: '',
   );
 
   /// Key used in SharedPreferences
