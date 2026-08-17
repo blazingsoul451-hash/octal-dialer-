@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
+import '../config/app_config.dart';
 
 enum PairingMode {
   authenticated,
@@ -39,7 +40,7 @@ class PhoneBridgeService extends ChangeNotifier {
   String _errorMessage = '';
   String get errorMessage => _errorMessage;
 
-  String _serverUrl = 'http://localhost:3000';
+  String _serverUrl = AppConfig.defaultBaseUrl;
   String get serverUrl => _serverUrl;
 
   String _authToken = '';
@@ -108,7 +109,7 @@ class PhoneBridgeService extends ChangeNotifier {
     _email = prefs.getString('user_email') ?? '';
     _role = prefs.getString('user_role') ?? 'user';
     _tenantId = prefs.getString('tenant_id') ?? '';
-    _serverUrl = prefs.getString('server_url') ?? 'http://localhost:3000';
+    _serverUrl = await AppConfig.init();
     _deviceUid = prefs.getString('octal_device_uid') ?? '';
     _mode = PairingMode.authenticated;
 

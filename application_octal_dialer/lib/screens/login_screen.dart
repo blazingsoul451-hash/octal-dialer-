@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../config/app_config.dart';
 import 'device_dashboard_screen.dart';
 import 'connect_screen.dart';
 
@@ -29,14 +30,8 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _loadSavedServer() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedServer = prefs.getString('server_url');
-    if (savedServer != null && savedServer.isNotEmpty) {
-      _serverController.text = savedServer;
-    } else {
-      // Default to standard local dev / tunnel server
-      _serverController.text = Platform.isAndroid ? 'http://10.0.2.2:3000' : 'http://localhost:3000';
-    }
+    final effective = await AppConfig.init();
+    _serverController.text = effective;
   }
 
   Future<void> _handleLogin() async {
@@ -90,7 +85,7 @@ class _LoginScreenState extends State<LoginScreen> {
       await prefs.setString('user_email', email);
       await prefs.setString('user_role', role);
       await prefs.setString('tenant_id', tenantId);
-      await prefs.setString('server_url', serverUrl);
+      await AppConfig.setBaseUrl(serverUrl);
 
       // Register device with backend
       String deviceUid = prefs.getString('octal_device_uid') ?? '';
@@ -253,7 +248,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       controller: _serverController,
                       style: const TextStyle(fontSize: 13, fontFamily: 'monospace', color: Colors.white),
                       decoration: InputDecoration(
-                        hintText: 'https://octaldialer.com or http://10.0.2.2:3000',
+                        hintText: 'http://192.168.1.35:3000 or https://yourdomain.com',
                         hintStyle: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 11),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         fillColor: const Color(0xFF020617),

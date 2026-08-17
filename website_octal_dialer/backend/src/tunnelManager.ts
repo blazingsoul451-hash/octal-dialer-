@@ -96,20 +96,23 @@ export class TunnelManager {
 
         const handleOutput = (data: Buffer) => {
           const text = data.toString();
-          // Match trycloudflare.com or loca.lt
+          // Match actual dynamic trycloudflare.com or loca.lt subdomains (exclude internal api.trycloudflare.com)
           const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/) || text.match(/https:\/\/[a-zA-Z0-9-]+\.loca\.lt/);
           if (match && !resolved) {
+            const candidateUrl = match[0];
+            if (candidateUrl.includes('api.trycloudflare.com') || candidateUrl.includes('pkg.trycloudflare.com') || candidateUrl.includes('update.trycloudflare.com')) {
+              return;
+            }
             resolved = true;
-            const url = match[0];
             this.state = {
               enabled: true,
-              publicUrl: url,
+              publicUrl: candidateUrl,
               provider: hasBinary ? 'cloudflare' : 'localtunnel',
               connectedAt: new Date().toISOString(),
               error: null
             };
-            console.log(`[Tunnel] ✅ Global Public HTTPS URL Active: ${url}`);
-            resolve(url);
+            console.log(`[Tunnel] ✅ Global Public HTTPS URL Active: ${candidateUrl}`);
+            resolve(candidateUrl);
           }
         };
 
@@ -118,14 +121,20 @@ export class TunnelManager {
 
         proc.on('close', (code) => {
           console.log(`[Tunnel] Tunnel process closed with exit code ${code}`);
-          if (!resolved) resolve(null);
           this.state.enabled = false;
           this.state.publicUrl = null;
+          if (!resolved) {
+            resolved = true;
+            resolve(null);
+          }
         });
 
         // 15-second timeout fallback
         setTimeout(() => {
           if (!resolved) {
+            resolved = true;
+            this.state.enabled = false;
+            this.state.publicUrl = null;
             console.log('[Tunnel] Tunnel negotiation timeout. Using LAN fallback.');
             resolve(null);
           }

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../services/phone_bridge_service.dart';
 import 'login_screen.dart';
 import 'connect_screen.dart';

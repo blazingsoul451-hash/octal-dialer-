@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import '../config/app_config.dart';
 import 'connected_screen.dart';
 import 'login_screen.dart';
 import 'device_dashboard_screen.dart';
@@ -29,6 +30,10 @@ class _ConnectScreenState extends State<ConnectScreen> {
     final prefs = await SharedPreferences.getInstance();
     final savedUri = prefs.getString('connection_uri');
     if (savedUri != null && savedUri.isNotEmpty) {
+      if (savedUri.contains('localhost') || savedUri.contains('127.0.0.1') || savedUri.contains('10.0.2.2')) {
+        await prefs.remove('connection_uri');
+        return;
+      }
       _uriController.text = savedUri;
       _connect(savedUri, autoConnect: true);
     }
@@ -45,30 +50,27 @@ class _ConnectScreenState extends State<ConnectScreen> {
       
       String? sessionId = parsed.queryParameters['sessionId'];
       String? token = parsed.queryParameters['token'];
-      String? serverUrl = parsed.queryParameters['serverUrl'];
+      String? rawServerUrl = parsed.queryParameters['serverUrl'];
       String laptopName = parsed.queryParameters['laptop'] ?? 'Laptop Host';
       String laptopBtAddress = parsed.queryParameters['bt'] ?? '00:11:22:33:44:55';
 
-      if (serverUrl == null && (parsed.scheme == 'http' || parsed.scheme == 'https') && parsed.host.isNotEmpty) {
+      // SINGLE SOURCE OF TRUTH: If QR contains no serverUrl, use the app's configured API_BASE_URL
+      String effectiveServerUrl;
+      if (rawServerUrl != null && rawServerUrl.isNotEmpty) {
+        final sanitized = AppConfig.sanitizeUrl(rawServerUrl);
+        effectiveServerUrl = sanitized ?? AppConfig.apiBaseUrl;
+      } else if ((parsed.scheme == 'http' || parsed.scheme == 'https') && parsed.host.isNotEmpty) {
         final portStr = parsed.hasPort ? ':${parsed.port}' : (parsed.scheme == 'https' ? '' : ':3000');
-        serverUrl = '${parsed.scheme}://${parsed.host}$portStr';
+        effectiveServerUrl = '${parsed.scheme}://${parsed.host}$portStr';
+      } else {
+        effectiveServerUrl = AppConfig.apiBaseUrl;
       }
 
-      if (sessionId == null || sessionId.isEmpty || token == null || token.isEmpty || serverUrl == null || serverUrl.isEmpty) {
-        throw const FormatException('Missing required pairing parameters in QR payload');
+      if (sessionId == null || sessionId.isEmpty || token == null || token.isEmpty) {
+        throw const FormatException('Missing required pairing parameters (sessionId/token) in QR payload');
       }
 
-      final serverUri = Uri.parse(serverUrl);
-      // Require HTTPS for production, allow HTTP for localhost & local private LAN networks
-      final isLocalhostOrLAN = serverUri.host == 'localhost' ||
-                               serverUri.host == '127.0.0.1' ||
-                               serverUri.host.startsWith('192.168.') ||
-                               serverUri.host.startsWith('10.') ||
-                               serverUri.host.startsWith('172.') ||
-                               serverUri.host.endsWith('.local');
-      if (serverUri.scheme != 'https' && !isLocalhostOrLAN) {
-        throw const FormatException('Server URL must use HTTPS (HTTP allowed only for localhost and private LAN testing)');
-      }
+      final serverUri = Uri.parse(effectiveServerUrl);
       if (!['http', 'https'].contains(serverUri.scheme)) {
         throw const FormatException('Invalid server URL scheme (must be http/https)');
       }
@@ -90,7 +92,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
             builder: (context) => ConnectedScreen(
               sessionId: sessionId,
               token: token,
-              serverUrl: serverUrl!,
+              serverUrl: effectiveServerUrl,
               laptopName: laptopName,
               laptopBtAddress: laptopBtAddress,
             ),

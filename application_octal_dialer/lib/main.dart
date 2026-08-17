@@ -4,8 +4,11 @@ import 'screens/login_screen.dart';
 import 'screens/device_dashboard_screen.dart';
 import 'screens/connect_screen.dart';
 
-void main() {
+import 'config/app_config.dart';
+
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppConfig.init();
   runApp(const OctalDialerApp());
 }
 

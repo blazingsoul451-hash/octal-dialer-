@@ -305,6 +305,10 @@ function getPublicBaseUrl(context?: { headers?: any; handshake?: any }): string 
 
   if (host) {
     const hostname = host.split(':')[0];
+    // If request comes from localhost/loopback, the external phone cannot reach loopback. Use authoritative LAN IP.
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '0.0.0.0') {
+      return `${proto}://${getLocalIP()}:${PORT}`;
+    }
     return `${proto}://${hostname}:${PORT}`;
   }
   return `${proto}://${getLocalIP()}:${PORT}`;
@@ -1018,6 +1022,43 @@ app.get('/api/audit-logs', requireAuth, (req, res) => {
 app.post('/api/leads/:id/unlock', requireAuth, (req, res) => {
   releaseLeadLock(req.params.id);
   res.json({ success: true, message: `Lead ${req.params.id} unlocked.` });
+});
+
+// GET /api/session/resolve — resolves and validates a session for pairing by authenticated mobile clients
+app.get('/api/session/resolve', requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const sessionId = req.query.sessionId as string;
+  const token = req.query.token as string;
+
+  if (!sessionId || !token) {
+    res.status(400).json({ error: 'sessionId and token are required.' });
+    return;
+  }
+
+  const session = getSessionById(sessionId);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found or expired.' });
+    return;
+  }
+
+  if (session.tenantId && user.tenantId && session.tenantId !== user.tenantId) {
+    res.status(403).json({ error: 'Forbidden: Session belongs to a different tenant.' });
+    return;
+  }
+
+  if (session.token !== token) {
+    res.status(401).json({ error: 'Invalid pairing token.' });
+    return;
+  }
+
+  res.json({
+    success: true,
+    sessionId: session.id,
+    laptopName: session.laptopName,
+    laptopBtAddress: session.laptopBtAddress,
+    status: session.status,
+    serverUrl: getPublicBaseUrl(req)
+  });
 });
 
 // REST: Server Info (public — mobile app needs this without auth)
@@ -2212,6 +2253,7 @@ io.on('connection', (socket) => {
     console.log(`[Socket] Laptop registered: ${session.id} | Tenant: ${tenantId} | User: ${userId || 'anonymous'} | Status: ${session.status}`);
 
     const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
+    const cleanPairingUri = `octaldialer://join?sessionId=${session.id}&token=${session.token}&laptop=${encodeURIComponent(session.laptopName || 'Laptop')}&bt=${encodeURIComponent(session.laptopBtAddress || '00:11:22:33:44:55')}`;
 
     socket.emit('session:created', {
       sessionId: session.id,
@@ -2221,11 +2263,13 @@ io.on('connection', (socket) => {
       localIP: getLocalIP(),
       port: PORT,
       serverUrl: effectiveUrl,
+      pairingUri: cleanPairingUri,
       qrPayload: {
         sessionId: session.id,
         token: session.token,
         laptopName: session.laptopName,
         laptopBtAddress: session.laptopBtAddress,
+        pairingUri: cleanPairingUri,
         serverUrl: effectiveUrl
       }
     });
@@ -2256,14 +2300,18 @@ io.on('connection', (socket) => {
 
     const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
     const newToken = revokePhone(sessionId);
+    const cleanRefreshPairingUri = `octaldialer://join?sessionId=${sessionId}&token=${newToken}&laptop=${encodeURIComponent(session.laptopName || 'Laptop')}&bt=${encodeURIComponent(session.laptopBtAddress || '00:11:22:33:44:55')}`;
+
     socket.emit('session:refreshed', {
       token: newToken,
       serverUrl: effectiveUrl,
+      pairingUri: cleanRefreshPairingUri,
       qrPayload: {
         sessionId,
         token: newToken,
         laptopName: session.laptopName,
         laptopBtAddress: session.laptopBtAddress,
+        pairingUri: cleanRefreshPairingUri,
         serverUrl: effectiveUrl
       }
     });
