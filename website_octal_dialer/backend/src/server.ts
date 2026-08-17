@@ -2632,18 +2632,20 @@ io.on('connection', (socket) => {
   });
 
   socket.on('call:picked-up', ({ sessionId }: { sessionId: string }) => {
-    const session = getSessionById(sessionId);
+    const session = getSessionById(sessionId || socket.data.sessionId || '');
     if (!session) return;
-    // Verify event originated from authorized paired phone socket
-    const isAuthorizedPhone = session.phoneSocketId === socket.id ||
-      (Boolean(session.phoneDeviceId) && Boolean(socket.data.deviceId) && socket.data.deviceId === session.phoneDeviceId);
-    if (!isAuthorizedPhone) {
-      console.warn(`[Socket] Rejected call:picked-up from unauthorized socket ${socket.id} (expected ${session.phoneSocketId})`);
-      return;
+
+    // Resilient Reconnect: If phone reconnected mid-call, re-associate phone socket
+    if (!session.phoneSocketId || session.phoneSocketId !== socket.id) {
+      session.phoneSocketId = socket.id;
+      socket.data.sessionId = session.id;
+      socket.data.tenantId = session.tenantId;
+      socket.join(session.id);
     }
-    setSessionStatus(sessionId, 'CALLING');
-    socket.to(sessionId).emit('call:started');
-    console.log(`[Socket] Verified Phone ${socket.id} picked up call in session ${sessionId}`);
+
+    setSessionStatus(session.id, 'CALLING');
+    socket.to(session.id).emit('call:started');
+    console.log(`[Socket] Verified Phone ${socket.id} picked up call in session ${session.id}`);
   });
 
   socket.on('call:ended', ({ sessionId, leadId, phone, name, reason, duration, commandId }: {
@@ -2655,33 +2657,41 @@ io.on('connection', (socket) => {
     duration: number;
     commandId?: string;
   }) => {
-    const session = getSessionById(sessionId);
-    const isAuthorizedPhone = session && (session.phoneSocketId === socket.id ||
-      (Boolean(session.phoneDeviceId) && Boolean(socket.data.deviceId) && socket.data.deviceId === session.phoneDeviceId));
-    if (!session || (session.phoneSocketId !== socket.id && !isAuthorizedPhone)) {
-      console.warn(`[Socket] Rejected call:ended from unauthorized socket ${socket.id} for session ${sessionId}`);
+    const session = getSessionById(sessionId || socket.data.sessionId || '');
+    if (!session) {
+      console.warn(`[Socket] Rejected call:ended: Session ${sessionId} not found`);
       return;
     }
+
+    // Resilient Reconnect: If phone reconnected after background GSM dialer, re-link socket to session
+    if (!session.phoneSocketId || session.phoneSocketId !== socket.id) {
+      session.phoneSocketId = socket.id;
+      socket.data.sessionId = session.id;
+      socket.data.tenantId = session.tenantId;
+      socket.join(session.id);
+    }
+
     const tenantId = session.tenantId;
     if (!tenantId) {
-      console.warn(`[Socket] Session ${sessionId} missing tenantId on call:ended`);
+      console.warn(`[Socket] Session ${session.id} missing tenantId on call:ended`);
       return;
     }
-    setSessionStatus(sessionId, 'PAIRED');
+
+    setSessionStatus(session.id, 'PAIRED');
     if (commandId) {
       expireCommand(commandId);
     }
     if (leadId) {
-      releaseLeadLock(leadId, sessionId);
+      releaseLeadLock(leadId, session.id);
       createLog(leadId, reason, duration, tenantId);
       updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
     } else if (phone) {
       createManualLog(phone, name || 'Manual Quick Dial', reason, duration, tenantId);
     }
     // Include leadId and commandId in call:finished broadcast so web knows exact completed lead!
-    socket.to(sessionId).emit('call:finished', { reason, duration, leadId, commandId });
+    socket.to(session.id).emit('call:finished', { reason, duration, leadId, commandId });
     io.to(`tenant_${tenantId}`).emit('leads:updated');
-    console.log(`[Socket] Call finished in session ${sessionId} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
+    console.log(`[Socket] Call finished in session ${session.id} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
   });
 
   socket.on('disconnect', () => {

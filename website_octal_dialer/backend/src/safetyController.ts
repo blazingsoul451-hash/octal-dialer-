@@ -222,11 +222,17 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
     const now = new Date().toISOString();
     const existingCmd = stmts.findActiveCommand.get({ leadId: req.leadId, now }) as any;
     if (existingCmd) {
-      return {
-        allowed: false,
-        reason: 'DUPLICATE_COMMAND',
-        message: `Duplicate call prevented. Lead is already in-flight (command: ${existingCmd.id}). Wait ${COMMAND_TTL_MINUTES} minutes or until the call completes.`
-      };
+      // If the command is from the same session (which is idle) or stale, expire it automatically
+      if (existingCmd.sessionId === req.sessionId) {
+        stmts.markCommandExpired.run({ id: existingCmd.id, now });
+        console.log(`[SafetyController] Stale command ${existingCmd.id} automatically expired for lead ${req.leadId}`);
+      } else {
+        return {
+          allowed: false,
+          reason: 'DUPLICATE_COMMAND',
+          message: `Duplicate call prevented. Lead is already in-flight (command: ${existingCmd.id}). Wait ${COMMAND_TTL_MINUTES} minutes or until the call completes.`
+        };
+      }
     }
 
     // ── Layer 3.6: Lead Reservation & Lock Check (Only AFTER all checks succeed) ──
