@@ -1,0 +1,13 @@
+{
+  "name": "octal-dialer-workspace",
+  "version": "1.0.0",
+  "description": "Octal Dialer workspace root",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/start_all.js",
+    "dev:backend": "npm --prefix website_octal_dialer/backend run dev",
+    "dev:frontend": "npm --prefix website_octal_dialer/frontend run dev",
+    "build": "npm --prefix website_octal_dialer/backend run build && npm --prefix website_octal_dialer/frontend run build",
+    "test": "node website_octal_dialer/backend/test_call_flow_and_outcomes.js"
+  }
+}

@@ -143,11 +143,6 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Serve compiled frontend dashboard directly on backend port 3000
-const frontendDist = path.join(__dirname, '../../frontend/dist');
-if (fs.existsSync(frontendDist)) {
-  app.use(express.static(frontendDist));
-}
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
@@ -330,6 +325,18 @@ function getPublicBaseUrl(context?: { headers?: any; handshake?: any }): string 
 }
 
 const getEffectiveServerUrl = getPublicBaseUrl;
+
+// ─── Server Info Endpoint (Public) ──────────────────────────────────────────
+app.get(['/info', '/api/info'], (req, res) => {
+  const publicBase = getPublicBaseUrl({ headers: req.headers });
+  res.json({
+    laptopName: os.hostname(),
+    localIP: getLocalIP(),
+    port: PORT,
+    serverUrl: publicBase,
+    apkUrl: `${publicBase}/download/apk`
+  });
+});
 
 // ─── Auth REST Endpoints (no requireAuth — public) ──────────────────────────
 
@@ -3019,6 +3026,7 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`[QR will auto-encode this URL in the pairing link]`);
 
   // Initialize Cloudflare Tunnel and APK Watcher
+  tunnelManager.attachSocketIO(io);
   tunnelManager.init(PORT);
   apkWatcher.init(io, db);
 });

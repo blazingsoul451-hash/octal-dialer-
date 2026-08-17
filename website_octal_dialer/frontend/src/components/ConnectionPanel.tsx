@@ -71,13 +71,26 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   const [copied, setCopied] = useState(false);
   const [showApkQr, setShowApkQr] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [dynamicTunnelUrl, setDynamicTunnelUrl] = useState<string | null>(null);
 
   const laptopName = window.location.hostname || 'Localhost';
   const currentHost = window.location.hostname;
   const apiProtocol = window.location.protocol;
 
-  const safeServerUrl = (qrPayload && qrPayload.serverUrl && qrPayload.serverUrl.startsWith('http'))
-    ? qrPayload.serverUrl
+  // Real-time Cloudflare Quick Tunnel updates over WebSocket
+  useEffect(() => {
+    if (!socket) return;
+    const handler = (data: { serverUrl?: string | null }) => {
+      if (data?.serverUrl) {
+        setDynamicTunnelUrl(data.serverUrl);
+      }
+    };
+    socket.on('tunnel:updated', handler);
+    return () => { socket.off('tunnel:updated', handler); };
+  }, [socket]);
+
+  const safeServerUrl = dynamicTunnelUrl || (qrPayload && qrPayload.serverUrl && qrPayload.serverUrl.startsWith('http'))
+    ? (dynamicTunnelUrl || qrPayload.serverUrl)
     : (serverUrl && serverUrl.startsWith('http') 
       ? serverUrl 
       : `${apiProtocol}//${currentHost}:3000`);
@@ -210,15 +223,25 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
             Connect your authenticated Android device to dial real SIM/GSM calls directly through your phone.
           </p>
         </div>
-        <div className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full border shrink-0 ${
-          isConnected 
-            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 emerald-glow' 
-            : 'bg-red-500/10 border-red-500/30 text-red-400'
-        }`}>
-          <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
-          <span className="text-[10px] font-mono font-bold uppercase tracking-wider">
-            {isConnected ? 'Bridge Ready' : 'Server Offline'}
-          </span>
+        <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[11px] font-mono ${
+            safeServerUrl.includes('trycloudflare.com') || safeServerUrl.startsWith('https://')
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+              : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+          }`}>
+            <span className={`w-2 h-2 rounded-full ${safeServerUrl.includes('trycloudflare.com') || safeServerUrl.startsWith('https://') ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+            <span>Cloudflare Tunnel: {safeServerUrl.includes('trycloudflare.com') ? 'CONNECTED' : 'LOCAL'}</span>
+          </div>
+          <div className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full border shrink-0 ${
+            isConnected 
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 emerald-glow' 
+              : 'bg-red-500/10 border-red-500/30 text-red-400'
+          }`}>
+            <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
+            <span className="text-[10px] font-mono font-bold uppercase tracking-wider">
+              {isConnected ? 'Bridge Ready' : 'Server Offline'}
+            </span>
+          </div>
         </div>
       </div>
 

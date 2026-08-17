@@ -5,7 +5,7 @@ import fs from 'fs';
 export interface TunnelState {
   enabled: boolean;
   publicUrl: string | null;
-  provider: 'cloudflare' | 'localtunnel' | 'custom' | 'lan';
+  provider: 'cloudflare' | 'custom' | 'lan';
   connectedAt: string | null;
   error: string | null;
 }
@@ -13,6 +13,11 @@ export interface TunnelState {
 export class TunnelManager {
   private static instance: TunnelManager | null = null;
   private tunnelProcess: ChildProcess | null = null;
+  private ioInstance: any = null;
+  private explicitlyStopped = false;
+  private restartTimeout: any = null;
+  private urlChangeListeners: ((url: string) => void)[] = [];
+
   private state: TunnelState = {
     enabled: false,
     publicUrl: null,
@@ -29,10 +34,19 @@ export class TunnelManager {
     return TunnelManager.instance;
   }
 
+  public attachSocketIO(io: any): void {
+    this.ioInstance = io;
+  }
+
+  public onUrlChange(callback: (url: string) => void): void {
+    this.urlChangeListeners.push(callback);
+  }
+
   public init(port: number): void {
     this.port = port;
+    this.explicitlyStopped = false;
 
-    // Check if user specified a canonical public domain or permanent tunnel in .env
+    // 1. Check if user specified a canonical public domain or permanent tunnel in environment
     const canonicalDomain = process.env.DEVICE_SERVER_URL || process.env.PUBLIC_BASE_URL || process.env.PUBLIC_DOMAIN || process.env.PUBLIC_URL || '';
     if (canonicalDomain) {
       this.state = {
@@ -46,7 +60,7 @@ export class TunnelManager {
       return;
     }
 
-    // Automatically launch Cloudflare Tunnel by default
+    // 2. Automatically launch and supervise Free Cloudflare Quick Tunnel ($0)
     this.startCloudflareTunnel();
   }
 
@@ -67,27 +81,28 @@ export class TunnelManager {
       connectedAt: new Date().toISOString(),
       error: null
     };
+    if (this.ioInstance) {
+      this.ioInstance.emit('tunnel:updated', { serverUrl: formatted, status: 'CONNECTED', provider: 'custom' });
+    }
   }
 
   public async startCloudflareTunnel(): Promise<string | null> {
-    if (this.state.publicUrl && this.state.provider === 'cloudflare') {
+    if (this.state.publicUrl && this.tunnelProcess && !this.tunnelProcess.killed) {
       return this.state.publicUrl;
     }
 
+    const cloudflaredPath = path.resolve(__dirname, '../bin/cloudflared.exe');
+    if (!fs.existsSync(cloudflaredPath)) {
+      console.warn(`[Tunnel] cloudflared.exe binary not found at ${cloudflaredPath}. Using LAN mode.`);
+      return null;
+    }
+
+    console.log(`[Tunnel] Launching Cloudflare Quick Tunnel for port ${this.port}...`);
+
     return new Promise((resolve) => {
-      console.log(`[Tunnel] Launching Cloudflare Quick Tunnel for port ${this.port}...`);
-
-      const cloudflaredPath = path.resolve(__dirname, '../bin/cloudflared.exe');
-      const hasBinary = fs.existsSync(cloudflaredPath);
-
-      const command = hasBinary ? cloudflaredPath : 'npx';
-      const args = hasBinary
-        ? ['tunnel', '--url', `http://127.0.0.1:${this.port}`, '--no-autoupdate']
-        : ['-y', 'localtunnel', '--port', String(this.port)];
-
       try {
-        const proc = spawn(command, args, {
-          shell: !hasBinary,
+        const proc = spawn(cloudflaredPath, ['tunnel', '--url', `http://127.0.0.1:${this.port}`, '--no-autoupdate'], {
+          shell: false,
           windowsHide: true
         });
 
@@ -96,10 +111,10 @@ export class TunnelManager {
 
         const handleOutput = (data: Buffer) => {
           const text = data.toString();
-          // Match actual dynamic trycloudflare.com or loca.lt subdomains (exclude internal api.trycloudflare.com)
-          const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/) || text.match(/https:\/\/[a-zA-Z0-9-]+\.loca\.lt/);
+          const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/);
+
           if (match && !resolved) {
-            const candidateUrl = match[0];
+            const candidateUrl = match[0].trim();
             if (candidateUrl.includes('api.trycloudflare.com') || candidateUrl.includes('pkg.trycloudflare.com') || candidateUrl.includes('update.trycloudflare.com')) {
               return;
             }
@@ -107,11 +122,25 @@ export class TunnelManager {
             this.state = {
               enabled: true,
               publicUrl: candidateUrl,
-              provider: hasBinary ? 'cloudflare' : 'localtunnel',
+              provider: 'cloudflare',
               connectedAt: new Date().toISOString(),
               error: null
             };
             console.log(`[Tunnel] ✅ Global Public HTTPS URL Active: ${candidateUrl}`);
+            
+            // Broadcast new URL across live Socket.IO connections to web dashboards
+            if (this.ioInstance) {
+              this.ioInstance.emit('tunnel:updated', { 
+                serverUrl: candidateUrl, 
+                status: 'CONNECTED', 
+                provider: 'cloudflare' 
+              });
+            }
+
+            for (const cb of this.urlChangeListeners) {
+              try { cb(candidateUrl); } catch (_) {}
+            }
+
             resolve(candidateUrl);
           }
         };
@@ -120,28 +149,32 @@ export class TunnelManager {
         proc.stderr?.on('data', handleOutput);
 
         proc.on('close', (code) => {
-          console.log(`[Tunnel] Tunnel process closed with exit code ${code}`);
           this.state.enabled = false;
           this.state.publicUrl = null;
+
+          if (this.ioInstance) {
+            this.ioInstance.emit('tunnel:updated', { serverUrl: null, status: 'DISCONNECTED' });
+          }
+
           if (!resolved) {
             resolved = true;
             resolve(null);
+          }
+
+          // Auto-recovery / crash restart with backoff if backend is alive
+          if (!this.explicitlyStopped) {
+            console.log('[Tunnel] Auto-reconnecting Cloudflare Quick Tunnel in 3s...');
+            if (this.restartTimeout) clearTimeout(this.restartTimeout);
+            this.restartTimeout = setTimeout(() => {
+              if (!this.explicitlyStopped) {
+                this.startCloudflareTunnel();
+              }
+            }, 3000);
           }
         });
 
-        // 15-second timeout fallback
-        setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            this.state.enabled = false;
-            this.state.publicUrl = null;
-            console.log('[Tunnel] Tunnel negotiation timeout. Using LAN fallback.');
-            resolve(null);
-          }
-        }, 15000);
-
       } catch (err: any) {
-        console.warn('[Tunnel] Could not launch tunnel provider:', err.message);
+        console.warn('[Tunnel] Could not launch cloudflared process:', err.message);
         this.state.error = err.message;
         resolve(null);
       }
@@ -149,6 +182,11 @@ export class TunnelManager {
   }
 
   public stopTunnel(): void {
+    this.explicitlyStopped = true;
+    if (this.restartTimeout) {
+      clearTimeout(this.restartTimeout);
+      this.restartTimeout = null;
+    }
     if (this.tunnelProcess) {
       try {
         this.tunnelProcess.kill();
