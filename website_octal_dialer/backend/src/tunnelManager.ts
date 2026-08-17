@@ -111,13 +111,10 @@ export class TunnelManager {
 
         const handleOutput = (data: Buffer) => {
           const text = data.toString();
-          const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/);
+          const matches = Array.from(text.matchAll(/https:\/\/(?!api\b|pkg\b|update\b)[a-zA-Z0-9-]+\.trycloudflare\.com/g));
 
-          if (match && !resolved) {
-            const candidateUrl = match[0].trim();
-            if (candidateUrl.includes('api.trycloudflare.com') || candidateUrl.includes('pkg.trycloudflare.com') || candidateUrl.includes('update.trycloudflare.com')) {
-              return;
-            }
+          if (matches.length > 0 && !resolved) {
+            const candidateUrl = matches[0][0].trim();
             resolved = true;
             this.state = {
               enabled: true,
