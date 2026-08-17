@@ -88,10 +88,10 @@ export const FacebookScraper: React.FC<FacebookScraperProps> = ({
     let timer: any = null;
     if (status === 'running') {
       timer = setInterval(fetchStatus, 2000);
-    } else {
-      timer = setInterval(fetchStatus, 8000);
     }
-    return () => clearInterval(timer);
+    return () => {
+      if (timer) clearInterval(timer);
+    };
   }, [status]);
 
   useEffect(() => {

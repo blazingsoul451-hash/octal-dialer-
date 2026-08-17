@@ -46,10 +46,10 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({ onImportSu
     let interval: any = null;
     if (scraperStatus === 'running') {
       interval = setInterval(fetchScraperStatus, 1500);
-    } else {
-      interval = setInterval(fetchScraperStatus, 5000);
     }
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [scraperStatus, serverUrl, authToken]);
 
   const handleStartScraper = async (e: React.FormEvent) => {

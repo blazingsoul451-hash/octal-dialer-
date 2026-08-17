@@ -170,10 +170,10 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
     let timer: any = null;
     if (botStatus === 'running') {
       timer = setInterval(fetchBotStatus, 2000);
-    } else {
-      timer = setInterval(fetchBotStatus, 8000);
     }
-    return () => clearInterval(timer);
+    return () => {
+      if (timer) clearInterval(timer);
+    };
   }, [botStatus]);
 
   useEffect(() => {

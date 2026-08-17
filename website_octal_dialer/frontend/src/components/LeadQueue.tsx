@@ -53,6 +53,21 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const dispositionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processedCallRef = useRef<string | null>(null); // Track last processed call to prevent duplicate processing
 
+  // Windowed pagination state for instant DOM rendering with 1,000+ leads
+  const PAGE_SIZE = 50;
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Auto-align page with active currentIndex
+  useEffect(() => {
+    const targetPage = Math.floor(currentIndex / PAGE_SIZE) + 1;
+    if (targetPage !== currentPage && targetPage > 0) {
+      setCurrentPage(targetPage);
+    }
+  }, [currentIndex]);
+
+  const totalPages = Math.ceil(leads.length / PAGE_SIZE) || 1;
+  const paginatedLeads = leads.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
   // Call ticker state — only ticks after call is picked up (ACTIVE)
   const [callDuration, setCallDuration] = useState(0);
   const tickerRef = useRef<any>(null);
@@ -394,7 +409,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const remainingCount = leads.filter(l => l.status === 'PENDING').length;
 
   const getStatusBadge = () => {
-    if (callState === 'CALLING') return { label: `◉ Ringing... (${autoDialTimeout}s timeout)`, color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 animate-pulse font-bold' };
+    if (callState === 'CALLING') return { label: `◉ Connecting Handset & Ringing... (${autoDialTimeout}s limit)`, color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 animate-pulse font-bold' };
     if (callState === 'ACTIVE') return { label: `● CONNECTED — ${formatTimer(callDuration)}`, color: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/40 emerald-glow font-bold' };
     if (phoneConnected && isAutoDialing) return { label: '● Auto-Dialing Campaign ON', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30 font-bold animate-pulse' };
     if (phoneConnected) return { label: '● Ready to dial', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30 font-bold' };
@@ -589,55 +604,83 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                 </div>
               </div>
             ) : (
-              leads.map((lead, idx) => (
-                <div
-                  key={lead.id}
-                  onClick={() => {
-                    if (callState === 'IDLE') {
-                      setCurrentIndex(idx);
-                      setLogs(prev => [...prev, `[Queue] Selected lead: ${lead.name}`]);
-                    }
-                  }}
-                  className={`w-full p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer group ${
-                    idx === currentIndex
-                      ? isLight 
-                        ? 'bg-amber-500/20 border-amber-500 text-slate-950 font-black border-l-4' 
-                        : 'bg-amber-500/10 border-amber-500/70 text-white font-bold border-l-4 border-l-amber-500'
-                      : isLight
-                        ? 'bg-slate-50 border-slate-200 hover:border-slate-300 text-slate-900 font-bold'
-                        : 'bg-slate-950/60 border-slate-850 hover:border-slate-750 text-slate-300'
-                  }`}
-                >
-                  <div className="min-w-0 pr-2 flex-1">
-                    <p className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{lead.name}</p>
-                    <p className={`text-[10px] font-mono mt-0.5 ${isLight ? 'text-slate-600 font-semibold' : 'text-slate-400'}`}>{lead.phone}</p>
-                  </div>
+              paginatedLeads.map((lead, localIdx) => {
+                const idx = (currentPage - 1) * PAGE_SIZE + localIdx;
+                return (
+                  <div
+                    key={lead.id}
+                    onClick={() => {
+                      if (callState === 'IDLE') {
+                        setCurrentIndex(idx);
+                        setLogs(prev => [...prev, `[Queue] Selected lead: ${lead.name}`]);
+                      }
+                    }}
+                    className={`w-full p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer group ${
+                      idx === currentIndex
+                        ? isLight 
+                          ? 'bg-amber-500/20 border-amber-500 text-slate-950 font-black border-l-4' 
+                          : 'bg-amber-500/10 border-amber-500/70 text-white font-bold border-l-4 border-l-amber-500'
+                        : isLight
+                          ? 'bg-slate-50 border-slate-200 hover:border-slate-300 text-slate-900 font-bold'
+                          : 'bg-slate-950/60 border-slate-850 hover:border-slate-750 text-slate-300'
+                    }`}
+                  >
+                    <div className="min-w-0 pr-2 flex-1">
+                      <p className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{lead.name}</p>
+                      <p className={`text-[10px] font-mono mt-0.5 ${isLight ? 'text-slate-600 font-semibold' : 'text-slate-400'}`}>{lead.phone}</p>
+                    </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className={`text-[9px] font-mono font-extrabold tracking-wider px-2 py-0.5 rounded border uppercase ${
-                      lead.status === 'COMPLETED'
-                        ? isLight ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-[9px] font-mono font-extrabold tracking-wider px-2 py-0.5 rounded border uppercase ${
+                        lead.status === 'COMPLETED'
+                          ? isLight ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
                         : lead.status === 'CALLING'
-                        ? isLight ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                          ? isLight ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
                         : isLight ? 'bg-slate-200 border-slate-300 text-slate-700' : 'bg-slate-900 border-slate-800 text-slate-400'
-                    }`}>
-                      {lead.status === 'COMPLETED' ? lead.outcome || 'DONE' : lead.status}
-                    </span>
+                      }`}>
+                        {lead.status === 'COMPLETED' ? lead.outcome || 'DONE' : lead.status}
+                      </span>
 
-                    {/* Tiny Trash/Bin Delete Icon */}
-                    <button
-                      onClick={(e) => handleDeleteLead(lead.id, e)}
-                      disabled={callState !== 'IDLE'}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition cursor-pointer"
-                      title="Delete lead permanently"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                      {/* Tiny Trash/Bin Delete Icon */}
+                      <button
+                        onClick={(e) => handleDeleteLead(lead.id, e)}
+                        disabled={callState !== 'IDLE'}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition cursor-pointer"
+                        title="Delete lead permanently"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
+
+          {/* Pagination Controls for Large Queues */}
+          {leads.length > PAGE_SIZE && (
+            <div className={`flex items-center justify-between pt-2.5 mt-2 border-t text-[11px] font-mono select-none ${
+              isLight ? 'border-slate-200 text-slate-700' : 'border-slate-800 text-slate-400'
+            }`}>
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-2.5 py-1 rounded-lg border font-bold disabled:opacity-30 hover:bg-amber-500/10 transition cursor-pointer"
+              >
+                ◀ Prev
+              </button>
+              <span className="font-bold text-[10px]">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="px-2.5 py-1 rounded-lg border font-bold disabled:opacity-30 hover:bg-amber-500/10 transition cursor-pointer"
+              >
+                Next ▶
+              </button>
+            </div>
+          )}
         </div>
 
         {/* RIGHT COLUMN: Centerpiece Interactive Call Panel */}
