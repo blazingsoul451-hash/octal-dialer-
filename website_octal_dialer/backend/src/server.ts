@@ -301,11 +301,13 @@ function getPublicBaseUrl(context?: { headers?: any; handshake?: any }): string 
   if (publicUrl) return publicUrl.replace(/\/+$/, '');
 
   const host = context?.headers?.host || context?.handshake?.headers?.host;
+  const proto = (context?.headers?.['x-forwarded-proto'] === 'https' || (process.env.NODE_ENV === 'production' && !host?.includes('localhost') && !host?.includes('127.0.0.1'))) ? 'https' : 'http';
+
   if (host) {
     const hostname = host.split(':')[0];
-    return `http://${hostname}:${PORT}`;
+    return `${proto}://${hostname}:${PORT}`;
   }
-  return `http://${getLocalIP()}:${PORT}`;
+  return `${proto}://${getLocalIP()}:${PORT}`;
 }
 
 const getEffectiveServerUrl = getPublicBaseUrl;
@@ -1764,9 +1766,17 @@ app.post('/api/leads/import', requireAuth, (req, res) => {
   }
 });
 
-// REST: Manual leads import for mobile (no requireAuth)
-app.post('/api/leads/import/mobile', (req, res) => {
+// REST: Manual leads import for mobile (protected)
+app.post('/api/leads/import/mobile', requireAuth, (req, res) => {
   try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
     const { campaignName, fileName, leads } = req.body as {
       campaignName: string;
       fileName: string;
@@ -1778,8 +1788,10 @@ app.post('/api/leads/import/mobile', (req, res) => {
       return;
     }
 
-    const targetTenantId = (req.headers['x-tenant-id'] as string) || (req.body.tenantId as string) || 'tenant_default';
-    const result = createCampaign(campaignName, fileName, leads, targetTenantId);
+    // Tenant identity is strictly derived from authenticated user JWT
+    const result = createCampaign(campaignName, fileName, leads, tenantId);
+    io.to(`tenant_${tenantId}`).emit('leads:updated');
+
     res.json({
       success: true,
       campaignId: result.campaign.id,
@@ -2046,14 +2058,19 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ─── LAPTOP DISCONNECT DEVICE ────────────────────────────────────────────────
-  socket.on('laptop:disconnect-device', ({ sessionId, deviceId }: { sessionId: string; deviceId?: string }) => {
+  // ─── LAPTOP DISCONNECT / REVOKE PHONE ───────────────────────────────────────
+  const handleLaptopRevoke = ({ sessionId, deviceId }: { sessionId: string; deviceId?: string }) => {
     const session = getSessionById(sessionId);
     if (!session) return;
 
-    // Verify emitting socket is the authorized laptop socket
-    if (session.laptopSocketId !== socket.id) {
-      console.warn(`[Socket] Rejected laptop:disconnect-device from unauthorized socket ${socket.id}`);
+    // Verify emitting socket is authorized laptop socket OR authenticated admin belonging to the tenant
+    const isAuthorizedSocket = session.laptopSocketId === socket.id;
+    const isTenantAdmin = socket.data.user && socket.data.tenantId === session.tenantId &&
+      (socket.data.user.role === 'admin' || socket.data.user.role === 'superadmin' || socket.data.user.role === 'platform_admin');
+
+    if (!isAuthorizedSocket && !isTenantAdmin) {
+      console.warn(`[Socket Security] Rejected laptop disconnect/revoke from unauthorized socket ${socket.id} for session ${sessionId}`);
+      socket.emit('error', { code: 'UNAUTHORIZED_LAPTOP_SESSION', message: 'You are not authorized to disconnect or revoke this session.' });
       return;
     }
 
@@ -2074,39 +2091,68 @@ io.on('connection', (socket) => {
 
     if (targetDevId) {
       updateDeviceStatus(targetDevId, 'ONLINE');
-      io.emit('device:status-changed', {
+      const tenantRoom = session.tenantId ? `tenant_${session.tenantId}` : null;
+      const statusPayload = {
         deviceId: targetDevId,
         status: 'ONLINE',
         isSocketOnline: authenticatedPhoneSockets.has(targetDevId)
-      });
-    }
-
-    console.log(`[Device Disconnected] Laptop unlinked phone in session ${sessionId}`);
-  });
-
-  // ─── PHONE DISCONNECT SESSION ────────────────────────────────────────────────
-  socket.on('phone:disconnect-session', ({ sessionId }: { sessionId?: string }) => {
-    const sid = sessionId || socket.data.sessionId;
-    if (sid) {
-      const session = getSessionById(sid);
-      if (session) {
-        revokePhone(sid);
-        if (session.laptopSocketId) {
-          io.to(session.laptopSocketId).emit('phone:disconnected');
-        }
-        socket.leave(sid);
-        delete socket.data.sessionId;
+      };
+      if (tenantRoom) {
+        io.to(tenantRoom).emit('device:status-changed', statusPayload);
+      } else {
+        io.emit('device:status-changed', statusPayload);
       }
     }
 
-    const devId = socket.data.deviceId;
+    console.log(`[Device Disconnected] Laptop unlinked phone in session ${sessionId}`);
+  };
+
+  socket.on('laptop:disconnect-device', handleLaptopRevoke);
+  socket.on('laptop:revoke-phone', handleLaptopRevoke);
+
+  // ─── PHONE DISCONNECT SESSION ────────────────────────────────────────────────
+  socket.on('phone:disconnect-session', ({ sessionId }: { sessionId?: string } = {}) => {
+    const sid = sessionId || socket.data.sessionId;
+    if (!sid) return;
+
+    const session = getSessionById(sid);
+    if (!session) return;
+
+    // Strict phone ownership verification:
+    // 1. Socket must be the paired phone socket for this session
+    // 2. If deviceId is present on socket, it must match session.phoneDeviceId
+    // 3. Socket tenantId must match session.tenantId
+    const isAuthorizedPhone = session.phoneSocketId === socket.id &&
+      (!session.phoneDeviceId || !socket.data.deviceId || session.phoneDeviceId === socket.data.deviceId) &&
+      (!session.tenantId || !socket.data.tenantId || session.tenantId === socket.data.tenantId);
+
+    if (!isAuthorizedPhone) {
+      console.warn(`[Socket Security] Rejected unauthorized phone:disconnect-session from socket ${socket.id} for session ${sid}`);
+      socket.emit('error', { code: 'UNAUTHORIZED_PHONE_SESSION', message: 'Unauthorized phone disconnect attempt.' });
+      return;
+    }
+
+    revokePhone(sid);
+    if (session.laptopSocketId) {
+      io.to(session.laptopSocketId).emit('phone:disconnected');
+    }
+    socket.leave(sid);
+    delete socket.data.sessionId;
+
+    const devId = socket.data.deviceId || session.phoneDeviceId;
     if (devId) {
       updateDeviceStatus(devId, 'ONLINE');
-      io.emit('device:status-changed', {
+      const tenantRoom = session.tenantId ? `tenant_${session.tenantId}` : null;
+      const statusPayload = {
         deviceId: devId,
         status: 'ONLINE',
         isSocketOnline: true
-      });
+      };
+      if (tenantRoom) {
+        io.to(tenantRoom).emit('device:status-changed', statusPayload);
+      } else {
+        io.emit('device:status-changed', statusPayload);
+      }
     }
 
     socket.emit('bridge:unpaired', { reason: 'Disconnected by phone.' });
@@ -2282,14 +2328,24 @@ io.on('connection', (socket) => {
   });
 
   socket.on('phone:status', (data: { sessionId?: string; phoneStatus: 'READY' | 'PERMISSION_REQUIRED' }) => {
-    const sid = data.sessionId || socket.data.sessionId;
+    const sid = socket.data.sessionId || data.sessionId;
     if (!sid) return;
+
     const session = getSessionById(sid);
-    if (session) {
-      setPhoneStatus(sid, data.phoneStatus);
-      io.to(sid).emit('phone:status_changed', { phoneStatus: data.phoneStatus });
-      console.log(`[Phone Status] Session ${sid} phoneStatus set to: ${data.phoneStatus}`);
+    if (!session) return;
+
+    // Strict ownership verification: Emitting socket must be the paired phone socket
+    const isAuthorized = session.phoneSocketId === socket.id &&
+      (!session.phoneDeviceId || !socket.data.deviceId || session.phoneDeviceId === socket.data.deviceId);
+
+    if (!isAuthorized) {
+      console.warn(`[Socket Security] Rejected phone:status from unauthorized socket ${socket.id} for session ${sid}`);
+      return;
     }
+
+    setPhoneStatus(sid, data.phoneStatus);
+    io.to(sid).emit('phone:status_changed', { phoneStatus: data.phoneStatus });
+    console.log(`[Phone Status] Session ${sid} phoneStatus set to: ${data.phoneStatus}`);
   });
 
   socket.on('phone:ping', () => {
@@ -2308,10 +2364,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Phone responds to latency ping
-  socket.on('phone:pong', ({ sessionId, timestamp }: { sessionId: string; timestamp: number }) => {
-    // Broadcast back to the laptop room
-    io.to(sessionId).emit('client:pong', { timestamp });
+  // Phone responds to latency ping — must be the authoritative paired phone socket
+  socket.on('phone:pong', ({ sessionId, timestamp }: { sessionId?: string; timestamp: number }) => {
+    const sid = socket.data.sessionId || sessionId;
+    if (!sid) return;
+    const session = getSessionById(sid);
+    if (!session || session.phoneSocketId !== socket.id) return;
+    io.to(sid).emit('client:pong', { timestamp });
   });
 
   socket.on('app:version_check', ({ currentVersion }: { currentVersion: string }) => {
@@ -2372,7 +2431,11 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const tenantId = session.tenantId || 'tenant_default';
+    const tenantId = session.tenantId;
+    if (!tenantId) {
+      socket.emit('error', { code: 'UNAUTHORIZED_TENANT', message: 'Session is not bound to an authenticated tenant.' });
+      return;
+    }
 
     // 4. Route through Safety Controller & Atomic Lead Reservation (only AFTER authorization checks!)
     const check = checkCallAllowed({ sessionId, phone, leadId, campaignId, tenantId });
@@ -2402,25 +2465,53 @@ io.on('connection', (socket) => {
   });
 
   // Emergency stop from socket
-  socket.on('campaign:emergency_stop', ({ sessionId }: { sessionId: string }) => {
-    const session = getSessionById(sessionId);
-    const tenantId = session?.tenantId || socket.data.tenantId || 'tenant_default';
-    triggerEmergencyStop(tenantId);
-
+  socket.on('campaign:emergency_stop', ({ sessionId, campaignId }: { sessionId?: string; campaignId?: string } = {}) => {
+    const session = getSessionById(sessionId || socket.data.sessionId || '');
     if (session?.phoneSocketId) {
       const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
       if (phoneSocket) phoneSocket.emit('phone:hangup');
     }
 
-    io.to(sessionId).emit('campaign:emergency_stopped', { stoppedBy: 'dashboard-socket', timestamp: new Date().toISOString() });
-    io.to(`tenant_${tenantId}`).emit('campaign:emergency_stopped', { stoppedBy: 'dashboard-socket', timestamp: new Date().toISOString() });
-    console.warn(`[SafetyController] Emergency stop via socket for tenant ${tenantId} / session ${sessionId}`);
+    const tenantId = socket.data.tenantId || session?.tenantId;
+    if (!tenantId) {
+      socket.emit('error', { code: 'UNAUTHORIZED', message: 'Missing tenant identity for emergency stop.' });
+      return;
+    }
+
+    // Verify session belongs to tenant if provided
+    if (session && session.tenantId && session.tenantId !== tenantId) {
+      console.warn(`[SafetyController Security] Rejected emergency stop from cross-tenant session`);
+      socket.emit('error', { code: 'UNAUTHORIZED', message: 'Unauthorized session.' });
+      return;
+    }
+
+    triggerEmergencyStop(tenantId, campaignId);
+
+    const sid = sessionId || socket.data.sessionId;
+    if (sid) {
+      io.to(sid).emit('campaign:emergency_stopped', { stoppedBy: 'dashboard-socket', campaignId, timestamp: new Date().toISOString() });
+    }
+    io.to(`tenant_${tenantId}`).emit('campaign:emergency_stopped', { stoppedBy: 'dashboard-socket', campaignId, timestamp: new Date().toISOString() });
+    console.warn(`[SafetyController] Emergency stop via socket for tenant ${tenantId} / campaign ${campaignId || 'ALL'}`);
   });
 
-  socket.on('campaign:clear_emergency_stop', () => {
-    const tenantId = socket.data.tenantId || 'tenant_default';
-    clearEmergencyStop(tenantId);
-    io.to(`tenant_${tenantId}`).emit('campaign:emergency_cleared', { clearedBy: 'dashboard-socket' });
+  socket.on('campaign:clear_emergency_stop', ({ campaignId }: { campaignId?: string } = {}) => {
+    const tenantId = socket.data.tenantId;
+    if (!tenantId) {
+      socket.emit('error', { code: 'UNAUTHORIZED', message: 'Missing tenant identity.' });
+      return;
+    }
+
+    // Role check: restricted agents cannot clear emergency stop
+    const user = socket.data.user;
+    if (user && user.role === 'agent') {
+      console.warn(`[SafetyController Security] Agent ${user.id} attempted to clear emergency stop without admin/supervisor rights.`);
+      socket.emit('error', { code: 'FORBIDDEN', message: 'Only administrators or supervisors can clear emergency stops.' });
+      return;
+    }
+
+    clearEmergencyStop(tenantId, campaignId);
+    io.to(`tenant_${tenantId}`).emit('campaign:emergency_cleared', { clearedBy: 'dashboard-socket', campaignId });
   });
 
   socket.on('dial:hangup', ({ sessionId }: { sessionId: string }) => {
@@ -2468,7 +2559,11 @@ io.on('connection', (socket) => {
       console.warn(`[Socket] Rejected call:ended from unauthorized socket ${socket.id} for session ${sessionId}`);
       return;
     }
-    const tenantId = session.tenantId || 'tenant_default';
+    const tenantId = session.tenantId;
+    if (!tenantId) {
+      console.warn(`[Socket] Session ${sessionId} missing tenantId on call:ended`);
+      return;
+    }
     setSessionStatus(sessionId, 'PAIRED');
     if (commandId) {
       expireCommand(commandId);
@@ -2490,16 +2585,22 @@ io.on('connection', (socket) => {
     // If it was an authenticated phone socket
     if (socket.data.isPhone && socket.data.deviceId) {
       const devId = socket.data.deviceId;
+      const tenantId = socket.data.tenantId;
       // Guard: Only delete from active map if it still points to THIS socket ID (prevents stale disconnects from dropping new sockets!)
       if (authenticatedPhoneSockets.get(devId)?.socketId === socket.id) {
         authenticatedPhoneSockets.delete(devId);
         updateDeviceStatus(devId, 'OFFLINE');
-        io.emit('device:status-changed', {
+        const statusPayload = {
           deviceId: devId,
           status: 'OFFLINE',
           isSocketOnline: false,
           lastSeenAt: new Date().toISOString()
-        });
+        };
+        if (tenantId) {
+          io.to(`tenant_${tenantId}`).emit('device:status-changed', statusPayload);
+        } else {
+          io.emit('device:status-changed', statusPayload);
+        }
         console.log(`[Auth Phone Disconnect] Device ${devId} went OFFLINE`);
       } else {
         console.log(`[Auth Phone Disconnect] Stale disconnect ignored for device ${devId}`);
@@ -2551,14 +2652,22 @@ function emailLog(msg: string) {
 
 // ── GET /email/leads
 app.get('/email/leads', requireAuth, (req: express.Request, res: express.Response): void => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const rows = emailDb.prepare('SELECT * FROM email_leads WHERE tenantId = ? ORDER BY createdAt ASC').all(tenantId);
   res.json(rows);
 });
 
 // ── POST /email/upload
 app.post('/email/upload', requireAuth, (req: express.Request, res: express.Response): void => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const { leads } = req.body as { leads: { email: string; name?: string; company?: string }[] };
   if (!Array.isArray(leads) || !leads.length) {
     res.status(400).json({ error: 'leads array required' });
@@ -2580,21 +2689,33 @@ app.post('/email/upload', requireAuth, (req: express.Request, res: express.Respo
 
 // ── DELETE /email/leads
 app.delete('/email/leads', requireAuth, (req: express.Request, res: express.Response): void => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   emailDb.prepare('DELETE FROM email_leads WHERE tenantId = ?').run(tenantId);
   res.json({ success: true });
 });
 
 // ── GET /email/accounts
 app.get('/email/accounts', requireAuth, (req: express.Request, res: express.Response): void => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const rows = emailDb.prepare('SELECT id, email, senderName, smtpHost, smtpPort, status FROM email_accounts WHERE tenantId = ?').all(tenantId);
   res.json(rows);
 });
 
 // ── POST /email/accounts
 app.post('/email/accounts', requireAuth, (req: express.Request, res: express.Response): void => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const { accounts } = req.body as { accounts: { email: string; password: string; senderName?: string; smtpHost?: string; smtpPort?: number; status?: string }[] };
   if (!Array.isArray(accounts)) {
     res.status(400).json({ error: 'accounts array required' });
@@ -2627,14 +2748,22 @@ app.post('/email/accounts', requireAuth, (req: express.Request, res: express.Res
 
 // ── GET /email/templates
 app.get('/email/templates', requireAuth, (req: express.Request, res: express.Response): void => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const rows = emailDb.prepare('SELECT * FROM email_templates WHERE (tenantId = ? OR systemTemplate = 1) ORDER BY stage ASC, id ASC').all(tenantId);
   res.json(rows);
 });
 
 // ── POST /email/templates
 app.post('/email/templates', requireAuth, (req: express.Request, res: express.Response): void => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const { templates } = req.body as { templates: { subject: string; body: string; stage?: number }[] };
   if (!Array.isArray(templates)) {
     res.status(400).json({ error: 'templates array required' });
@@ -2650,7 +2779,11 @@ app.post('/email/templates', requireAuth, (req: express.Request, res: express.Re
 
 // ── POST /email/start — fire-and-forget campaign runner
 app.post('/email/start', requireAuth, (req: express.Request, res: express.Response): void => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   if (emailerJob.running) {
     res.json({ success: true, message: 'Campaign already running.' });
     return;

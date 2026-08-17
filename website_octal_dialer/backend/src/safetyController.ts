@@ -178,7 +178,22 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
     }
   }
 
-  // ── Layer 2: Lead/DNC checks ──────────────────────────────────────────────
+  // ── Layer 2: Session & Device authorization checks ────────────────────────
+  const session = getSessionById(req.sessionId);
+
+  if (!session || !session.phoneSocketId) {
+    return { allowed: false, reason: 'NO_PHONE', message: 'No paired phone is connected to this session.' };
+  }
+
+  if (session.tenantId && session.tenantId !== tenantId) {
+    return { allowed: false, reason: 'UNAUTHORIZED_TENANT', message: 'Session does not belong to your tenant.' };
+  }
+
+  if (session.status === 'CALLING') {
+    return { allowed: false, reason: 'DEVICE_BUSY', message: 'Device is already mid-call. Wait for it to finish.' };
+  }
+
+  // ── Layer 3: Lead/DNC checks ──────────────────────────────────────────────
   const normalizedPhone = normalizePhone(req.phone || '');
 
   if (normalizedPhone) {
@@ -203,9 +218,7 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
       return { allowed: false, reason: 'LEAD_COMPLETED', message: 'This lead has already been completed.' };
     }
 
-    // ── Layer 2.5: Command ID idempotency check ──────────────────────────────
-    // If an active (non-expired) command already exists for this leadId,
-    // a duplicate dial is being attempted — block it.
+    // ── Layer 3.5: Command ID idempotency check ──────────────────────────────
     const now = new Date().toISOString();
     const existingCmd = stmts.findActiveCommand.get({ leadId: req.leadId, now }) as any;
     if (existingCmd) {
@@ -216,7 +229,7 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
       };
     }
 
-    // ── Layer 2.6: Lead Reservation & Lock Check ─────────────────────────────
+    // ── Layer 3.6: Lead Reservation & Lock Check (Only AFTER all checks succeed) ──
     const reserved = reserveLead(req.leadId, req.sessionId, tenantId);
     if (!reserved) {
       return {
@@ -225,19 +238,6 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
         message: 'Lead is currently locked by another active device or session.'
       };
     }
-  }
-
-  // ── Layer 3: Device checks ────────────────────────────────────────────────
-  const session = getSessionById(req.sessionId);
-
-  if (!session || !session.phoneSocketId) {
-    if (req.leadId) releaseLeadLock(req.leadId, req.sessionId);
-    return { allowed: false, reason: 'NO_PHONE', message: 'No paired phone is connected to this session.' };
-  }
-
-  if (session.status === 'CALLING') {
-    if (req.leadId) releaseLeadLock(req.leadId, req.sessionId);
-    return { allowed: false, reason: 'DEVICE_BUSY', message: 'Device is already mid-call. Wait for it to finish.' };
   }
 
   // ── All checks passed — issue command ID ─────────────────────────────────
