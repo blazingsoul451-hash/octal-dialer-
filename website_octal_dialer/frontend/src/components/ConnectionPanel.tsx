@@ -105,8 +105,8 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
 
   const effectiveSessionId = sessionId || 'sess_offline';
   const effectiveToken = token || '8888';
-  const nativePairingUrl = `octaldialer://join?sessionId=${effectiveSessionId}&token=${effectiveToken}&serverUrl=${encodeURIComponent(safeServerUrl)}&laptop=${encodeURIComponent(laptopName)}&laptopBtAddress=${encodeURIComponent(laptopBtAddress || '00:1A:7D:DA:71:11')}`;
-  const activeQrValue = qrMode === 'download' ? directApkUrl : nativePairingUrl;
+  const universalJoinUrl = `${safeServerUrl}/join?sessionId=${effectiveSessionId}&token=${effectiveToken}&serverUrl=${encodeURIComponent(safeServerUrl)}&laptop=${encodeURIComponent(laptopName)}&bt=${encodeURIComponent(laptopBtAddress || '00:1A:7D:DA:71:11')}`;
+  const activeQrValue = qrMode === 'download' ? directApkUrl : universalJoinUrl;
 
   const fetchDevices = useCallback(async () => {
     if (!authToken) return;
