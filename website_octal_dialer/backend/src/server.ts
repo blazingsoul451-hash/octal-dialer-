@@ -862,30 +862,44 @@ app.delete('/api/suppression-list/:id', requireAuth, (req, res) => {
   }
 });
 
-// POST /api/emergency-stop — halt all dialing immediately
+// POST /api/emergency-stop — halts all active calls immediately
 app.post('/api/emergency-stop', requireAuth, (req, res) => {
   const user = (req as any).user;
-  triggerEmergencyStop();
-  writeAuditLog('EMERGENCY_STOP', 'global', 'all', user.username, 'Dashboard triggered emergency stop');
-  // Broadcast hangup to ALL connected sockets
-  // Send hangup to all active sessions' phones (admin action affects all)
+  const tenantId = user.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  triggerEmergencyStop(tenantId);
+  writeAuditLog('EMERGENCY_STOP', 'tenant', tenantId, user.username, 'Emergency stop activated');
+
+  // Send hangup only to this tenant's active sessions' phones
   for (const [, sess] of getSessions()) {
-    if (sess.phoneSocketId) {
+    if (sess.tenantId === tenantId && sess.phoneSocketId) {
       const ps = io.sockets.sockets.get(sess.phoneSocketId);
       if (ps) ps.emit('phone:hangup');
     }
   }
-  io.emit('campaign:emergency_stopped', { stoppedBy: user.username, timestamp: new Date().toISOString() });
-  console.warn(`[EmergencyStop] Triggered by ${user.username}`);
+  io.to(`tenant_${tenantId}`).emit('campaign:emergency_stopped', { stoppedBy: user.username, timestamp: new Date().toISOString() });
+  console.warn(`[EmergencyStop] Triggered by ${user.username} for tenant ${tenantId}`);
   res.json({ success: true, message: 'Emergency stop activated. All dialing halted.' });
 });
 
 // POST /api/emergency-stop/clear — re-enable dialing after emergency stop
 app.post('/api/emergency-stop/clear', requireAuth, (req, res) => {
   const user = (req as any).user;
-  clearEmergencyStop();
-  writeAuditLog('EMERGENCY_STOP_CLEAR', 'global', 'all', user.username, 'Emergency stop cleared');
-  io.emit('campaign:emergency_cleared', { clearedBy: user.username });
+  const tenantId = user.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  if (user.role === 'agent') {
+    res.status(403).json({ error: 'Only administrators or supervisors can clear emergency stops.' });
+    return;
+  }
+  clearEmergencyStop(tenantId);
+  writeAuditLog('EMERGENCY_STOP_CLEAR', 'tenant', tenantId, user.username, 'Emergency stop cleared');
+  io.to(`tenant_${tenantId}`).emit('campaign:emergency_cleared', { clearedBy: user.username });
   res.json({ success: true, message: 'Emergency stop cleared. Dialing re-enabled.' });
 });
 
@@ -983,7 +997,10 @@ app.post('/api/devices/:id/revoke', requireAuth, (req, res) => {
       authenticatedPhoneSockets.delete(deviceId);
     }
 
-    io.emit('device:status-changed', { deviceId, status: 'REVOKED', isSocketOnline: false });
+    const statusPayload = { deviceId, status: 'REVOKED', isSocketOnline: false };
+    if (user.tenantId) {
+      io.to(`tenant_${user.tenantId}`).emit('device:status-changed', statusPayload);
+    }
 
     res.json({ success: true, message: `Device ${deviceId} revoked.` });
   } catch (err: any) {
@@ -1601,8 +1618,13 @@ app.post('/api/admin/scraper/force-stop', requireAuth, requireAdmin, (req, res) 
 
 // POST /api/admin/system/unlock-all-leads
 app.post('/api/admin/system/unlock-all-leads', requireAuth, requireAdmin, (req, res) => {
+  const user = (req as any).user;
   const count = releaseExpiredLeases(0);
-  io.emit('leads:updated');
+  if (user?.tenantId) {
+    io.to(`tenant_${user.tenantId}`).emit('leads:updated');
+  } else {
+    io.emit('leads:updated');
+  }
   res.json({ success: true, count, message: `Unlocked ${count} locked lead(s).` });
 });
 
@@ -1950,13 +1972,17 @@ io.on('connection', (socket) => {
 
     console.log(`[Auth Phone Connected] Device: ${device.name} (${device.id}) | User: ${user.username} | Tenant: ${user.tenantId}`);
 
-    io.emit('device:status-changed', {
+    const statusPayload = {
       deviceId: device.id,
       status: 'ONLINE',
       isSocketOnline: true,
       lastSeenAt: new Date().toISOString()
-    });
+    };
+    if (user.tenantId) {
+      io.to(`tenant_${user.tenantId}`).emit('device:status-changed', statusPayload);
+    }
   });
+
   // ─── LAPTOP EXPLICIT CONNECT TO REGISTERED DEVICE ─────────────────────────────
   socket.on('laptop:connect-device', ({ sessionId, deviceId }: { sessionId: string; deviceId: string }) => {
     const session = getSessionById(sessionId);
@@ -2050,12 +2076,15 @@ io.on('connection', (socket) => {
 
     console.log(`[Device Bridge Success] Laptop ${socket.id} paired with phone ${deviceId} in session ${sessionId}`);
 
-    io.emit('device:status-changed', {
+    const pairedStatusPayload = {
       deviceId,
       status: 'PAIRED',
       isSocketOnline: true,
       sessionId: session.id
-    });
+    };
+    if (session.tenantId) {
+      io.to(`tenant_${session.tenantId}`).emit('device:status-changed', pairedStatusPayload);
+    }
   });
 
   // ─── LAPTOP DISCONNECT / REVOKE PHONE ───────────────────────────────────────
@@ -2091,16 +2120,13 @@ io.on('connection', (socket) => {
 
     if (targetDevId) {
       updateDeviceStatus(targetDevId, 'ONLINE');
-      const tenantRoom = session.tenantId ? `tenant_${session.tenantId}` : null;
       const statusPayload = {
         deviceId: targetDevId,
         status: 'ONLINE',
         isSocketOnline: authenticatedPhoneSockets.has(targetDevId)
       };
-      if (tenantRoom) {
-        io.to(tenantRoom).emit('device:status-changed', statusPayload);
-      } else {
-        io.emit('device:status-changed', statusPayload);
+      if (session.tenantId) {
+        io.to(`tenant_${session.tenantId}`).emit('device:status-changed', statusPayload);
       }
     }
 
@@ -2142,16 +2168,13 @@ io.on('connection', (socket) => {
     const devId = socket.data.deviceId || session.phoneDeviceId;
     if (devId) {
       updateDeviceStatus(devId, 'ONLINE');
-      const tenantRoom = session.tenantId ? `tenant_${session.tenantId}` : null;
       const statusPayload = {
         deviceId: devId,
         status: 'ONLINE',
         isSocketOnline: true
       };
-      if (tenantRoom) {
-        io.to(tenantRoom).emit('device:status-changed', statusPayload);
-      } else {
-        io.emit('device:status-changed', statusPayload);
+      if (session.tenantId) {
+        io.to(`tenant_${session.tenantId}`).emit('device:status-changed', statusPayload);
       }
     }
 
@@ -2171,9 +2194,16 @@ io.on('connection', (socket) => {
         userId = user.id;
       }
     }
-    if (!tenantId) {
-      tenantId = socket.data.user ? (socket.data.user.tenantId || socket.data.user.id) : 'user_admin_e38eeed3';
+    if (!tenantId && socket.data.user?.tenantId) {
+      tenantId = socket.data.user.tenantId;
     }
+
+    if (!tenantId) {
+      console.warn(`[Socket Security] Rejected unauthenticated laptop:register from socket ${socket.id}`);
+      socket.emit('error', { code: 'UNAUTHORIZED_TENANT', message: 'Authentication required with valid tenant identity.' });
+      return;
+    }
+
     const session = reclaimOrCreateSession(socket.id, data?.previousSessionId, tenantId);
     if (userId && !session.userId) session.userId = userId;
     socket.join(session.id);
@@ -2598,8 +2628,6 @@ io.on('connection', (socket) => {
         };
         if (tenantId) {
           io.to(`tenant_${tenantId}`).emit('device:status-changed', statusPayload);
-        } else {
-          io.emit('device:status-changed', statusPayload);
         }
         console.log(`[Auth Phone Disconnect] Device ${devId} went OFFLINE`);
       } else {
