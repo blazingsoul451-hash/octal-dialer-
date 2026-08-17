@@ -63,8 +63,13 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorMessage = '';
     });
 
+    String formattedServerUrl = serverUrl;
+    if (!formattedServerUrl.startsWith('http://') && !formattedServerUrl.startsWith('https://')) {
+      formattedServerUrl = 'http://$formattedServerUrl';
+    }
+
     try {
-      final loginUri = Uri.parse('$serverUrl/api/auth/login');
+      final loginUri = Uri.parse('$formattedServerUrl/api/auth/login');
       final res = await http.post(
         loginUri,
         headers: {'Content-Type': 'application/json'},

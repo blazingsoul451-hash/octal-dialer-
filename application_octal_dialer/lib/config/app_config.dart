@@ -2,11 +2,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// Single source of truth for the Octal Dialer Android application backend configuration.
 class AppConfig {
-  /// Default backend URL if none configured via --dart-define or preferences.
-  static const String defaultBaseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-    defaultValue: '',
-  );
+  /// Default backend URL if none configured
+  static const String defaultBaseUrl = 'http://127.0.0.1:3000';
 
   /// Key used in SharedPreferences
   static const String serverUrlKey = 'server_url';
@@ -28,19 +25,12 @@ class AppConfig {
       if (sanitized != null) {
         _currentBaseUrl = sanitized;
       } else {
-        // Invalid or stale loopback/emulator URL -> migrate to defaultBaseUrl
         _currentBaseUrl = defaultBaseUrl;
         await prefs.setString(serverUrlKey, defaultBaseUrl);
       }
     } else {
       _currentBaseUrl = defaultBaseUrl;
       await prefs.setString(serverUrlKey, defaultBaseUrl);
-    }
-
-    // Clean stale connection_uri if it contains loopback/emulator
-    final savedUri = prefs.getString(connectionUriKey);
-    if (savedUri != null && (savedUri.contains('localhost') || savedUri.contains('127.0.0.1') || savedUri.contains('10.0.2.2'))) {
-      await prefs.remove(connectionUriKey);
     }
 
     return _currentBaseUrl;
@@ -56,19 +46,18 @@ class AppConfig {
     await prefs.setString(serverUrlKey, clean);
   }
 
-  /// Sanitize URL and reject unsafe/broken loopback/emulator addresses in physical device mode
+  /// Sanitize URL
   static String? sanitizeUrl(String rawUrl) {
     final trimmed = rawUrl.trim().replaceAll(RegExp(r'/+$'), '');
     if (trimmed.isEmpty) return null;
 
     final lower = trimmed.toLowerCase();
-    // Reject loopbacks and emulator-only addresses
-    if (lower.contains('127.0.0.1') || lower.contains('localhost') || lower.contains('10.0.2.2') || lower.contains('api.trycloudflare.com')) {
+    if (lower.contains('api.trycloudflare.com')) {
       return null;
     }
 
     if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
-      return 'https://$trimmed';
+      return 'http://$trimmed';
     }
 
     return trimmed;
