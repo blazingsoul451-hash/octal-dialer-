@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/phone_bridge_service.dart';
+import '../widgets/octal_logo.dart';
 import 'login_screen.dart';
-import 'connect_screen.dart';
 import 'connected_screen.dart';
 import 'standalone_dialer_screen.dart';
 import 'call_log_screen.dart';
+import 'calling_screen.dart';
 
 class DeviceDashboardScreen extends StatefulWidget {
   const DeviceDashboardScreen({super.key});
@@ -16,6 +17,18 @@ class DeviceDashboardScreen extends StatefulWidget {
 
 class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with WidgetsBindingObserver {
   final PhoneBridgeService _bridge = PhoneBridgeService.instance;
+  int _selectedTabIndex = 0;
+
+  // Settings state
+  int _ringTimeoutSeconds = 35;
+  int _nextCallDelaySeconds = 3;
+  String _autoDialMode = 'Full Auto';
+  bool _callRecording = false;
+  bool _vibrateOnAnswer = true;
+  bool _playDialTone = true;
+
+  // Lead queue state for on-device dialer
+  List<LeadItem> _localQueue = [];
 
   @override
   void initState() {
@@ -31,6 +44,20 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
         );
       }
     });
+
+    _loadSampleQueue();
+  }
+
+  void _loadSampleQueue() {
+    _localQueue = [
+      LeadItem(id: 'lead_1', name: 'Acme Corporation', phone: '+1 (555) 123-4567'),
+      LeadItem(id: 'lead_2', name: 'Global Enterprises', phone: '+1 (555) 987-6543'),
+      LeadItem(id: 'lead_3', name: 'Beta Solutions', phone: '+1 (555) 234-5678'),
+      LeadItem(id: 'lead_4', name: 'Omega LLC', phone: '+1 (555) 345-6789'),
+      LeadItem(id: 'lead_5', name: 'Prime Industries', phone: '+1 (555) 456-7890'),
+      LeadItem(id: 'lead_6', name: 'Nova Systems', phone: '+1 (555) 567-8901'),
+      LeadItem(id: 'lead_7', name: 'Delta Corp', phone: '+1 (555) 678-9012'),
+    ];
   }
 
   @override
@@ -50,9 +77,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   }
 
   void _onBridgeUpdate() {
-    if (mounted) {
-      setState(() {});
-    }
+    if (mounted) setState(() {});
   }
 
   void _handlePaired(Map<String, dynamic> data) {
@@ -80,10 +105,6 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
     }
   }
 
-  void _requestConnectToLaptop() {
-    _bridge.requestPairWithActiveLaptop();
-  }
-
   Future<void> _logout() async {
     await _bridge.logout();
     if (mounted) {
@@ -96,348 +117,803 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
 
   @override
   Widget build(BuildContext context) {
-    final isOnline = _bridge.isConnected;
-    final errorMessage = _bridge.errorMessage;
-    final statusMessage = _bridge.statusMessage;
-
     return Scaffold(
-      backgroundColor: const Color(0xFF020617),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0F172A),
-        title: const Row(
+      backgroundColor: OctalColors.bgDark,
+      drawer: _buildSideDrawer(),
+      body: SafeArea(
+        child: IndexedStack(
+          index: _selectedTabIndex,
           children: [
-            Icon(Icons.phone_in_talk, color: Color(0xFFFFB800), size: 20),
-            SizedBox(width: 10),
-            Text(
-              'Octal Dialer Device',
-              style: TextStyle(fontFamily: 'Ubuntu', fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
-            ),
+            _buildHomeDashboardTab(),
+            _buildLeadsQueueTab(),
+            const CallLogScreen(),
+            _buildSettingsTab(),
           ],
         ),
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.redAccent, size: 20),
-            tooltip: 'Log Out',
-            onPressed: _logout,
-          ),
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedTabIndex,
+        onTap: (idx) => setState(() => _selectedTabIndex = idx),
+        backgroundColor: OctalColors.surfaceCard,
+        selectedItemColor: OctalColors.primaryGold,
+        unselectedItemColor: OctalColors.textSecondary,
+        selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+        unselectedLabelStyle: const TextStyle(fontSize: 10),
+        type: BottomNavigationBarType.fixed,
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.dialpad), label: 'Dialer'),
+          BottomNavigationBarItem(icon: Icon(Icons.people_alt_outlined), label: 'Leads'),
+          BottomNavigationBarItem(icon: Icon(Icons.history), label: 'History'),
+          BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), label: 'Settings'),
         ],
       ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // TAB 0: HOME DASHBOARD (Matching Reference Screen 2)
+  // ══════════════════════════════════════════════════════════════════════════
+  Widget _buildHomeDashboardTab() {
+    final isOnline = _bridge.isConnected;
+    final user = _bridge.username.isNotEmpty ? _bridge.username : 'Agent';
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 18.0, vertical: 12.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // App Header Bar from Reference Screen 2
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Error Banner
-              if (errorMessage.isNotEmpty) ...[
-                Container(
-                  padding: const EdgeInsets.all(12.0),
-                  decoration: BoxDecoration(
-                    color: Colors.red.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(14.0),
-                    border: Border.all(color: Colors.red.withOpacity(0.35)),
+              Builder(
+                builder: (ctx) => IconButton(
+                  icon: const Icon(Icons.menu, color: Colors.white, size: 24),
+                  onPressed: () => Scaffold.of(ctx).openDrawer(),
+                ),
+              ),
+              const Row(
+                children: [
+                  OctalLogo(size: 24),
+                  SizedBox(width: 8),
+                  Text(
+                    'OCTAL DIALER',
+                    style: TextStyle(
+                      fontFamily: 'Ubuntu',
+                      fontSize: 15,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 2.0,
+                      color: Colors.white,
+                    ),
                   ),
-                  child: Row(
+                ],
+              ),
+              IconButton(
+                icon: const Icon(Icons.notifications_none, color: Colors.white, size: 24),
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('All system notifications are up to date.')),
+                  );
+                },
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 14),
+
+          // 1. Welcome Card from Reference Screen 2
+          Container(
+            padding: const EdgeInsets.all(16.0),
+            decoration: BoxDecoration(
+              color: OctalColors.surfaceCard,
+              borderRadius: BorderRadius.circular(20.0),
+              border: Border.all(color: OctalColors.border),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.error_outline, color: Colors.redAccent, size: 18),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          errorMessage,
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                      Text(
+                        'Welcome, $user',
+                        style: const TextStyle(
+                          fontFamily: 'Ubuntu',
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
                         ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Ready to Make Calls',
+                        style: TextStyle(fontSize: 12, color: OctalColors.textSecondary),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(Icons.phone_android, size: 14, color: isOnline ? OctalColors.success : OctalColors.textMuted),
+                          const SizedBox(width: 6),
+                          Text(
+                            isOnline ? 'Phone Connected' : 'Connecting...',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: isOnline ? OctalColors.success : OctalColors.textMuted,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 16),
-              ],
-
-              // Account Identity Card
-              Container(
-                padding: const EdgeInsets.all(18.0),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A),
-                  borderRadius: BorderRadius.circular(20.0),
-                  border: Border.all(color: const Color(0xFF1E293B), width: 1.5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: isOnline ? OctalColors.success.withOpacity(0.15) : OctalColors.warning.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: isOnline ? OctalColors.success.withOpacity(0.4) : OctalColors.warning.withOpacity(0.4),
+                    ),
+                  ),
+                  child: Text(
+                    isOnline ? 'Connected' : 'Offline',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: isOnline ? OctalColors.success : OctalColors.warning,
+                    ),
+                  ),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 14),
+
+          // 2. Current Campaign Card from Reference Screen 2
+          Container(
+            padding: const EdgeInsets.all(16.0),
+            decoration: BoxDecoration(
+              color: OctalColors.surfaceCard,
+              borderRadius: BorderRadius.circular(20.0),
+              border: Border.all(color: OctalColors.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'AUTHENTICATED ACCOUNT',
-                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.0, color: Color(0xFF94A3B8)),
+                        Text(
+                          'Current Campaign',
+                          style: TextStyle(fontSize: 11, color: OctalColors.textSecondary),
                         ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFFB800).withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: const Color(0xFFFFB800).withOpacity(0.3)),
-                          ),
-                          child: Text(
-                            _bridge.role.toUpperCase(),
-                            style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFFFFB800)),
+                        SizedBox(height: 2),
+                        Text(
+                          'Summer Promotion',
+                          style: TextStyle(
+                            fontFamily: 'Ubuntu',
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFFB800).withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: const Color(0xFFFFB800).withOpacity(0.3)),
-                          ),
-                          child: const Icon(Icons.person, color: Color(0xFFFFB800), size: 22),
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(_bridge.username, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white)),
-                              if (_bridge.email.isNotEmpty)
-                                Text(_bridge.email, style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8))),
-                              Text('Tenant: ${_bridge.tenantId.isNotEmpty ? _bridge.tenantId : "tenant_default"}',
-                                  style: const TextStyle(fontSize: 10, fontFamily: 'monospace', color: Color(0xFF64748B))),
-                            ],
-                          ),
-                        ),
-                      ],
+                    TextButton(
+                      onPressed: () => setState(() => _selectedTabIndex = 1),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      ),
+                      child: const Text('Change', style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
                     ),
                   ],
                 ),
-              ),
+                const SizedBox(height: 14),
 
-              const SizedBox(height: 16),
-
-              // Device Hardware Status Card
-              Container(
-                padding: const EdgeInsets.all(18.0),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A),
-                  borderRadius: BorderRadius.circular(20.0),
-                  border: Border.all(
-                    color: isOnline ? const Color(0xFF10B981).withOpacity(0.3) : const Color(0xFF1E293B),
-                    width: 1.5,
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                // 4 Metric Pills Row from Reference Screen 2
+                Row(
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'REGISTERED HANDSET',
-                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.0, color: Color(0xFF94A3B8)),
-                        ),
-                        Row(
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: isOnline ? const Color(0xFF10B981) : Colors.redAccent,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              isOnline ? 'ONLINE' : 'CONNECTING',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: isOnline ? const Color(0xFF10B981) : Colors.redAccent,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF10B981).withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: const Color(0xFF10B981).withOpacity(0.3)),
-                          ),
-                          child: const Icon(Icons.smartphone, color: Color(0xFF10B981), size: 22),
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(_bridge.deviceName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                              Text('${_bridge.deviceOs} • Octal App v1.2.0 • IP: ${_bridge.deviceIp}', style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8))),
-                              Text('BT Bridge: ${_bridge.deviceBtAddress}', style: const TextStyle(fontSize: 10, fontFamily: 'monospace', color: Color(0xFF64748B))),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF020617),
-                        borderRadius: BorderRadius.circular(10),
+                    _buildMetricPill('Total Leads', '250', Colors.white),
+                    const SizedBox(width: 8),
+                    _buildMetricPill('Completed', '120', OctalColors.success),
+                    const SizedBox(width: 8),
+                    _buildMetricPill('Answered', '45', OctalColors.primaryGold),
+                    const SizedBox(width: 8),
+                    _buildMetricPill('Remaining', '130', OctalColors.textSecondary),
+                  ],
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 14),
+
+          // 3. Active Call / Lead Dial Card from Reference Screen 2
+          Container(
+            padding: const EdgeInsets.all(18.0),
+            decoration: BoxDecoration(
+              color: OctalColors.surfaceCard,
+              borderRadius: BorderRadius.circular(20.0),
+              border: Border.all(color: OctalColors.primaryGold.withOpacity(0.3), width: 1.5),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'ACTIVE CALL / NEXT UP',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.2,
+                        color: OctalColors.primaryGold,
                       ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            isOnline ? Icons.check_circle_outline : Icons.sync,
-                            size: 14,
-                            color: isOnline ? const Color(0xFF10B981) : const Color(0xFFFFB800),
+                    ),
+                    Icon(Icons.graphic_eq, color: OctalColors.primaryGold, size: 18),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                Row(
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: OctalColors.primaryGold.withOpacity(0.15),
+                        border: Border.all(color: OctalColors.primaryGold),
+                      ),
+                      child: const Center(
+                        child: Text(
+                          'A',
+                          style: TextStyle(
+                            fontFamily: 'Ubuntu',
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                            color: OctalColors.primaryGold,
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              statusMessage,
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                color: isOnline ? const Color(0xFF10B981) : const Color(0xFFFFB800),
-                              ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Acme Corporation',
+                            style: TextStyle(
+                              fontFamily: 'Ubuntu',
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
                             ),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            '+1 (555) 123-4567 • READY',
+                            style: TextStyle(fontSize: 12, color: OctalColors.textSecondary, fontFamily: 'monospace'),
                           ),
                         ],
                       ),
                     ),
                   ],
                 ),
-              ),
 
-              const SizedBox(height: 24),
+                const SizedBox(height: 16),
 
-              // Main Connect to Laptop Action
-              ElevatedButton.icon(
-                onPressed: isOnline ? _requestConnectToLaptop : null,
-                icon: const Icon(Icons.laptop_chromebook, size: 18),
-                label: const Text(
-                  'CONNECT TO LAPTOP',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.0),
+                // Quick In-Call Action Row (Mute, Keypad, Speaker)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildMiniAction(Icons.mic_none, 'Mute'),
+                    _buildMiniAction(Icons.dialpad, 'Keypad'),
+                    _buildMiniAction(Icons.volume_up_outlined, 'Speaker'),
+                  ],
                 ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFFFB800),
-                  foregroundColor: const Color(0xFF020617),
-                  padding: const EdgeInsets.symmetric(vertical: 15.0),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14.0),
+
+                const SizedBox(height: 16),
+
+                // Start Dialing Full Width Gold Button
+                SizedBox(
+                  height: 48,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      if (_bridge.socket != null) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => CallingScreen(
+                              phone: '+15551234567',
+                              name: 'Acme Corporation',
+                              leadId: 'lead_1',
+                              timeout: _ringTimeoutSeconds,
+                              socket: _bridge.socket!,
+                              sessionId: (_bridge.currentSessionId != null && _bridge.currentSessionId!.isNotEmpty) ? _bridge.currentSessionId! : 'sess_standalone',
+                            ),
+                          ),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.phone, color: OctalColors.bgDark, size: 20),
+                    label: const Text(
+                      'Dial Lead Now',
+                      style: TextStyle(
+                        fontFamily: 'Ubuntu',
+                        fontSize: 14,
+                        fontWeight: FontWeight.w900,
+                        color: OctalColors.bgDark,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: OctalColors.primaryGold,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
                   ),
-                  elevation: 0,
-                  disabledBackgroundColor: const Color(0xFF1E293B),
                 ),
-              ),
 
+                const SizedBox(height: 10),
+
+                // Pause Auto Dial / Lead Queue Button
+                Center(
+                  child: TextButton.icon(
+                    onPressed: () => setState(() => _selectedTabIndex = 1),
+                    icon: const Icon(Icons.playlist_play, color: OctalColors.textSecondary, size: 18),
+                    label: const Text(
+                      'Open Full Lead Queue',
+                      style: TextStyle(color: OctalColors.textSecondary, fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMetricPill(String title, String value, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+        decoration: BoxDecoration(
+          color: OctalColors.surfaceElevated,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: OctalColors.border),
+        ),
+        child: Column(
+          children: [
+            Text(
+              value,
+              style: TextStyle(
+                fontFamily: 'Ubuntu',
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+                color: color,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 9, color: OctalColors.textSecondary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMiniAction(IconData icon, String label) {
+    return Column(
+      children: [
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: OctalColors.surfaceElevated,
+            border: Border.all(color: OctalColors.border),
+          ),
+          child: Icon(icon, color: Colors.white, size: 18),
+        ),
+        const SizedBox(height: 4),
+        Text(label, style: const TextStyle(fontSize: 10, color: OctalColors.textSecondary)),
+      ],
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // TAB 1: LEADS QUEUE TAB (Matching Reference Screen 4)
+  // ══════════════════════════════════════════════════════════════════════════
+  Widget _buildLeadsQueueTab() {
+    return StandaloneDialerScreen(
+      socket: _bridge.socket,
+      serverUrl: _bridge.serverUrl,
+      queue: _localQueue,
+      sessionId: _bridge.currentSessionId,
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // TAB 3: SETTINGS TAB (Matching Reference Screens 8 & 9)
+  // ══════════════════════════════════════════════════════════════════════════
+  Widget _buildSettingsTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Settings',
+            style: TextStyle(
+              fontFamily: 'Ubuntu',
+              fontSize: 20,
+              fontWeight: FontWeight.w900,
+              color: Colors.white,
+            ),
+          ),
+
+          const SizedBox(height: 18),
+
+          // 1. Phone Connection Status Card from Reference Screen 9
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: OctalColors.surfaceCard,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: OctalColors.border),
+            ),
+            child: Column(
+              children: [
+                const OctalLogo(size: 48),
+                const SizedBox(height: 12),
+                const Text(
+                  'Phone Connected',
+                  style: TextStyle(fontFamily: 'Ubuntu', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Device ID: ${_bridge.deviceUid.isNotEmpty ? _bridge.deviceUid : "ANDR-7F3A89"}',
+                  style: const TextStyle(fontSize: 11, fontFamily: 'monospace', color: OctalColors.textSecondary),
+                ),
+                const SizedBox(height: 16),
+                const Divider(color: OctalColors.border),
+                const SizedBox(height: 12),
+
+                _buildStatusRow(Icons.wifi, 'Socket Connection', _bridge.isConnected ? 'Connected' : 'Connecting', OctalColors.success),
+                const SizedBox(height: 10),
+                _buildStatusRow(Icons.sim_card_outlined, 'GSM Service', 'Ready', OctalColors.success),
+                const SizedBox(height: 10),
+                _buildStatusRow(Icons.battery_charging_full, 'Battery Level', '78%', OctalColors.primaryGold),
+                const SizedBox(height: 10),
+                _buildStatusRow(Icons.signal_cellular_alt, 'Signal Strength', 'Good', OctalColors.success),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // 2. Dialer Settings Section from Reference Screen 8
+          const Text(
+            'Dialer Settings',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: OctalColors.primaryGold, letterSpacing: 0.5),
+          ),
+          const SizedBox(height: 10),
+
+          Container(
+            decoration: BoxDecoration(
+              color: OctalColors.surfaceCard,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: OctalColors.border),
+            ),
+            child: Column(
+              children: [
+                ListTile(
+                  title: const Text('Ring Timeout', style: TextStyle(fontSize: 13, color: Colors.white)),
+                  trailing: Text('$_ringTimeoutSeconds Seconds >', style: const TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
+                  onTap: () {
+                    _showTimeoutPicker();
+                  },
+                ),
+                const Divider(height: 1, color: OctalColors.border),
+                ListTile(
+                  title: const Text('Next Call Delay', style: TextStyle(fontSize: 13, color: Colors.white)),
+                  trailing: Text('$_nextCallDelaySeconds Seconds >', style: const TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
+                  onTap: () {
+                    _showDelayPicker();
+                  },
+                ),
+                const Divider(height: 1, color: OctalColors.border),
+                ListTile(
+                  title: const Text('Auto Dial Mode', style: TextStyle(fontSize: 13, color: Colors.white)),
+                  trailing: Text('$_autoDialMode >', style: const TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+                const Divider(height: 1, color: OctalColors.border),
+                SwitchListTile(
+                  title: const Text('Call Recording', style: TextStyle(fontSize: 13, color: Colors.white)),
+                  value: _callRecording,
+                  activeColor: OctalColors.primaryGold,
+                  onChanged: (val) => setState(() => _callRecording = val),
+                ),
+                const Divider(height: 1, color: OctalColors.border),
+                SwitchListTile(
+                  title: const Text('Vibrate on Answer', style: TextStyle(fontSize: 13, color: Colors.white)),
+                  value: _vibrateOnAnswer,
+                  activeColor: OctalColors.primaryGold,
+                  onChanged: (val) => setState(() => _vibrateOnAnswer = val),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // 3. General Section from Reference Screen 8
+          const Text(
+            'General',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: OctalColors.primaryGold, letterSpacing: 0.5),
+          ),
+          const SizedBox(height: 10),
+
+          Container(
+            decoration: BoxDecoration(
+              color: OctalColors.surfaceCard,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: OctalColors.border),
+            ),
+            child: Column(
+              children: [
+                const ListTile(
+                  title: Text('Theme', style: TextStyle(fontSize: 13, color: Colors.white)),
+                  trailing: Text('Octal Gold >', style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+                const Divider(height: 1, color: OctalColors.border),
+                const ListTile(
+                  title: Text('Language', style: TextStyle(fontSize: 13, color: Colors.white)),
+                  trailing: Text('English >', style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+                const Divider(height: 1, color: OctalColors.border),
+                const ListTile(
+                  title: Text('About Octal Dialer', style: TextStyle(fontSize: 13, color: Colors.white)),
+                  trailing: Text('Version 1.2.0 >', style: TextStyle(color: OctalColors.textSecondary, fontSize: 12)),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // Log Out Button
+          SizedBox(
+            height: 48,
+            child: OutlinedButton.icon(
+              onPressed: _logout,
+              icon: const Icon(Icons.logout, color: OctalColors.error, size: 18),
+              label: const Text('Log Out Account', style: TextStyle(color: OctalColors.error, fontWeight: FontWeight.bold)),
+              style: OutlinedButton.styleFrom(
+                side: BorderSide(color: OctalColors.error.withOpacity(0.4)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusRow(IconData icon, String label, String value, Color color) {
+    return Row(
+      children: [
+        Icon(icon, size: 16, color: OctalColors.textSecondary),
+        const SizedBox(width: 10),
+        Text(label, style: const TextStyle(fontSize: 12, color: OctalColors.textSecondary)),
+        const Spacer(),
+        Text(value, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color)),
+      ],
+    );
+  }
+
+  void _showDelayPicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: OctalColors.surfaceCard,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        final delays = [0, 1, 2, 3, 5, 10, 15, 30, 60];
+        return Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Select Next Call Delay',
+                style: TextStyle(fontFamily: 'Ubuntu', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+              ),
               const SizedBox(height: 12),
+              ...delays.map((d) => ListTile(
+                    title: Text(d == 0 ? '0s (Instant)' : '$d Seconds', style: const TextStyle(color: Colors.white, fontSize: 14)),
+                    trailing: _nextCallDelaySeconds == d ? const Icon(Icons.check, color: OctalColors.primaryGold) : null,
+                    onTap: () {
+                      setState(() => _nextCallDelaySeconds = d);
+                      Navigator.pop(ctx);
+                    },
+                  )),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
-              // Secondary Actions
-              Row(
+  void _showTimeoutPicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: OctalColors.surfaceCard,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        final timeouts = [15, 20, 25, 30, 35, 45, 60];
+        return Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Select Ring Timeout',
+                style: TextStyle(fontFamily: 'Ubuntu', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+              const SizedBox(height: 12),
+              ...timeouts.map((t) => ListTile(
+                    title: Text('$t Seconds', style: const TextStyle(color: Colors.white, fontSize: 14)),
+                    trailing: _ringTimeoutSeconds == t ? const Icon(Icons.check, color: OctalColors.primaryGold) : null,
+                    onTap: () {
+                      setState(() => _ringTimeoutSeconds = t);
+                      Navigator.pop(ctx);
+                    },
+                  )),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SIDE DRAWER MENU (Matching Reference Screen 10)
+  // ══════════════════════════════════════════════════════════════════════════
+  Widget _buildSideDrawer() {
+    final username = _bridge.username.isNotEmpty ? _bridge.username : 'agent';
+    final email = _bridge.email.isNotEmpty ? _bridge.email : 'agent@octal.com';
+    final role = _bridge.role.isNotEmpty ? _bridge.role : 'Administrator';
+
+    return Drawer(
+      backgroundColor: OctalColors.bgDark,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // User Header from Reference Screen 10
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: const BoxDecoration(
+                color: OctalColors.surfaceCard,
+                border: Border(bottom: BorderSide(color: OctalColors.border)),
+              ),
+              child: Row(
                 children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => StandaloneDialerScreen(
-                              socket: _bridge.socket,
-                              serverUrl: _bridge.serverUrl,
-                              queue: const [],
-                              onQueueUpdated: () {},
-                              sessionId: '',
-                            ),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.dialpad, size: 16),
-                      label: const Text('DIALER', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Color(0xFF1E293B)),
-                        padding: const EdgeInsets.symmetric(vertical: 13.0),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
-                      ),
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: OctalColors.primaryGold.withOpacity(0.15),
+                      border: Border.all(color: OctalColors.primaryGold),
+                    ),
+                    child: const Center(
+                      child: Icon(Icons.person, color: OctalColors.primaryGold, size: 26),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 14),
                   Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => CallLogScreen(
-                              socket: _bridge.socket,
-                              serverUrl: _bridge.serverUrl,
-                            ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          username,
+                          style: const TextStyle(
+                            fontFamily: 'Ubuntu',
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
-                        );
-                      },
-                      icon: const Icon(Icons.history, size: 16),
-                      label: const Text('LOGS', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Color(0xFF1E293B)),
-                        padding: const EdgeInsets.symmetric(vertical: 13.0),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const ConnectScreen()),
-                        );
-                      },
-                      icon: const Icon(Icons.qr_code, size: 16),
-                      label: const Text('QR PAIR', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: const Color(0xFFFFB800),
-                        side: BorderSide(color: const Color(0xFFFFB800).withOpacity(0.3)),
-                        padding: const EdgeInsets.symmetric(vertical: 13.0),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
-                      ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          email,
+                          style: const TextStyle(fontSize: 11, color: OctalColors.textSecondary),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          role.toUpperCase(),
+                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: OctalColors.primaryGold),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
+            ),
 
-              const SizedBox(height: 24),
+            const SizedBox(height: 12),
 
-              const Center(
-                child: Text(
-                  'When you click "Connect to Laptop" or click "Connect" on your website auto-dialer dashboard, your phone will pair and route physical SIM GSM calls automatically.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF64748B),
-                    height: 1.4,
-                  ),
-                ),
-              ),
-            ],
-          ),
+            // Menu Items from Reference Screen 10
+            _buildDrawerItem(Icons.dashboard_outlined, 'Dashboard', _selectedTabIndex == 0, () {
+              Navigator.pop(context);
+              setState(() => _selectedTabIndex = 0);
+            }),
+            _buildDrawerItem(Icons.campaign_outlined, 'Campaigns', false, () {
+              Navigator.pop(context);
+              setState(() => _selectedTabIndex = 0);
+            }),
+            _buildDrawerItem(Icons.people_alt_outlined, 'Leads', _selectedTabIndex == 1, () {
+              Navigator.pop(context);
+              setState(() => _selectedTabIndex = 1);
+            }),
+            _buildDrawerItem(Icons.history, 'Call History', _selectedTabIndex == 2, () {
+              Navigator.pop(context);
+              setState(() => _selectedTabIndex = 2);
+            }),
+            _buildDrawerItem(Icons.playlist_add_check, 'Dispositions', false, () {
+              Navigator.pop(context);
+              setState(() => _selectedTabIndex = 1);
+            }),
+            _buildDrawerItem(Icons.settings_outlined, 'Settings', _selectedTabIndex == 3, () {
+              Navigator.pop(context);
+              setState(() => _selectedTabIndex = 3);
+            }),
+
+            const Spacer(),
+            const Divider(color: OctalColors.border),
+
+            _buildDrawerItem(Icons.logout, 'Log Out', false, _logout, color: OctalColors.error),
+            const SizedBox(height: 12),
+          ],
         ),
       ),
+    );
+  }
+
+  Widget _buildDrawerItem(IconData icon, String title, bool isSelected, VoidCallback onTap, {Color? color}) {
+    return ListTile(
+      leading: Icon(icon, color: color ?? (isSelected ? OctalColors.primaryGold : OctalColors.textSecondary), size: 20),
+      title: Text(
+        title,
+        style: TextStyle(
+          fontFamily: 'Ubuntu',
+          fontSize: 14,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+          color: color ?? (isSelected ? OctalColors.primaryGold : Colors.white),
+        ),
+      ),
+      selected: isSelected,
+      selectedTileColor: OctalColors.primaryGold.withOpacity(0.1),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+      onTap: onTap,
     );
   }
 }

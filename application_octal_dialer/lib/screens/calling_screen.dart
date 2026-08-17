@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'package:url_launcher/url_launcher.dart';
+import '../widgets/octal_logo.dart';
 
 class CallingScreen extends StatefulWidget {
   final String phone;
@@ -28,20 +30,29 @@ class CallingScreen extends StatefulWidget {
   State<CallingScreen> createState() => _CallingScreenState();
 }
 
-class _CallingScreenState extends State<CallingScreen> {
-  String _callStatus = 'Ringing...';
+class _CallingScreenState extends State<CallingScreen> with SingleTickerProviderStateMixin {
+  String _callStatus = '00:00';
   int _secondsLeft = 30;
   int _talkDuration = 0;
   Timer? _ringingTimer;
   Timer? _talkTimer;
   bool _isAnswered = false;
   bool _callEnded = false;
+  bool _isMuted = false;
+  bool _isSpeaker = false;
+
+  late AnimationController _waveAnimController;
 
   @override
   void initState() {
     super.initState();
-    _secondsLeft = widget.timeout;
+    _secondsLeft = widget.timeout > 0 ? widget.timeout : 30;
     _startRingingTimer();
+
+    _waveAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
     
     // Register native telephony call state listener to automate state tracking
     _nativeChannel.setMethodCallHandler((call) async {
@@ -56,11 +67,8 @@ class _CallingScreenState extends State<CallingScreen> {
     // Listen for remote hangup command from web dashboard
     widget.socket.on('phone:hangup', (_) {
       debugPrint('CallingScreen: Received remote hangup command');
-      // Attempt native call termination (may fail on Android 9+ without default dialer privilege)
-      _nativeChannel.invokeMethod('endCall').then((_) {
-        debugPrint('CallingScreen: Native endCall succeeded');
-      }).catchError((e) {
-        debugPrint('CallingScreen: Native endCall failed (expected on Android 9+): $e');
+      _nativeChannel.invokeMethod('endCall').catchError((e) {
+        debugPrint('CallingScreen: Native endCall ignored: $e');
       });
       _endCall('CANCELLED');
     });
@@ -114,7 +122,7 @@ class _CallingScreenState extends State<CallingScreen> {
     if (mounted) {
       setState(() {
         _isAnswered = true;
-        _callStatus = '0:00';
+        _callStatus = '00:00';
       });
     }
 
@@ -126,7 +134,7 @@ class _CallingScreenState extends State<CallingScreen> {
       if (mounted) {
         setState(() {
           _talkDuration++;
-          final minutes = (_talkDuration ~/ 60).toString();
+          final minutes = (_talkDuration ~/ 60).toString().padLeft(2, '0');
           final seconds = (_talkDuration % 60).toString().padLeft(2, '0');
           _callStatus = '$minutes:$seconds';
         });
@@ -135,7 +143,7 @@ class _CallingScreenState extends State<CallingScreen> {
   }
 
   void _endCall(String reason) {
-    if (_callEnded) return; // Guard against duplicate terminal events (timeout + IDLE + hangup race)
+    if (_callEnded) return; // Guard against duplicate terminal events
     _callEnded = true;
     _ringingTimer?.cancel();
     _talkTimer?.cancel();
@@ -161,125 +169,271 @@ class _CallingScreenState extends State<CallingScreen> {
 
   @override
   void dispose() {
+    _waveAnimController.dispose();
     _ringingTimer?.cancel();
     _talkTimer?.cancel();
     widget.socket.off('phone:hangup');
-    // Do NOT null out MethodChannel handler — it would strip the listener
-    // from StandaloneDialerScreen if it registered one. The handler is
-    // scoped to the channel, and the native side continues to emit.
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final initial = widget.name.isNotEmpty ? widget.name[0].toUpperCase() : 'A';
+
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: OctalColors.bgDark,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 40.0),
+          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Column(
+              // Top Bar from Reference Screen 3
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const SizedBox(height: 40),
-                  Text(
-                    _isAnswered ? 'ACTIVE BRIDGED CALL' : 'ROUTING GSM DIAL...',
+                  IconButton(
+                    icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white, size: 28),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                  const Text(
+                    'Active Call',
                     style: TextStyle(
-                      fontSize: 10,
+                      fontFamily: 'Ubuntu',
+                      fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      letterSpacing: 2.0,
-                      color: _isAnswered ? const Color(0xFF10B981) : Colors.amber,
+                      color: Colors.white,
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  const Icon(Icons.signal_cellular_alt, color: OctalColors.success, size: 20),
+                ],
+              ),
+
+              const SizedBox(height: 10),
+
+              // Hero Glowing Avatar from Reference Screen 3
+              Center(
+                child: Container(
+                  width: 140,
+                  height: 140,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: OctalColors.surfaceCard,
+                    border: Border.all(color: OctalColors.primaryGold, width: 3.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: OctalColors.primaryGold.withOpacity(0.3),
+                        blurRadius: 36,
+                        spreadRadius: 4,
+                      ),
+                    ],
+                  ),
+                  child: Center(
+                    child: Container(
+                      width: 116,
+                      height: 116,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: OctalColors.bgDark,
+                        border: Border.all(color: OctalColors.secondaryGold.withOpacity(0.5), width: 1.5),
+                      ),
+                      child: Center(
+                        child: Text(
+                          initial,
+                          style: const TextStyle(
+                            fontFamily: 'Ubuntu',
+                            fontSize: 48,
+                            fontWeight: FontWeight.w900,
+                            color: OctalColors.primaryGold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // Contact Name & Phone from Reference Screen 3
+              Column(
+                children: [
                   Text(
-                    widget.name,
+                    widget.name.isNotEmpty ? widget.name : 'Unknown Contact',
+                    textAlign: TextAlign.center,
                     style: const TextStyle(
                       fontFamily: 'Ubuntu',
-                      fontSize: 28,
+                      fontSize: 24,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
                     ),
-                    textAlign: TextAlign.center,
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
                   Text(
                     widget.phone,
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 14,
-                      color: Colors.white.withOpacity(0.5),
-                    ),
-                  ),
-                ],
-              ),
-
-              Column(
-                children: [
-                  Text(
-                    _isAnswered ? _callStatus : 'Ringing: ${_secondsLeft}s',
                     style: const TextStyle(
                       fontFamily: 'monospace',
-                      fontSize: 48,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      letterSpacing: 1.0,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: OctalColors.textSecondary,
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _isAnswered ? 'CONNECTED' : 'WAITING FOR GSM HANDSHAKE',
-                    style: TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white.withOpacity(0.3),
-                      letterSpacing: 1.0,
-                    ),
-                  ),
-                ],
-              ),
+                  const SizedBox(height: 16),
 
-              Column(
-                children: [
-                  if (!_isAnswered) ...[
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                  // Call Status Badge & Timer
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _isAnswered 
+                          ? OctalColors.success.withOpacity(0.15) 
+                          : OctalColors.primaryGold.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: _isAnswered 
+                            ? OctalColors.success.withOpacity(0.4) 
+                            : OctalColors.primaryGold.withOpacity(0.4),
+                      ),
+                    ),
+                    child: Column(
                       children: [
-                        ElevatedButton.icon(
-                          onPressed: _simulateAnswer,
-                          icon: const Icon(Icons.call, size: 18),
-                          label: const Text('SIMULATE ANSWER', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF10B981),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14.0),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14.0),
-                            ),
+                        Text(
+                          _isAnswered ? 'IN CALL' : 'RINGING',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 1.5,
+                            color: _isAnswered ? OctalColors.success : OctalColors.primaryGold,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _isAnswered ? _callStatus : '00:${_secondsLeft.toString().padLeft(2, '0')}',
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 16),
-                  ],
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      ElevatedButton.icon(
-                        onPressed: () => _endCall(_isAnswered ? 'ANSWERED' : 'BUSY'),
-                        icon: const Icon(Icons.call_end, size: 20),
-                        label: Text(_isAnswered ? 'HANG UP CALL' : 'DECLINE CALL', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.redAccent,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 16.0),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16.0),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 12),
+
+              // Animated Audio Waveform Visualizer from Reference Screen 3
+              AnimatedBuilder(
+                animation: _waveAnimController,
+                builder: (context, child) {
+                  return SizedBox(
+                    height: 38,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(24, (index) {
+                        final waveVal = math.sin((index * 0.4) + (_waveAnimController.value * math.pi * 2));
+                        final height = _isAnswered
+                            ? 8.0 + (waveVal.abs() * 24.0)
+                            : 4.0 + (math.sin(index * 0.3).abs() * 12.0);
+                        return Container(
+                          width: 3.5,
+                          height: height,
+                          margin: const EdgeInsets.symmetric(horizontal: 2.5),
+                          decoration: BoxDecoration(
+                            color: _isAnswered ? OctalColors.primaryGold : OctalColors.textMuted,
+                            borderRadius: BorderRadius.circular(4),
                           ),
+                        );
+                      }),
+                    ),
+                  );
+                },
+              ),
+
+              const SizedBox(height: 16),
+
+              // Control Actions (Mute, Keypad, Speaker) from Reference Screen 3
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildControlItem(
+                    icon: _isMuted ? Icons.mic_off : Icons.mic,
+                    label: 'Mute',
+                    isActive: _isMuted,
+                    onTap: () => setState(() => _isMuted = !_isMuted),
+                  ),
+                  _buildControlItem(
+                    icon: Icons.dialpad,
+                    label: 'Keypad',
+                    isActive: false,
+                    onTap: () {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('In-call DTMF Keypad active on native phone.')),
+                      );
+                    },
+                  ),
+                  _buildControlItem(
+                    icon: _isSpeaker ? Icons.volume_up : Icons.volume_down,
+                    label: 'Speaker',
+                    isActive: _isSpeaker,
+                    onTap: () => setState(() => _isSpeaker = !_isSpeaker),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 20),
+
+              // Simulated Answer Button (during ringing) + End Call Button
+              Column(
+                children: [
+                  if (!_isAnswered) ...[
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: OutlinedButton.icon(
+                        onPressed: _simulateAnswer,
+                        icon: const Icon(Icons.phone_forwarded, color: OctalColors.success, size: 18),
+                        label: const Text(
+                          'Simulate Connected Answer',
+                          style: TextStyle(color: OctalColors.success, fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          side: BorderSide(color: OctalColors.success.withOpacity(0.5), width: 1.5),
+                          backgroundColor: OctalColors.success.withOpacity(0.1),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                         ),
                       ),
-                    ],
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
+                  // End Call Full Width Gold/Red Button from Reference Screen 3
+                  SizedBox(
+                    width: double.infinity,
+                    height: 54,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _endCall(_isAnswered ? 'ANSWERED' : 'CANCELLED'),
+                      icon: const Icon(Icons.call_end, color: OctalColors.bgDark, size: 22),
+                      label: const Text(
+                        'End Call',
+                        style: TextStyle(
+                          fontFamily: 'Ubuntu',
+                          fontSize: 16,
+                          fontWeight: FontWeight.w900,
+                          color: OctalColors.bgDark,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: OctalColors.primaryGold,
+                        elevation: 6,
+                        shadowColor: OctalColors.primaryGold.withOpacity(0.4),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -287,6 +441,50 @@ class _CallingScreenState extends State<CallingScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildControlItem({
+    required IconData icon,
+    required String label,
+    required bool isActive,
+    required VoidCallback onTap,
+  }) {
+    return Column(
+      children: [
+        InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(30),
+          child: Container(
+            width: 58,
+            height: 58,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isActive ? OctalColors.primaryGold : OctalColors.surfaceCard,
+              border: Border.all(
+                color: isActive ? OctalColors.primaryGold : OctalColors.border,
+                width: 1.5,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 8,
+                ),
+              ],
+            ),
+            child: Icon(
+              icon,
+              color: isActive ? OctalColors.bgDark : Colors.white,
+              size: 24,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 12, color: OctalColors.textSecondary, fontWeight: FontWeight.w600),
+        ),
+      ],
     );
   }
 }

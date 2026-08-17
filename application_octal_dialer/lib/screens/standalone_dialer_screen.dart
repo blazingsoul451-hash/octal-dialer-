@@ -7,15 +7,26 @@ import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
 import 'package:excel/excel.dart' hide Border;
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+import '../widgets/octal_logo.dart';
 
 class LeadItem {
   final String id;
   final String name;
   final String phone;
   String status; // 'PENDING', 'CALLING', 'COMPLETED', 'NO_ANSWER', 'SKIPPED'
+  String? disposition;
+  String? notes;
+  int? duration;
 
-  LeadItem({required this.id, required this.name, required this.phone, this.status = 'PENDING'});
+  LeadItem({
+    required this.id,
+    required this.name,
+    required this.phone,
+    this.status = 'PENDING',
+    this.disposition,
+    this.notes,
+    this.duration,
+  });
 }
 
 class StandaloneDialerScreen extends StatefulWidget {
@@ -23,7 +34,6 @@ class StandaloneDialerScreen extends StatefulWidget {
   final String? serverUrl;
   final List<LeadItem>? queue;
   final VoidCallback? onQueueUpdated;
-
   final String? sessionId;
 
   const StandaloneDialerScreen({
@@ -44,11 +54,12 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
   final TextEditingController _nameController = TextEditingController();
   
   late List<LeadItem> _queue;
+  String _selectedFilter = 'Pending'; // 'Pending', 'Calling', 'Completed', 'Failed'
   
   bool _isAutoDialing = false;
   int _currentIndex = -1;
   int _intervalSeconds = 35; // Ring timeout
-  int _delayBetweenCallsSeconds = 3; // Delay between calls
+  int _delayBetweenCallsSeconds = 3; // Configurable Next-Call Delay
   Timer? _autoDialTimer;
   int _countdown = 0;
 
@@ -56,9 +67,7 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
   bool _callActive = false;
   String? _activeCallLeadId;
 
-  static const Color _slateGray = Color(0xFF64748B);
-  static const Color _emerald = Color(0xFF10B981);
-  static const Color _amber = Color(0xFFFFB800);
+  static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
 
   @override
   void initState() {
@@ -66,7 +75,6 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
     WidgetsBinding.instance.addObserver(this);
     _queue = widget.queue ?? [];
     
-    // Listen to native phone state changes (IDLE, OFFHOOK, RINGING)
     _nativeChannel.setMethodCallHandler((call) async {
       if (call.method == 'onCallStateChanged') {
         final state = call.arguments as String;
@@ -88,12 +96,9 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
     }
   }
 
-  static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
-
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _nativeChannel.setMethodCallHandler(null);
     _nativeChannel.invokeMethod('keepScreenOn', {'enable': false});
     _autoDialTimer?.cancel();
     _phoneController.dispose();
@@ -102,811 +107,737 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
   }
 
   void _handleNativeCallStateChange(String state) {
-    debugPrint("Native Call State Changed: $state");
-    if (state == 'OFFHOOK' || state == 'RINGING') {
+    if (state == 'OFFHOOK') {
       _callActive = true;
-    } else if (state == 'IDLE') {
-      if (_isAutoDialing && _currentIndex >= 0 && _currentIndex < _queue.length) {
-        final currentLead = _queue[_currentIndex];
-        if (_callActive && _activeCallLeadId == currentLead.id) {
-          _callActive = false;
-          _activeCallLeadId = null;
-          _autoDialTimer?.cancel();
-
-          final durationSecs = _callStartTime != null
-              ? DateTime.now().difference(_callStartTime!).inSeconds
-              : 0;
-
-          if (widget.socket != null && widget.socket.connected) {
-            widget.socket.emit('call:ended', {
-              'sessionId': widget.sessionId ?? 'sess_default',
-              'leadId': currentLead.id.startsWith('local_') ? null : currentLead.id,
-              'phone': currentLead.phone,
-              'name': currentLead.name,
-              'reason': 'ANSWERED',
-              'duration': durationSecs,
-            });
-          }
-
-          setState(() {
-            currentLead.status = 'COMPLETED';
-          });
-          _startBetweenCallsDelay();
-        }
+      _callStartTime = DateTime.now();
+    } else if (state == 'IDLE' && _callActive) {
+      _callActive = false;
+      final duration = _callStartTime != null 
+          ? DateTime.now().difference(_callStartTime!).inSeconds 
+          : 0;
+      
+      if (_activeCallLeadId != null) {
+        _showDispositionDialog(_activeCallLeadId!, duration);
       }
     }
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      if (_isAutoDialing && _currentIndex >= 0 && _currentIndex < _queue.length) {
-        final currentLead = _queue[_currentIndex];
-        if (_callActive && _activeCallLeadId == currentLead.id) {
-          _callActive = false;
-          _activeCallLeadId = null;
-          _autoDialTimer?.cancel();
-
-          final durationSecs = _callStartTime != null
-              ? DateTime.now().difference(_callStartTime!).inSeconds
-              : 0;
-
-          if (widget.socket != null && widget.socket.connected) {
-            widget.socket.emit('call:ended', {
-              'sessionId': widget.sessionId ?? 'sess_default',
-              'leadId': currentLead.id.startsWith('local_') ? null : currentLead.id,
-              'phone': currentLead.phone,
-              'name': currentLead.name,
-              'reason': 'ANSWERED',
-              'duration': durationSecs,
-            });
-          }
-
-          setState(() {
-            currentLead.status = 'COMPLETED';
-          });
-          _startBetweenCallsDelay();
-        }
-      }
-    }
-  }
-
-  Future<void> _makeCall(String phone) async {
+  Future<void> _makeCall(String phone, String name, {String? leadId}) async {
     final cleanPhone = phone.replaceAll(RegExp(r'[^\d+]'), '');
+    if (cleanPhone.isEmpty) return;
+
+    if (leadId != null) {
+      _activeCallLeadId = leadId;
+      final idx = _queue.indexWhere((l) => l.id == leadId);
+      if (idx != -1) {
+        setState(() {
+          _queue[idx].status = 'CALLING';
+        });
+      }
+    }
+
+    // Launch direct phone dialer via Android MethodChannel
     try {
       await _nativeChannel.invokeMethod('makeDirectCall', {'phone': cleanPhone});
     } catch (e) {
-      final uri = Uri.parse('tel:$cleanPhone');
+      final telUri = Uri.parse('tel:$cleanPhone');
       try {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        await launchUrl(telUri, mode: LaunchMode.externalApplication);
       } catch (err) {
-        debugPrint('Direct call error: $err');
+        debugPrint('Could not launch native phone: $err');
       }
     }
   }
 
-  void _addLead() {
-    final phone = _phoneController.text.trim();
-    final name = _nameController.text.trim();
-    if (phone.isEmpty) return;
-
-    setState(() {
-      _queue.add(LeadItem(
-        id: 'local_${DateTime.now().millisecondsSinceEpoch}',
-        name: name.isEmpty ? 'Lead ${_queue.length + 1}' : name,
-        phone: phone,
-      ));
-      _phoneController.clear();
-      _nameController.clear();
-      widget.onQueueUpdated?.call();
-    });
-  }
-
-  Future<void> _importFile() async {
-    try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['csv', 'xlsx', 'xls'],
-      );
-
-      if (result != null && result.files.single.path != null) {
-        final file = File(result.files.single.path!);
-        final extension = result.files.single.extension?.toLowerCase();
-        
-        List<LeadItem> importedLeads = [];
-        
-        if (extension == 'csv') {
-          final input = await file.readAsString();
-          List<List<dynamic>> rows = const CsvToListConverter().convert(input);
-          if (rows.length > 1) { // Skip header assuming row 0 is header
-            for (int i = 1; i < rows.length; i++) {
-              final row = rows[i];
-              if (row.length >= 2) {
-                final name = row[0].toString().trim();
-                final phone = row[1].toString().replaceAll(RegExp(r'[^\d+]'), '').trim();
-
-                if (name.isNotEmpty && name.length <= 255 && phone.isNotEmpty && phone.length >= 10 && phone.length <= 20) {
-                  importedLeads.add(LeadItem(
-                    id: 'import_${DateTime.now().millisecondsSinceEpoch}_$i',
-                    name: name,
-                    phone: phone,
-                  ));
-                }
-              }
-            }
-          }
-        } else if (extension == 'xlsx' || extension == 'xls') {
-          var bytes = await file.readAsBytes();
-          var excel = Excel.decodeBytes(bytes);
-          for (var table in excel.tables.keys) {
-            final sheet = excel.tables[table];
-            if (sheet != null && sheet.rows.length > 1) {
-              for (int i = 1; i < sheet.rows.length; i++) {
-                final row = sheet.rows[i];
-                if (row.length >= 2 && row[0] != null && row[1] != null) {
-                  final name = row[0]!.value.toString().trim();
-                  final phone = row[1]!.value.toString().replaceAll(RegExp(r'[^\d+]'), '').trim();
-
-                  if (name.isNotEmpty && name.length <= 255 && phone.isNotEmpty && phone.length >= 10 && phone.length <= 20) {
-                    importedLeads.add(LeadItem(
-                      id: 'import_${DateTime.now().millisecondsSinceEpoch}_$i',
-                      name: name,
-                      phone: phone,
-                    ));
-                  }
-                }
-              }
-            }
-          }
-        }
-        
-        if (importedLeads.isNotEmpty) {
-          bool saveToServer = false;
-          String defaultCampaignName = result.files.single.name.replaceFirst(RegExp(r'\.[^.]+$'), '');
-          
-          if (widget.serverUrl != null && mounted) {
-            // Show custom dialog asking to save as server campaign
-            saveToServer = await showDialog<bool>(
-              context: context,
-              builder: (context) => AlertDialog(
-                backgroundColor: const Color(0xFF0F172A),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  side: const BorderSide(color: _amber),
-                ),
-                title: const Text(
-                  'SAVE AS CAMPAIGN?',
-                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.2),
-                ),
-                content: Text(
-                  'Would you like to save this file as a campaign on the server, so you can select and reuse it directly from the dashboard?',
-                  style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 11),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('NO, JUST LOCAL', style: TextStyle(color: _slateGray, fontSize: 10, fontWeight: FontWeight.bold)),
-                  ),
-                  ElevatedButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    style: ElevatedButton.styleFrom(backgroundColor: _emerald),
-                    child: const Text('YES, SAVE IT', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-                  ),
-                ],
-              ),
-            ) ?? false;
-          }
-
-          if (saveToServer && widget.serverUrl != null && mounted) {
-            // Ask for Campaign Name
-            final controller = TextEditingController(text: defaultCampaignName);
-            bool submitted = await showDialog<bool>(
-              context: context,
-              builder: (context) => AlertDialog(
-                backgroundColor: const Color(0xFF0F172A),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  side: const BorderSide(color: _amber),
-                ),
-                title: const Text(
-                  'CAMPAIGN NAME',
-                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.2),
-                ),
-                content: TextField(
-                  controller: controller,
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                  decoration: const InputDecoration(
-                    labelText: 'Enter campaign name',
-                    labelStyle: TextStyle(color: _slateGray, fontSize: 11),
-                    enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: _slateGray)),
-                    focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: _amber)),
-                  ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('CANCEL', style: TextStyle(color: _slateGray, fontSize: 10, fontWeight: FontWeight.bold)),
-                  ),
-                  ElevatedButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    style: ElevatedButton.styleFrom(backgroundColor: _amber),
-                    child: const Text('SUBMIT', style: TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)),
-                  ),
-                ],
-              ),
-            ) ?? false;
-
-            if (submitted && controller.text.trim().isNotEmpty && mounted) {
-              final campaignName = controller.text.trim();
-              // Make REST post request to backend /api/leads/import/mobile
-              try {
-                // Show loading spinner
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (context) => const Center(
-                    child: CircularProgressIndicator(color: _amber),
-                  ),
-                );
-
-                final uri = Uri.parse('${widget.serverUrl}/api/leads/import/mobile');
-                final response = await http.post(
-                  uri,
-                  headers: {'Content-Type': 'application/json'},
-                  body: json.encode({
-                    'campaignName': campaignName,
-                    'fileName': result.files.single.name,
-                    'leads': importedLeads.map((l) => {
-                      'name': l.name,
-                      'phone': l.phone,
-                    }).toList(),
-                  }),
-                ).timeout(const Duration(seconds: 12));
-
-                // Pop loading spinner
-                if (mounted) Navigator.pop(context);
-
-                if (response.statusCode == 200 || response.statusCode == 201) {
-                  // Reload the dashboard campaign list by letting the app know
-                  if (widget.socket != null) {
-                    widget.socket.emit('leads:updated');
-                  }
-
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Campaign "$campaignName" saved on server successfully!'), backgroundColor: _emerald),
-                    );
-                  }
-                } else {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to save on server (Code ${response.statusCode}). Saved locally instead.'), backgroundColor: Colors.redAccent),
-                    );
-                  }
-                }
-              } catch (e) {
-                // Pop loading spinner if active
-                if (mounted) Navigator.pop(context);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Network error saving to server: $e. Saved locally instead.'), backgroundColor: Colors.redAccent),
-                  );
-                }
-              }
-            }
-          }
-
-          setState(() {
-            _queue.clear(); // Clear old queue and populate with new leads
-            _queue.addAll(importedLeads);
-            _currentIndex = -1; // reset index for new queue
-            widget.onQueueUpdated?.call();
-          });
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No valid leads found in file. Make sure columns are Name, Phone.')),
-          );
-        }
-      }
-    } catch (e) {
+  void _startAutoDialing() {
+    if (_queue.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error parsing file: $e')),
+        const SnackBar(content: Text('Lead queue is empty. Import or add leads to start dialing.')),
       );
-    }
-  }
-
-  Future<void> _startAutoDialer() async {
-    if (_queue.isEmpty) return;
-    
-    try {
-      final bool granted = await _nativeChannel.invokeMethod('checkCallPermission');
-      if (!granted) {
-        final bool requestResult = await _nativeChannel.invokeMethod('requestCallPermission');
-        if (!requestResult) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Permissions (CALL_PHONE and READ_PHONE_STATE) are required for auto-dialing!'),
-                backgroundColor: Colors.redAccent,
-              ),
-            );
-          }
-          return;
-        }
-      }
-    } catch (e) {
-      debugPrint('Permission error: $e');
+      return;
     }
 
-    _nativeChannel.invokeMethod('keepScreenOn', {'enable': true});
     setState(() {
       _isAutoDialing = true;
-      if (_currentIndex < 0 || _currentIndex >= _queue.length) {
-        _currentIndex = 0;
-      }
     });
-    _dialNext();
+
+    _nativeChannel.invokeMethod('keepScreenOn', {'enable': true});
+    _dialNextInQueue();
   }
 
-  void _stopAutoDialer() {
-    _nativeChannel.invokeMethod('keepScreenOn', {'enable': false});
+  void _pauseAutoDialing() {
     _autoDialTimer?.cancel();
     setState(() {
       _isAutoDialing = false;
       _countdown = 0;
-      _callActive = false;
-      _activeCallLeadId = null;
     });
+    _nativeChannel.invokeMethod('keepScreenOn', {'enable': false});
   }
 
-  void _dialNext() {
-    if (!_isAutoDialing || _currentIndex >= _queue.length) {
-      _stopAutoDialer();
+  void _dialNextInQueue() {
+    if (!_isAutoDialing) return;
+
+    final nextIdx = _queue.indexWhere((l) => l.status == 'PENDING');
+    if (nextIdx == -1) {
+      _pauseAutoDialing();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Auto dialing complete! All leads processed.')),
+      );
       return;
     }
 
-    final currentLead = _queue[_currentIndex];
     setState(() {
-      currentLead.status = 'CALLING';
-      _countdown = _intervalSeconds;
-      _callActive = true;
-      _activeCallLeadId = currentLead.id;
-      _callStartTime = DateTime.now();
+      _currentIndex = nextIdx;
     });
 
-    _makeCall(currentLead.phone);
-
-    // Start ring timeout countdown
-    _autoDialTimer?.cancel();
-    _autoDialTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) return;
-      if (_countdown > 1) {
-        setState(() {
-          _countdown--;
-        });
-      } else {
-        timer.cancel();
-        _handleNoAnswer();
-      }
-    });
+    final lead = _queue[nextIdx];
+    _makeCall(lead.phone, lead.name, leadId: lead.id);
   }
 
-  void _handleNoAnswer() {
-    if (!_isAutoDialing || _currentIndex >= _queue.length) return;
-    
-    // Try to bring app to foreground
-    try {
-      _nativeChannel.invokeMethod('bringToForeground');
-    } catch (e) {
-      debugPrint('Could not bring to foreground: $e');
-    }
+  void _showDispositionDialog(String leadId, int duration) {
+    final idx = _queue.indexWhere((l) => l.id == leadId);
+    if (idx == -1) return;
+    final lead = _queue[idx];
 
-    final currentLead = _queue[_currentIndex];
-    if (_callActive && _activeCallLeadId == currentLead.id) {
-      _callActive = false;
-      _activeCallLeadId = null;
+    String selectedDisp = 'Interested';
+    final notesCtrl = TextEditingController();
+    final List<String> dispOptions = [
+      'Interested',
+      'Not Interested',
+      'No Answer',
+      'Busy',
+      'Wrong Number',
+      'Callback Request',
+      'Other'
+    ];
 
-      // Emit call ended to the server as NO_ANSWER
-      if (widget.socket != null && widget.socket.connected) {
-        widget.socket.emit('call:ended', {
-          'sessionId': widget.sessionId ?? 'sess_default',
-          'leadId': currentLead.id.startsWith('local_') ? null : currentLead.id,
-          'phone': currentLead.phone,
-          'name': currentLead.name,
-          'reason': 'NO_ANSWER',
-          'duration': 0,
-        });
-      }
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: OctalColors.bgDark,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Header Bar
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Call Disposition',
+                          style: TextStyle(
+                            fontFamily: 'Ubuntu',
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: OctalColors.textSecondary, size: 22),
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
+                    ),
 
+                    const SizedBox(height: 12),
+
+                    // Contact & Duration Banner from Reference Screen 5
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: OctalColors.surfaceCard,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: OctalColors.border),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  lead.name,
+                                  style: const TextStyle(
+                                    fontFamily: 'Ubuntu',
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  lead.phone,
+                                  style: const TextStyle(
+                                    fontFamily: 'monospace',
+                                    fontSize: 13,
+                                    color: OctalColors.textSecondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                '00:${duration.toString().padLeft(2, '0')}',
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: OctalColors.primaryGold,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Call Duration',
+                                style: TextStyle(fontSize: 10, color: OctalColors.textMuted),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // Quick Disposition Chips Grid from Reference Screen 5
+                    const Text(
+                      'Disposition Result',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: OctalColors.textSecondary),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: dispOptions.map((disp) {
+                        final isSelected = selectedDisp == disp;
+                        return ChoiceChip(
+                          label: Text(
+                            disp,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: isSelected ? OctalColors.bgDark : Colors.white,
+                            ),
+                          ),
+                          selected: isSelected,
+                          selectedColor: OctalColors.primaryGold,
+                          backgroundColor: OctalColors.surfaceCard,
+                          side: BorderSide(
+                            color: isSelected ? OctalColors.primaryGold : OctalColors.border,
+                          ),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          onSelected: (val) {
+                            if (val) {
+                              setModalState(() => selectedDisp = disp);
+                            }
+                          },
+                        );
+                      }).toList(),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // Notes Text Area from Reference Screen 5
+                    const Text(
+                      'Notes',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: OctalColors.textSecondary),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: notesCtrl,
+                      maxLines: 3,
+                      maxLength: 500,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: 'Enter lead notes or follow-up instructions...',
+                        hintStyle: TextStyle(color: OctalColors.textMuted, fontSize: 12),
+                        filled: true,
+                        fillColor: OctalColors.surfaceCard,
+                        counterStyle: TextStyle(color: OctalColors.textMuted, fontSize: 11),
+                        contentPadding: const EdgeInsets.all(14),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(color: OctalColors.border),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(color: OctalColors.primaryGold, width: 1.5),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    // Save & Next Full Width Button from Reference Screen 5
+                    SizedBox(
+                      height: 52,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _saveDisposition(leadId, selectedDisp, notesCtrl.text, duration);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: OctalColors.primaryGold,
+                          foregroundColor: OctalColors.bgDark,
+                          elevation: 4,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        ),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              'Save & Next',
+                              style: TextStyle(
+                                fontFamily: 'Ubuntu',
+                                fontSize: 15,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            SizedBox(width: 8),
+                            Icon(Icons.arrow_forward, size: 18),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _saveDisposition(String leadId, String disposition, String notes, int duration) {
+    final idx = _queue.indexWhere((l) => l.id == leadId);
+    if (idx != -1) {
       setState(() {
-        currentLead.status = 'NO_ANSWER';
+        _queue[idx].status = 'COMPLETED';
+        _queue[idx].disposition = disposition;
+        _queue[idx].notes = notes;
+        _queue[idx].duration = duration;
       });
-      
-      _startBetweenCallsDelay();
+    }
+
+    // If Auto Dialing is active, run the configurable next-call delay countdown!
+    if (_isAutoDialing) {
+      _startNextCallDelayCountdown();
     }
   }
 
-  void _startBetweenCallsDelay() {
-    if (!_isAutoDialing) return;
-    
+  void _startNextCallDelayCountdown() {
     _autoDialTimer?.cancel();
+
+    if (_delayBetweenCallsSeconds <= 0) {
+      _dialNextInQueue();
+      return;
+    }
+
     setState(() {
-      _countdown = _delayBetweenCallsSeconds; // Use the configured delay
+      _countdown = _delayBetweenCallsSeconds;
     });
 
     _autoDialTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) return;
-      if (_countdown > 1) {
-        setState(() {
-          _countdown--;
-        });
-      } else {
+      if (!mounted) {
         timer.cancel();
-        if (mounted && _isAutoDialing) {
-          setState(() {
-            _currentIndex++;
-          });
-          if (_currentIndex < _queue.length) {
-            _dialNext();
-          } else {
-            _stopAutoDialer();
+        return;
+      }
+      setState(() {
+        _countdown--;
+        if (_countdown <= 0) {
+          timer.cancel();
+          _dialNextInQueue();
+        }
+      });
+    });
+  }
+
+  Future<void> _pickAndImportFile() async {
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['csv', 'xlsx', 'xls'],
+    );
+    if (res == null || res.files.single.path == null) return;
+
+    final filePath = res.files.single.path!;
+    List<LeadItem> imported = [];
+
+    try {
+      if (filePath.endsWith('.csv')) {
+        final input = File(filePath).openRead();
+        final fields = await input.transform(utf8.decoder).transform(const CsvToListConverter()).toList();
+        for (int i = 1; i < fields.length; i++) {
+          final row = fields[i];
+          if (row.length >= 2) {
+            imported.add(LeadItem(
+              id: 'lead_${DateTime.now().millisecondsSinceEpoch}_$i',
+              name: row[0].toString(),
+              phone: row[1].toString(),
+            ));
+          }
+        }
+      } else {
+        final bytes = File(filePath).readAsBytesSync();
+        final excel = Excel.decodeBytes(bytes);
+        for (final table in excel.tables.keys) {
+          final sheet = excel.tables[table]!;
+          for (int i = 1; i < sheet.rows.length; i++) {
+            final row = sheet.rows[i];
+            if (row.length >= 2 && row[0]?.value != null && row[1]?.value != null) {
+              imported.add(LeadItem(
+                id: 'lead_${DateTime.now().millisecondsSinceEpoch}_$i',
+                name: row[0]!.value.toString(),
+                phone: row[1]!.value.toString(),
+              ));
+            }
           }
         }
       }
-    });
+
+      if (imported.isNotEmpty) {
+        setState(() {
+          _queue.addAll(imported);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Successfully imported ${imported.length} leads!')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to import leads: $e')),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final pendingCount = _queue.where((l) => l.status == 'PENDING').length;
+    final callingCount = _queue.where((l) => l.status == 'CALLING').length;
+    final completedCount = _queue.where((l) => l.status == 'COMPLETED').length;
+    final failedCount = _queue.where((l) => l.status == 'NO_ANSWER' || l.status == 'SKIPPED').length;
+
+    List<LeadItem> filteredLeads = [];
+    if (_selectedFilter == 'Pending') {
+      filteredLeads = _queue.where((l) => l.status == 'PENDING').toList();
+    } else if (_selectedFilter == 'Calling') {
+      filteredLeads = _queue.where((l) => l.status == 'CALLING').toList();
+    } else if (_selectedFilter == 'Completed') {
+      filteredLeads = _queue.where((l) => l.status == 'COMPLETED').toList();
+    } else {
+      filteredLeads = _queue.where((l) => l.status == 'NO_ANSWER' || l.status == 'SKIPPED').toList();
+    }
+
     return Scaffold(
+      backgroundColor: OctalColors.bgDark,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F172A),
-        elevation: 0,
-        title: const Row(
-          children: [
-            Icon(Icons.phone_in_talk, color: _amber, size: 20),
-            SizedBox(width: 8),
-            Text(
-              'OCTAL MOBILE DIALER',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2),
-            ),
-          ],
+        backgroundColor: OctalColors.surfaceCard,
+        title: const Text(
+          'Leads Queue',
+          style: TextStyle(
+            fontFamily: 'Ubuntu',
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.file_upload_outlined, color: OctalColors.primaryGold, size: 22),
+            tooltip: 'Import CSV/Excel',
+            onPressed: _pickAndImportFile,
+          ),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
+      body: SafeArea(
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Auto Dialer Status Card
+            // Top Status Filter Pill Tabs from Reference Screen 4
             Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: _isAutoDialing 
-                    ? const Color(0xFF064E3B).withOpacity(0.4)
-                    : const Color(0xFF0F172A),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: _isAutoDialing ? _emerald : const Color(0xFF1E293B),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              color: OctalColors.surfaceCard,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _buildPillTab('Pending', pendingCount),
+                    const SizedBox(width: 8),
+                    _buildPillTab('Calling', callingCount),
+                    const SizedBox(width: 8),
+                    _buildPillTab('Completed', completedCount),
+                    const SizedBox(width: 8),
+                    _buildPillTab('Failed', failedCount),
+                  ],
                 ),
               ),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 10,
-                            height: 10,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: _isAutoDialing ? _emerald : _amber,
-                            ),
+            ),
+
+            // Next-Call Delay Countdown Bar (if auto dialing)
+            if (_isAutoDialing && _countdown > 0) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                color: OctalColors.primaryGold.withOpacity(0.15),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(color: OctalColors.primaryGold, strokeWidth: 2),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          'Next Call in ${_countdown}s...',
+                          style: const TextStyle(
+                            fontFamily: 'Ubuntu',
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: OctalColors.primaryGold,
                           ),
-                          const SizedBox(width: 8),
+                        ),
+                      ],
+                    ),
+                    TextButton(
+                      onPressed: _dialNextInQueue,
+                      child: const Text('Dial Now', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // Leads Queue List View
+            Expanded(
+              child: filteredLeads.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.people_outline, color: OctalColors.textMuted, size: 48),
+                          const SizedBox(height: 12),
                           Text(
-                            _isAutoDialing ? 'AUTO DIALER ACTIVE' : 'DIALER STANDBY',
-                            style: TextStyle(
-                              color: _isAutoDialing ? _emerald : _amber,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                              letterSpacing: 1.0,
+                            'No ${_selectedFilter.toLowerCase()} leads in queue',
+                            style: const TextStyle(fontSize: 14, color: OctalColors.textSecondary),
+                          ),
+                          const SizedBox(height: 16),
+                          OutlinedButton.icon(
+                            onPressed: _pickAndImportFile,
+                            icon: const Icon(Icons.add, color: OctalColors.primaryGold, size: 18),
+                            label: const Text('Import CSV / Excel', style: TextStyle(color: OctalColors.primaryGold)),
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: OctalColors.primaryGold),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             ),
                           ),
                         ],
                       ),
-                      if (_isAutoDialing)
-                        Text(
-                          'Next in: ${_countdown}s',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  // Interval Slider
-                  Row(
-                    children: [
-                      const SizedBox(
-                        width: 80,
-                        child: Text('Ring Timeout:', style: TextStyle(fontSize: 11, color: _slateGray)),
-                      ),
-                      Expanded(
-                        child: Slider(
-                          value: _intervalSeconds.toDouble(),
-                          min: 10,
-                          max: 60,
-                          divisions: 50,
-                          activeColor: _amber,
-                          inactiveColor: _slateGray.withOpacity(0.3),
-                          label: '${_intervalSeconds}s',
-                          onChanged: _isAutoDialing ? null : (val) {
-                            setState(() {
-                              _intervalSeconds = val.round();
-                            });
-                          },
-                        ),
-                      ),
-                      Text('${_intervalSeconds}s', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  // Delay Between Calls Slider
-                  Row(
-                    children: [
-                      const SizedBox(
-                        width: 80,
-                        child: Text('Call Delay:', style: TextStyle(fontSize: 11, color: _slateGray)),
-                      ),
-                      Expanded(
-                        child: Slider(
-                          value: _delayBetweenCallsSeconds.toDouble(),
-                          min: 1,
-                          max: 15,
-                          divisions: 14,
-                          activeColor: _emerald,
-                          inactiveColor: _slateGray.withOpacity(0.3),
-                          label: '${_delayBetweenCallsSeconds}s',
-                          onChanged: _isAutoDialing ? null : (val) {
-                            setState(() {
-                              _delayBetweenCallsSeconds = val.round();
-                            });
-                          },
-                        ),
-                      ),
-                      Text('${_delayBetweenCallsSeconds}s', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  // Start / Stop Action Buttons
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _isAutoDialing ? _stopAutoDialer : _startAutoDialer,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _isAutoDialing ? Colors.redAccent : _amber,
-                            foregroundColor: _isAutoDialing ? Colors.white : Colors.black,
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                          icon: Icon(_isAutoDialing ? Icons.stop : Icons.play_arrow),
-                          label: Text(
-                            _isAutoDialing ? 'PAUSE AUTO DIALER' : 'START AUTO DIALER',
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: filteredLeads.length,
+                      itemBuilder: (context, index) {
+                        final lead = filteredLeads[index];
+                        final globalIdx = _queue.indexOf(lead) + 1;
 
-            const SizedBox(height: 20),
-
-            // Quick Add Lead Form
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0F172A),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFF1E293B)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'ADD LEAD TO MOBILE QUEUE',
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF94A3B8), letterSpacing: 1),
-                      ),
-                      TextButton.icon(
-                        onPressed: _importFile,
-                        icon: const Icon(Icons.file_upload, size: 14, color: _amber),
-                        label: const Text('IMPORT CSV/XLSX', style: TextStyle(fontSize: 10, color: _amber, fontWeight: FontWeight.bold)),
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _nameController,
-                    decoration: InputDecoration(
-                      hintText: 'Lead Name (Optional)',
-                      hintStyle: const TextStyle(color: _slateGray, fontSize: 12),
-                      filled: true,
-                      fillColor: const Color(0xFF020617),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-                    ),
-                    style: const TextStyle(fontSize: 13, color: Colors.white),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _phoneController,
-                          keyboardType: TextInputType.phone,
-                          decoration: InputDecoration(
-                            hintText: 'Phone Number (+1...)',
-                            hintStyle: const TextStyle(color: _slateGray, fontSize: 12),
-                            filled: true,
-                            fillColor: const Color(0xFF020617),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-                          ),
-                          style: const TextStyle(fontSize: 13, color: Colors.white),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(
-                        onPressed: _addLead,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF1E293B),
-                          foregroundColor: _amber,
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                        child: const Text('ADD', style: TextStyle(fontWeight: FontWeight.bold)),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // Queue Header
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'MOBILE LEAD QUEUE (${_queue.length})',
-                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF94A3B8), letterSpacing: 1),
-                ),
-                if (_queue.isNotEmpty)
-                  TextButton(
-                    onPressed: () {
-                      setState(() {
-                        _queue.clear();
-                        _currentIndex = -1;
-                        _stopAutoDialer();
-                      });
-                    },
-                    child: const Text('CLEAR ALL', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-                  ),
-              ],
-            ),
-
-            const SizedBox(height: 8),
-
-            // Lead Queue List
-            _queue.isEmpty
-                ? Container(
-                    padding: const EdgeInsets.all(32),
-                    alignment: Alignment.center,
-                    child: const Text(
-                      'No leads in queue. Add numbers above to start auto-dialing directly from your phone.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: _slateGray, fontSize: 12),
-                    ),
-                  )
-                : ListView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: _queue.length,
-                    itemBuilder: (context, index) {
-                      final lead = _queue[index];
-                      final isCurrent = index == _currentIndex;
-
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        color: isCurrent ? const Color(0xFF1E293B) : const Color(0xFF0F172A),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          side: BorderSide(
-                            color: isCurrent ? _amber : const Color(0xFF1E293B),
-                          ),
-                        ),
-                        child: ListTile(
-                          dense: true,
-                          title: Text(
-                            lead.name,
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
-                              color: isCurrent ? _amber : Colors.white,
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: OctalColors.surfaceCard,
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                              color: lead.status == 'CALLING' 
+                                  ? OctalColors.primaryGold 
+                                  : OctalColors.border,
+                              width: lead.status == 'CALLING' ? 1.5 : 1.0,
                             ),
                           ),
-                          subtitle: Text(
-                            lead.phone,
-                            style: const TextStyle(fontSize: 11, color: _slateGray),
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
+                          child: Row(
                             children: [
+                              // Number Pill from Reference Screen 4
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                width: 34,
+                                height: 34,
                                 decoration: BoxDecoration(
-                                  color: lead.status == 'CALLING'
-                                      ? _amber.withOpacity(0.2)
-                                      : lead.status == 'COMPLETED'
-                                          ? _emerald.withOpacity(0.2)
-                                          : lead.status == 'NO_ANSWER'
-                                              ? Colors.redAccent.withOpacity(0.2)
-                                              : _slateGray.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(6),
+                                  color: lead.status == 'CALLING' 
+                                      ? OctalColors.primaryGold 
+                                      : OctalColors.surfaceElevated,
+                                  borderRadius: BorderRadius.circular(10),
                                 ),
-                                child: Text(
-                                  lead.status,
-                                  style: TextStyle(
-                                    fontSize: 9,
-                                    fontWeight: FontWeight.bold,
-                                    color: lead.status == 'CALLING'
-                                        ? _amber
-                                        : lead.status == 'COMPLETED'
-                                            ? _emerald
-                                            : lead.status == 'NO_ANSWER'
-                                                ? Colors.redAccent
-                                                : _slateGray,
+                                child: Center(
+                                  child: Text(
+                                    '$globalIdx',
+                                    style: TextStyle(
+                                      fontFamily: 'Ubuntu',
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w900,
+                                      color: lead.status == 'CALLING' ? OctalColors.bgDark : Colors.white,
+                                    ),
                                   ),
                                 ),
                               ),
-                              IconButton(
-                                icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18),
-                                onPressed: () {
-                                  setState(() {
-                                    _queue.removeAt(index);
-                                    if (_currentIndex >= _queue.length) {
-                                      _currentIndex = _queue.length - 1;
-                                    }
-                                  });
-                                },
+                              const SizedBox(width: 14),
+
+                              // Name & Phone
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      lead.name,
+                                      style: const TextStyle(
+                                        fontFamily: 'Ubuntu',
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      lead.phone,
+                                      style: const TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 12,
+                                        color: OctalColors.textSecondary,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                              IconButton(
-                                icon: const Icon(Icons.phone, color: _emerald, size: 18),
-                                onPressed: () => _makeCall(lead.phone),
-                              ),
+
+                              // Action / Status
+                              if (lead.status == 'PENDING') ...[
+                                ElevatedButton(
+                                  onPressed: () => _makeCall(lead.phone, lead.name, leadId: lead.id),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: OctalColors.surfaceElevated,
+                                    foregroundColor: OctalColors.primaryGold,
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  ),
+                                  child: const Text('Next', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                ),
+                              ] else if (lead.status == 'CALLING') ...[
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: OctalColors.primaryGold.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Text(
+                                    'DIALING',
+                                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: OctalColors.primaryGold),
+                                  ),
+                                ),
+                              ] else ...[
+                                Text(
+                                  lead.disposition ?? lead.status,
+                                  style: const TextStyle(fontSize: 11, color: OctalColors.success, fontWeight: FontWeight.bold),
+                                ),
+                              ],
                             ],
                           ),
-                        ),
-                      );
-                    },
+                        );
+                      },
+                    ),
+            ),
+
+            // Sticky Bottom Action Bar from Reference Screen 4: "▶ Start Auto Dial"
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: const BoxDecoration(
+                color: OctalColors.surfaceCard,
+                border: Border(top: BorderSide(color: OctalColors.border)),
+              ),
+              child: SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton.icon(
+                  onPressed: _isAutoDialing ? _pauseAutoDialing : _startAutoDialing,
+                  icon: Icon(
+                    _isAutoDialing ? Icons.pause : Icons.play_arrow,
+                    color: OctalColors.bgDark,
+                    size: 22,
                   ),
+                  label: Text(
+                    _isAutoDialing ? 'Pause Auto Dial' : 'Start Auto Dial',
+                    style: const TextStyle(
+                      fontFamily: 'Ubuntu',
+                      fontSize: 15,
+                      fontWeight: FontWeight.w900,
+                      color: OctalColors.bgDark,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: OctalColors.primaryGold,
+                    elevation: 4,
+                    shadowColor: OctalColors.primaryGold.withOpacity(0.4),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPillTab(String title, int count) {
+    final isSelected = _selectedFilter == title;
+    return GestureDetector(
+      onTap: () => setState(() => _selectedFilter = title),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? OctalColors.primaryGold : OctalColors.surfaceElevated,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: isSelected ? OctalColors.bgDark : Colors.white,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: isSelected ? OctalColors.bgDark.withOpacity(0.2) : OctalColors.bgDark,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: isSelected ? OctalColors.bgDark : OctalColors.primaryGold,
+                ),
+              ),
+            ),
           ],
         ),
       ),

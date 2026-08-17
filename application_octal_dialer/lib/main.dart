@@ -3,8 +3,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/login_screen.dart';
 import 'screens/device_dashboard_screen.dart';
 import 'screens/connect_screen.dart';
-
 import 'config/app_config.dart';
+import 'widgets/octal_logo.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,9 +21,9 @@ class OctalDialerApp extends StatefulWidget {
 
 class _OctalDialerAppState extends State<OctalDialerApp> {
   Widget _initialScreen = const Scaffold(
-    backgroundColor: Color(0xFF020617),
+    backgroundColor: OctalColors.bgDark,
     body: Center(
-      child: CircularProgressIndicator(color: Color(0xFFFFB800)),
+      child: CircularProgressIndicator(color: OctalColors.primaryGold),
     ),
   );
 
@@ -56,26 +56,41 @@ class _OctalDialerAppState extends State<OctalDialerApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Octal Dialer Client',
+      title: 'Octal Dialer',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.dark,
       darkTheme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF020617),
-        primaryColor: const Color(0xFFFFB800),
-        cardColor: const Color(0xFF0F172A),
-        hintColor: const Color(0xFF94A3B8),
+        scaffoldBackgroundColor: OctalColors.bgDark,
+        primaryColor: OctalColors.primaryGold,
+        cardColor: OctalColors.surfaceCard,
+        hintColor: OctalColors.textSecondary,
+        dividerColor: OctalColors.border,
         colorScheme: const ColorScheme.dark(
-          primary: Color(0xFFFFB800),
-          secondary: Color(0xFFD97706),
-          surface: Color(0xFF0F172A),
-          error: Colors.redAccent,
+          primary: OctalColors.primaryGold,
+          secondary: OctalColors.secondaryGold,
+          surface: OctalColors.surfaceCard,
+          error: OctalColors.error,
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: OctalColors.surfaceCard,
+          elevation: 0,
+          centerTitle: false,
+          iconTheme: IconThemeData(color: Colors.white),
+        ),
+        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+          backgroundColor: OctalColors.surfaceCard,
+          selectedItemColor: OctalColors.primaryGold,
+          unselectedItemColor: OctalColors.textSecondary,
+          type: BottomNavigationBarType.fixed,
+          elevation: 8,
         ),
         textTheme: const TextTheme(
-          displayLarge: TextStyle(fontFamily: 'Ubuntu', fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
-          titleLarge: TextStyle(fontFamily: 'Ubuntu', fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+          displayLarge: TextStyle(fontFamily: 'Ubuntu', fontSize: 30, fontWeight: FontWeight.w900, color: Colors.white),
+          titleLarge: TextStyle(fontFamily: 'Ubuntu', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+          titleMedium: TextStyle(fontFamily: 'Ubuntu', fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
           bodyLarge: TextStyle(fontSize: 14, color: Colors.white),
-          bodyMedium: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+          bodyMedium: TextStyle(fontSize: 12, color: OctalColors.textSecondary),
         ),
       ),
       home: _initialScreen,

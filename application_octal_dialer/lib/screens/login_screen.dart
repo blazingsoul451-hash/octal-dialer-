@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
+import '../widgets/octal_logo.dart';
 import 'device_dashboard_screen.dart';
 import 'connect_screen.dart';
 
@@ -21,6 +22,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _showServerConfig = false;
   String _errorMessage = '';
 
   @override
@@ -34,13 +36,21 @@ class _LoginScreenState extends State<LoginScreen> {
     _serverController.text = effective;
   }
 
+  @override
+  void dispose() {
+    _serverController.dispose();
+    _identifierController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
   Future<void> _handleLogin() async {
     final serverUrl = _serverController.text.trim().replaceAll(RegExp(r'/+$'), '');
     final identifier = _identifierController.text.trim();
     final password = _passwordController.text;
 
     if (serverUrl.isEmpty) {
-      setState(() => _errorMessage = 'Please enter the server URL.');
+      setState(() => _errorMessage = 'Please specify your server URL.');
       return;
     }
     if (identifier.isEmpty || password.isEmpty) {
@@ -62,7 +72,7 @@ class _LoginScreenState extends State<LoginScreen> {
           'identifier': identifier,
           'password': password,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 12));
 
       final data = jsonDecode(res.body);
 
@@ -75,7 +85,7 @@ class _LoginScreenState extends State<LoginScreen> {
       final String userId = user['id'] ?? '';
       final String username = user['username'] ?? identifier;
       final String email = user['email'] ?? '';
-      final String role = user['role'] ?? 'user';
+      final String role = user['role'] ?? 'agent';
       final String tenantId = user['tenantId'] ?? 'tenant_default';
 
       final prefs = await SharedPreferences.getInstance();
@@ -110,7 +120,7 @@ class _LoginScreenState extends State<LoginScreen> {
             'appVersion': '1.2.0',
             'deviceUid': deviceUid
           }),
-        ).timeout(const Duration(seconds: 5));
+        ).timeout(const Duration(seconds: 6));
       } catch (e) {
         debugPrint('Device auto-registration warning: $e');
       }
@@ -121,15 +131,12 @@ class _LoginScreenState extends State<LoginScreen> {
           MaterialPageRoute(builder: (context) => const DeviceDashboardScreen()),
         );
       }
-    } catch (e) {
+    } catch (err) {
       if (mounted) {
         setState(() {
-          _errorMessage = e.toString().replaceFirst('Exception: ', '');
+          _errorMessage = err.toString().replaceAll('Exception:', '').trim();
+          _isLoading = false;
         });
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
       }
     }
   }
@@ -137,280 +144,427 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF020617),
+      backgroundColor: OctalColors.bgDark,
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 20.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 24),
-              // App Brand Header
-              Center(
+        child: Stack(
+          children: [
+            // Subtle golden wave aesthetic at the bottom
+            Positioned(
+              bottom: -50,
+              left: -30,
+              right: -30,
+              height: 220,
+              child: Opacity(
+                opacity: 0.12,
+                child: CustomPaint(
+                  painter: _WavePainter(),
+                ),
+              ),
+            ),
+
+            Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 28.0, vertical: 24.0),
                 child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Container(
-                      width: 64,
-                      height: 64,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFB800).withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: const Color(0xFFFFB800).withOpacity(0.35),
-                          width: 1.5,
-                        ),
-                      ),
-                      child: const Icon(
-                        Icons.phone_in_talk,
-                        color: Color(0xFFFFB800),
-                        size: 34,
+                    // Top Logo & Brand
+                    Center(
+                      child: Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: OctalColors.surfaceCard,
+                              border: Border.all(color: OctalColors.borderGold, width: 1.5),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: OctalColors.primaryGold.withOpacity(0.15),
+                                  blurRadius: 24,
+                                  spreadRadius: 2,
+                                ),
+                              ],
+                            ),
+                            child: const OctalLogo(size: 56),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'OCTAL',
+                            style: TextStyle(
+                              fontFamily: 'Ubuntu',
+                              fontSize: 22,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 4.0,
+                              color: OctalColors.primaryGold,
+                            ),
+                          ),
+                          const Text(
+                            'DIALER',
+                            style: TextStyle(
+                              fontFamily: 'Ubuntu',
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 6.0,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 16),
+
+                    const SizedBox(height: 28),
+
+                    // Headings from Reference Image
                     const Text(
-                      'OCTAL DIALER',
+                      'Smart Dialing.\nBetter Results.',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
                         fontFamily: 'Ubuntu',
                         fontSize: 24,
                         fontWeight: FontWeight.w900,
-                        letterSpacing: 1.5,
                         color: Colors.white,
+                        height: 1.25,
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'AUTHENTICATED GSM CALLING BRIDGE',
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Powerful auto dialer for sales teams and call centers.',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 2.0,
-                        color: Colors.white.withOpacity(0.45),
+                        fontSize: 13,
+                        color: OctalColors.textSecondary,
+                        height: 1.4,
                       ),
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 32),
 
-              // Login Form Card
-              Container(
-                padding: const EdgeInsets.all(22.0),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A),
-                  borderRadius: BorderRadius.circular(24.0),
-                  border: Border.all(
-                    color: const Color(0xFFFFB800).withOpacity(0.2),
-                    width: 1.5,
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+                    const SizedBox(height: 32),
+
+                    // Error Message
                     if (_errorMessage.isNotEmpty) ...[
                       Container(
-                        padding: const EdgeInsets.all(12.0),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                         decoration: BoxDecoration(
-                          color: Colors.red.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(12.0),
-                          border: Border.all(color: Colors.red.withOpacity(0.3)),
+                          color: OctalColors.error.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: OctalColors.error.withOpacity(0.35)),
                         ),
                         child: Row(
                           children: [
-                            const Icon(Icons.error_outline, color: Colors.redAccent, size: 18),
-                            const SizedBox(width: 8),
+                            const Icon(Icons.error_outline, color: OctalColors.error, size: 18),
+                            const SizedBox(width: 10),
                             Expanded(
                               child: Text(
                                 _errorMessage,
-                                style: const TextStyle(
-                                  color: Colors.redAccent,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                style: const TextStyle(fontSize: 12, color: OctalColors.error, fontWeight: FontWeight.w600),
                               ),
                             ),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 18),
                     ],
 
-                    const Text(
-                      'SERVER URL',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.0,
-                        color: Color(0xFF94A3B8),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: _serverController,
-                      style: const TextStyle(fontSize: 13, fontFamily: 'monospace', color: Colors.white),
-                      decoration: InputDecoration(
-                        hintText: 'https://dialer.yourdomain.com or https://tunnel.trycloudflare.com',
-                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 11),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        fillColor: const Color(0xFF020617),
-                        filled: true,
-                        prefixIcon: const Icon(Icons.dns_outlined, color: Color(0xFF94A3B8), size: 18),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14.0),
-                          borderSide: BorderSide.none,
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14.0),
-                          borderSide: const BorderSide(color: Color(0xFFFFB800), width: 1.5),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    const Text(
-                      'OCTAL USERNAME OR EMAIL',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.0,
-                        color: Color(0xFF94A3B8),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: _identifierController,
-                      style: const TextStyle(fontSize: 13, color: Colors.white),
-                      decoration: InputDecoration(
-                        hintText: 'e.g. mohsin or user@example.com',
-                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 11),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        fillColor: const Color(0xFF020617),
-                        filled: true,
-                        prefixIcon: const Icon(Icons.person_outline, color: Color(0xFF94A3B8), size: 18),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14.0),
-                          borderSide: BorderSide.none,
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14.0),
-                          borderSide: const BorderSide(color: Color(0xFFFFB800), width: 1.5),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    const Text(
-                      'PASSWORD',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.0,
-                        color: Color(0xFF94A3B8),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: _passwordController,
-                      obscureText: _obscurePassword,
-                      style: const TextStyle(fontSize: 13, color: Colors.white),
-                      decoration: InputDecoration(
-                        hintText: '••••••••',
-                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 11),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        fillColor: const Color(0xFF020617),
-                        filled: true,
-                        prefixIcon: const Icon(Icons.lock_outline, color: Color(0xFF94A3B8), size: 18),
-                        suffixIcon: IconButton(
-                          icon: Icon(
-                            _obscurePassword ? Icons.visibility_off : Icons.visibility,
-                            color: const Color(0xFF94A3B8),
-                            size: 18,
+                    // Input Form Fields
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: OctalColors.surfaceCard,
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(color: OctalColors.border, width: 1.5),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.4),
+                            blurRadius: 16,
+                            offset: const Offset(0, 8),
                           ),
-                          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14.0),
-                          borderSide: BorderSide.none,
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14.0),
-                          borderSide: const BorderSide(color: Color(0xFFFFB800), width: 1.5),
-                        ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 24),
-
-                    ElevatedButton(
-                      onPressed: _isLoading ? null : _handleLogin,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFFFB800),
-                        foregroundColor: const Color(0xFF020617),
-                        padding: const EdgeInsets.symmetric(vertical: 15.0),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14.0),
-                        ),
-                        elevation: 0,
-                      ),
-                      child: _isLoading
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF020617)),
-                            )
-                          : const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.login, size: 18),
-                                SizedBox(width: 8),
-                                Text(
-                                  'LOG IN',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 1.0,
-                                  ),
-                                ),
-                              ],
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // Username / Email Field
+                          TextField(
+                            controller: _identifierController,
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                            decoration: InputDecoration(
+                              labelText: 'Username or Email',
+                              labelStyle: const TextStyle(color: OctalColors.textSecondary, fontSize: 13),
+                              prefixIcon: const Icon(Icons.person_outline, color: OctalColors.primaryGold, size: 20),
+                              filled: true,
+                              fillColor: OctalColors.surfaceElevated.withOpacity(0.6),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: const BorderSide(color: OctalColors.border),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: const BorderSide(color: OctalColors.primaryGold, width: 1.5),
+                              ),
                             ),
+                          ),
+
+                          const SizedBox(height: 14),
+
+                          // Password Field
+                          TextField(
+                            controller: _passwordController,
+                            obscureText: _obscurePassword,
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                            decoration: InputDecoration(
+                              labelText: 'Password',
+                              labelStyle: const TextStyle(color: OctalColors.textSecondary, fontSize: 13),
+                              prefixIcon: const Icon(Icons.lock_outline, color: OctalColors.primaryGold, size: 20),
+                              suffixIcon: IconButton(
+                                icon: Icon(
+                                  _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                                  color: OctalColors.textSecondary,
+                                  size: 18,
+                                ),
+                                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                              ),
+                              filled: true,
+                              fillColor: OctalColors.surfaceElevated.withOpacity(0.6),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: const BorderSide(color: OctalColors.border),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: const BorderSide(color: OctalColors.primaryGold, width: 1.5),
+                              ),
+                            ),
+                          ),
+
+                          // Server URL Config Collapsible
+                          const SizedBox(height: 10),
+                          InkWell(
+                            onTap: () => setState(() => _showServerConfig = !_showServerConfig),
+                            borderRadius: BorderRadius.circular(8),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    _showServerConfig ? Icons.expand_less : Icons.settings_ethernet,
+                                    size: 16,
+                                    color: OctalColors.primaryGold,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  const Text(
+                                    'Server Endpoint Settings',
+                                    style: TextStyle(fontSize: 11, color: OctalColors.textSecondary, fontWeight: FontWeight.bold),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    _showServerConfig ? 'Hide' : 'Configure',
+                                    style: const TextStyle(fontSize: 10, color: OctalColors.primaryGold, fontWeight: FontWeight.bold),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+
+                          if (_showServerConfig) ...[
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: _serverController,
+                              style: const TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'monospace'),
+                              decoration: InputDecoration(
+                                labelText: 'Server URL (HTTPS / LAN)',
+                                labelStyle: const TextStyle(color: OctalColors.textSecondary, fontSize: 12),
+                                prefixIcon: const Icon(Icons.dns_outlined, color: OctalColors.primaryGold, size: 18),
+                                filled: true,
+                                fillColor: OctalColors.bgDark,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: OctalColors.border),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: OctalColors.primaryGold, width: 1.5),
+                                ),
+                              ),
+                            ),
+                          ],
+
+                          const SizedBox(height: 20),
+
+                          // Primary Gold Login Button
+                          SizedBox(
+                            height: 52,
+                            child: ElevatedButton(
+                              onPressed: _isLoading ? null : _handleLogin,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: OctalColors.primaryGold,
+                                foregroundColor: OctalColors.bgDark,
+                                elevation: 4,
+                                shadowColor: OctalColors.primaryGold.withOpacity(0.4),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              child: _isLoading
+                                  ? const SizedBox(
+                                      width: 22,
+                                      height: 22,
+                                      child: CircularProgressIndicator(color: OctalColors.bgDark, strokeWidth: 2.5),
+                                    )
+                                  : const Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Text(
+                                          'Login',
+                                          style: TextStyle(
+                                            fontFamily: 'Ubuntu',
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w900,
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                        SizedBox(width: 8),
+                                        Icon(Icons.arrow_forward, size: 18),
+                                      ],
+                                    ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
+
+                    const SizedBox(height: 20),
+
+                    // Social Divider: "or continue with"
+                    Row(
+                      children: [
+                        const Expanded(child: Divider(color: OctalColors.border)),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          child: Text(
+                            'or continue with',
+                            style: TextStyle(fontSize: 11, color: OctalColors.textSecondary.withOpacity(0.8)),
+                          ),
+                        ),
+                        const Expanded(child: Divider(color: OctalColors.border)),
+                      ],
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // Google Login Button (Matching Reference)
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Please log in with your Octal tenant username & password.')),
+                        );
+                      },
+                      icon: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'G',
+                          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ),
+                      label: const Text(
+                        'Google',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        side: const BorderSide(color: OctalColors.border, width: 1.5),
+                        backgroundColor: OctalColors.surfaceCard,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                    ),
+
+                    const SizedBox(height: 18),
+
+                    // QR Pairing Alternative Shortcut
+                    TextButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const ConnectScreen()),
+                        );
+                      },
+                      icon: const Icon(Icons.qr_code_scanner, color: OctalColors.primaryGold, size: 18),
+                      label: const Text(
+                        'Pair with Laptop via QR Code',
+                        style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    // Footer from Reference: "Don't have an account? Sign Up"
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Text(
+                          "Don't have an account? ",
+                          style: TextStyle(fontSize: 12, color: OctalColors.textSecondary),
+                        ),
+                        GestureDetector(
+                          onTap: () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Ask your team administrator to invite you to your Octal workspace.')),
+                            );
+                          },
+                          child: const Text(
+                            'Sign Up',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: OctalColors.primaryGold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 20),
                   ],
                 ),
               ),
-
-              const SizedBox(height: 20),
-
-              // Alternative Recovery / QR Scan Link
-              Center(
-                child: TextButton.icon(
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const ConnectScreen()),
-                    );
-                  },
-                  icon: const Icon(Icons.qr_code_scanner, size: 16, color: Color(0xFFFFB800)),
-                  label: const Text(
-                    'Alternative: QR Code / Deep Link Pairing',
-                    style: TextStyle(color: Color(0xFFFFB800), fontSize: 12, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-              const Center(
-                child: Text(
-                  'Log into your existing Octal Dialer SaaS account. Your Android handset will be authenticated as a registered device.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF64748B),
-                    height: 1.4,
-                  ),
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
   }
+}
+
+class _WavePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = OctalColors.primaryGold
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0;
+
+    final path = Path();
+    path.moveTo(0, size.height * 0.7);
+    path.quadraticBezierTo(size.width * 0.35, size.height * 0.2, size.width * 0.65, size.height * 0.8);
+    path.quadraticBezierTo(size.width * 0.85, size.height * 1.1, size.width, size.height * 0.5);
+
+    canvas.drawPath(path, paint);
+
+    final path2 = Path();
+    paint.strokeWidth = 1.2;
+    path2.moveTo(0, size.height * 0.85);
+    path2.quadraticBezierTo(size.width * 0.4, size.height * 0.4, size.width * 0.7, size.height * 0.9);
+    path2.quadraticBezierTo(size.width * 0.9, size.height * 1.15, size.width, size.height * 0.65);
+    canvas.drawPath(path2, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
