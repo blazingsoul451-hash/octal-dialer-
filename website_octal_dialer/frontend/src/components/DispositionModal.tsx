@@ -1,14 +1,28 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ShieldCheck, MessageSquare } from 'lucide-react';
+
+export interface DispositionResult {
+  success: boolean;
+  message?: string;
+  nextLeadId?: string | null;
+  nextLead?: {
+    id: string;
+    name: string;
+    phone: string;
+    campaignId: string;
+    status: string;
+  } | null;
+}
 
 interface DispositionModalProps {
   isOpen: boolean;
   leadId: string;
   leadName: string;
+  initialOutcome?: string;
   onClose: () => void;
   serverUrl: string;
   authToken?: string;
-  onSaveSuccess: () => void;
+  onSaveSuccess: (result?: DispositionResult) => void;
   isLight?: boolean;
 }
 
@@ -16,15 +30,23 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
   isOpen,
   leadId,
   leadName,
+  initialOutcome = 'ANSWERED',
   onClose,
   serverUrl,
   authToken,
   onSaveSuccess,
   isLight
 }) => {
-  const [outcome, setOutcome] = useState('ANSWERED');
+  const [outcome, setOutcome] = useState(initialOutcome);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setOutcome(initialOutcome || 'ANSWERED');
+      setNotes('');
+    }
+  }, [isOpen, initialOutcome]);
 
   if (!isOpen) return null;
 
@@ -41,7 +63,8 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
         body: JSON.stringify({ leadId, outcome, notes })
       });
       if (res.ok) {
-        onSaveSuccess();
+        const data: DispositionResult = await res.json();
+        onSaveSuccess(data);
         onClose();
       }
     } catch (err) {
@@ -77,13 +100,14 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
                 isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-850 text-white'
               }`}
             >
-              <option value="ANSWERED">Answered / Completed</option>
+              <option value="ANSWERED">Answered & Spoke</option>
               <option value="INTERESTED">Interested Lead</option>
               <option value="NOT_INTERESTED">Not Interested</option>
               <option value="NO_ANSWER">No Answer / Missed</option>
-              <option value="BUSY">Line Busy</option>
-              <option value="WRONG_NUMBER">Wrong Number</option>
+              <option value="BUSY">Line Busy / Dropped</option>
+              <option value="FAILED">Carrier Failed (Insufficient Balance / Unreachable)</option>
               <option value="CALLBACK_REQUESTED">Callback Requested</option>
+              <option value="WRONG_NUMBER">Wrong Number</option>
             </select>
           </div>
 
@@ -122,3 +146,4 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
     </div>
   );
 };
+

@@ -668,7 +668,7 @@ try {
 // ─── Performance Indexes for Auto-Dialer & Multi-Tenant Queries ──────────────
 try {
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_leads_tenant_camp_status ON leads(tenantId, campaignId, status)`).run();
-  db.prepare(`CREATE INDEX IF NOT EXISTS idx_leads_locked ON leads(tenantId, lockedUntil)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_leads_locked ON leads(tenantId, lockedBy)`).run();
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_call_logs_tenant_ts ON call_logs(tenantId, timestamp)`).run();
 } catch (e) {
   console.error('[DB] Performance index creation error:', e);

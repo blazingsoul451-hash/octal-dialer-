@@ -293,6 +293,8 @@ export default function App() {
   const [dispOpen, setDispOpen] = useState(false);
   const [dispLeadId, setDispLeadId] = useState('');
   const [dispLeadName, setDispLeadName] = useState('');
+  const [dispInitialOutcome, setDispInitialOutcome] = useState<string>('ANSWERED');
+  const [lastDispositionSaved, setLastDispositionSaved] = useState<DispositionResult | null>(null);
 
   // Pass auth token to socket connection
   const socketData = useSocket(SERVER_URL, authToken || undefined);
@@ -329,9 +331,10 @@ export default function App() {
     setActiveTab('dialer'); // auto redirect to dialer
   };
 
-  const triggerDisposition = (leadId: string, leadName: string) => {
+  const triggerDisposition = (leadId: string, leadName: string, initialOutcome: string = 'ANSWERED') => {
     setDispLeadId(leadId);
     setDispLeadName(leadName);
+    setDispInitialOutcome(initialOutcome);
     setDispOpen(true);
   };
 
@@ -1323,6 +1326,7 @@ export default function App() {
               socket={socketData.socket}
               latencyMs={socketData.latencyMs}
               phoneDeviceName={socketData.phoneDeviceName}
+              lastDispositionSaved={lastDispositionSaved}
             />
           </div>
 
@@ -1461,12 +1465,16 @@ export default function App() {
         isOpen={dispOpen}
         leadId={dispLeadId}
         leadName={dispLeadName}
+        initialOutcome={dispInitialOutcome}
         onClose={() => setDispOpen(false)}
         serverUrl={SERVER_URL}
         authToken={authToken || ''}
-        onSaveSuccess={() => {
+        onSaveSuccess={(result) => {
           showToast('Call disposition logged successfully.', 'success');
           fetchCampaigns();
+          if (result) {
+            setLastDispositionSaved(result);
+          }
         }}
       />
     </div>

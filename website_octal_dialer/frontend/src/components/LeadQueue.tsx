@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, SkipForward, AlertTriangle, ShieldCheck, PhoneCall, ListRestart, Trash2 } from 'lucide-react';
+import { Play, Square, SkipForward, AlertTriangle, ShieldCheck, PhoneCall, ListRestart, Trash2, Clock, FastForward, Pause } from 'lucide-react';
 import type { Campaign, Lead } from '../types';
+import type { DispositionResult } from './DispositionModal';
 
 interface LeadQueueProps {
   phoneConnected: boolean;
@@ -14,11 +15,12 @@ interface LeadQueueProps {
   callState: 'IDLE' | 'CALLING' | 'ACTIVE';
   lastCallFinished: { reason: string; duration: number; leadId?: string; commandId?: string } | null;
   lastBlockedReason: { reason: string; message: string } | null;
-  triggerDisposition: (leadId: string, leadName: string) => void;
+  triggerDisposition: (leadId: string, leadName: string, initialOutcome?: string) => void;
   isLight?: boolean;
   socket?: any;
   latencyMs?: number | null;
   phoneDeviceName?: string | null;
+  lastDispositionSaved?: DispositionResult | null;
 }
 
 const formatTimer = (seconds: number): string => {
@@ -44,6 +46,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   socket,
   latencyMs,
   phoneDeviceName,
+  lastDispositionSaved,
 }) => {
   const [selectedCampId, setSelectedCampId] = useState<string>('');
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -75,6 +78,75 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const ringTimeoutRef = useRef<any>(null);
   const [autoDialTimeout, setAutoDialTimeout] = useState(35); // seconds before auto-hangup if no answer
   const [isAutoDialing, setIsAutoDialing] = useState(false); // tracks if campaign auto-pilot is ON
+
+  // Inter-call delay configuration & cooldown countdown
+  const [interCallDelay, setInterCallDelay] = useState<number>(() => {
+    const saved = localStorage.getItem('octal_inter_call_delay');
+    return saved !== null ? parseInt(saved, 10) : 3;
+  });
+  const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
+  const countdownTimerRef = useRef<any>(null);
+  const nextLeadToDialRef = useRef<{ id: string; name: string; phone: string; campaignId?: string } | null>(null);
+
+  // Helper to schedule the next dial using authoritative lead
+  const scheduleNextDial = (nextLead: { id: string; name: string; phone: string; campaignId?: string }) => {
+    if (!phoneConnected || !selectedCampId) {
+      return;
+    }
+    nextLeadToDialRef.current = nextLead;
+
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+
+    if (interCallDelay === 0) {
+      setCountdownSeconds(null);
+      setLogs(prev => [...prev, `[Auto Dialer] Instant dial next lead: ${nextLead.name} (${nextLead.phone})`]);
+      dialLead(nextLead.phone, nextLead.name, autoDialTimeout, nextLead.id, nextLead.campaignId || selectedCampId);
+      return;
+    }
+
+    let remaining = interCallDelay;
+    setCountdownSeconds(remaining);
+    setLogs(prev => [...prev, `[Auto Dialer] Next call in ${remaining}s: ${nextLead.name} (${nextLead.phone})...`]);
+
+    countdownTimerRef.current = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+        setCountdownSeconds(null);
+        setLogs(prev => [...prev, `[Auto Dialer] Dialing: ${nextLead.name} (${nextLead.phone})`]);
+        dialLead(nextLead.phone, nextLead.name, autoDialTimeout, nextLead.id, nextLead.campaignId || selectedCampId);
+      } else {
+        setCountdownSeconds(remaining);
+      }
+    }, 1000);
+  };
+
+  const handleInstantDialNow = () => {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    setCountdownSeconds(null);
+    if (nextLeadToDialRef.current && phoneConnected && selectedCampId) {
+      const lead = nextLeadToDialRef.current;
+      setLogs(prev => [...prev, `[Auto Dialer] Instant dial triggered: ${lead.name} (${lead.phone})`]);
+      dialLead(lead.phone, lead.name, autoDialTimeout, lead.id, lead.campaignId || selectedCampId);
+    }
+  };
+
+  const handlePauseCountdown = () => {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    setCountdownSeconds(null);
+    setIsAutoDialing(false);
+    setLogs(prev => [...prev, `[Auto Dialer] Auto-dialing paused by user.`]);
+  };
 
   // Fetch leads of campaign
   const fetchLeads = async (campId: string) => {
@@ -202,67 +274,110 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     return () => {
       if (tickerRef.current) clearInterval(tickerRef.current);
     };
-  }, [callState]);
+  }, [callState, autoDialTimeout]);
 
-  // Handle post-call routing trigger & 5-second auto-dial progression
+  // Handle post-call routing trigger & authoritative next lead transition
   useEffect(() => {
-    if (lastCallFinished) {
-      const targetLead = lastCallFinished.leadId 
-        ? leads.find(l => l.id === lastCallFinished.leadId) 
-        : leads[currentIndex];
+    if (!lastCallFinished) return;
 
-      if (!targetLead) return;
+    const targetLead = lastCallFinished.leadId 
+      ? leads.find(l => l.id === lastCallFinished.leadId) 
+      : leads[currentIndex];
 
-      // Guard: process each call completion exactly once
-      const callKey = `${targetLead.id}_${lastCallFinished.reason}_${lastCallFinished.duration}_${lastCallFinished.commandId || ''}`;
-      if (processedCallRef.current === callKey) return;
-      processedCallRef.current = callKey;
+    if (!targetLead) return;
 
-      const wasAnswered = lastCallFinished.duration > 3; // answered = connected for >3s
+    const callKey = `${targetLead.id}_${lastCallFinished.reason}_${lastCallFinished.duration}_${lastCallFinished.commandId || ''}`;
+    if (processedCallRef.current === callKey) return;
+    processedCallRef.current = callKey;
 
-      setLogs(prev => [
-        ...prev,
-        `[Call Outcome] ${targetLead.name}: ${lastCallFinished.reason} | Duration: ${lastCallFinished.duration}s | ${wasAnswered ? 'ANSWERED' : 'NOT ANSWERED'}`
-      ]);
+    const rawReason = lastCallFinished.reason || 'UNKNOWN';
+    const duration = lastCallFinished.duration || 0;
 
-      // Mark lead completed locally first
-      setLeads(prev => prev.map((l) => 
-        l.id === targetLead.id 
-          ? { ...l, status: 'COMPLETED', outcome: wasAnswered ? lastCallFinished.reason : 'NO ANSWER', duration: lastCallFinished.duration }
-          : l
-      ));
+    // Explicit outcome detection (do not classify OFFHOOK or short carrier error message as ANSWERED)
+    let detectedOutcome = 'NO_ANSWER';
+    if (rawReason === 'CANCELLED') {
+      detectedOutcome = 'CANCELLED';
+    } else if (rawReason === 'BUSY') {
+      detectedOutcome = 'BUSY';
+    } else if (rawReason === 'FAILED') {
+      detectedOutcome = 'FAILED';
+    } else if (duration >= 6) {
+      // Sustained conversation (>5s)
+      detectedOutcome = 'ANSWERED';
+    } else if (duration > 0 && duration < 6) {
+      // Very short duration is typically carrier IVR ("insufficient balance" / dropped call)
+      detectedOutcome = 'FAILED';
+    } else {
+      detectedOutcome = 'NO_ANSWER';
+    }
 
-      // Open disposition modal ONLY if the call was answered (connected for >3s)
-      // For unanswered calls — skip remarks and auto-dial next immediately
-      if (wasAnswered) {
-        triggerDisposition(targetLead.id, targetLead.name);
-        setLogs(prev => [...prev, `[Dialer] Call answered — waiting for remarks before dialing next lead...`]);
-      } else {
-        // Not answered — auto-advance after 2 seconds
-        setLogs(prev => [...prev, `[Auto Dialer] Not answered — advancing to next lead in 2s...`]);
-        const timerId = setTimeout(() => {
-          setLeads(currentLeads => {
-            const nextPendingIdx = currentLeads.findIndex(
-              (l) => l.status === 'PENDING' && l.id !== targetLead.id
-            );
-            if (nextPendingIdx !== -1) {
-              setCurrentIndex(nextPendingIdx);
-              const nextLead = currentLeads[nextPendingIdx];
-              setLogs(prev => [...prev, `[Auto Dialer] Dialing: ${nextLead.name} (${nextLead.phone})`]);
-              if (phoneConnected && selectedCampId && isAutoDialing) {
-                dialLead(nextLead.phone, nextLead.name, autoDialTimeout, nextLead.id, selectedCampId);
-              }
+    setLogs(prev => [
+      ...prev,
+      `[Call Outcome] ${targetLead.name}: ${rawReason} | Duration: ${duration}s | Status: ${detectedOutcome}`
+    ]);
+
+    // Mark lead completed locally first
+    setLeads(prev => prev.map((l) => 
+      l.id === targetLead.id 
+        ? { ...l, status: 'COMPLETED', outcome: detectedOutcome, duration }
+        : l
+    ));
+
+    // For answered or substantial calls, prompt disposition modal
+    if (duration > 0 || detectedOutcome === 'ANSWERED') {
+      triggerDisposition(targetLead.id, targetLead.name, detectedOutcome);
+      setLogs(prev => [...prev, `[Dialer] Call finished — waiting for disposition notes before next lead...`]);
+    } else {
+      // Unanswered or immediate dropped call without agent conversation
+      if (isAutoDialing && selectedCampId) {
+        fetch(`${serverUrl}/api/campaigns/${selectedCampId}/next-lead`, {
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        })
+          .then(r => r.json())
+          .then(data => {
+            if (data.nextLead) {
+              const next = data.nextLead;
+              const nextIdx = leads.findIndex(l => l.id === next.id);
+              if (nextIdx !== -1) setCurrentIndex(nextIdx);
+              scheduleNextDial(next);
             } else {
               setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — no more pending leads.`]);
               setIsAutoDialing(false);
             }
-            return currentLeads;
-          });
-        }, 2000);
-        return () => clearTimeout(timerId);
+          })
+          .catch(err => console.error('Error fetching next lead:', err));
       }
     }
-  }, [lastCallFinished, currentIndex, leads, phoneConnected, selectedCampId, isAutoDialing, autoDialTimeout, dialLead]);
+  }, [lastCallFinished]);
+
+  // Handle authoritative backend disposition save event
+  useEffect(() => {
+    if (!lastDispositionSaved) return;
+
+    if (lastDispositionSaved.nextLead) {
+      const next = lastDispositionSaved.nextLead;
+      const idx = leads.findIndex(l => l.id === next.id);
+      if (idx !== -1) setCurrentIndex(idx);
+
+      if (isAutoDialing && phoneConnected && selectedCampId) {
+        scheduleNextDial(next);
+      }
+    } else if (lastDispositionSaved.nextLeadId) {
+      const next = leads.find(l => l.id === lastDispositionSaved.nextLeadId);
+      if (next) {
+        const idx = leads.findIndex(l => l.id === next.id);
+        if (idx !== -1) setCurrentIndex(idx);
+        if (isAutoDialing && phoneConnected && selectedCampId) {
+          scheduleNextDial(next);
+        }
+      }
+    } else {
+      if (isAutoDialing) {
+        setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — all pending leads processed.`]);
+        setIsAutoDialing(false);
+      }
+    }
+  }, [lastDispositionSaved]);
 
   // Handle Safety Controller block feedback
   useEffect(() => {
@@ -283,6 +398,11 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         clearTimeout(dispositionTimerRef.current);
         dispositionTimerRef.current = null;
       }
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+      setCountdownSeconds(null);
       setLogs(prev => [...prev, '[Emergency Stop] Auto-dialing halted.']);
     };
     socket.on('campaign:emergency_stopped', handler);
@@ -482,7 +602,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                 value={autoDialTimeout}
                 onChange={(e) => setAutoDialTimeout(Number(e.target.value))}
                 className={`border focus:border-amber-500 rounded-xl px-2.5 py-2 text-xs font-mono font-bold focus:outline-none transition cursor-pointer ${
-                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-850 text-white'
                 }`}
                 title="Max seconds to ring phone before marking NO ANSWER and hanging up"
               >
@@ -494,11 +614,44 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               </select>
             </div>
 
+            {/* Next Call Delay selector */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className={`text-[10px] font-mono font-bold uppercase ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                Next Call Delay:
+              </span>
+              <select
+                value={interCallDelay}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setInterCallDelay(val);
+                  localStorage.setItem('octal_inter_call_delay', String(val));
+                }}
+                className={`border focus:border-amber-500 rounded-xl px-2.5 py-2 text-xs font-mono font-bold focus:outline-none transition cursor-pointer ${
+                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-850 text-white'
+                }`}
+                title="Cooldown delay before automatically dialing the next lead after previous call finishes"
+              >
+                <option value={0}>0s (Instant)</option>
+                <option value={1}>1s</option>
+                <option value={2}>2s</option>
+                <option value={3}>3s (Default)</option>
+                <option value={5}>5s</option>
+                <option value={10}>10s</option>
+              </select>
+            </div>
+
             {/* Start / Stop Campaign Button */}
             {selectedCampId && (
               isAutoDialing ? (
                 <button
-                  onClick={() => setIsAutoDialing(false)}
+                  onClick={() => {
+                    setIsAutoDialing(false);
+                    if (countdownTimerRef.current) {
+                      clearInterval(countdownTimerRef.current);
+                      countdownTimerRef.current = null;
+                    }
+                    setCountdownSeconds(null);
+                  }}
                   className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-md flex items-center gap-2"
                 >
                   <Square className="w-3.5 h-3.5 fill-current" />
@@ -717,6 +870,45 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               <span>Dial</span>
             </button>
           </div>
+
+          {/* Inter-Call Delay Active Countdown Banner */}
+          {countdownSeconds !== null && (
+            <div className={`p-4 border rounded-2xl flex items-center justify-between gap-3 shadow-lg transition-all animate-pulse ${
+              isLight ? 'bg-amber-50 border-amber-300 text-amber-950' : 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+            }`}>
+              <div className="flex items-center gap-3">
+                <span className="w-3 h-3 rounded-full bg-amber-500 animate-ping shrink-0" />
+                <div className="text-left">
+                  <p className="text-xs font-mono font-black">
+                    Next Lead: {nextLeadToDialRef.current?.name || 'Contact'} ({nextLeadToDialRef.current?.phone})
+                  </p>
+                  <p className="text-[10px] font-mono opacity-80">
+                    Dialing automatically in {countdownSeconds}s...
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleInstantDialNow}
+                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-xs font-black rounded-xl transition cursor-pointer flex items-center gap-1 shadow-sm"
+                  title="Skip cooldown timer and dial immediately"
+                >
+                  <FastForward className="w-3 h-3 fill-current" />
+                  <span>Dial Now</span>
+                </button>
+                <button
+                  onClick={handlePauseCountdown}
+                  className={`px-3 py-1.5 font-mono text-xs font-bold rounded-xl border transition cursor-pointer flex items-center gap-1 ${
+                    isLight ? 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700' : 'bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-300'
+                  }`}
+                  title="Pause auto-dialing progression"
+                >
+                  <Pause className="w-3 h-3" />
+                  <span>Pause</span>
+                </button>
+              </div>
+            </div>
+          )}
           
           {/* Main Caller Card */}
           <div className={`border rounded-2xl p-6 shadow-2xl flex flex-col justify-between h-[360px] relative overflow-hidden transition-colors ${
