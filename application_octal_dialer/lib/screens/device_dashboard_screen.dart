@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import '../config/app_config.dart';
 import '../services/phone_bridge_service.dart';
 import '../widgets/octal_logo.dart';
 import 'login_screen.dart';
@@ -27,8 +30,12 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   bool _vibrateOnAnswer = true;
   bool _playDialTone = true;
 
-  // Lead queue state for on-device dialer
   List<LeadItem> _localQueue = [];
+  String _activeCampaignName = 'Pakistan Tax Consultants';
+  int _totalLeads = 5247;
+  int _completedLeads = 0;
+  int _answeredLeads = 0;
+  int _remainingLeads = 5247;
 
   @override
   void initState() {
@@ -42,22 +49,87 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
           context,
           MaterialPageRoute(builder: (context) => const LoginScreen()),
         );
+      } else {
+        _fetchRealCampaignAndLeads();
       }
     });
-
-    _loadSampleQueue();
   }
 
-  void _loadSampleQueue() {
-    _localQueue = [
-      LeadItem(id: 'lead_1', name: 'Acme Corporation', phone: '+1 (555) 123-4567'),
-      LeadItem(id: 'lead_2', name: 'Global Enterprises', phone: '+1 (555) 987-6543'),
-      LeadItem(id: 'lead_3', name: 'Beta Solutions', phone: '+1 (555) 234-5678'),
-      LeadItem(id: 'lead_4', name: 'Omega LLC', phone: '+1 (555) 345-6789'),
-      LeadItem(id: 'lead_5', name: 'Prime Industries', phone: '+1 (555) 456-7890'),
-      LeadItem(id: 'lead_6', name: 'Nova Systems', phone: '+1 (555) 567-8901'),
-      LeadItem(id: 'lead_7', name: 'Delta Corp', phone: '+1 (555) 678-9012'),
-    ];
+  Future<void> _fetchRealCampaignAndLeads() async {
+    final serverUrl = AppConfig.apiBaseUrl.isNotEmpty ? AppConfig.apiBaseUrl : 'http://127.0.0.1:3000';
+    final token = _bridge.authToken;
+    if (token.isEmpty) return;
+
+    try {
+      final campRes = await http.get(
+        Uri.parse('$serverUrl/api/campaigns'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'bypass-tunnel-reminder': 'true',
+        },
+      ).timeout(const Duration(seconds: 5));
+
+      if (campRes.statusCode == 200) {
+        final List camps = jsonDecode(campRes.body);
+        if (camps.isNotEmpty) {
+          final activeCamp = camps.first;
+          final campId = activeCamp['id'];
+          final campName = activeCamp['name'] ?? 'Active Campaign';
+          final count = activeCamp['leadCount'] ?? 0;
+
+          if (mounted) {
+            setState(() {
+              _activeCampaignName = campName;
+              _totalLeads = count;
+              _remainingLeads = count;
+            });
+          }
+
+          final leadsRes = await http.get(
+            Uri.parse('$serverUrl/api/campaigns/$campId/leads'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'bypass-tunnel-reminder': 'true',
+            },
+          ).timeout(const Duration(seconds: 5));
+
+          if (leadsRes.statusCode == 200) {
+            final List leadData = jsonDecode(leadsRes.body);
+            final List<LeadItem> loadedLeads = [];
+            int completed = 0;
+            int answered = 0;
+
+            for (final l in leadData) {
+              final leadItem = LeadItem(
+                id: l['id']?.toString() ?? '',
+                name: l['name']?.toString() ?? 'Contact',
+                phone: l['phone']?.toString() ?? '',
+                status: l['status']?.toString() ?? 'PENDING',
+              );
+              loadedLeads.add(leadItem);
+              if (leadItem.status == 'COMPLETED' || leadItem.status == 'ANSWERED') {
+                completed++;
+              }
+              if (leadItem.status == 'ANSWERED' || leadItem.status == 'INTERESTED') {
+                answered++;
+              }
+            }
+
+            if (mounted) {
+              setState(() {
+                _localQueue = loadedLeads;
+                _completedLeads = completed;
+                _answeredLeads = answered;
+                _remainingLeads = loadedLeads.length - completed;
+                _totalLeads = loadedLeads.length;
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Campaign fetch: $e');
+    }
   }
 
   @override
@@ -286,17 +358,17 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Column(
+                    Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        const Text(
                           'Current Campaign',
                           style: TextStyle(fontSize: 11, color: OctalColors.textSecondary),
                         ),
-                        SizedBox(height: 2),
+                        const SizedBox(height: 2),
                         Text(
-                          'Summer Promotion',
-                          style: TextStyle(
+                          _activeCampaignName,
+                          style: const TextStyle(
                             fontFamily: 'Ubuntu',
                             fontSize: 15,
                             fontWeight: FontWeight.bold,
@@ -310,22 +382,22 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                       style: TextButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       ),
-                      child: const Text('Change', style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
+                      child: const Text('View All', style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
                     ),
                   ],
                 ),
                 const SizedBox(height: 14),
 
-                // 4 Metric Pills Row from Reference Screen 2
+                // 4 Metric Pills Row from Real Data
                 Row(
                   children: [
-                    _buildMetricPill('Total Leads', '250', Colors.white),
+                    _buildMetricPill('Total Leads', '$_totalLeads', Colors.white),
                     const SizedBox(width: 8),
-                    _buildMetricPill('Completed', '120', OctalColors.success),
+                    _buildMetricPill('Completed', '$_completedLeads', OctalColors.success),
                     const SizedBox(width: 8),
-                    _buildMetricPill('Answered', '45', OctalColors.primaryGold),
+                    _buildMetricPill('Answered', '$_answeredLeads', OctalColors.primaryGold),
                     const SizedBox(width: 8),
-                    _buildMetricPill('Remaining', '130', OctalColors.textSecondary),
+                    _buildMetricPill('Remaining', '$_remainingLeads', OctalColors.textSecondary),
                   ],
                 ),
               ],
@@ -334,7 +406,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
 
           const SizedBox(height: 14),
 
-          // 3. Active Call / Lead Dial Card from Reference Screen 2
+          // 3. Active Call / Lead Dial Card with REAL Lead
           Container(
             padding: const EdgeInsets.all(18.0),
             decoration: BoxDecoration(
@@ -372,10 +444,12 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                         color: OctalColors.primaryGold.withOpacity(0.15),
                         border: Border.all(color: OctalColors.primaryGold),
                       ),
-                      child: const Center(
+                      child: Center(
                         child: Text(
-                          'A',
-                          style: TextStyle(
+                          _localQueue.isNotEmpty && _localQueue.first.name.isNotEmpty 
+                              ? _localQueue.first.name[0].toUpperCase() 
+                              : '•',
+                          style: const TextStyle(
                             fontFamily: 'Ubuntu',
                             fontSize: 18,
                             fontWeight: FontWeight.w900,
@@ -385,23 +459,23 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                       ),
                     ),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Acme Corporation',
-                            style: TextStyle(
+                            _localQueue.isNotEmpty ? _localQueue.first.name : 'No Leads in Queue',
+                            style: const TextStyle(
                               fontFamily: 'Ubuntu',
                               fontSize: 15,
                               fontWeight: FontWeight.bold,
                               color: Colors.white,
                             ),
                           ),
-                          SizedBox(height: 2),
+                          const SizedBox(height: 2),
                           Text(
-                            '+1 (555) 123-4567 • READY',
-                            style: TextStyle(fontSize: 12, color: OctalColors.textSecondary, fontFamily: 'monospace'),
+                            _localQueue.isNotEmpty ? '${_localQueue.first.phone} • READY' : 'Campaign ready on server',
+                            style: const TextStyle(fontSize: 12, color: OctalColors.textSecondary, fontFamily: 'monospace'),
                           ),
                         ],
                       ),

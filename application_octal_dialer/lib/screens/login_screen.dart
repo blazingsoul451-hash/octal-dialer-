@@ -32,8 +32,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _loadSavedServer() async {
-    final effective = await AppConfig.init();
-    _serverController.text = effective;
+    _serverController.text = 'http://127.0.0.1:3000';
   }
 
   @override
@@ -45,14 +44,9 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _handleLogin() async {
-    final serverUrl = _serverController.text.trim().replaceAll(RegExp(r'/+$'), '');
     final identifier = _identifierController.text.trim();
     final password = _passwordController.text;
 
-    if (serverUrl.isEmpty) {
-      setState(() => _errorMessage = 'Please specify your server URL.');
-      return;
-    }
     if (identifier.isEmpty || password.isEmpty) {
       setState(() => _errorMessage = 'Please enter your username/email and password.');
       return;
@@ -63,30 +57,71 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorMessage = '';
     });
 
-    String formattedServerUrl = serverUrl;
-    if (!formattedServerUrl.startsWith('http://') && !formattedServerUrl.startsWith('https://')) {
-      formattedServerUrl = 'http://$formattedServerUrl';
+    // Candidates to auto-try: 1) USB Reverse Loopback, 2) Public HTTPS Tunnel, 3) LAN IP
+    final List<String> candidateUrls = [
+      _serverController.text.trim().isNotEmpty ? _serverController.text.trim() : 'http://127.0.0.1:3000',
+      'http://127.0.0.1:3000',
+      'https://red-trams-hide.loca.lt',
+      'http://192.168.100.56:3000',
+    ];
+
+    dynamic loginData;
+    String successfulUrl = '';
+
+    for (final rawUrl in candidateUrls) {
+      String url = rawUrl.replaceAll(RegExp(r'/+$'), '');
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        url = 'http://$url';
+      }
+
+      try {
+        final loginUri = Uri.parse('$url/api/auth/login');
+        final res = await http.post(
+          loginUri,
+          headers: {
+            'Content-Type': 'application/json',
+            'bypass-tunnel-reminder': 'true',
+          },
+          body: jsonEncode({
+            'identifier': identifier,
+            'password': password,
+          }),
+        ).timeout(const Duration(seconds: 4));
+
+        final data = jsonDecode(res.body);
+        if (res.statusCode == 200 && data['token'] != null) {
+          loginData = data;
+          successfulUrl = url;
+          break;
+        } else if (data['error'] != null) {
+          throw Exception(data['error']);
+        }
+      } catch (e) {
+        if (e.toString().contains('Invalid username') || e.toString().contains('suspended')) {
+          if (mounted) {
+            setState(() {
+              _errorMessage = 'Invalid username or password.';
+              _isLoading = false;
+            });
+          }
+          return;
+        }
+      }
+    }
+
+    if (loginData == null) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Could not reach server. Ensure USB wire is connected.';
+          _isLoading = false;
+        });
+      }
+      return;
     }
 
     try {
-      final loginUri = Uri.parse('$formattedServerUrl/api/auth/login');
-      final res = await http.post(
-        loginUri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'identifier': identifier,
-          'password': password,
-        }),
-      ).timeout(const Duration(seconds: 12));
-
-      final data = jsonDecode(res.body);
-
-      if (res.statusCode != 200 || data['token'] == null) {
-        throw Exception(data['error'] ?? 'Invalid username or password.');
-      }
-
-      final String token = data['token'];
-      final user = data['user'] ?? {};
+      final String token = loginData['token'];
+      final user = loginData['user'] ?? {};
       final String userId = user['id'] ?? '';
       final String username = user['username'] ?? identifier;
       final String email = user['email'] ?? '';
@@ -100,7 +135,7 @@ class _LoginScreenState extends State<LoginScreen> {
       await prefs.setString('user_email', email);
       await prefs.setString('user_role', role);
       await prefs.setString('tenant_id', tenantId);
-      await AppConfig.setBaseUrl(serverUrl);
+      await AppConfig.setBaseUrl(successfulUrl);
 
       // Register device with backend
       String deviceUid = prefs.getString('octal_device_uid') ?? '';
@@ -113,10 +148,11 @@ class _LoginScreenState extends State<LoginScreen> {
 
       try {
         await http.post(
-          Uri.parse('$serverUrl/api/devices/register'),
+          Uri.parse('$successfulUrl/api/devices/register'),
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer $token'
+            'Authorization': 'Bearer $token',
+            'bypass-tunnel-reminder': 'true',
           },
           body: jsonEncode({
             'name': deviceName,
@@ -125,7 +161,7 @@ class _LoginScreenState extends State<LoginScreen> {
             'appVersion': '1.2.0',
             'deviceUid': deviceUid
           }),
-        ).timeout(const Duration(seconds: 6));
+        ).timeout(const Duration(seconds: 4));
       } catch (e) {
         debugPrint('Device auto-registration warning: $e');
       }
@@ -153,7 +189,6 @@ class _LoginScreenState extends State<LoginScreen> {
       body: SafeArea(
         child: Stack(
           children: [
-            // Subtle golden wave aesthetic at the bottom
             Positioned(
               bottom: -50,
               left: -30,
@@ -174,7 +209,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Top Logo & Brand
                     Center(
                       child: Column(
                         children: [
@@ -221,7 +255,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     const SizedBox(height: 28),
 
-                    // Headings from Reference Image
                     const Text(
                       'Smart Dialing.\nBetter Results.',
                       textAlign: TextAlign.center,
@@ -246,7 +279,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     const SizedBox(height: 32),
 
-                    // Error Message
                     if (_errorMessage.isNotEmpty) ...[
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -271,7 +303,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 18),
                     ],
 
-                    // Input Form Fields
                     Container(
                       padding: const EdgeInsets.all(20),
                       decoration: BoxDecoration(
@@ -289,7 +320,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          // Username / Email Field
                           TextField(
                             controller: _identifierController,
                             style: const TextStyle(color: Colors.white, fontSize: 14),
@@ -313,7 +343,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                           const SizedBox(height: 14),
 
-                          // Password Field
                           TextField(
                             controller: _passwordController,
                             obscureText: _obscurePassword,
@@ -344,7 +373,6 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
 
-                          // Server URL Config Collapsible
                           const SizedBox(height: 10),
                           InkWell(
                             onTap: () => setState(() => _showServerConfig = !_showServerConfig),
@@ -399,7 +427,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                           const SizedBox(height: 20),
 
-                          // Primary Gold Login Button
                           SizedBox(
                             height: 52,
                             child: ElevatedButton(
@@ -443,7 +470,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     const SizedBox(height: 20),
 
-                    // Social Divider: "or continue with"
                     Row(
                       children: [
                         const Expanded(child: Divider(color: OctalColors.border)),
@@ -460,7 +486,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     const SizedBox(height: 16),
 
-                    // Google Login Button (Matching Reference)
                     OutlinedButton.icon(
                       onPressed: () {
                         ScaffoldMessenger.of(context).showSnackBar(
@@ -492,7 +517,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     const SizedBox(height: 18),
 
-                    // QR Pairing Alternative Shortcut
                     TextButton.icon(
                       onPressed: () {
                         Navigator.push(
@@ -509,7 +533,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     const SizedBox(height: 12),
 
-                    // Footer from Reference: "Don't have an account? Sign Up"
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
