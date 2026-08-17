@@ -19,28 +19,48 @@ console.log('━━━━━━━━━━━━━━━━━━━━━━�
 console.log('🧪 SUITE: 1. REAL-WORLD CALL OUTCOME CLASSIFICATION & SAFETY');
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-// 1. Classification function representing the coordination layer logic
+// 1. Authoritative classification logic from LeadQueue.tsx (Duration is NOT answer authority)
 function classifyCallOutcome(rawReason, duration) {
-  if (rawReason === 'CANCELLED') return 'CANCELLED';
-  if (rawReason === 'BUSY') return 'BUSY';
-  if (rawReason === 'FAILED') return 'FAILED';
-  if (duration >= 6) return 'ANSWERED';
-  if (duration > 0 && duration < 6) return 'FAILED'; // Carrier IVR ("insufficient balance" / fast drop)
-  return 'NO_ANSWER';
+  const reason = (rawReason || 'UNKNOWN').toUpperCase();
+  let initialOutcome = 'ANSWERED';
+  let requiresDisposition = false;
+
+  if (reason === 'CANCELLED') {
+    initialOutcome = 'CANCELLED';
+    requiresDisposition = false;
+  } else if (reason === 'BUSY') {
+    initialOutcome = 'BUSY';
+    requiresDisposition = false;
+  } else if (reason === 'NO_ANSWER') {
+    initialOutcome = 'NO_ANSWER';
+    requiresDisposition = false;
+  } else if (reason === 'FAILED' || reason === 'NETWORK_ERROR') {
+    initialOutcome = 'FAILED';
+    requiresDisposition = false;
+  } else {
+    // Connected channel: requires agent disposition to authoritatively confirm outcome
+    initialOutcome = 'ANSWERED';
+    requiresDisposition = true;
+  }
+
+  return { initialOutcome, requiresDisposition };
 }
 
-// Native OFFHOOK alone (duration=0 or short carrier drop) must NOT be classified as ANSWERED
-assert.strictEqual(classifyCallOutcome('OFFHOOK', 0), 'NO_ANSWER', 'OFFHOOK with duration 0 must be NO_ANSWER');
-assert.strictEqual(classifyCallOutcome('OFFHOOK', 2), 'FAILED', 'Short 2s carrier message must be FAILED');
-assert.strictEqual(classifyCallOutcome('OFFHOOK', 4), 'FAILED', 'Short 4s carrier message must be FAILED');
-assert.strictEqual(classifyCallOutcome('ANSWERED', 3), 'FAILED', 'Short 3s drop must be FAILED (not answered)');
-assert.strictEqual(classifyCallOutcome('ANSWERED', 15), 'ANSWERED', 'Sustained 15s talk is ANSWERED');
-assert.strictEqual(classifyCallOutcome('CANCELLED', 10), 'CANCELLED', 'Manual cancellation at 10s is CANCELLED');
-assert.strictEqual(classifyCallOutcome('BUSY', 0), 'BUSY', 'Busy signal is BUSY');
-assert.strictEqual(classifyCallOutcome('NO_ANSWER', 0), 'NO_ANSWER', 'Timeout is NO_ANSWER');
+// Check native failure events do NOT require disposition and correctly fail-close
+assert.deepStrictEqual(classifyCallOutcome('CANCELLED', 10), { initialOutcome: 'CANCELLED', requiresDisposition: false });
+assert.deepStrictEqual(classifyCallOutcome('BUSY', 0), { initialOutcome: 'BUSY', requiresDisposition: false });
+assert.deepStrictEqual(classifyCallOutcome('NO_ANSWER', 35), { initialOutcome: 'NO_ANSWER', requiresDisposition: false });
+assert.deepStrictEqual(classifyCallOutcome('FAILED', 4), { initialOutcome: 'FAILED', requiresDisposition: false });
+assert.deepStrictEqual(classifyCallOutcome('NETWORK_ERROR', 1), { initialOutcome: 'FAILED', requiresDisposition: false });
 
-console.log('  ✅ OFFHOOK alone or short carrier audio does NOT classify as human ANSWERED');
-console.log('  ✅ Terminal outcomes correctly distinguish CANCELLED, BUSY, FAILED, NO_ANSWER, ANSWERED');
+// Connected call requires human agent disposition to record final verdict (regardless of duration)
+assert.strictEqual(classifyCallOutcome('ANSWERED', 2).requiresDisposition, true, 'Short connected call requires agent disposition');
+assert.strictEqual(classifyCallOutcome('ANSWERED', 15).requiresDisposition, true, 'Long connected call requires agent disposition');
+assert.strictEqual(classifyCallOutcome('ANSWERED', 60).requiresDisposition, true, 'Sustained talk requires agent disposition');
+
+console.log('  ✅ Duration is NOT used as proof that a human answered');
+console.log('  ✅ Non-human failures (BUSY, NO_ANSWER, FAILED, CANCELLED) are strictly classified from native states');
+console.log('  ✅ Connected calls require authoritative human agent disposition');
 
 console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 console.log('🧪 SUITE: 2. EXACT-ONE-TERMINAL-EVENT DEDUPLICATION');

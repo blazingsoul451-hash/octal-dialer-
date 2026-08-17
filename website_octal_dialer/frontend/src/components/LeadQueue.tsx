@@ -290,45 +290,52 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     if (processedCallRef.current === callKey) return;
     processedCallRef.current = callKey;
 
-    const rawReason = lastCallFinished.reason || 'UNKNOWN';
+    const rawReason = (lastCallFinished.reason || 'UNKNOWN').toUpperCase();
     const duration = lastCallFinished.duration || 0;
 
-    // Explicit outcome detection (do not classify OFFHOOK or short carrier error message as ANSWERED)
-    let detectedOutcome = 'NO_ANSWER';
+    // Authoritative outcome classification:
+    // (Duration MUST NOT be the authoritative proof that a human answered)
+    let initialOutcome = 'ANSWERED';
+    let requiresDisposition = false;
+
     if (rawReason === 'CANCELLED') {
-      detectedOutcome = 'CANCELLED';
+      initialOutcome = 'CANCELLED';
+      requiresDisposition = false;
     } else if (rawReason === 'BUSY') {
-      detectedOutcome = 'BUSY';
-    } else if (rawReason === 'FAILED') {
-      detectedOutcome = 'FAILED';
-    } else if (duration >= 6) {
-      // Sustained conversation (>5s)
-      detectedOutcome = 'ANSWERED';
-    } else if (duration > 0 && duration < 6) {
-      // Very short duration is typically carrier IVR ("insufficient balance" / dropped call)
-      detectedOutcome = 'FAILED';
+      initialOutcome = 'BUSY';
+      requiresDisposition = false;
+    } else if (rawReason === 'NO_ANSWER') {
+      initialOutcome = 'NO_ANSWER';
+      requiresDisposition = false;
+    } else if (rawReason === 'FAILED' || rawReason === 'NETWORK_ERROR') {
+      initialOutcome = 'FAILED';
+      requiresDisposition = false;
     } else {
-      detectedOutcome = 'NO_ANSWER';
+      // Call channel was connected (OFFHOOK -> IDLE).
+      // Because Android GSM radio telemetry cannot differentiate between a human answering
+      // vs carrier IVR / balance error, the agent disposition is the authoritative truth.
+      initialOutcome = 'ANSWERED';
+      requiresDisposition = true;
     }
 
     setLogs(prev => [
       ...prev,
-      `[Call Outcome] ${targetLead.name}: ${rawReason} | Duration: ${duration}s | Status: ${detectedOutcome}`
+      `[Call Ended] ${targetLead.name}: Native State=${rawReason} | Talk Duration=${duration}s`
     ]);
 
     // Mark lead completed locally first
     setLeads(prev => prev.map((l) => 
       l.id === targetLead.id 
-        ? { ...l, status: 'COMPLETED', outcome: detectedOutcome, duration }
+        ? { ...l, status: 'COMPLETED', outcome: initialOutcome, duration }
         : l
     ));
 
-    // For answered or substantial calls, prompt disposition modal
-    if (duration > 0 || detectedOutcome === 'ANSWERED') {
-      triggerDisposition(targetLead.id, targetLead.name, detectedOutcome);
-      setLogs(prev => [...prev, `[Dialer] Call finished — waiting for disposition notes before next lead...`]);
+    if (requiresDisposition) {
+      // Open disposition modal for agent to record authoritative human outcome
+      triggerDisposition(targetLead.id, targetLead.name, initialOutcome);
+      setLogs(prev => [...prev, `[Dialer] Call ended — awaiting agent disposition to determine outcome...`]);
     } else {
-      // Unanswered or immediate dropped call without agent conversation
+      // For unpicked, cancelled, busy, or failed calls, advance to authoritative next lead
       if (isAutoDialing && selectedCampId) {
         fetch(`${serverUrl}/api/campaigns/${selectedCampId}/next-lead`, {
           headers: { 'Authorization': `Bearer ${authToken}` }

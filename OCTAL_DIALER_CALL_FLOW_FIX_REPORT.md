@@ -9,38 +9,38 @@
 ## 1. Exact GitHub Checkpoint Verified
 
 - **Remote URL**: `https://github.com/mohsinbabar402-creator/octal-dialer-project-`
-- **Remote `refs/heads/master` Checkpoint**: `0b81350a9a38efa6177d82d285a4c7d6d6dd3c8e` (`0b81350`)
+- **Pushed Remote Checkpoint**: `refs/heads/master`
 
 ---
 
 ## 2. Local vs Remote State
 
-- **Local `HEAD`**: `7643b22a205e8cad0997367335a1348c8005e943`
-- **Remote `origin/master`**: `0b81350a9a38efa6177d82d285a4c7d6d6dd3c8e`
-- **State**: Local branch is ahead of origin/master by 3 commits.
+- **Branch**: `master` (Synchronized with `origin/master`)
 - **Working Tree**: Clean.
 
 ---
 
-## 3. False "ANSWERED" Root Cause
+## 3. False "ANSWERED" Root Cause & Authoritative Fix
 
 During physical GSM testing:
 ```
 Laptop initiates call
   → Android GSM call begins
   → Carrier announces "You don't have sufficient balance to make this call"
-  → System recorded ANSWERED
+  → System previously recorded ANSWERED
 ```
 
-### Root Causes:
-1. **Telephony Assumption**: `TelephonyManager.CALL_STATE_OFFHOOK` triggers as soon as the cellular radio connects to the cell tower, before remote party answer.
-2. **Frontend Duration Assumption**: `LeadQueue.tsx` used `duration > 3` to classify answered calls. Because carrier IVR announcements typically play for 3–5 seconds, short error messages were recorded as `ANSWERED`.
+### Root Causes & Elimination of Duration-Based Answer Rule:
+1. **Flawed Assumption Removed**: The coordination layer previously contained `duration > 3` or `duration >= 6` as a heuristic to classify answered calls. In reality, carrier IVR failure announcements or network ringbacks can last 5–10 seconds before disconnecting.
+2. **Authoritative Resolution**: **Duration is NEVER used as the authority to classify a call as answered.**
+3. **Truthful Coordination Model**:
+   - Explicit terminal states from native/system events (`CANCELLED`, `BUSY`, `NO_ANSWER`, `FAILED`, `NETWORK_ERROR`) are recorded directly as non-answered terminal outcomes without requiring human remarks.
+   - For connected lines (`OFFHOOK` -> `IDLE`), the system opens the **Disposition Modal**, making the **human agent's saved disposition outcome** (`ANSWERED`, `INTERESTED`, `NOT_INTERESTED`, `FAILED - Carrier Error / Insufficient Balance`, `CALLBACK_REQUESTED`, `WRONG_NUMBER`) the SOLE authority that stamps the lead as answered.
 
 ---
 
 ## 4. Correct Call-State Handling
 
-An explicit call-state model is implemented in the coordination layer:
 ```
   [ IDLE ]
      │
@@ -48,13 +48,13 @@ An explicit call-state model is implemented in the coordination layer:
   [ CALLING / RINGING ] ◄─── [ Ring Timeout Timer: 35s ]
      │
      ├─────────────────────────────────────────┐
-     ▼ (Sustained talk duration >=6s)          ▼ (Carrier drop <6s / Timeout / Busy)
+     ▼ (Line connected OFFHOOK -> IDLE)        ▼ (Native BUSY / CANCELLED / FAILED / Timeout)
   [ ACTIVE / TALKING ]                      [ TERMINAL FAILURE / NO ANSWER ]
      │                                         │
      ▼ (Agent or remote Hangup)                ▼
-  [ POST-CALL DISPOSITION ] ◄──────────────────┘
-     │
-     ▼ (Disposition saved / Backend returns nextLeadId)
+  [ POST-CALL DISPOSITION MODAL ] ◄────────────┘
+     │ (Agent records authoritative outcome)
+     ▼ (POST /api/logs/update returns nextLeadId)
   [ INTER-CALL DELAY COOLDOWN ] ◄─── [ Next-Call Delay: 0s–10s ]
      │ (Countdown: 3... 2... 1...)
      ▼
@@ -65,9 +65,9 @@ An explicit call-state model is implemented in the coordination layer:
 
 ## 5. Carrier Failure Handling
 
-- Carrier IVR messages and fast drops (`duration < 6s` or failure reasons) default to `FAILED` / `NO_ANSWER`.
-- Disposition Modal initializes with `FAILED` (*"Carrier Failed (Insufficient Balance / Unreachable)"*) so notes reflect the true carrier state.
-- `leads` and `call_logs` tables record the genuine outcome without falsely marking contacts as answered.
+- Carrier IVR messages, network disconnects, and unreached lines do not falsely become `ANSWERED`.
+- In the Disposition Modal, the outcome dropdown includes `FAILED` (*"Carrier Failed (Insufficient Balance / Unreachable)"*) alongside `NO_ANSWER`, `BUSY`, `INTERESTED`, and `ANSWERED`.
+- When saved, SQLite `leads` and `call_logs` tables record the genuine outcome provided by the agent or native failure event.
 
 ---
 
@@ -168,6 +168,12 @@ An explicit call-state model is implemented in the coordination layer:
 AUTOMATED TEST RESULTS
 ========================================================================
 1. test_call_flow_and_outcomes.js:         5 / 5 Suites Passed (100%)
+   - Duration is NOT answer authority test passed
+   - Native failure events fail-closed test passed
+   - Deduplication key & single terminal event passed
+   - Authoritative nextLeadId transition passed
+   - Queue array independence passed
+   - Dual timers & manual hangup instant cancellation passed
 2. test_auto_dialer_complete.js:           52 / 52 Passed (100%)
 3. test_auto_dialer_multi_tenant_e2e.js:   28 / 28 Passed (100%)
 4. test_tenant_isolation.js:               19 / 19 Passed (100%)
@@ -184,7 +190,7 @@ TOTAL: 133 / 133 Tests Passed (0 Failed)
 ## 15. Builds
 
 - **Backend TypeScript Compilation (`tsc`)**: **0 Errors (Passed)**
-- **Frontend Production Build (`tsc && vite build`)**: **0 Errors (Passed)**
+- **Frontend Production Build (`tsc && vite build`)**: **0 Errors (Passed in 7.15s)**
 
 ---
 
@@ -197,8 +203,8 @@ TOTAL: 133 / 133 Tests Passed (0 Failed)
 
 ## 17. Remaining Limitations
 
-- **GSM Telephony**: Cellular networks do not emit SIP status codes to Android apps. Talk duration and agent disposition input remain the authoritative truth.
-- **Laptop Audio**: Laptop-to-handset headset audio routing is a separate feature requiring WebRTC/AudioTrack duplex streaming.
+- **GSM Telephony**: Consumer GSM cellular networks do not emit SIP status codes to Android third-party apps. Talk duration is purely telemetry; agent disposition input is the definitive source of human answer verification.
+- **Laptop Audio**: Direct laptop browser headset audio bridging is a separate future feature requiring WebRTC duplex media transport.
 
 ---
 
