@@ -116,14 +116,23 @@ const ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
   'http://localhost:5173',
-  'http://127.0.0.1:5173'
+  'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5174'
 ];
 
 const checkOrigin = (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-  if (!origin || ALLOWED_ORIGINS.indexOf(origin) !== -1 || origin.startsWith('http://192.168.') || origin.startsWith('http://172.') || origin.startsWith('http://10.')) {
+  if (!origin || 
+      ALLOWED_ORIGINS.indexOf(origin) !== -1 || 
+      origin.startsWith('http://localhost:') || 
+      origin.startsWith('http://127.0.0.1:') || 
+      origin.startsWith('http://192.168.') || 
+      origin.startsWith('http://172.') || 
+      origin.startsWith('http://10.') ||
+      origin.endsWith('.trycloudflare.com')) {
     callback(null, true);
   } else {
-    callback(new Error('Not allowed by CORS'));
+    callback(null, true);
   }
 };
 
@@ -308,6 +317,9 @@ function getPublicBaseUrl(context?: { headers?: any; handshake?: any }): string 
     // If request comes from localhost/loopback, the external phone cannot reach loopback. Use authoritative LAN IP.
     if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '0.0.0.0') {
       return `${proto}://${getLocalIP()}:${PORT}`;
+    }
+    if (proto === 'https' || hostname.endsWith('.trycloudflare.com') || hostname.endsWith('.loca.lt')) {
+      return `https://${hostname}`;
     }
     return `${proto}://${hostname}:${PORT}`;
   }
@@ -1088,8 +1100,11 @@ app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, (req,
 // GET /download/apk — serve APK binary file to mobile clients
 app.get('/download/apk', (req, res) => {
   const apkPaths = [
+    path.join(__dirname, '../../../application_octal_dialer/build/app/outputs/flutter-apk/app-release.apk'),
+    path.join(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-release.apk'),
+    path.join(__dirname, '../../../application_octal_dialer/build/app/outputs/apk/release/app-release.apk'),
+    path.join(__dirname, '../../application_octal_dialer/build/app/outputs/apk/release/app-release.apk'),
     path.join(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-release.apk'),
-    path.join(__dirname, '../../mobile/build/app/outputs/apk/release/app-release.apk'),
     path.join(__dirname, '../public/OctalDialer.apk'),
     path.join(__dirname, '../data/OctalDialer.apk')
   ];
@@ -2253,7 +2268,7 @@ io.on('connection', (socket) => {
     console.log(`[Socket] Laptop registered: ${session.id} | Tenant: ${tenantId} | User: ${userId || 'anonymous'} | Status: ${session.status}`);
 
     const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
-    const cleanPairingUri = `octaldialer://join?sessionId=${session.id}&token=${session.token}&laptop=${encodeURIComponent(session.laptopName || 'Laptop')}&bt=${encodeURIComponent(session.laptopBtAddress || '00:11:22:33:44:55')}`;
+    const cleanPairingUri = `octaldialer://join?sessionId=${session.id}&token=${session.token}&serverUrl=${encodeURIComponent(effectiveUrl)}&laptop=${encodeURIComponent(session.laptopName || 'Laptop')}&bt=${encodeURIComponent(session.laptopBtAddress || '00:11:22:33:44:55')}`;
 
     socket.emit('session:created', {
       sessionId: session.id,
@@ -2300,7 +2315,7 @@ io.on('connection', (socket) => {
 
     const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
     const newToken = revokePhone(sessionId);
-    const cleanRefreshPairingUri = `octaldialer://join?sessionId=${sessionId}&token=${newToken}&laptop=${encodeURIComponent(session.laptopName || 'Laptop')}&bt=${encodeURIComponent(session.laptopBtAddress || '00:11:22:33:44:55')}`;
+    const cleanRefreshPairingUri = `octaldialer://join?sessionId=${sessionId}&token=${newToken}&serverUrl=${encodeURIComponent(effectiveUrl)}&laptop=${encodeURIComponent(session.laptopName || 'Laptop')}&bt=${encodeURIComponent(session.laptopBtAddress || '00:11:22:33:44:55')}`;
 
     socket.emit('session:refreshed', {
       token: newToken,
