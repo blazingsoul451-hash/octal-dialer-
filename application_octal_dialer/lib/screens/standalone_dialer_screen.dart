@@ -64,9 +64,7 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
   String _selectedFilter = 'Pending'; // 'Pending', 'Calling', 'Completed', 'Failed'
   
   bool _isAutoDialing = false;
-  int _currentIndex = -1;
-  int _intervalSeconds = 35; // Ring timeout
-  int _delayBetweenCallsSeconds = 3; // Configurable Next-Call Delay
+  final int _delayBetweenCallsSeconds = 3; // Configurable Next-Call Delay
   Timer? _autoDialTimer;
   int _countdown = 0;
 
@@ -210,10 +208,6 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
       );
       return;
     }
-
-    setState(() {
-      _currentIndex = nextIdx;
-    });
 
     final lead = _queue[nextIdx];
     _makeCall(lead.phone, lead.name, leadId: lead.id);

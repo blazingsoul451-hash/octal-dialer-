@@ -63,7 +63,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _loadingLeads = false;
   String? _leadsError;
 
-  static const Color _bg = Color(0xFF020617);
   static const Color _card = Color(0xFF0F172A);
   static const Color _border = Color(0xFF1E293B);
   static const Color _amber = Color(0xFFFFB800);

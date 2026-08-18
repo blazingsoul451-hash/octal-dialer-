@@ -28,7 +28,6 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   String _autoDialMode = 'Full Auto';
   bool _callRecording = false;
   bool _vibrateOnAnswer = true;
-  bool _playDialTone = true;
 
   List<LeadItem> _localQueue = [];
   List<Map<String, dynamic>> _campaignsList = [];

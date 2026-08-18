@@ -30,13 +30,15 @@ class CallingScreen extends StatefulWidget {
   State<CallingScreen> createState() => _CallingScreenState();
 }
 
+enum CallPhase { ringing, connected, ended }
+
 class _CallingScreenState extends State<CallingScreen> with SingleTickerProviderStateMixin {
   String _callStatus = '00:00';
   int _secondsLeft = 30;
   int _talkDuration = 0;
   Timer? _ringingTimer;
   Timer? _talkTimer;
-  bool _isAnswered = false;
+  CallPhase _phase = CallPhase.ringing;
   bool _callEnded = false;
   bool _isMuted = false;
   bool _isSpeaker = false;
@@ -54,7 +56,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       duration: const Duration(milliseconds: 1200),
     )..repeat(reverse: true);
     
-    // Register native telephony call state listener to automate state tracking
+    // Register native telephony call state listener to track real GSM hardware states
     _nativeChannel.setMethodCallHandler((call) async {
       if (call.method == 'onCallStateChanged') {
         final state = call.arguments as String;
@@ -77,13 +79,17 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   }
 
   void _handleCallStateChange(String state) {
-    debugPrint("CallingScreen: Native state -> $state");
+    debugPrint("CallingScreen: Native GSM state -> $state");
     if (state == 'OFFHOOK') {
-      if (!_isAnswered) {
-        _simulateAnswer();
+      if (_phase != CallPhase.connected && !_callEnded) {
+        _handleOffhook();
       }
     } else if (state == 'IDLE') {
-      _endCall(_isAnswered ? 'ANSWERED' : 'NO_ANSWER');
+      if (_phase == CallPhase.connected) {
+        _endCall('CONNECTED');
+      } else {
+        _endCall('NO_ANSWER');
+      }
     }
   }
 
@@ -117,11 +123,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     }
   }
 
-  void _simulateAnswer() {
+  void _handleOffhook() {
     _ringingTimer?.cancel();
     if (mounted) {
       setState(() {
-        _isAnswered = true;
+        _phase = CallPhase.connected;
         _callStatus = '00:00';
       });
     }
@@ -145,6 +151,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   void _endCall(String reason) {
     if (_callEnded) return; // Guard against duplicate terminal events
     _callEnded = true;
+    _phase = CallPhase.ended;
     _ringingTimer?.cancel();
     _talkTimer?.cancel();
 
@@ -179,6 +186,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   @override
   Widget build(BuildContext context) {
     final initial = widget.name.isNotEmpty ? widget.name[0].toUpperCase() : 'A';
+    final isConnected = _phase == CallPhase.connected;
 
     return Scaffold(
       backgroundColor: OctalColors.bgDark,
@@ -188,7 +196,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
           child: Column(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Top Bar from Reference Screen 3
+              // Top Bar
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -196,9 +204,9 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                     icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white, size: 28),
                     onPressed: () => Navigator.pop(context),
                   ),
-                  const Text(
-                    'Active Call',
-                    style: TextStyle(
+                  Text(
+                    isConnected ? 'Active Call' : 'Connecting Call',
+                    style: const TextStyle(
                       fontFamily: 'Ubuntu',
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -211,7 +219,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
 
               const SizedBox(height: 10),
 
-              // Hero Glowing Avatar from Reference Screen 3
+              // Hero Glowing Avatar
               Center(
                 child: Container(
                   width: 140,
@@ -255,7 +263,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
 
               const SizedBox(height: 16),
 
-              // Contact Name & Phone from Reference Screen 3
+              // Lead Contact Info & Timing
               Column(
                 children: [
                   Text(
@@ -263,19 +271,18 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                       fontFamily: 'Ubuntu',
-                      fontSize: 24,
-                      fontWeight: FontWeight.w900,
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
                       color: Colors.white,
                     ),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 4),
                   Text(
                     widget.phone,
                     style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
                       color: OctalColors.textSecondary,
+                      letterSpacing: 0.5,
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -284,12 +291,12 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     decoration: BoxDecoration(
-                      color: _isAnswered 
+                      color: isConnected 
                           ? OctalColors.success.withOpacity(0.15) 
                           : OctalColors.primaryGold.withOpacity(0.15),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                        color: _isAnswered 
+                        color: isConnected 
                             ? OctalColors.success.withOpacity(0.4) 
                             : OctalColors.primaryGold.withOpacity(0.4),
                       ),
@@ -297,17 +304,17 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                     child: Column(
                       children: [
                         Text(
-                          _isAnswered ? 'IN CALL' : 'RINGING',
+                          isConnected ? 'IN CALL' : 'RINGING',
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w900,
                             letterSpacing: 1.5,
-                            color: _isAnswered ? OctalColors.success : OctalColors.primaryGold,
+                            color: isConnected ? OctalColors.success : OctalColors.primaryGold,
                           ),
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          _isAnswered ? _callStatus : '00:${_secondsLeft.toString().padLeft(2, '0')}',
+                          isConnected ? _callStatus : '00:${_secondsLeft.toString().padLeft(2, '0')}',
                           style: const TextStyle(
                             fontFamily: 'monospace',
                             fontSize: 22,
@@ -323,7 +330,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
 
               const SizedBox(height: 12),
 
-              // Animated Audio Waveform Visualizer from Reference Screen 3
+              // Animated Audio Waveform Visualizer
               AnimatedBuilder(
                 animation: _waveAnimController,
                 builder: (context, child) {
@@ -333,7 +340,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: List.generate(24, (index) {
                         final waveVal = math.sin((index * 0.4) + (_waveAnimController.value * math.pi * 2));
-                        final height = _isAnswered
+                        final height = isConnected
                             ? 8.0 + (waveVal.abs() * 24.0)
                             : 4.0 + (math.sin(index * 0.3).abs() * 12.0);
                         return Container(
@@ -341,7 +348,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                           height: height,
                           margin: const EdgeInsets.symmetric(horizontal: 2.5),
                           decoration: BoxDecoration(
-                            color: _isAnswered ? OctalColors.primaryGold : OctalColors.textMuted,
+                            color: isConnected ? OctalColors.primaryGold : OctalColors.textMuted,
                             borderRadius: BorderRadius.circular(4),
                           ),
                         );
@@ -353,7 +360,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
 
               const SizedBox(height: 16),
 
-              // Control Actions (Mute, Keypad, Speaker) from Reference Screen 3
+              // Control Actions (Mute, Keypad, Speaker)
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
@@ -384,58 +391,35 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
 
               const SizedBox(height: 20),
 
-              // Simulated Answer Button (during ringing) + End Call Button
-              Column(
-                children: [
-                  if (!_isAnswered) ...[
-                    SizedBox(
-                      width: double.infinity,
-                      height: 48,
-                      child: OutlinedButton.icon(
-                        onPressed: _simulateAnswer,
-                        icon: const Icon(Icons.phone_forwarded, color: OctalColors.success, size: 18),
-                        label: const Text(
-                          'Simulate Connected Answer',
-                          style: TextStyle(color: OctalColors.success, fontWeight: FontWeight.bold, fontSize: 13),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: OctalColors.success.withOpacity(0.5), width: 1.5),
-                          backgroundColor: OctalColors.success.withOpacity(0.1),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-
-                  // End Call Full Width Gold/Red Button from Reference Screen 3
-                  SizedBox(
-                    width: double.infinity,
-                    height: 54,
-                    child: ElevatedButton.icon(
-                      onPressed: () => _endCall(_isAnswered ? 'ANSWERED' : 'CANCELLED'),
-                      icon: const Icon(Icons.call_end, color: OctalColors.bgDark, size: 22),
-                      label: const Text(
-                        'End Call',
-                        style: TextStyle(
-                          fontFamily: 'Ubuntu',
-                          fontSize: 16,
-                          fontWeight: FontWeight.w900,
-                          color: OctalColors.bgDark,
-                          letterSpacing: 0.5,
-                        ),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: OctalColors.primaryGold,
-                        elevation: 6,
-                        shadowColor: OctalColors.primaryGold.withOpacity(0.4),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                      ),
+              // End Call Full Width Gold Button
+              SizedBox(
+                width: double.infinity,
+                height: 54,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    _nativeChannel.invokeMethod('endCall').catchError((_) {});
+                    _endCall(isConnected ? 'CONNECTED' : 'CANCELLED');
+                  },
+                  icon: const Icon(Icons.call_end, color: OctalColors.bgDark, size: 22),
+                  label: const Text(
+                    'End Call',
+                    style: TextStyle(
+                      fontFamily: 'Ubuntu',
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900,
+                      color: OctalColors.bgDark,
+                      letterSpacing: 0.5,
                     ),
                   ),
-                ],
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: OctalColors.primaryGold,
+                    elevation: 6,
+                    shadowColor: OctalColors.primaryGold.withOpacity(0.4),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                  ),
+                ),
               ),
             ],
           ),

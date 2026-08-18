@@ -53,7 +53,6 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   
-  const dispositionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processedCallRef = useRef<string | null>(null); // Track last processed call to prevent duplicate processing
 
   // Windowed pagination state for instant DOM rendering with 1,000+ leads
@@ -404,10 +403,6 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     if (!socket) return;
     const handler = () => {
       setIsAutoDialing(false);
-      if (dispositionTimerRef.current) {
-        clearTimeout(dispositionTimerRef.current);
-        dispositionTimerRef.current = null;
-      }
       if (countdownTimerRef.current) {
         clearInterval(countdownTimerRef.current);
         countdownTimerRef.current = null;
@@ -458,31 +453,6 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     dialLead(lead.phone, lead.name, autoDialTimeout, lead.id, lead.campaignId || selectedCampId);
   };
 
-  // Called by DispositionModal after user saves remarks — then advances to next lead
-  const handleAfterDisposition = () => {
-    if (!isAutoDialing) return;
-    setLeads(currentLeads => {
-      const nextPendingIdx = currentLeads.findIndex(
-        (l, idx) => idx > currentIndex && l.status === 'PENDING'
-      );
-      if (nextPendingIdx !== -1) {
-        setCurrentIndex(nextPendingIdx);
-        const nextLead = currentLeads[nextPendingIdx];
-        setLogs(prev => [...prev, `[Auto Dialer] Remarks saved. Dialing next: ${nextLead.name} (${nextLead.phone})`]);
-        dispositionTimerRef.current = setTimeout(() => {
-          if (phoneConnected) {
-            dialLead(nextLead.phone, nextLead.name, autoDialTimeout, nextLead.id, selectedCampId);
-          }
-          dispositionTimerRef.current = null;
-        }, 1500);
-      } else {
-        setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete!`]);
-        setIsAutoDialing(false);
-      }
-      return currentLeads;
-    });
-  };
-
   const handleHangup = () => {
     setLogs(prev => [...prev, '[Dialer] Hanging up current call...']);
     hangupCall();
@@ -523,11 +493,12 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     dialLead(manualPhone, 'Manual Dial', 35);
   };
 
-  // Cleanup tracked timers on unmount
+  // Cleanup tracked countdown timer on unmount
   useEffect(() => {
     return () => {
-      if (dispositionTimerRef.current) {
-        clearTimeout(dispositionTimerRef.current);
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
       }
     };
   }, []);

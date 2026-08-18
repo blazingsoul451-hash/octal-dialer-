@@ -2721,21 +2721,28 @@ io.on('connection', (socket) => {
     console.log(`[Socket] Hangup command sent to phone in session ${sessionId}`);
   });
 
+  // ─── STRICT CALL LIFECYCLE SOCKET HANDLERS ─────────────────────────────────
+  // Server-side idempotency guard to prevent duplicate terminal processing per call
+  const processedCallEndings = new Set<string>();
+
   socket.on('call:picked-up', ({ sessionId }: { sessionId: string }) => {
     const session = getSessionById(sessionId || socket.data.sessionId || '');
     if (!session) return;
 
-    // Resilient Reconnect: If phone reconnected mid-call, re-associate phone socket
-    if (!session.phoneSocketId || session.phoneSocketId !== socket.id) {
-      session.phoneSocketId = socket.id;
-      socket.data.sessionId = session.id;
-      socket.data.tenantId = session.tenantId;
-      socket.join(session.id);
+    // Strict ownership validation: Only the authoritative paired phone socket may emit call:picked-up
+    if (session.phoneSocketId !== socket.id) {
+      console.warn(`[Socket Security] Rejected call:picked-up from non-authoritative socket ${socket.id} (owner: ${session.phoneSocketId})`);
+      return;
+    }
+
+    if (socket.data.tenantId && session.tenantId && socket.data.tenantId !== session.tenantId) {
+      console.warn(`[Socket Security] Rejected call:picked-up: Tenant mismatch`);
+      return;
     }
 
     setSessionStatus(session.id, 'CALLING');
     socket.to(session.id).emit('call:started');
-    console.log(`[Socket] Verified Phone ${socket.id} picked up call in session ${session.id}`);
+    console.log(`[Socket] Verified Phone ${socket.id} entered active call state in session ${session.id}`);
   });
 
   socket.on('call:ended', ({ sessionId, leadId, phone, name, reason, duration, commandId }: {
@@ -2753,18 +2760,33 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Resilient Reconnect: If phone reconnected after background GSM dialer, re-link socket to session
-    if (!session.phoneSocketId || session.phoneSocketId !== socket.id) {
-      session.phoneSocketId = socket.id;
-      socket.data.sessionId = session.id;
-      socket.data.tenantId = session.tenantId;
-      socket.join(session.id);
+    // Strict ownership validation: Only the authoritative paired phone socket may emit call:ended
+    if (session.phoneSocketId !== socket.id) {
+      console.warn(`[Socket Security] Rejected call:ended from non-authoritative socket ${socket.id} (owner: ${session.phoneSocketId})`);
+      return;
     }
 
     const tenantId = session.tenantId;
     if (!tenantId) {
       console.warn(`[Socket] Session ${session.id} missing tenantId on call:ended`);
       return;
+    }
+
+    if (socket.data.tenantId && socket.data.tenantId !== tenantId) {
+      console.warn(`[Socket Security] Rejected call:ended: Tenant mismatch`);
+      return;
+    }
+
+    // Idempotency guard: Prevent processing duplicate call:ended for the exact same call
+    const termKey = `${session.id}_${leadId || phone || ''}_${commandId || ''}`;
+    if (processedCallEndings.has(termKey)) {
+      console.log(`[Socket Idempotency] Ignoring duplicate call:ended for key: ${termKey}`);
+      return;
+    }
+    processedCallEndings.add(termKey);
+    if (processedCallEndings.size > 2000) {
+      const first = processedCallEndings.values().next().value;
+      if (first) processedCallEndings.delete(first);
     }
 
     setSessionStatus(session.id, 'PAIRED');
@@ -2778,7 +2800,8 @@ io.on('connection', (socket) => {
     } else if (phone) {
       createManualLog(phone, name || 'Manual Quick Dial', reason, duration, tenantId);
     }
-    // Include leadId and commandId in call:finished broadcast so web knows exact completed lead!
+
+    // Include leadId and commandId in call:finished broadcast so web knows exact completed lead
     socket.to(session.id).emit('call:finished', { reason, duration, leadId, commandId });
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     console.log(`[Socket] Call finished in session ${session.id} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
