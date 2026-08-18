@@ -122,6 +122,11 @@ class PhoneBridgeService extends ChangeNotifier {
     _connectAuthenticatedSocket();
   }
 
+  /// Manually force reconnect the authenticated socket
+  Future<void> reconnect() async {
+    await initializeAuthenticated();
+  }
+
   /// Gather hardware & network identifiers
   Future<void> _gatherDeviceInfo() async {
     _deviceOs = Platform.isAndroid ? 'Android' : (Platform.isIOS ? 'iOS' : 'Desktop');
@@ -173,11 +178,11 @@ class PhoneBridgeService extends ChangeNotifier {
     _socket = io.io(
       _serverUrl,
       io.OptionBuilder()
-          .setTransports(['websocket', 'polling'])
+          .setTransports(['polling', 'websocket'])
           .enableAutoConnect()
           .enableReconnection()
           .setReconnectionAttempts(9999)
-          .setReconnectionDelay(2000)
+          .setReconnectionDelay(1500)
           .build(),
     );
 

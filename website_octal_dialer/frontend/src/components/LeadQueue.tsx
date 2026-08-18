@@ -218,6 +218,9 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   useEffect(() => {
     if (selectedCampId) {
       fetchLeads(selectedCampId);
+      if (socket) {
+        socket.emit('campaign:select', { campaignId: selectedCampId, sessionId });
+      }
     } else {
       setLeads([]);
       setCurrentIndex(0);

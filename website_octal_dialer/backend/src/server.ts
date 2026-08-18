@@ -24,6 +24,7 @@ process.on('unhandledRejection', (reason) => {
 
 import {
   createCampaign,
+  appendLeadsToCampaign,
   getCampaigns,
   getLeads,
   getLogs,
@@ -1323,6 +1324,8 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
     }
 
     const result = createCampaign(finalCampaignName, fileName, leads, tenantId);
+    io.to(`tenant_${tenantId}`).emit('leads:updated');
+    io.to(`tenant_${tenantId}`).emit('campaigns:updated');
     res.json({
       success: true,
       campaignId: result.campaign.id,
@@ -1821,9 +1824,10 @@ app.get('/api/download/apk', serveApkHandler);
 // REST: Manual leads import (protected)
 app.post('/api/leads/import', requireAuth, (req, res) => {
   try {
-    const { campaignName, fileName, leads } = req.body as {
-      campaignName: string;
-      fileName: string;
+    const { campaignName, campaignId, fileName, leads } = req.body as {
+      campaignName?: string;
+      campaignId?: string;
+      fileName?: string;
       leads: { name: string; phone: string }[];
     };
 
@@ -1838,7 +1842,13 @@ app.post('/api/leads/import', requireAuth, (req, res) => {
       return;
     }
 
-    const result = createCampaign(campaignName, fileName, leads, tenantId);
+    const result = campaignId
+      ? appendLeadsToCampaign(campaignId, leads, tenantId)
+      : createCampaign(campaignName || 'Imported Campaign', fileName || 'Manual Import', leads, tenantId);
+
+    io.to(`tenant_${tenantId}`).emit('leads:updated');
+    io.to(`tenant_${tenantId}`).emit('campaigns:updated');
+
     res.json({
       success: true,
       campaignId: result.campaign.id,
@@ -1865,9 +1875,10 @@ app.post('/api/leads/import/mobile', requireAuth, (req, res) => {
       return;
     }
 
-    const { campaignName, fileName, leads } = req.body as {
-      campaignName: string;
-      fileName: string;
+    const { campaignName, campaignId, fileName, leads } = req.body as {
+      campaignName?: string;
+      campaignId?: string;
+      fileName?: string;
       leads: { name: string; phone: string }[];
     };
 
@@ -1877,8 +1888,12 @@ app.post('/api/leads/import/mobile', requireAuth, (req, res) => {
     }
 
     // Tenant identity is strictly derived from authenticated user JWT
-    const result = createCampaign(campaignName, fileName, leads, tenantId);
+    const result = campaignId
+      ? appendLeadsToCampaign(campaignId, leads, tenantId)
+      : createCampaign(campaignName || 'Mobile Imported Campaign', fileName || 'Mobile Import', leads, tenantId);
+
     io.to(`tenant_${tenantId}`).emit('leads:updated');
+    io.to(`tenant_${tenantId}`).emit('campaigns:updated');
 
     res.json({
       success: true,
@@ -2046,6 +2061,54 @@ io.on('connection', (socket) => {
     };
     if (user.tenantId) {
       io.to(`tenant_${user.tenantId}`).emit('device:status-changed', statusPayload);
+    }
+
+    // Auto-pair with waiting laptop session for the same user / tenant
+    const allSessions = getSessions();
+    for (const s of allSessions.values()) {
+      if ((s.userId === user.id || s.tenantId === user.tenantId) && s.laptopSocketId && s.status === 'WAITING') {
+        pairAuthenticatedDevice(
+          s.id,
+          device.id,
+          socket.id,
+          device.name,
+          device.btAddress || '48:D2:24:D3:5F:AA',
+          device.osType || 'Android',
+          device.ipAddress || '127.0.0.1',
+          user.id,
+          user.tenantId
+        );
+
+        socket.join(s.id);
+        socket.data.sessionId = s.id;
+
+        const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
+        socket.emit('bridge:paired', {
+          sessionId: s.id,
+          token: s.token,
+          laptopName: s.laptopName,
+          laptopBtAddress: s.laptopBtAddress,
+          serverUrl: effectiveUrl
+        });
+
+        socket.emit('phone:paired', {
+          sessionId: s.id,
+          laptopName: s.laptopName,
+          laptopBtAddress: s.laptopBtAddress
+        });
+
+        io.to(s.id).emit('phone:connected', {
+          deviceName: device.name,
+          phoneBtAddress: device.btAddress || '48:D2:24:D3:5F:AA',
+          phoneOsType: device.osType || 'Android',
+          phoneIpAddress: device.ipAddress || '127.0.0.1',
+          phoneStatus: 'READY',
+          deviceId: device.id
+        });
+
+        console.log(`[Auto Pair] Phone ${device.name} auto-paired to laptop session ${s.id} for user ${user.username}`);
+        break;
+      }
     }
   });
 
@@ -2308,38 +2371,56 @@ io.on('connection', (socket) => {
         phoneStatus: session.phoneStatus || 'READY',
         deviceId: session.phoneDeviceId
       });
-    }
-  });
+    } else {
+      // Check if there is an active authenticated phone socket for this user/tenant
+      for (const p of authenticatedPhoneSockets.values()) {
+        if ((p.userId === userId || p.tenantId === tenantId) && session.status === 'WAITING') {
+          const phoneSocket = io.sockets.sockets.get(p.socketId);
+          if (phoneSocket) {
+            pairAuthenticatedDevice(
+              session.id,
+              p.deviceId,
+              p.socketId,
+              p.deviceName,
+              p.btAddress,
+              p.osType,
+              p.ipAddress,
+              userId || 'unknown',
+              tenantId
+            );
 
-  socket.on('laptop:revoke-phone', ({ sessionId }: { sessionId: string }) => {
-    const session = getSessionById(sessionId);
-    if (!session) return;
-    
-    if (session.phoneSocketId) {
-      const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
-      if (phoneSocket) {
-        phoneSocket.emit('phone:kicked', { reason: 'Revoked by dashboard.' });
-        phoneSocket.leave(sessionId);
+            phoneSocket.join(session.id);
+            phoneSocket.data.sessionId = session.id;
+
+            socket.emit('phone:connected', {
+              deviceName: p.deviceName,
+              phoneBtAddress: p.btAddress,
+              phoneOsType: p.osType,
+              phoneIpAddress: p.ipAddress,
+              phoneStatus: 'READY',
+              deviceId: p.deviceId
+            });
+
+            phoneSocket.emit('bridge:paired', {
+              sessionId: session.id,
+              token: session.token,
+              laptopName: session.laptopName,
+              laptopBtAddress: session.laptopBtAddress,
+              serverUrl: effectiveUrl
+            });
+
+            phoneSocket.emit('phone:paired', {
+              sessionId: session.id,
+              laptopName: session.laptopName,
+              laptopBtAddress: session.laptopBtAddress
+            });
+
+            console.log(`[Auto Pair] Laptop session ${session.id} auto-paired to phone ${p.deviceName} for user ${userId}`);
+            break;
+          }
+        }
       }
     }
-
-    const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
-    const newToken = revokePhone(sessionId);
-    const cleanRefreshPairingUri = `octaldialer://join?sessionId=${sessionId}&token=${newToken}&serverUrl=${encodeURIComponent(effectiveUrl)}&laptop=${encodeURIComponent(session.laptopName || 'Laptop')}&bt=${encodeURIComponent(session.laptopBtAddress || '00:11:22:33:44:55')}`;
-
-    socket.emit('session:refreshed', {
-      token: newToken,
-      serverUrl: effectiveUrl,
-      pairingUri: cleanRefreshPairingUri,
-      qrPayload: {
-        sessionId,
-        token: newToken,
-        laptopName: session.laptopName,
-        laptopBtAddress: session.laptopBtAddress,
-        pairingUri: cleanRefreshPairingUri,
-        serverUrl: effectiveUrl
-      }
-    });
   });
 
   socket.on('phone:join', (data: { 
@@ -2454,6 +2535,15 @@ io.on('connection', (socket) => {
   socket.on('phone:ping', () => {
     updateHeartbeat(socket.id);
     socket.emit('phone:pong', { timestamp: new Date().toISOString() });
+  });
+
+  socket.on('campaign:select', (data: { campaignId: string; sessionId?: string }) => {
+    const tenantId = (socket as any).data?.tenantId || (socket as any).tenantId || 'tenant_default';
+    io.to(`tenant_${tenantId}`).emit('campaign:selected', { campaignId: data?.campaignId });
+    if (data?.sessionId) {
+      io.to(data.sessionId).emit('campaign:selected', { campaignId: data.campaignId });
+    }
+    console.log(`[Campaign Sync] Broadcasted campaign:selected ${data?.campaignId} to tenant_${tenantId}`);
   });
 
   // Web dashboard sends ping to measure phone latency

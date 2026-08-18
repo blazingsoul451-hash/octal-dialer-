@@ -52,8 +52,8 @@ class AppConfig {
     if (trimmed.isEmpty) return null;
 
     final lower = trimmed.toLowerCase();
-    if (lower.contains('api.trycloudflare.com')) {
-      return null;
+    if (lower.contains('api.trycloudflare.com') || lower.contains('.trycloudflare.com') || lower.contains('.loca.lt') || lower.contains('ngrok')) {
+      return defaultBaseUrl;
     }
 
     if (!lower.startsWith('http://') && !lower.startsWith('https://')) {

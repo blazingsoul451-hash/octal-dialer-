@@ -7,6 +7,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
 import 'package:excel/excel.dart' hide Border;
 import 'dart:convert';
+import 'package:http/http.dart' as http;
+import '../config/app_config.dart';
+import '../services/phone_bridge_service.dart';
 import '../widgets/octal_logo.dart';
 
 class LeadItem {
@@ -35,6 +38,8 @@ class StandaloneDialerScreen extends StatefulWidget {
   final List<LeadItem>? queue;
   final VoidCallback? onQueueUpdated;
   final String? sessionId;
+  final String? campaignId;
+  final String? campaignName;
 
   const StandaloneDialerScreen({
     super.key,
@@ -43,6 +48,8 @@ class StandaloneDialerScreen extends StatefulWidget {
     this.queue,
     this.onQueueUpdated,
     this.sessionId,
+    this.campaignId,
+    this.campaignName,
   });
 
   @override
@@ -86,12 +93,30 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
 
     if (widget.socket != null) {
       widget.socket.on('leads:updated', (_) {
-        if (mounted) {
-          setState(() {
-            _queue.clear();
-            widget.onQueueUpdated?.call();
-          });
+        if (mounted) _fetchBackendQueue();
+      });
+      widget.socket.on('campaigns:updated', (_) {
+        if (mounted) _fetchBackendQueue();
+      });
+      widget.socket.on('campaign:selected', (data) {
+        final campId = data is Map ? data['campaignId']?.toString() : data?.toString();
+        if (campId != null && mounted) {
+          _fetchBackendQueue(campId);
         }
+      });
+    }
+
+    if (_queue.isEmpty) {
+      _fetchBackendQueue();
+    }
+  }
+
+  @override
+  void didUpdateWidget(StandaloneDialerScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.queue != null && widget.queue != oldWidget.queue) {
+      setState(() {
+        _queue = widget.queue!;
       });
     }
   }
@@ -470,6 +495,91 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
     });
   }
 
+  Future<void> _fetchBackendQueue([String? targetCampId]) async {
+    final serverUrl = widget.serverUrl ?? AppConfig.apiBaseUrl;
+    final token = PhoneBridgeService.instance.authToken;
+    if (token.isEmpty) return;
+
+    try {
+      final campRes = await http.get(
+        Uri.parse('$serverUrl/api/campaigns'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'bypass-tunnel-reminder': 'true',
+        },
+      ).timeout(const Duration(seconds: 25));
+
+      if (campRes.statusCode == 200) {
+        final List camps = jsonDecode(campRes.body);
+        if (camps.isNotEmpty) {
+          final typedCamps = camps.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          Map<String, dynamic> activeCamp = typedCamps.first;
+
+          final requestedId = targetCampId ?? widget.campaignId;
+          if (requestedId != null) {
+            activeCamp = typedCamps.firstWhere((c) => c['id'] == requestedId, orElse: () => typedCamps.first);
+          } else {
+            // Default to largest production campaign (e.g. 5,168 leads)
+            final sorted = List<Map<String, dynamic>>.from(typedCamps);
+            sorted.sort((a, b) => ((b['leadCount'] ?? 0) as int).compareTo((a['leadCount'] ?? 0) as int));
+            activeCamp = sorted.first;
+          }
+
+          final campId = activeCamp['id']?.toString() ?? '';
+          final leadsRes = await http.get(
+            Uri.parse('$serverUrl/api/campaigns/$campId/leads'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'bypass-tunnel-reminder': 'true',
+            },
+          ).timeout(const Duration(seconds: 25));
+
+          if (leadsRes.statusCode == 200) {
+            final List list = jsonDecode(leadsRes.body);
+            final List<LeadItem> loaded = list.map((item) => LeadItem(
+              id: item['id']?.toString() ?? '',
+              name: item['name']?.toString() ?? 'Contact',
+              phone: item['phone']?.toString() ?? '',
+              status: item['status']?.toString() ?? 'PENDING',
+              disposition: item['outcome']?.toString(),
+              duration: item['duration'] is int ? item['duration'] : null,
+            )).toList();
+
+            if (mounted) {
+              setState(() {
+                _queue = loaded;
+              });
+              widget.onQueueUpdated?.call();
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Queue fetch error: $e');
+    }
+  }
+
+  void _exportLeads() {
+    if (_queue.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No leads to export.')),
+      );
+      return;
+    }
+    final csvRows = [
+      ['Name', 'Phone', 'Status', 'Outcome', 'Duration (s)'],
+      ..._queue.map((l) => [l.name, l.phone, l.status, l.disposition ?? '', l.duration?.toString() ?? '0'])
+    ];
+    final csv = const ListToCsvConverter().convert(csvRows);
+    Clipboard.setData(ClipboardData(text: csv));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Exported ${_queue.length} leads (copied to clipboard as CSV).'),
+        backgroundColor: const Color(0xFF10B981),
+      ),
+    );
+  }
+
   Future<void> _pickAndImportFile() async {
     final res = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -478,7 +588,8 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
     if (res == null || res.files.single.path == null) return;
 
     final filePath = res.files.single.path!;
-    List<LeadItem> imported = [];
+    final fileName = res.files.single.name;
+    List<Map<String, String>> rawLeads = [];
 
     try {
       if (filePath.endsWith('.csv')) {
@@ -487,11 +598,11 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
         for (int i = 1; i < fields.length; i++) {
           final row = fields[i];
           if (row.length >= 2) {
-            imported.add(LeadItem(
-              id: 'lead_${DateTime.now().millisecondsSinceEpoch}_$i',
-              name: row[0].toString(),
-              phone: row[1].toString(),
-            ));
+            final name = row[0].toString().trim();
+            final phone = row[1].toString().trim();
+            if (phone.isNotEmpty) {
+              rawLeads.add({'name': name.isEmpty ? 'Contact' : name, 'phone': phone});
+            }
           }
         }
       } else {
@@ -501,29 +612,70 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
           final sheet = excel.tables[table]!;
           for (int i = 1; i < sheet.rows.length; i++) {
             final row = sheet.rows[i];
-            if (row.length >= 2 && row[0]?.value != null && row[1]?.value != null) {
-              imported.add(LeadItem(
-                id: 'lead_${DateTime.now().millisecondsSinceEpoch}_$i',
-                name: row[0]!.value.toString(),
-                phone: row[1]!.value.toString(),
-              ));
+            if (row.length >= 2 && row[1]?.value != null) {
+              final name = row[0]?.value?.toString().trim() ?? 'Contact';
+              final phone = row[1]?.value?.toString().trim() ?? '';
+              if (phone.isNotEmpty) {
+                rawLeads.add({'name': name.isEmpty ? 'Contact' : name, 'phone': phone});
+              }
             }
           }
         }
       }
 
-      if (imported.isNotEmpty) {
-        setState(() {
-          _queue.addAll(imported);
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Successfully imported ${imported.length} leads!')),
-        );
+      if (rawLeads.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No valid lead rows found in file.')),
+          );
+        }
+        return;
+      }
+
+      final serverUrl = widget.serverUrl ?? AppConfig.apiBaseUrl;
+      final token = PhoneBridgeService.instance.authToken;
+
+      final postRes = await http.post(
+        Uri.parse('$serverUrl/api/leads/import/mobile'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+          'bypass-tunnel-reminder': 'true',
+        },
+        body: jsonEncode({
+          'campaignName': 'Mobile Import - ${fileName.replaceAll(RegExp(r'\.[^.]+$'), '')}',
+          'fileName': fileName,
+          'leads': rawLeads,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      if (postRes.statusCode == 200) {
+        final data = jsonDecode(postRes.body);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Imported ${data['count']} unique leads (${data['dedupedCount'] ?? 0} duplicates skipped)!',
+              ),
+              backgroundColor: const Color(0xFF10B981),
+            ),
+          );
+        }
+        _fetchBackendQueue();
+      } else {
+        final err = jsonDecode(postRes.body);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Import failed: ${err['error'] ?? 'Server error'}')),
+          );
+        }
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to import leads: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to import leads: $e')),
+        );
+      }
     }
   }
 
@@ -545,6 +697,8 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
       filteredLeads = _queue.where((l) => l.status == 'NO_ANSWER' || l.status == 'SKIPPED').toList();
     }
 
+    final isPendingTab = _selectedFilter == 'Pending';
+
     return Scaffold(
       backgroundColor: OctalColors.bgDark,
       appBar: AppBar(
@@ -559,10 +713,16 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
           ),
         ),
         actions: [
+          if (isPendingTab)
+            IconButton(
+              icon: const Icon(Icons.file_upload_outlined, color: OctalColors.primaryGold, size: 22),
+              tooltip: 'Import Leads',
+              onPressed: _pickAndImportFile,
+            ),
           IconButton(
-            icon: const Icon(Icons.file_upload_outlined, color: OctalColors.primaryGold, size: 22),
-            tooltip: 'Import CSV/Excel',
-            onPressed: _pickAndImportFile,
+            icon: const Icon(Icons.file_download_outlined, color: Colors.white70, size: 22),
+            tooltip: 'Export Leads',
+            onPressed: _exportLeads,
           ),
         ],
       ),
@@ -639,15 +799,16 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
                             style: const TextStyle(fontSize: 14, color: OctalColors.textSecondary),
                           ),
                           const SizedBox(height: 16),
-                          OutlinedButton.icon(
-                            onPressed: _pickAndImportFile,
-                            icon: const Icon(Icons.add, color: OctalColors.primaryGold, size: 18),
-                            label: const Text('Import CSV / Excel', style: TextStyle(color: OctalColors.primaryGold)),
-                            style: OutlinedButton.styleFrom(
-                              side: const BorderSide(color: OctalColors.primaryGold),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          if (isPendingTab)
+                            OutlinedButton.icon(
+                              onPressed: _pickAndImportFile,
+                              icon: const Icon(Icons.add, color: OctalColors.primaryGold, size: 18),
+                              label: const Text('Import Leads', style: TextStyle(color: OctalColors.primaryGold)),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: OctalColors.primaryGold),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
                             ),
-                          ),
                         ],
                       ),
                     )

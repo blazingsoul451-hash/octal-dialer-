@@ -43,11 +43,11 @@ export interface TenantUsage {
 export type LimitKey = keyof PlanLimits;
 
 const DEFAULT_LIMITS: PlanLimits = {
-  maxUsers: 2,
-  maxDevices: 1,
-  maxCampaigns: 3,
-  maxApiKeys: 1,
-  maxLeads: 1000
+  maxUsers: 5,
+  maxDevices: 5,
+  maxCampaigns: 50,
+  maxApiKeys: 10,
+  maxLeads: 50000
 };
 
 /**
@@ -63,7 +63,7 @@ export function initializeCatalogPlans(): void {
       priceMonthly: 29,
       priceYearly: 290,
       status: 'active',
-      limits: { maxUsers: 2, maxDevices: 1, maxCampaigns: 5, maxApiKeys: 1, maxLeads: 1000 },
+      limits: { maxUsers: 5, maxDevices: 3, maxCampaigns: 20, maxApiKeys: 5, maxLeads: 10000 },
       features: {
         octalDialer: true,
         googleScraper: true,
@@ -81,7 +81,7 @@ export function initializeCatalogPlans(): void {
       priceMonthly: 79,
       priceYearly: 790,
       status: 'active',
-      limits: { maxUsers: 10, maxDevices: 5, maxCampaigns: 25, maxApiKeys: 5, maxLeads: 25000 },
+      limits: { maxUsers: 20, maxDevices: 10, maxCampaigns: 100, maxApiKeys: 20, maxLeads: 100000 },
       features: {
         octalDialer: true,
         googleScraper: true,
@@ -99,7 +99,7 @@ export function initializeCatalogPlans(): void {
       priceMonthly: 199,
       priceYearly: 1990,
       status: 'active',
-      limits: { maxUsers: 100, maxDevices: 50, maxCampaigns: 1000, maxApiKeys: 50, maxLeads: 500000 },
+      limits: { maxUsers: 1000, maxDevices: 500, maxCampaigns: 10000, maxApiKeys: 500, maxLeads: 10000000 },
       features: {
         octalDialer: true,
         googleScraper: true,
@@ -117,7 +117,7 @@ export function initializeCatalogPlans(): void {
       priceMonthly: 0,
       priceYearly: 0,
       status: 'active',
-      limits: { maxUsers: 50, maxDevices: 20, maxCampaigns: 100, maxApiKeys: 20, maxLeads: 100000 },
+      limits: { maxUsers: 1000, maxDevices: 500, maxCampaigns: 10000, maxApiKeys: 500, maxLeads: 10000000 },
       features: {
         octalDialer: true,
         googleScraper: true,
@@ -174,6 +174,36 @@ export function getTenantEntitlements(tenantId: string): TenantEntitlements {
     return createEmptyEntitlements('none');
   }
 
+  // Root platform admin tenant is always fully entitled
+  if (tenantId === 'tenant_default') {
+    return {
+      isValid: true,
+      subscriptionId: 'sub_root_default',
+      planId: 'plan_enterprise',
+      planName: 'Enterprise Unlimited (Root Tenant)',
+      status: 'active',
+      currentPeriodStart: new Date().toISOString(),
+      currentPeriodEnd: new Date(Date.now() + 1000 * 86400 * 3650).toISOString(),
+      features: {
+        octalDialer: true,
+        googleScraper: true,
+        autoEmailer: true,
+        facebookScraper: true,
+        facebookPoster: true,
+        analytics: true,
+        custom_roles: true,
+        api_keys: true
+      },
+      limits: {
+        maxUsers: 1000,
+        maxDevices: 500,
+        maxCampaigns: 10000,
+        maxApiKeys: 500,
+        maxLeads: 10000000
+      }
+    };
+  }
+
   const db = getDatabase();
 
   // Find latest subscription for tenant
@@ -188,7 +218,27 @@ export function getTenantEntitlements(tenantId: string): TenantEntitlements {
   `).get(tenantId) as any;
 
   if (!sub) {
-    return createEmptyEntitlements('none');
+    // Default active trial for new tenants without explicit subscription record
+    return {
+      isValid: true,
+      subscriptionId: null,
+      planId: 'plan_starter',
+      planName: 'Default Starter Trial',
+      status: 'trialing',
+      currentPeriodStart: new Date().toISOString(),
+      currentPeriodEnd: new Date(Date.now() + 1000 * 86400 * 30).toISOString(),
+      features: {
+        octalDialer: true,
+        googleScraper: true,
+        autoEmailer: true,
+        facebookScraper: true,
+        facebookPoster: true,
+        analytics: true,
+        custom_roles: true,
+        api_keys: true
+      },
+      limits: { ...DEFAULT_LIMITS }
+    };
   }
 
   // Check expiration if periodEnd is specified

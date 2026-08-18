@@ -31,11 +31,13 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   bool _playDialTone = true;
 
   List<LeadItem> _localQueue = [];
-  String _activeCampaignName = 'Pakistan Tax Consultants';
-  int _totalLeads = 5247;
+  List<Map<String, dynamic>> _campaignsList = [];
+  String? _selectedCampaignId;
+  String _activeCampaignName = 'Pakistan Tax Consultants COMBINED FINAL';
+  int _totalLeads = 5168;
   int _completedLeads = 0;
   int _answeredLeads = 0;
-  int _remainingLeads = 5247;
+  int _remainingLeads = 5168;
 
   @override
   void initState() {
@@ -53,9 +55,18 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
         _fetchRealCampaignAndLeads();
       }
     });
+
+    if (_bridge.socket != null) {
+      _bridge.socket!.on('leads:updated', (_) {
+        if (mounted) _fetchRealCampaignAndLeads(_selectedCampaignId);
+      });
+      _bridge.socket!.on('campaigns:updated', (_) {
+        if (mounted) _fetchRealCampaignAndLeads(_selectedCampaignId);
+      });
+    }
   }
 
-  Future<void> _fetchRealCampaignAndLeads() async {
+  Future<void> _fetchRealCampaignAndLeads([String? targetCampId]) async {
     final serverUrl = AppConfig.apiBaseUrl.isNotEmpty ? AppConfig.apiBaseUrl : 'http://127.0.0.1:3000';
     final token = _bridge.authToken;
     if (token.isEmpty) return;
@@ -67,23 +78,53 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
           'Authorization': 'Bearer $token',
           'bypass-tunnel-reminder': 'true',
         },
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 25));
 
       if (campRes.statusCode == 200) {
         final List camps = jsonDecode(campRes.body);
-        if (camps.isNotEmpty) {
-          final activeCamp = camps.first;
-          final campId = activeCamp['id'];
-          final campName = activeCamp['name'] ?? 'Active Campaign';
-          final count = activeCamp['leadCount'] ?? 0;
-
+        if (camps.isEmpty) {
           if (mounted) {
             setState(() {
-              _activeCampaignName = campName;
-              _totalLeads = count;
-              _remainingLeads = count;
+              _campaignsList = [];
+              _selectedCampaignId = null;
+              _activeCampaignName = 'No Active Campaign';
+              _totalLeads = 0;
+              _remainingLeads = 0;
+              _completedLeads = 0;
+              _answeredLeads = 0;
+              _localQueue = [];
             });
           }
+          return;
+        }
+
+        final typedCamps = camps.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+
+        Map<String, dynamic> activeCamp = typedCamps.first;
+        if (targetCampId != null) {
+          activeCamp = typedCamps.firstWhere((c) => c['id'] == targetCampId, orElse: () => typedCamps.first);
+        } else if (_selectedCampaignId != null) {
+          activeCamp = typedCamps.firstWhere((c) => c['id'] == _selectedCampaignId, orElse: () => typedCamps.first);
+        } else {
+          // Default to the main / largest production campaign (e.g. 5,168 leads)
+          final sorted = List<Map<String, dynamic>>.from(typedCamps);
+          sorted.sort((a, b) => ((b['leadCount'] ?? 0) as int).compareTo((a['leadCount'] ?? 0) as int));
+          activeCamp = sorted.first;
+        }
+
+        final campId = activeCamp['id']?.toString() ?? '';
+        final campName = activeCamp['name']?.toString() ?? 'Active Campaign';
+        final count = (activeCamp['leadCount'] is int) ? (activeCamp['leadCount'] as int) : 0;
+
+        if (mounted) {
+          setState(() {
+            _campaignsList = typedCamps;
+            _selectedCampaignId = campId;
+            _activeCampaignName = campName;
+            _totalLeads = count;
+            _remainingLeads = count;
+          });
+        }
 
           final leadsRes = await http.get(
             Uri.parse('$serverUrl/api/campaigns/$campId/leads'),
@@ -91,7 +132,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
               'Authorization': 'Bearer $token',
               'bypass-tunnel-reminder': 'true',
             },
-          ).timeout(const Duration(seconds: 5));
+          ).timeout(const Duration(seconds: 25));
 
           if (leadsRes.statusCode == 200) {
             final List leadData = jsonDecode(leadsRes.body);
@@ -126,7 +167,6 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
             }
           }
         }
-      }
     } catch (e) {
       debugPrint('Campaign fetch: $e');
     }
@@ -320,27 +360,93 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                     ],
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: isOnline ? OctalColors.success.withOpacity(0.15) : OctalColors.warning.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: isOnline ? OctalColors.success.withOpacity(0.4) : OctalColors.warning.withOpacity(0.4),
+                InkWell(
+                  onTap: () async {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Connecting phone to server...')),
+                    );
+                    await AppConfig.setBaseUrl('http://127.0.0.1:3000');
+                    await _bridge.initializeAuthenticated();
+                    _bridge.reconnect();
+                    _fetchRealCampaignAndLeads();
+                  },
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: isOnline ? OctalColors.success.withOpacity(0.15) : OctalColors.primaryGold.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isOnline ? OctalColors.success.withOpacity(0.5) : OctalColors.primaryGold,
+                        width: 1.5,
+                      ),
                     ),
-                  ),
-                  child: Text(
-                    isOnline ? 'Connected' : 'Offline',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: isOnline ? OctalColors.success : OctalColors.warning,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          isOnline ? Icons.check_circle : Icons.sync,
+                          size: 14,
+                          color: isOnline ? OctalColors.success : OctalColors.primaryGold,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          isOnline ? 'Connected' : 'Connect Phone',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w900,
+                            color: isOnline ? OctalColors.success : OctalColors.primaryGold,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
               ],
             ),
           ),
+
+          if (!isOnline) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: OctalColors.primaryGold.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: OctalColors.primaryGold.withOpacity(0.4)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, color: OctalColors.primaryGold, size: 18),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Phone is not connected to backend. Tap to connect.',
+                      style: TextStyle(fontSize: 11, color: Colors.white70),
+                    ),
+                  ),
+                  ElevatedButton(
+                    onPressed: () async {
+                      await AppConfig.setBaseUrl('http://127.0.0.1:3000');
+                      await _bridge.initializeAuthenticated();
+                      _bridge.reconnect();
+                      _fetchRealCampaignAndLeads();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: OctalColors.primaryGold,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text(
+                      'Connect',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: OctalColors.bgDark),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
 
           const SizedBox(height: 14),
 
@@ -358,25 +464,62 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Current Campaign',
-                          style: TextStyle(fontSize: 11, color: OctalColors.textSecondary),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          _activeCampaignName,
-                          style: const TextStyle(
-                            fontFamily: 'Ubuntu',
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Current Campaign',
+                            style: TextStyle(fontSize: 11, color: OctalColors.textSecondary),
                           ),
-                        ),
-                      ],
+                          const SizedBox(height: 4),
+                          if (_campaignsList.length > 1)
+                            DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _selectedCampaignId,
+                                isDense: true,
+                                isExpanded: true,
+                                dropdownColor: OctalColors.surfaceCard,
+                                icon: const Icon(Icons.keyboard_arrow_down, color: OctalColors.primaryGold, size: 20),
+                                style: const TextStyle(
+                                  fontFamily: 'Ubuntu',
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                                items: _campaignsList.map((c) {
+                                  final name = c['name']?.toString() ?? 'Campaign';
+                                  final count = c['leadCount'] ?? 0;
+                                  return DropdownMenuItem<String>(
+                                    value: c['id']?.toString(),
+                                    child: Text(
+                                      '$name ($count leads)',
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontSize: 13, color: Colors.white),
+                                    ),
+                                  );
+                                }).toList(),
+                                onChanged: (newCampId) {
+                                  if (newCampId != null) {
+                                    _fetchRealCampaignAndLeads(newCampId);
+                                  }
+                                },
+                              ),
+                            )
+                          else
+                            Text(
+                              _activeCampaignName,
+                              style: const TextStyle(
+                                fontFamily: 'Ubuntu',
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
+                    const SizedBox(width: 8),
                     TextButton(
                       onPressed: () => setState(() => _selectedTabIndex = 1),
                       style: TextButton.styleFrom(
@@ -621,6 +764,8 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
       serverUrl: _bridge.serverUrl,
       queue: _localQueue,
       sessionId: _bridge.currentSessionId,
+      campaignId: _selectedCampaignId,
+      campaignName: _activeCampaignName,
     );
   }
 

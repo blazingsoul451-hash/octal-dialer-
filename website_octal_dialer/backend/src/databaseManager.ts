@@ -670,6 +670,8 @@ try {
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_leads_tenant_camp_status ON leads(tenantId, campaignId, status)`).run();
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_leads_locked ON leads(tenantId, lockedBy)`).run();
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_call_logs_tenant_ts ON call_logs(tenantId, timestamp)`).run();
+  // Enforce database-level uniqueness: same normalized phone cannot exist twice in same campaign/tenant
+  db.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tenant_camp_phone ON leads(tenantId, campaignId, phone)`).run();
 } catch (e) {
   console.error('[DB] Performance index creation error:', e);
 }
@@ -803,7 +805,7 @@ const stmts = {
   getCampaignById: db.prepare(`SELECT * FROM campaigns WHERE id = @id AND tenantId = @tenantId`),
   insertCampaign:  db.prepare(`INSERT INTO campaigns (id, name, fileName, leadCount, tenantId, createdAt) VALUES (@id, @name, @fileName, @leadCount, @tenantId, @createdAt)`),
   getLeadsByCamp:  db.prepare(`SELECT * FROM leads WHERE campaignId = @campaignId AND tenantId = @tenantId AND status != 'ARCHIVED'`),
-  insertLead:      db.prepare(`INSERT INTO leads (id, campaignId, name, phone, status, tenantId, createdAt) VALUES (@id, @campaignId, @name, @phone, @status, @tenantId, @createdAt)`),
+  insertLead:      db.prepare(`INSERT OR IGNORE INTO leads (id, campaignId, name, phone, status, tenantId, createdAt) VALUES (@id, @campaignId, @name, @phone, @status, @tenantId, @createdAt)`),
   getLead:         db.prepare(`SELECT * FROM leads WHERE id = @id AND tenantId = @tenantId`),
   getLeadByIdOnly: db.prepare(`SELECT * FROM leads WHERE id = @id`),
   updateLeadStatus:db.prepare(`UPDATE leads SET status = @status, outcome = COALESCE(@outcome, outcome), duration = COALESCE(@duration, duration) WHERE id = @id AND tenantId = @tenantId`),
@@ -924,14 +926,96 @@ export function createCampaign(
       });
     }
 
+    const actualCount = (db.prepare(`SELECT COUNT(*) as c FROM leads WHERE campaignId = ? AND tenantId = ?`).get(campaignId, tId) as { c: number }).c;
     db.prepare(`UPDATE campaigns SET leadCount = @count WHERE id = @id AND tenantId = @tenantId`)
-      .run({ count: validLeads.length, id: campaignId, tenantId: tId });
+      .run({ count: actualCount, id: campaignId, tenantId: tId });
+    newCampaign.leadCount = actualCount;
   });
 
   insertLeads();
 
   return {
     campaign: newCampaign,
+    totalRaw: rawLeads.length,
+    dedupedCount,
+    dncSkippedCount,
+    finalCount: newCampaign.leadCount
+  };
+}
+
+export function appendLeadsToCampaign(
+  campaignId: string,
+  rawLeads: { name: string; phone: string }[],
+  tenantId: string
+): CampaignImportResult {
+  if (!tenantId || !campaignId) {
+    throw new Error('Tenant ID and Campaign ID are required (fail-closed).');
+  }
+  const campaign = stmts.getCampaignById.get({ id: campaignId, tenantId }) as Campaign | undefined;
+  if (!campaign) {
+    throw new Error('Campaign not found in this tenant.');
+  }
+
+  const now = new Date().toISOString();
+  const dncRows = db.prepare(`SELECT phone FROM suppression_list WHERE tenantId = ?`).all(tenantId) as { phone: string }[];
+  const dncSet = new Set<string>(dncRows.map(r => r.phone));
+
+  const existingRows = db.prepare(`SELECT phone FROM leads WHERE tenantId = ?`).all(tenantId) as { phone: string }[];
+  const existingSet = new Set<string>(existingRows.map(r => r.phone));
+
+  let dedupedCount = 0;
+  let dncSkippedCount = 0;
+  const batchSeen = new Set<string>();
+  const validLeads: { name: string; phone: string }[] = [];
+
+  for (const lead of rawLeads) {
+    const norm = normalizePhone(lead.phone);
+    if (!norm) continue;
+
+    if (dncSet.has(norm)) {
+      dncSkippedCount++;
+      continue;
+    }
+
+    if (batchSeen.has(norm) || existingSet.has(norm)) {
+      dedupedCount++;
+      continue;
+    }
+
+    batchSeen.add(norm);
+    validLeads.push({ name: lead.name || 'Unknown Lead', phone: norm });
+  }
+
+  const runInsert = db.transaction(() => {
+    if (validLeads.length > 0) {
+      const leadLimitCheck = checkLimit(tenantId, 'maxLeads', validLeads.length);
+      if (!leadLimitCheck.allowed) {
+        throw new Error(leadLimitCheck.error || `Lead quota exceeded (${leadLimitCheck.current + validLeads.length}/${leadLimitCheck.limit}).`);
+      }
+    }
+
+    for (let i = 0; i < validLeads.length; i++) {
+      stmts.insertLead.run({
+        id: `lead_${campaignId}_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`,
+        campaignId,
+        name: validLeads[i].name,
+        phone: validLeads[i].phone,
+        status: 'PENDING',
+        tenantId,
+        createdAt: now
+      });
+    }
+
+    const actualCount = (db.prepare(`SELECT COUNT(*) as c FROM leads WHERE campaignId = ? AND tenantId = ?`).get(campaignId, tenantId) as { c: number }).c;
+    db.prepare(`UPDATE campaigns SET leadCount = @count WHERE id = @id AND tenantId = @tenantId`)
+      .run({ count: actualCount, id: campaignId, tenantId });
+    campaign.leadCount = actualCount;
+  });
+
+  runInsert();
+
+  return {
+    campaign,
     totalRaw: rawLeads.length,
     dedupedCount,
     dncSkippedCount,
@@ -1095,10 +1179,10 @@ export function saveDb(data: LegacyDb) {
 }
 
 // ─── Phone-number normalisation helper ───────────────────────────────────────
-// Strips spaces, dashes, dots, parentheses; formats local 03xx numbers to +923xx
+// Strips spaces, dashes, dots, parentheses, slashes; canonicalizes Pakistani and international numbers
 export function normalizePhone(raw: string): string {
   if (!raw) return '';
-  let stripped = raw.replace(/[\s\-().]/g, '');
+  let stripped = raw.toString().trim().replace(/[\s\-\(\)\.\/\\]/g, '');
   if (!stripped) return '';
 
   // Handle local Pakistani 03xx format: 03001234567 -> +923001234567
@@ -1106,10 +1190,22 @@ export function normalizePhone(raw: string): string {
     return '+92' + stripped.substring(1);
   }
   // Handle 923xx without +: 923001234567 -> +923001234567
-  if (/^92\d{10}$/.test(stripped)) {
+  if (/^923\d{9}$/.test(stripped)) {
     return '+' + stripped;
   }
-  // If numeric without leading +, add + if >= 10 digits
+  // Handle +923xx: +923001234567 -> +923001234567
+  if (/^\+923\d{9}$/.test(stripped)) {
+    return stripped;
+  }
+  // Handle 00923xx: 00923001234567 -> +923001234567
+  if (/^00923\d{9}$/.test(stripped)) {
+    return '+' + stripped.substring(2);
+  }
+  // If already starts with + and has 10-15 digits
+  if (/^\+\d{10,15}$/.test(stripped)) {
+    return stripped;
+  }
+  // If purely numeric without leading +, add + if >= 10 digits
   if (/^\d{10,15}$/.test(stripped)) {
     return '+' + stripped;
   }
