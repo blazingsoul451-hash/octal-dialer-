@@ -85,65 +85,11 @@ class _CallLogScreenState extends State<CallLogScreen> {
           });
         }
       } else {
-        _loadFallbackLogs();
+        if (mounted) setState(() => _isLoading = false);
       }
     } catch (e) {
-      _loadFallbackLogs();
+      if (mounted) setState(() => _isLoading = false);
     }
-  }
-
-  void _loadFallbackLogs() {
-    if (!mounted) return;
-    setState(() {
-      _logs = [
-        CallLogItem(
-          id: 'log_1',
-          name: 'Acme Corporation',
-          phone: '+1 (555) 123-4567',
-          reason: 'ANSWERED',
-          duration: 135,
-          createdAt: '10:30 AM',
-          disposition: 'Interested',
-        ),
-        CallLogItem(
-          id: 'log_2',
-          name: 'Global Enterprises',
-          phone: '+1 (555) 987-6543',
-          reason: 'NO_ANSWER',
-          duration: 0,
-          createdAt: '10:21 AM',
-          disposition: 'No Answer',
-        ),
-        CallLogItem(
-          id: 'log_3',
-          name: 'Beta Solutions',
-          phone: '+1 (555) 234-5678',
-          reason: 'ANSWERED',
-          duration: 85,
-          createdAt: '10:15 AM',
-          disposition: 'Callback Request',
-        ),
-        CallLogItem(
-          id: 'log_4',
-          name: 'Omega LLC',
-          phone: '+1 (555) 345-6789',
-          reason: 'FAILED',
-          duration: 0,
-          createdAt: '10:11 AM',
-          disposition: 'Failed',
-        ),
-        CallLogItem(
-          id: 'log_5',
-          name: 'Prime Industries',
-          phone: '+1 (555) 456-7890',
-          reason: 'NO_ANSWER',
-          duration: 0,
-          createdAt: '10:05 AM',
-          disposition: 'No Answer',
-        ),
-      ];
-      _isLoading = false;
-    });
   }
 
   @override

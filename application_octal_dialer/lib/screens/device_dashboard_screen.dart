@@ -502,19 +502,24 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                   height: 48,
                   child: ElevatedButton.icon(
                     onPressed: () {
-                      if (_bridge.socket != null) {
+                      if (_localQueue.isNotEmpty && _bridge.socket != null) {
+                        final lead = _localQueue.first;
                         Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (context) => CallingScreen(
-                              phone: '+15551234567',
-                              name: 'Acme Corporation',
-                              leadId: 'lead_1',
+                              phone: lead.phone,
+                              name: lead.name,
+                              leadId: lead.id,
                               timeout: _ringTimeoutSeconds,
                               socket: _bridge.socket!,
                               sessionId: (_bridge.currentSessionId != null && _bridge.currentSessionId!.isNotEmpty) ? _bridge.currentSessionId! : 'sess_standalone',
                             ),
                           ),
+                        );
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('No leads currently in queue. Please select a campaign.')),
                         );
                       }
                     },
