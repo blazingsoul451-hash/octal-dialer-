@@ -1,0 +1,17 @@
+========================================================================
+VERCEL ACCOUNT RECOVERY CODES (mohsinbabar402-creator)
+========================================================================
+
+Account: mohsinbabar402-creator
+Created: 2026-08-22
+
+RECOVERY CODES:
+1. 7d167a7d-66fdfe78
+2. cb094fec-2401e272
+3. ea98afc9-251c4674
+4. 3f1caaba-6355235f
+5. 7bf293a3-4eb52eac
+6. 93b9ba9e-3c94cd3e
+
+Keep these codes safe to regain access if you lose your 2FA / passkey device.
+========================================================================

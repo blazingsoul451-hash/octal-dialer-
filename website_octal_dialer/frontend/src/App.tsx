@@ -37,11 +37,11 @@ const getBackendUrl = () => {
       return 'http://127.0.0.1:5000';
     }
     if (loc.hostname.includes('vercel.app')) {
-      return 'http://140.245.215.156:5000';
+      return 'http://140.245.215.156';
     }
-    return `http://${loc.hostname}:5000`;
+    return `http://${loc.hostname}`;
   }
-  return 'http://140.245.215.156:5000';
+  return 'http://140.245.215.156';
 };
 
 const SERVER_URL = getBackendUrl();

@@ -219,8 +219,8 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       const candidateUrls = Array.from(new Set([
         '',
         serverUrl,
-        `http://${window.location.hostname}:5000`,
-        'http://140.245.215.156:5000'
+        'http://140.245.215.156',
+        `http://${window.location.hostname}`
       ]));
 
       let res: Response | null = null;
