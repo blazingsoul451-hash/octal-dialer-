@@ -69,11 +69,11 @@ export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight 
   const getOutcomeBadge = (outcome: string) => {
     const norm = (outcome || '').toUpperCase();
     if (norm === 'CONNECTED' || norm === 'ANSWERED' || norm === 'SUCCESS' || norm === 'INTERESTED') {
-      return isLight ? 'bg-emerald-50 border-emerald-300 text-emerald-700 font-bold' : 'bg-emerald-950/30 border-emerald-900 text-emerald-400';
+      return isLight ? 'bg-emerald-50 border-emerald-300 text-emerald-700 font-bold' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-bold';
     }
-    if (norm === 'NO_ANSWER') return isLight ? 'bg-red-50 border-red-300 text-red-700 font-bold' : 'bg-red-950/30 border-red-900 text-red-400';
-    if (norm === 'BUSY') return isLight ? 'bg-amber-50 border-amber-300 text-amber-700 font-bold' : 'bg-amber-955/30 border-amber-900 text-amber-400';
-    return isLight ? 'bg-slate-100 border-slate-300 text-slate-600 font-bold' : 'bg-slate-900 border-slate-800 text-slate-400';
+    if (norm === 'NO_ANSWER') return isLight ? 'bg-red-50 border-red-300 text-red-700 font-bold' : 'bg-zinc-800 border-zinc-700 text-zinc-400 font-bold';
+    if (norm === 'BUSY' || norm === 'REJECTED') return isLight ? 'bg-amber-50 border-amber-300 text-amber-700 font-bold' : 'bg-red-500/10 border-red-500/30 text-red-400 font-bold';
+    return isLight ? 'bg-slate-100 border-slate-300 text-slate-600 font-bold' : 'bg-[#18181b] border-[#27272a] text-zinc-400 font-bold';
   };
 
   const formatDate = (isoStr: string) => {
@@ -82,17 +82,17 @@ export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight 
   };
 
   return (
-    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left transition-colors ${
-      isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left select-none transition-colors ${
+      isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
     }`}>
       <div className={`flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b gap-3 ${
-        isLight ? 'border-slate-200' : 'border-slate-800/80'
+        isLight ? 'border-slate-200' : 'border-[#18181b]'
       }`}>
         <div>
-          <h2 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+          <h2 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
             Call Logs & Historical Reporting
           </h2>
-          <p className={`text-xs mt-1 ${isLight ? 'text-slate-600 font-semibold' : 'text-slate-400'}`}>
+          <p className="text-xs text-zinc-400 mt-1">
             Audit real-time call durations, disposition metrics, and GSM hardware execution logs.
           </p>
         </div>
@@ -100,7 +100,7 @@ export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight 
           <button
             onClick={handleExportCsv}
             disabled={exporting || logs.length === 0}
-            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md"
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black font-bold text-xs rounded-xl transition flex items-center gap-2 cursor-pointer shadow-sm"
           >
             <Download className={`w-3.5 h-3.5 ${exporting ? 'animate-bounce' : ''}`} />
             <span>{exporting ? 'Exporting...' : 'Export CSV'}</span>
@@ -108,64 +108,62 @@ export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight 
           <button
             onClick={fetchLogs}
             disabled={loading}
-            className="p-2 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-400 hover:text-white rounded-xl transition cursor-pointer"
+            className={`p-2.5 rounded-xl border transition cursor-pointer ${
+              isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700' : 'bg-[#18181b] hover:bg-[#27272a] border-[#27272a] text-zinc-400 hover:text-white'
+            }`}
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-amber-500' : ''}`} />
           </button>
         </div>
       </div>
 
       {error && (
-        <div className={`p-3 border text-xs rounded-xl flex items-start gap-2 ${
-          isLight ? 'bg-red-50 border-red-200 text-red-700' : 'bg-red-950/20 border-red-900/30 text-red-400'
-        }`}>
+        <div className="p-3.5 border text-xs rounded-2xl flex items-start gap-2 shadow-sm bg-red-500/10 border-red-500/30 text-red-400">
           <AlertCircle className="w-4.5 h-4.5 shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
       {loading && logs.length === 0 ? (
-        <div className="h-48 flex items-center justify-center text-xs font-mono text-slate-500">
+        <div className={`h-48 flex items-center justify-center text-xs font-mono ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
           Loading history files...
         </div>
       ) : logs.length === 0 ? (
-        <div className={`h-48 border border-dashed rounded-xl flex flex-col items-center justify-center text-center p-6 text-slate-500 text-xs font-mono ${
-          isLight ? 'border-slate-300 bg-slate-50/50' : 'border-slate-850'
+        <div className={`h-48 border border-dashed rounded-2xl flex flex-col items-center justify-center text-center p-6 text-xs font-mono ${
+          isLight ? 'border-slate-300 text-slate-500' : 'border-[#27272a] text-zinc-500'
         }`}>
           No calls placed in this session yet
         </div>
       ) : (
-        <div className={`overflow-x-auto rounded-xl border ${
-          isLight ? 'border-slate-200 bg-white' : 'border-slate-855 bg-slate-950'
-        }`}>
-          <table className="w-full text-left border-collapse text-xs">
+        <div className={`overflow-x-auto rounded-2xl border ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
+          <table className="w-full text-left border-collapse text-xs font-mono">
             <thead>
-              <tr className={`border-b font-mono text-[9px] uppercase ${
-                isLight ? 'bg-slate-100 border-slate-200 text-slate-600' : 'bg-slate-900 border-slate-850 text-slate-400'
+              <tr className={`border-b text-[10px] uppercase tracking-wider ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-600' : 'bg-[#121215] border-[#18181b] text-zinc-400'
               }`}>
-                <th className="p-3">Time</th>
-                <th className="p-3">Recipient Name</th>
-                <th className="p-3">Phone Line</th>
-                <th className="p-3">Campaign Group</th>
-                <th className="p-3">Bluetooth Signal Outcome</th>
-                <th className="p-3">Talk Duration</th>
+                <th className="p-3.5">Time</th>
+                <th className="p-3.5">Recipient Name</th>
+                <th className="p-3.5">Phone Line</th>
+                <th className="p-3.5">Campaign Group</th>
+                <th className="p-3.5">Signal Outcome</th>
+                <th className="p-3.5 text-right">Talk Duration</th>
               </tr>
             </thead>
-            <tbody className={`divide-y font-mono ${
-              isLight ? 'divide-slate-200 text-slate-800' : 'divide-slate-900 text-slate-350'
+            <tbody className={`divide-y ${
+              isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b] text-zinc-300'
             }`}>
               {logs.map((log) => (
-                <tr key={log.id} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-900/40 transition'}>
-                  <td className="p-3 text-[10px] text-slate-500">{formatDate(log.timestamp)}</td>
-                  <td className={`p-3 font-body font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{log.leadName}</td>
-                  <td className="p-3 text-[10px] text-slate-500">{log.leadPhone}</td>
-                  <td className="p-3 font-body text-slate-500">{log.campaignName}</td>
-                  <td className="p-3">
-                    <span className={`text-[8px] font-bold px-2 py-0.5 border rounded uppercase ${getOutcomeBadge(log.outcome)}`}>
+                <tr key={log.id} className={`${isLight ? 'hover:bg-slate-50' : 'hover:bg-[#121215]/60'} transition`}>
+                  <td className={`p-3.5 text-[11px] ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{formatDate(log.timestamp)}</td>
+                  <td className={`p-3.5 font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{log.leadName}</td>
+                  <td className={`p-3.5 text-[11px] font-bold ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>{log.leadPhone}</td>
+                  <td className={`p-3.5 ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>{log.campaignName}</td>
+                  <td className="p-3.5">
+                    <span className={`text-[9px] font-bold px-2.5 py-0.5 border rounded-full uppercase ${getOutcomeBadge(log.outcome)}`}>
                       {log.outcome}
                     </span>
                   </td>
-                  <td className="p-3 font-bold">{log.duration}s</td>
+                  <td className={`p-3.5 text-right font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{log.duration}s</td>
                 </tr>
               ))}
             </tbody>

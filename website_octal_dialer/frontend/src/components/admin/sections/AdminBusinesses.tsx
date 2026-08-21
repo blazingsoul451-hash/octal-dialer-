@@ -95,7 +95,7 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
             onClick={fetchTenants}
             disabled={loading}
             className={`px-3 py-1.5 rounded-xl border text-xs font-bold font-mono flex items-center gap-1.5 cursor-pointer transition ${
-              isLight ? 'bg-white border-slate-300 hover:bg-slate-50 text-slate-700' : 'bg-slate-900 border-slate-800 hover:bg-slate-850 text-slate-300'
+              isLight ? 'bg-white border-slate-300 hover:bg-slate-50 text-slate-700' : 'bg-[#18181b] border-[#18181b] hover:bg-[#27272a] text-slate-300'
             }`}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
@@ -113,7 +113,9 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by business name or owner..."
-            className="w-full bg-slate-950/80 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition"
+            className={`w-full rounded-xl pl-9 pr-3.5 py-2 text-xs font-mono placeholder-slate-500 focus:outline-none focus:border-amber-500 transition border ${
+              isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
+            }`}
           />
         </div>
 
@@ -121,7 +123,9 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
         <select
           value={countryFilter}
           onChange={(e) => setCountryFilter(e.target.value)}
-          className="bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-slate-300 focus:outline-none focus:border-amber-500 cursor-pointer"
+          className={`border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-amber-500 cursor-pointer ${
+            isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#121215] border-[#18181b] text-slate-300'
+          }`}
         >
           <option value="ALL">All Countries</option>
           {countries.map(c => (
@@ -133,7 +137,9 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-slate-300 focus:outline-none focus:border-amber-500 cursor-pointer"
+          className={`border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-amber-500 cursor-pointer ${
+            isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#121215] border-[#18181b] text-slate-300'
+          }`}
         >
           <option value="ALL">All Statuses</option>
           <option value="active">Active</option>
@@ -143,44 +149,46 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
 
       {/* ── Businesses Table ── */}
       <div className={`p-5 rounded-2xl border ${
-        isLight ? 'bg-white border-slate-200' : 'bg-slate-900/90 border-slate-800'
+        isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs font-mono">
             <thead>
-              <tr className="border-b border-slate-800 text-[10px] text-slate-500 uppercase">
-                <th className="pb-3">Business</th>
-                <th className="pb-3">Owner</th>
-                <th className="pb-3">Country</th>
-                <th className="pb-3">Plan</th>
-                <th className="pb-3">Users</th>
-                <th className="pb-3">Devices</th>
-                <th className="pb-3">Status</th>
-                <th className="pb-3">Created</th>
-                <th className="pb-3 text-right">Actions</th>
+              <tr className={`border-b text-[10px] uppercase ${
+                isLight ? 'border-slate-200 text-slate-600 bg-slate-50' : 'border-[#18181b] text-slate-500'
+              }`}>
+                <th className="p-3">Business</th>
+                <th className="p-3">Owner</th>
+                <th className="p-3">Country</th>
+                <th className="p-3">Plan</th>
+                <th className="p-3">Users</th>
+                <th className="p-3">Devices</th>
+                <th className="p-3">Status</th>
+                <th className="p-3">Created</th>
+                <th className="p-3 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
+            <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b]'}`}>
               {tenants.map((t: any) => (
-                <tr key={t.id} className="hover:bg-slate-800/40 transition">
+                <tr key={t.id} className={`${isLight ? 'hover:bg-slate-50' : 'hover:bg-[#121215]/60'} transition`}>
                   {/* Business Name + Avatar */}
-                  <td className="py-3 font-bold text-white flex items-center gap-2.5">
+                  <td className="p-3 font-bold flex items-center gap-2.5">
                     <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-amber-500 to-amber-600 border border-amber-400/30 flex items-center justify-center text-xs font-black text-slate-950 shrink-0 shadow">
                       {t.name.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <div className="text-white font-bold">{t.name}</div>
+                      <div className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{t.name}</div>
                       <div className="text-[10px] text-slate-500">{t.slug}</div>
                     </div>
                   </td>
 
                   {/* Owner */}
-                  <td className="py-3 text-slate-300">
+                  <td className={`p-3 ${isLight ? 'text-slate-800' : 'text-slate-300'}`}>
                     <span className="font-bold">{t.ownerUsername || '—'}</span>
                   </td>
 
                   {/* Country */}
-                  <td className="py-3 text-slate-400">
+                  <td className="p-3 text-slate-400">
                     <span className="flex items-center gap-1">
                       <Globe className="w-3.5 h-3.5 text-slate-500" />
                       <span>{t.country || 'US'}</span>
@@ -188,26 +196,30 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
                   </td>
 
                   {/* Plan */}
-                  <td className="py-3 text-purple-300 font-bold">
+                  <td className="p-3 text-purple-400 font-bold">
                     {t.planName || 'Starter'}
                   </td>
 
                   {/* Users */}
-                  <td className="py-3 text-slate-300">
-                    <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] font-bold">
+                  <td className="p-3">
+                    <span className={`px-2 py-0.5 rounded border text-[10px] font-bold ${
+                      isLight ? 'bg-slate-100 border-slate-200 text-slate-800' : 'bg-[#121215] border-[#18181b] text-slate-300'
+                    }`}>
                       {t.userCount || 0}
                     </span>
                   </td>
 
                   {/* Devices */}
-                  <td className="py-3 text-slate-300">
-                    <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] font-bold">
+                  <td className="p-3">
+                    <span className={`px-2 py-0.5 rounded border text-[10px] font-bold ${
+                      isLight ? 'bg-slate-100 border-slate-200 text-slate-800' : 'bg-[#121215] border-[#18181b] text-slate-300'
+                    }`}>
                       {t.deviceCount || 0}
                     </span>
                   </td>
 
                   {/* Status */}
-                  <td className="py-3">
+                  <td className="p-3">
                     <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase border ${
                       t.status === 'active' 
                         ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800' 
@@ -218,15 +230,17 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
                   </td>
 
                   {/* Created */}
-                  <td className="py-3 text-slate-500 text-[10px]">
+                  <td className="p-3 text-slate-500 text-[10px]">
                     {new Date(t.createdAt).toLocaleDateString()}
                   </td>
 
                   {/* Action */}
-                  <td className="py-3 text-right">
+                  <td className="p-3 text-right">
                     <button
                       onClick={() => setSelectedBusinessId(t.id)}
-                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-300 text-[10px] font-bold font-mono cursor-pointer transition flex items-center gap-1 ml-auto"
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-bold font-mono cursor-pointer transition flex items-center gap-1 ml-auto ${
+                        isLight ? 'bg-slate-100 hover:bg-amber-500 hover:text-slate-950 text-slate-700' : 'bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-300'
+                      }`}
                     >
                       <Eye className="w-3 h-3" />
                       <span>Inspect</span>

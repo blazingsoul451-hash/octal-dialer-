@@ -324,22 +324,22 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   const totalPages = Math.ceil(tableFilteredLogs.length / pageSize) || 1;
 
   return (
-    <div className={`space-y-6 text-left transition-colors duration-200`}>
+    <div className="space-y-6 text-left select-none transition-colors duration-200">
       {/* ── Header & Range Control Bar ── */}
       <div className={`border rounded-2xl p-6 shadow-2xl transition-colors ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+        isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center shadow-md">
-                <TrendingUp className="w-5 h-5 text-slate-950" />
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center font-bold text-amber-400 shadow-sm">
+                <TrendingUp className="w-5 h-5" />
               </div>
-              <h1 className={`text-2xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+              <h1 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
                 Reports & Analytics
               </h1>
             </div>
-            <p className={`text-xs mt-1.5 font-medium ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
+            <p className="text-xs mt-1.5 text-zinc-400 font-medium">
               Real-time outbound campaign analytics, live answer rates, talk time metrics, and call outcome intelligence.
             </p>
           </div>
@@ -359,14 +359,12 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                 <button
                   key={preset}
                   onClick={() => { setDatePreset(preset); setPage(1); }}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer border ${
                     active
-                      ? isLight
-                        ? 'bg-amber-500 border-amber-600 text-slate-950 shadow-md'
-                        : 'bg-amber-500 border-amber-400 text-slate-950 shadow-md shadow-amber-500/20'
+                      ? 'bg-amber-500 border-amber-500 text-black shadow-sm font-black'
                       : isLight
-                        ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
-                        : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
+                        ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700'
+                        : 'bg-[#18181b] hover:bg-[#27272a] border-[#27272a] text-zinc-300'
                   }`}
                 >
                   {labels[preset]}
@@ -380,8 +378,8 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
               title="Refresh Analytics"
               className={`p-2 rounded-xl border transition-all cursor-pointer ${
                 isLight
-                  ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
-                  : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
+                  ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700'
+                  : 'bg-[#18181b] hover:bg-[#27272a] border-[#27272a] text-zinc-300'
               }`}
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-amber-500' : ''}`} />
@@ -391,9 +389,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
       </div>
 
       {error && (
-        <div className={`p-4 border text-xs rounded-2xl flex items-start gap-3 shadow-md ${
-          isLight ? 'bg-red-50 border-red-200 text-red-700' : 'bg-red-950/30 border-red-900/50 text-red-400'
-        }`}>
+        <div className="p-4 border text-xs rounded-2xl flex items-start gap-3 shadow-sm bg-red-500/10 border-red-500/30 text-red-400">
           <AlertCircle className="w-5 h-5 shrink-0" />
           <div>
             <p className="font-bold">Analytics Connection Notice</p>
@@ -406,10 +402,10 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Total Calls */}
         <div className={`border rounded-2xl p-5 shadow-xl transition-colors ${
-          isLight ? 'bg-white border-slate-200 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">Total Calls Placed</span>
+            <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 font-bold">Total Calls Placed</span>
             <div className={`p-2 rounded-xl ${isLight ? 'bg-amber-50 text-amber-600' : 'bg-amber-500/10 text-amber-400'}`}>
               <PhoneCall className="w-4 h-4" />
             </div>
@@ -417,17 +413,17 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
           <div className={`text-2xl font-black font-mono mt-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>
             {loading ? '...' : kpiData.total.toLocaleString()}
           </div>
-          <p className="text-[10px] text-slate-500 mt-1 font-mono">
+          <p className="text-[10px] text-zinc-500 mt-1 font-mono">
             {kpiData.answered} connected ({kpiData.answerRate}%)
           </p>
         </div>
 
         {/* Answer Rate */}
         <div className={`border rounded-2xl p-5 shadow-xl transition-colors ${
-          isLight ? 'bg-white border-slate-200 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">Answer Rate</span>
+            <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 font-bold">Answer Rate</span>
             <div className={`p-2 rounded-xl ${isLight ? 'bg-emerald-50 text-emerald-600' : 'bg-emerald-500/10 text-emerald-400'}`}>
               <CheckCircle2 className="w-4 h-4" />
             </div>
@@ -435,17 +431,17 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
           <div className={`text-2xl font-black font-mono mt-2 ${isLight ? 'text-slate-900' : 'text-emerald-400'}`}>
             {loading ? '...' : `${kpiData.answerRate}%`}
           </div>
-          <p className="text-[10px] text-slate-500 mt-1 font-mono">
+          <p className="text-[10px] text-zinc-500 mt-1 font-mono">
             {kpiData.noAnswer} missed / {kpiData.busy} busy
           </p>
         </div>
 
         {/* Total Talk Time */}
         <div className={`border rounded-2xl p-5 shadow-xl transition-colors ${
-          isLight ? 'bg-white border-slate-200 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">Total Talk Time</span>
+            <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 font-bold">Total Talk Time</span>
             <div className={`p-2 rounded-xl ${isLight ? 'bg-blue-50 text-blue-600' : 'bg-blue-500/10 text-blue-400'}`}>
               <Clock className="w-4 h-4" />
             </div>
@@ -453,17 +449,17 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
           <div className={`text-2xl font-black font-mono mt-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>
             {loading ? '...' : kpiData.talkTimeStr}
           </div>
-          <p className="text-[10px] text-slate-500 mt-1 font-mono">
+          <p className="text-[10px] text-zinc-500 mt-1 font-mono">
             {kpiData.totalSeconds} total call seconds
           </p>
         </div>
 
         {/* Average Call Duration */}
         <div className={`border rounded-2xl p-5 shadow-xl transition-colors ${
-          isLight ? 'bg-white border-slate-200 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">Avg Call Duration (ACD)</span>
+            <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 font-bold">Avg Call Duration (ACD)</span>
             <div className={`p-2 rounded-xl ${isLight ? 'bg-purple-50 text-purple-600' : 'bg-purple-500/10 text-purple-400'}`}>
               <TrendingUp className="w-4 h-4" />
             </div>
@@ -471,7 +467,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
           <div className={`text-2xl font-black font-mono mt-2 ${isLight ? 'text-slate-900' : 'text-amber-400'}`}>
             {loading ? '...' : kpiData.acdStr}
           </div>
-          <p className="text-[10px] text-slate-500 mt-1 font-mono">
+          <p className="text-[10px] text-zinc-500 mt-1 font-mono">
             avg duration of answered calls
           </p>
         </div>
@@ -482,30 +478,30 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
         
         {/* Chart 1: Daily Call Volume (2 cols) */}
         <div className={`lg:col-span-2 border rounded-2xl p-6 shadow-2xl transition-colors flex flex-col justify-between ${
-          isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+          isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
         }`}>
           <div>
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-4">
+            <div className={`flex items-center justify-between pb-3 border-b mb-4 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
               <div>
-                <h3 className={`text-base font-bold font-display ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+                <h3 className={`text-xs font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
                   Call Volume & Answer Trends
                 </h3>
-                <p className="text-[10px] text-slate-500 font-mono">Daily breakdown of total attempts vs answered connections</p>
+                <p className="text-[10px] text-zinc-500 font-mono">Daily breakdown of total attempts vs answered connections</p>
               </div>
               <div className="flex items-center gap-3 text-xs font-mono">
                 <span className="flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-sm bg-amber-500" />
-                  <span className="text-[10px] text-slate-400 font-bold">Total Calls</span>
+                  <span className="text-[10px] text-zinc-400 font-bold">Total Calls</span>
                 </span>
                 <span className="flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" />
-                  <span className="text-[10px] text-slate-400 font-bold">Answered</span>
+                  <span className="text-[10px] text-zinc-400 font-bold">Answered</span>
                 </span>
               </div>
             </div>
 
             {dailyData.days.length === 0 ? (
-              <div className="h-56 flex flex-col items-center justify-center text-slate-500 text-xs font-mono border border-dashed border-slate-800 rounded-xl">
+              <div className="h-56 flex flex-col items-center justify-center text-zinc-500 text-xs font-mono border border-dashed border-[#27272a] rounded-2xl">
                 <span>No call activity recorded for selected date range</span>
               </div>
             ) : (
@@ -516,7 +512,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   return (
                     <div key={d.date} className="flex-1 min-w-[28px] flex flex-col items-center gap-1.5 group relative">
                       {/* Tooltip on hover */}
-                      <div className="absolute -top-12 hidden group-hover:flex flex-col items-center bg-slate-900 border border-slate-700 text-white text-[9px] font-mono px-2 py-1 rounded shadow-xl whitespace-nowrap z-20 pointer-events-none">
+                      <div className="absolute -top-12 hidden group-hover:flex flex-col items-center bg-[#121215] border border-[#27272a] text-white text-[9px] font-mono px-2 py-1 rounded shadow-xl whitespace-nowrap z-20 pointer-events-none">
                         <span className="font-bold text-amber-400">{d.date}</span>
                         <span>{d.total} calls ({d.answered} answered)</span>
                       </div>
@@ -534,7 +530,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                           title={`Answered: ${d.answered}`}
                         />
                       </div>
-                      <span className="text-[9px] font-mono text-slate-500 truncate w-full text-center">
+                      <span className="text-[9px] font-mono text-zinc-500 truncate w-full text-center">
                         {d.label}
                       </span>
                     </div>
@@ -547,37 +543,37 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
 
         {/* Chart 2: Outcome Breakdown (1 col) */}
         <div className={`border rounded-2xl p-6 shadow-2xl transition-colors flex flex-col justify-between ${
-          isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+          isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
         }`}>
           <div>
-            <div className="pb-3 border-b border-slate-800/80 mb-4">
-              <h3 className={`text-base font-bold font-display ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+            <div className={`pb-3 border-b mb-4 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
+              <h3 className={`text-xs font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
                 Call Outcome Distribution
               </h3>
-              <p className="text-[10px] text-slate-500 font-mono">Percentage distribution across dispositions</p>
+              <p className="text-[10px] text-zinc-500 font-mono">Percentage distribution across dispositions</p>
             </div>
 
             {kpiData.total === 0 ? (
-              <div className="h-56 flex items-center justify-center text-slate-500 text-xs font-mono border border-dashed border-slate-800 rounded-xl">
+              <div className="h-56 flex items-center justify-center text-zinc-500 text-xs font-mono border border-dashed border-[#27272a] rounded-2xl">
                 <span>No disposition data</span>
               </div>
             ) : (
               <div className="space-y-3 pt-2">
                 {[
                   { label: 'Answered / Connected', count: kpiData.answered, color: 'bg-emerald-500', text: 'text-emerald-400' },
-                  { label: 'No Answer / Missed', count: kpiData.noAnswer, color: 'bg-red-500', text: 'text-red-400' },
+                  { label: 'No Answer / Missed', count: kpiData.noAnswer, color: 'bg-zinc-600', text: 'text-zinc-400' },
                   { label: 'Busy / Rejected', count: kpiData.busy, color: 'bg-amber-500', text: 'text-amber-400' },
                   { label: 'Voicemail', count: kpiData.voicemail, color: 'bg-purple-500', text: 'text-purple-400' },
-                  { label: 'DNC / Suppression', count: kpiData.dnc, color: 'bg-rose-500', text: 'text-rose-400' },
+                  { label: 'DNC / Suppression', count: kpiData.dnc, color: 'bg-red-500', text: 'text-red-400' },
                 ].map((item) => {
                   const pct = kpiData.total > 0 ? ((item.count / kpiData.total) * 100).toFixed(1) : '0.0';
                   return (
                     <div key={item.label} className="space-y-1">
                       <div className="flex justify-between text-xs font-mono">
-                        <span className={`font-semibold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>{item.label}</span>
-                        <span className="text-slate-400 font-bold">{item.count} ({pct}%)</span>
+                        <span className={`font-semibold ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>{item.label}</span>
+                        <span className="text-zinc-400 font-bold">{item.count} ({pct}%)</span>
                       </div>
-                      <div className="w-full bg-slate-800/80 rounded-full h-2 overflow-hidden">
+                      <div className="w-full bg-[#18181b] rounded-full h-2 overflow-hidden border border-[#27272a]">
                         <div
                           className={`h-full ${item.color} rounded-full transition-all duration-500`}
                           style={{ width: `${pct}%` }}
@@ -594,16 +590,16 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
 
       {/* ── Chart 3: Best Calling Hours (24 Hour Heatmap) ── */}
       <div className={`border rounded-2xl p-6 shadow-2xl transition-colors ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+        isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
-        <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-4">
+        <div className={`flex items-center justify-between pb-3 border-b mb-4 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
           <div>
-            <h3 className={`text-base font-bold font-display ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+            <h3 className={`text-xs font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Best Calling Hours (Hourly Density Matrix)
             </h3>
-            <p className="text-[10px] text-slate-500 font-mono">Hourly connect probability and peak calling density (00:00 - 23:00)</p>
+            <p className="text-[10px] text-zinc-500 font-mono">Hourly connect probability and peak calling density (00:00 - 23:00)</p>
           </div>
-          <span className="text-[10px] font-mono text-slate-400">Timezone: Local System Time</span>
+          <span className="text-[10px] font-mono text-zinc-400">Timezone: Local System Time</span>
         </div>
 
         <div className="grid grid-cols-6 sm:grid-cols-12 lg:grid-cols-24 gap-1 pt-2">
@@ -611,19 +607,19 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
             const intensity = h.total > 0 ? h.total / hourlyData.maxTotal : 0;
             const bgClass =
               intensity > 0.75
-                ? 'bg-amber-500 text-slate-950 font-bold'
+                ? 'bg-amber-500 text-black font-bold'
                 : intensity > 0.4
-                ? 'bg-amber-500/60 text-slate-950 font-bold'
+                ? 'bg-amber-500/60 text-black font-bold'
                 : intensity > 0.1
                 ? 'bg-amber-500/25 text-amber-300'
                 : isLight
                 ? 'bg-slate-100 text-slate-400'
-                : 'bg-slate-900 text-slate-500';
+                : 'bg-[#121215] text-zinc-500 border border-[#27272a]';
 
             return (
               <div
                 key={h.hour}
-                className={`p-2 rounded-lg text-center flex flex-col justify-between h-20 transition-all ${bgClass}`}
+                className={`p-2 rounded-xl text-center flex flex-col justify-between h-20 transition-all ${bgClass}`}
                 title={`Hour ${h.label}: ${h.total} calls (${h.answered} answered)`}
               >
                 <span className="text-[8px] font-mono font-bold block">{h.hour}h</span>
@@ -637,58 +633,60 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
 
       {/* ── Campaign Performance Matrix ── */}
       <div className={`border rounded-2xl p-6 shadow-2xl transition-colors space-y-4 ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+        isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
-        <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
+        <div className={`flex items-center justify-between pb-3 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
           <div>
-            <h3 className={`text-base font-bold font-display ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+            <h3 className={`text-xs font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Campaign Performance Comparison
             </h3>
-            <p className="text-[10px] text-slate-500 font-mono">Detailed conversion metrics and contact efficiency per campaign</p>
+            <p className="text-[10px] text-zinc-500 font-mono">Detailed conversion metrics and contact efficiency per campaign</p>
           </div>
-          <span className="text-xs font-mono text-amber-500 font-bold">{campaignStats.length} Campaign(s)</span>
+          <span className="text-xs font-mono text-amber-400 font-bold">{campaignStats.length} Campaign(s)</span>
         </div>
 
         {campaignStats.length === 0 ? (
-          <div className="h-32 flex items-center justify-center text-slate-500 text-xs font-mono border border-dashed border-slate-800 rounded-xl">
+          <div className={`h-32 flex items-center justify-center text-xs font-mono border border-dashed rounded-2xl ${
+            isLight ? 'border-slate-300 text-slate-500' : 'border-[#27272a] text-zinc-500'
+          }`}>
             <span>No active campaign data found in selected period</span>
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-slate-800/90">
+          <div className={`overflow-x-auto rounded-2xl border ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
             <table className="w-full text-left border-collapse text-xs font-mono">
               <thead>
-                <tr className={`border-b text-[9px] uppercase tracking-wider ${
-                  isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-slate-900 text-slate-400 border-slate-800'
+                <tr className={`border-b text-[10px] uppercase tracking-wider ${
+                  isLight ? 'bg-slate-50 text-slate-600 border-slate-200' : 'bg-[#121215] text-zinc-400 border-[#18181b]'
                 }`}>
-                  <th className="p-3">Campaign</th>
-                  <th className="p-3 text-right">Leads Listed</th>
-                  <th className="p-3 text-right">Calls Placed</th>
-                  <th className="p-3 text-right">Answered</th>
-                  <th className="p-3 text-right">Answer Rate</th>
-                  <th className="p-3 text-right">Total Talk Time</th>
+                  <th className="p-3.5">Campaign</th>
+                  <th className="p-3.5 text-right">Leads Listed</th>
+                  <th className="p-3.5 text-right">Calls Placed</th>
+                  <th className="p-3.5 text-right">Answered</th>
+                  <th className="p-3.5 text-right">Answer Rate</th>
+                  <th className="p-3.5 text-right">Total Talk Time</th>
                 </tr>
               </thead>
-              <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-slate-900 text-slate-300'}`}>
+              <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b] text-zinc-300'}`}>
                 {campaignStats.map(c => {
                   const rate = c.callsMade > 0 ? ((c.answered / c.callsMade) * 100).toFixed(1) : '0.0';
                   const mins = Math.floor(c.durationSecs / 60);
                   const secs = c.durationSecs % 60;
                   return (
-                    <tr key={c.name} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-900/40'}>
-                      <td className={`p-3 font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{c.name}</td>
-                      <td className="p-3 text-right">{c.totalLeads.toLocaleString()}</td>
-                      <td className="p-3 text-right font-bold text-amber-500">{c.callsMade.toLocaleString()}</td>
-                      <td className="p-3 text-right font-bold text-emerald-400">{c.answered.toLocaleString()}</td>
-                      <td className="p-3 text-right font-bold">
-                        <span className={`px-2 py-0.5 rounded border text-[9px] ${
+                    <tr key={c.name} className={`${isLight ? 'hover:bg-slate-50' : 'hover:bg-[#121215]/60'} transition`}>
+                      <td className={`p-3.5 font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{c.name}</td>
+                      <td className="p-3.5 text-right font-mono">{c.totalLeads.toLocaleString()}</td>
+                      <td className="p-3.5 text-right font-bold text-amber-500 font-mono">{c.callsMade.toLocaleString()}</td>
+                      <td className="p-3.5 text-right font-bold text-emerald-500 font-mono">{c.answered.toLocaleString()}</td>
+                      <td className="p-3.5 text-right font-bold font-mono">
+                        <span className={`px-2.5 py-0.5 rounded-full border text-[9px] ${
                           Number(rate) >= 40
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                            : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                            ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
+                            : 'bg-amber-500/10 text-amber-500 border-amber-500/30'
                         }`}>
                           {rate}%
                         </span>
                       </td>
-                      <td className="p-3 text-right text-slate-400">{mins}m {secs}s</td>
+                      <td className={`p-3.5 text-right font-mono ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>{mins}m {secs}s</td>
                     </tr>
                   );
                 })}
@@ -700,21 +698,21 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
 
       {/* ── Detailed Call Records & Filterable Log Table ── */}
       <div className={`border rounded-2xl p-6 shadow-2xl transition-colors space-y-4 ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+        isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b gap-3 border-slate-800/80">
+        <div className={`flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b gap-3 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
           <div>
-            <h3 className={`text-base font-bold font-display ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+            <h3 className={`text-xs font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Detailed Call Records
             </h3>
-            <p className="text-[10px] text-slate-500 font-mono">Searchable audit trail of GSM dialer connections</p>
+            <p className="text-[10px] text-zinc-500 font-mono">Searchable audit trail of GSM dialer connections</p>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               onClick={handleExportCsv}
               disabled={exporting || tableFilteredLogs.length === 0}
-              className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md"
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black font-bold text-xs rounded-xl transition flex items-center gap-2 cursor-pointer shadow-sm"
             >
               <Download className={`w-3.5 h-3.5 ${exporting ? 'animate-bounce' : ''}`} />
               <span>{exporting ? 'Exporting...' : 'Export Filtered CSV'}</span>
@@ -726,28 +724,28 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
         <div className="flex flex-wrap items-center gap-3">
           {/* Search Box */}
           <div className="flex-1 min-w-[200px] relative">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
+            <Search className={`w-4 h-4 absolute left-3 top-2.5 ${isLight ? 'text-slate-400' : 'text-zinc-500'}`} />
             <input
               type="text"
               placeholder="Search recipient name, phone line, campaign..."
               value={searchQuery}
               onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
-              className={`w-full pl-9 pr-3 py-2 text-xs rounded-xl border font-mono transition-colors outline-none ${
+              className={`w-full pl-9 pr-3 py-2 text-xs rounded-xl border font-mono transition-colors outline-none focus:border-amber-500 ${
                 isLight
-                  ? 'bg-slate-50 border-slate-300 text-slate-900 focus:border-amber-500'
-                  : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500/50'
+                  ? 'bg-slate-50 border-slate-200 text-slate-900 placeholder:text-slate-400'
+                  : 'bg-[#121215] border-[#27272a] text-white'
               }`}
             />
           </div>
 
           {/* Outcome Filter Dropdown */}
           <div className="flex items-center gap-1.5">
-            <Filter className="w-3.5 h-3.5 text-slate-500" />
+            <Filter className={`w-3.5 h-3.5 ${isLight ? 'text-slate-400' : 'text-zinc-500'}`} />
             <select
               value={selectedOutcomeFilter}
               onChange={e => { setSelectedOutcomeFilter(e.target.value); setPage(1); }}
-              className={`text-xs rounded-xl border px-3 py-2 font-mono outline-none cursor-pointer ${
-                isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-slate-200'
+              className={`text-xs rounded-xl border px-3.5 py-2 font-mono font-bold outline-none cursor-pointer ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
               }`}
             >
               <option value="ALL">All Outcomes</option>
@@ -763,8 +761,8 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
           <select
             value={selectedCampaignFilter}
             onChange={e => { setSelectedCampaignFilter(e.target.value); setPage(1); }}
-            className={`text-xs rounded-xl border px-3 py-2 font-mono outline-none cursor-pointer ${
-              isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-slate-200'
+            className={`text-xs rounded-xl border px-3.5 py-2 font-mono font-bold outline-none cursor-pointer ${
+              isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
             }`}
           >
             <option value="ALL">All Campaigns</option>
@@ -776,25 +774,27 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
 
         {/* Table Content */}
         {paginatedLogs.length === 0 ? (
-          <div className="h-40 flex flex-col items-center justify-center text-slate-500 text-xs font-mono border border-dashed border-slate-800 rounded-xl">
+          <div className={`h-40 flex flex-col items-center justify-center text-xs font-mono border border-dashed rounded-2xl ${
+            isLight ? 'border-slate-300 text-slate-500' : 'border-[#27272a] text-zinc-500'
+          }`}>
             <span>No matching call records found</span>
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-slate-800/90">
+          <div className={`overflow-x-auto rounded-2xl border ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
             <table className="w-full text-left border-collapse text-xs font-mono">
               <thead>
-                <tr className={`border-b text-[9px] uppercase tracking-wider ${
-                  isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-slate-900 text-slate-400 border-slate-800'
+                <tr className={`border-b text-[10px] uppercase tracking-wider ${
+                  isLight ? 'bg-slate-50 text-slate-600 border-slate-200' : 'bg-[#121215] text-zinc-400 border-[#18181b]'
                 }`}>
-                  <th className="p-3">Time</th>
-                  <th className="p-3">Recipient Name</th>
-                  <th className="p-3">Phone Line</th>
-                  <th className="p-3">Campaign</th>
-                  <th className="p-3">Outcome</th>
-                  <th className="p-3 text-right">Talk Duration</th>
+                  <th className="p-3.5">Time</th>
+                  <th className="p-3.5">Recipient Name</th>
+                  <th className="p-3.5">Phone Line</th>
+                  <th className="p-3.5">Campaign</th>
+                  <th className="p-3.5">Outcome</th>
+                  <th className="p-3.5 text-right">Talk Duration</th>
                 </tr>
               </thead>
-              <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-slate-900 text-slate-300'}`}>
+              <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b] text-zinc-300'}`}>
                 {paginatedLogs.map((log) => {
                   const d = new Date(log.timestamp);
                   const formattedDate = !isNaN(d.getTime())
@@ -802,17 +802,17 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                     : log.timestamp;
 
                   return (
-                    <tr key={log.id} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-900/40'}>
-                      <td className="p-3 text-[10px] text-slate-500">{formattedDate}</td>
-                      <td className={`p-3 font-body font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{log.leadName || 'Unknown Lead'}</td>
-                      <td className="p-3 text-[10px] text-slate-400">{log.leadPhone}</td>
-                      <td className="p-3 text-slate-400">{log.campaignName || '—'}</td>
-                      <td className="p-3">
-                        <span className={`text-[8px] font-bold px-2 py-0.5 border rounded uppercase ${getOutcomeBadge(log.outcome)}`}>
+                    <tr key={log.id} className={`${isLight ? 'hover:bg-slate-50' : 'hover:bg-[#121215]/60'} transition`}>
+                      <td className={`p-3.5 text-[11px] ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{formattedDate}</td>
+                      <td className={`p-3.5 font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{log.leadName || 'Unknown Lead'}</td>
+                      <td className={`p-3.5 text-[11px] font-bold ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>{log.leadPhone}</td>
+                      <td className={`p-3.5 ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>{log.campaignName || '—'}</td>
+                      <td className="p-3.5">
+                        <span className={`text-[9px] font-bold px-2.5 py-0.5 border rounded-full uppercase ${getOutcomeBadge(log.outcome)}`}>
                           {log.outcome}
                         </span>
                       </td>
-                      <td className="p-3 text-right font-bold text-amber-500">{log.duration}s</td>
+                      <td className={`p-3.5 text-right font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{log.duration}s</td>
                     </tr>
                   );
                 })}
@@ -823,21 +823,25 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
 
         {/* Pagination Footer */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-between text-xs font-mono pt-2 text-slate-400">
+          <div className={`flex items-center justify-between text-xs font-mono pt-2 ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
             <span>Showing {((page - 1) * pageSize) + 1} - {Math.min(page * pageSize, tableFilteredLogs.length)} of {tableFilteredLogs.length}</span>
             <div className="flex items-center gap-1.5">
               <button
                 disabled={page === 1}
                 onClick={() => setPage(p => Math.max(1, p - 1))}
-                className="px-3 py-1 rounded-lg border border-slate-800 disabled:opacity-40 hover:bg-slate-800 cursor-pointer"
+                className={`px-3 py-1.5 rounded-xl border disabled:opacity-40 cursor-pointer ${
+                  isLight ? 'border-slate-300 hover:bg-slate-100 text-slate-800' : 'border-[#27272a] hover:bg-[#18181b] text-white'
+                }`}
               >
                 Previous
               </button>
-              <span className="px-2 font-bold text-white">{page} / {totalPages}</span>
+              <span className={`px-2 font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{page} / {totalPages}</span>
               <button
                 disabled={page === totalPages}
                 onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                className="px-3 py-1 rounded-lg border border-slate-800 disabled:opacity-40 hover:bg-slate-800 cursor-pointer"
+                className={`px-3 py-1.5 rounded-xl border disabled:opacity-40 cursor-pointer ${
+                  isLight ? 'border-slate-300 hover:bg-slate-100 text-slate-800' : 'border-[#27272a] hover:bg-[#18181b] text-white'
+                }`}
               >
                 Next
               </button>

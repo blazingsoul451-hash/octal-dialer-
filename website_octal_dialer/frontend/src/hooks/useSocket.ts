@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-export function useSocket(serverUrl: string = 'http://localhost:3000', authToken?: string) {
+export function useSocket(serverUrl: string = 'http://localhost:5000', authToken?: string) {
   const [isConnected, setIsConnected] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);

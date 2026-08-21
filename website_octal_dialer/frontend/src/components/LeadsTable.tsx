@@ -47,17 +47,18 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
       if (sourceFilter) params.append('source', sourceFilter);
       if (statusFilter) params.append('status', statusFilter);
 
-      const res = await fetch(`${serverUrl}/leads?${params}`, {
+      const targetUrl = serverUrl && serverUrl.startsWith('http') ? serverUrl : window.location.origin;
+      const res = await fetch(`${targetUrl}/leads?${params}`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
 
       if (res.ok) {
         const data = await res.json();
-        setLeads(data.leads);
-        setTotalPages(data.pagination.totalPages);
-        setTotal(data.pagination.total);
+        setLeads(data.leads || []);
+        setTotalPages(data.pagination?.totalPages || 1);
+        setTotal(data.pagination?.total || 0);
       } else {
-        const errorData = await res.json();
+        const errorData = await res.json().catch(() => ({}));
         setError(errorData.error || 'Failed to fetch leads');
       }
     } catch {
@@ -93,8 +94,9 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
     if (selectedLeads.size === 0) return;
 
     try {
+      const targetUrl = serverUrl && serverUrl.startsWith('http') ? serverUrl : window.location.origin;
       const updatePromises = Array.from(selectedLeads).map(id =>
-        fetch(`${serverUrl}/leads/${id}`, {
+        fetch(`${targetUrl}/leads/${id}`, {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
@@ -117,101 +119,116 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
     if (sourceFilter) params.append('source', sourceFilter);
     if (statusFilter) params.append('status', statusFilter);
 
-    const exportUrl = `${serverUrl}/leads/export?${params}`;
+    const targetUrl = serverUrl && serverUrl.startsWith('http') ? serverUrl : window.location.origin;
+    const exportUrl = `${targetUrl}/api/logs/export?${params}`;
     window.open(exportUrl, '_blank');
   };
 
   const getStatusBadge = (status: string) => {
     const styles = {
-      new: 'bg-blue-500/20 text-blue-600 dark:text-blue-400',
-      contacted: 'bg-yellow-500/20 text-yellow-600 dark:text-yellow-400',
-      converted: 'bg-green-500/20 text-green-600 dark:text-green-400',
-      invalid: 'bg-red-500/20 text-red-600 dark:text-red-400'
+      new: isLight ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-blue-500/10 text-blue-400 border border-blue-500/30',
+      contacted: isLight ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30',
+      converted: isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30',
+      invalid: isLight ? 'bg-red-50 text-red-700 border-red-200' : 'bg-red-500/10 text-red-400 border border-red-500/30'
     };
     return styles[status as keyof typeof styles] || styles.new;
   };
 
   return (
-    <div className={`h-full overflow-y-auto ${isLight ? 'bg-white' : 'bg-slate-900'}`}>
-      <div className="max-w-7xl mx-auto p-6">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
+    <div className={`h-full w-full overflow-y-auto ${isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'}`}>
+      <div className="max-w-7xl mx-auto p-6 space-y-6">
+        
+        {/* Top Header Card */}
+        <div className={`p-6 border rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-colors ${
+          isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b] shadow-2xl'
+        }`}>
           <div className="flex items-center gap-3">
-            <Database className={`w-6 h-6 ${isLight ? 'text-amber-600' : 'text-amber-400'}`} />
-            <h1 className={`text-2xl font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
-              Scraped Leads
-            </h1>
-            <span className={`text-sm ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
-              ({total} total)
-            </span>
+            <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+              <Database className="w-5 h-5 text-amber-500" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  Central Leads Database
+                </h1>
+                <span className="text-xs px-2 py-0.5 rounded-full font-mono font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                  {total.toLocaleString()} leads
+                </span>
+              </div>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                Browse, search, and manage leads synced across campaigns and scrapers.
+              </p>
+            </div>
           </div>
-          <div className="flex gap-2">
+
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               onClick={fetchLeads}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                 isLight
-                  ? 'bg-slate-200 hover:bg-slate-300 text-slate-900'
-                  : 'bg-slate-700 hover:bg-slate-600 text-white'
+                  ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
+                  : 'bg-[#18181b] hover:bg-[#27272a] text-zinc-200 border border-[#27272a]'
               }`}
             >
-              <RefreshCw className="w-4 h-4" />
-              Refresh
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
             </button>
             <button
               onClick={handleExport}
-              className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-lg transition-colors"
+              className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs px-4 py-2 rounded-xl transition-all cursor-pointer shadow-sm"
             >
-              <Download className="w-4 h-4" />
-              Export CSV
+              <Download className="w-3.5 h-3.5" />
+              <span>Export CSV</span>
             </button>
           </div>
         </div>
 
-        {/* Filters */}
-        <div className={`mb-4 p-4 rounded-lg border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-800 border-slate-700'}`}>
-          <div className="flex items-center gap-2 mb-3">
-            <Filter className="w-4 h-4 text-slate-400" />
-            <span className={`text-sm font-medium ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-              Filters
+        {/* Filters Card */}
+        <div className={`p-5 rounded-2xl border transition-colors ${
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b] shadow-xl'
+        }`}>
+          <div className="flex items-center gap-2 mb-3 select-none">
+            <Filter className="w-3.5 h-3.5 text-amber-500" />
+            <span className="text-xs font-mono font-black uppercase tracking-wider text-amber-500">
+              Filter Pipeline
             </span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className={`block text-xs font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
-                Source Module
+              <label className="block text-[11px] font-mono font-bold uppercase text-zinc-400 mb-1.5">
+                Source Campaign
               </label>
-              <select
+              <input
+                type="text"
                 value={sourceFilter}
+                placeholder="Search by campaign name or ID..."
                 onChange={e => { setSourceFilter(e.target.value); setPage(1); }}
-                className={`w-full px-3 py-2 rounded border text-sm ${
+                className={`w-full px-3.5 py-2.5 rounded-xl border text-xs font-medium focus:outline-none focus:border-amber-500 transition ${
                   isLight
-                    ? 'bg-white border-slate-300 text-slate-900'
-                    : 'bg-slate-900 border-slate-600 text-white'
+                    ? 'bg-slate-50 border-slate-200 text-slate-900'
+                    : 'bg-[#121215] border-[#27272a] text-white placeholder:text-zinc-600'
                 }`}
-              >
-                <option value="">All Sources</option>
-                <option value="googleScraper">Google Scraper</option>
-                <option value="facebookScraper">Facebook Scraper</option>
-              </select>
+              />
             </div>
             <div>
-              <label className={`block text-xs font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
-                Status
+              <label className="block text-[11px] font-mono font-bold uppercase text-zinc-400 mb-1.5">
+                Lead Status
               </label>
               <select
                 value={statusFilter}
                 onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
-                className={`w-full px-3 py-2 rounded border text-sm ${
+                className={`w-full px-3.5 py-2.5 rounded-xl border text-xs font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer ${
                   isLight
-                    ? 'bg-white border-slate-300 text-slate-900'
-                    : 'bg-slate-900 border-slate-600 text-white'
+                    ? 'bg-slate-50 border-slate-200 text-slate-900'
+                    : 'bg-[#121215] border-[#27272a] text-white'
                 }`}
               >
                 <option value="">All Statuses</option>
-                <option value="new">New</option>
-                <option value="contacted">Contacted</option>
-                <option value="converted">Converted</option>
-                <option value="invalid">Invalid</option>
+                <option value="PENDING">Pending (New)</option>
+                <option value="COMPLETED">Completed (Converted)</option>
+                <option value="ANSWERED">Answered / Reached</option>
+                <option value="NO_ANSWER">No Answer</option>
+                <option value="DNC">Suppressed / DNC</option>
               </select>
             </div>
           </div>
@@ -219,92 +236,94 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
 
         {/* Bulk Actions */}
         {selectedLeads.size > 0 && (
-          <div className={`mb-4 p-3 rounded-lg border ${isLight ? 'bg-amber-50 border-amber-200' : 'bg-amber-900/20 border-amber-700'}`}>
-            <div className="flex items-center justify-between">
-              <span className={`text-sm font-medium ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                {selectedLeads.size} lead{selectedLeads.size > 1 ? 's' : ''} selected
-              </span>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleBulkStatusUpdate('contacted')}
-                  className="text-xs px-3 py-1 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-700 dark:text-yellow-400 rounded transition-colors"
-                >
-                  Mark Contacted
-                </button>
-                <button
-                  onClick={() => handleBulkStatusUpdate('converted')}
-                  className="text-xs px-3 py-1 bg-green-500/20 hover:bg-green-500/30 text-green-700 dark:text-green-400 rounded transition-colors"
-                >
-                  Mark Converted
-                </button>
-                <button
-                  onClick={() => handleBulkStatusUpdate('invalid')}
-                  className="text-xs px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-700 dark:text-red-400 rounded transition-colors"
-                >
-                  Mark Invalid
-                </button>
-              </div>
+          <div className={`p-3.5 rounded-2xl border flex items-center justify-between ${
+            isLight ? 'bg-amber-50 border-amber-200' : 'bg-amber-500/10 border-amber-500/30'
+          }`}>
+            <span className="text-xs font-bold text-amber-400">
+              {selectedLeads.size} lead{selectedLeads.size > 1 ? 's' : ''} selected
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleBulkStatusUpdate('ANSWERED')}
+                className="text-xs px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-lg transition-colors font-bold cursor-pointer"
+              >
+                Mark Reached
+              </button>
+              <button
+                onClick={() => handleBulkStatusUpdate('COMPLETED')}
+                className="text-xs px-3 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-lg transition-colors font-bold cursor-pointer"
+              >
+                Mark Converted
+              </button>
+              <button
+                onClick={() => handleBulkStatusUpdate('DNC')}
+                className="text-xs px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition-colors font-bold cursor-pointer"
+              >
+                Mark DNC
+              </button>
             </div>
           </div>
         )}
 
-        {/* Error */}
+        {/* Error Alert */}
         {error && (
-          <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-600 dark:text-red-400">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-2xl px-4 py-3 text-xs font-mono text-red-400">
             {error}
           </div>
         )}
 
-        {/* Table */}
-        <div className={`rounded-lg border ${isLight ? 'bg-white border-slate-200' : 'bg-slate-800 border-slate-700'}`}>
+        {/* Leads Table Container */}
+        <div className={`rounded-2xl border overflow-hidden transition-colors ${
+          isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b] shadow-2xl'
+        }`}>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className={`${isLight ? 'bg-slate-50' : 'bg-slate-900'}`}>
+            <table className="w-full text-xs">
+              <thead className={isLight ? 'bg-slate-50 border-b border-slate-200' : 'bg-[#121215] border-b border-[#18181b]'}>
                 <tr>
-                  <th className="px-4 py-3">
-                    <button onClick={handleSelectAll} className="text-slate-400 hover:text-slate-600">
+                  <th className="px-4 py-3.5 w-12 text-center">
+                    <button onClick={handleSelectAll} className="text-zinc-500 hover:text-white cursor-pointer">
                       {selectedLeads.size === leads.length && leads.length > 0 ? (
-                        <CheckSquare className="w-4 h-4" />
+                        <CheckSquare className="w-4 h-4 text-amber-500" />
                       ) : (
                         <Square className="w-4 h-4" />
                       )}
                     </button>
                   </th>
-                  <th className={`px-4 py-3 text-left text-xs font-bold uppercase ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                    Business
+                  <th className="px-4 py-3.5 text-left font-mono font-bold uppercase tracking-wider text-zinc-400">
+                    Business / Lead
                   </th>
-                  <th className={`px-4 py-3 text-left text-xs font-bold uppercase ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                    Contact
+                  <th className="px-4 py-3.5 text-left font-mono font-bold uppercase tracking-wider text-zinc-400">
+                    Contact Phone
                   </th>
-                  <th className={`px-4 py-3 text-left text-xs font-bold uppercase ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                    Source
+                  <th className="px-4 py-3.5 text-left font-mono font-bold uppercase tracking-wider text-zinc-400">
+                    Campaign Source
                   </th>
-                  <th className={`px-4 py-3 text-left text-xs font-bold uppercase ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+                  <th className="px-4 py-3.5 text-left font-mono font-bold uppercase tracking-wider text-zinc-400">
                     Status
                   </th>
-                  <th className={`px-4 py-3 text-left text-xs font-bold uppercase ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                    Scraped
+                  <th className="px-4 py-3.5 text-left font-mono font-bold uppercase tracking-wider text-zinc-400">
+                    Created / Synced
                   </th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className={isLight ? 'divide-y divide-slate-100' : 'divide-y divide-[#18181b]'}>
                 {loading ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={6} className="px-4 py-12 text-center text-zinc-500 font-mono">
                       Loading leads...
                     </td>
                   </tr>
                 ) : leads.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
-                      No leads found
+                    <td colSpan={6} className="px-4 py-12 text-center text-zinc-500 font-mono">
+                      No leads found matching your criteria.
                     </td>
                   </tr>
                 ) : (
                   leads.map(lead => (
-                    <tr key={lead.id} className={`border-t ${isLight ? 'border-slate-200' : 'border-slate-700'}`}>
-                      <td className="px-4 py-3">
-                        <button onClick={() => handleToggleSelect(lead.id)} className="text-slate-400 hover:text-slate-600">
+                    <tr key={lead.id} className={isLight ? 'hover:bg-slate-50 transition' : 'hover:bg-[#121215]/60 transition'}>
+                      <td className="px-4 py-3.5 text-center">
+                        <button onClick={() => handleToggleSelect(lead.id)} className={`cursor-pointer ${isLight ? 'text-slate-400 hover:text-slate-700' : 'text-zinc-500 hover:text-white'}`}>
                           {selectedLeads.has(lead.id) ? (
                             <CheckSquare className="w-4 h-4 text-amber-500" />
                           ) : (
@@ -312,38 +331,31 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
                           )}
                         </button>
                       </td>
-                      <td className={`px-4 py-3 ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                      <td className="px-4 py-3.5 font-medium">
                         <button
                           onClick={() => setSelectedLeadForDrawer(lead.id)}
-                          className="font-medium text-amber-500 hover:underline cursor-pointer text-left block"
+                          className={`font-bold hover:text-amber-500 transition cursor-pointer text-left block ${isLight ? 'text-slate-900' : 'text-white'}`}
                         >
-                          {lead.businessName || 'Unnamed Lead'}
+                          {lead.businessName || 'Unnamed Contact'}
                         </button>
-                        {lead.website && (
-                          <div className="text-xs text-blue-500 hover:underline">
-                            <a href={lead.website} target="_blank" rel="noopener noreferrer">
-                              {lead.website.substring(0, 30)}...
-                            </a>
-                          </div>
-                        )}
                       </td>
-                      <td className={`px-4 py-3 ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                        {lead.phone && <div className="font-mono text-xs">{lead.phone}</div>}
-                        {lead.email && <div className="text-xs text-slate-500">{lead.email}</div>}
+                      <td className={`px-4 py-3.5 font-mono font-bold ${isLight ? 'text-slate-800' : 'text-zinc-300'}`}>
+                        {lead.phone || '—'}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className="text-xs bg-slate-500/20 text-slate-600 dark:text-slate-400 px-2 py-1 rounded">
+                      <td className="px-4 py-3.5">
+                        <span className={`px-2.5 py-1 rounded-lg text-[11px] font-mono ${
+                          isLight ? 'bg-slate-100 border border-slate-200 text-slate-700' : 'bg-[#18181b] border border-[#27272a] text-zinc-300'
+                        }`}>
                           {lead.source}
                         </span>
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`text-xs px-2 py-1 rounded font-medium ${getStatusBadge(lead.status)}`}>
-                          {lead.status.toUpperCase()}
+                      <td className="px-4 py-3.5">
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${getStatusBadge(lead.status)}`}>
+                          {lead.status}
                         </span>
                       </td>
-                      <td className={`px-4 py-3 text-xs ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
-                        <div>{new Date(lead.scrapedAt).toLocaleDateString()}</div>
-                        <div className="text-slate-500">by {lead.scrapedBy}</div>
+                      <td className={`px-4 py-3.5 font-mono text-[11px] ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
+                        {new Date(lead.scrapedAt).toLocaleDateString()}
                       </td>
                     </tr>
                   ))
@@ -353,36 +365,45 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
           </div>
         </div>
 
-        {/* Pagination */}
+        {/* Pagination Controls */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-center gap-2 mt-4">
+          <div className="flex items-center justify-center gap-3 pt-2">
             <button
               onClick={() => setPage(Math.max(1, page - 1))}
               disabled={page === 1}
-              className={`px-3 py-1 rounded text-sm ${
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition ${
                 page === 1
-                  ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                  : 'bg-slate-300 dark:bg-slate-700 text-slate-900 dark:text-white hover:bg-slate-400 dark:hover:bg-slate-600'
+                  ? isLight
+                    ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                    : 'bg-[#18181b] text-zinc-600 border border-[#27272a] cursor-not-allowed'
+                  : isLight
+                  ? 'bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 shadow-sm cursor-pointer'
+                  : 'bg-[#18181b] hover:bg-[#27272a] text-white border border-[#27272a] cursor-pointer'
               }`}
             >
               Previous
             </button>
-            <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+            <span className={`text-xs font-mono ${isLight ? 'text-slate-600 font-bold' : 'text-zinc-400'}`}>
               Page {page} of {totalPages}
             </span>
             <button
               onClick={() => setPage(Math.min(totalPages, page + 1))}
               disabled={page === totalPages}
-              className={`px-3 py-1 rounded text-sm ${
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition ${
                 page === totalPages
-                  ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                  : 'bg-slate-300 dark:bg-slate-700 text-slate-900 dark:text-white hover:bg-slate-400 dark:hover:bg-slate-600'
+                  ? isLight
+                    ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                    : 'bg-[#18181b] text-zinc-600 border border-[#27272a] cursor-not-allowed'
+                  : isLight
+                  ? 'bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 shadow-sm cursor-pointer'
+                  : 'bg-[#18181b] hover:bg-[#27272a] text-white border border-[#27272a] cursor-pointer'
               }`}
             >
               Next
             </button>
           </div>
         )}
+
       </div>
 
       {/* ── Lead Intelligence Profile Drawer ── */}

@@ -32,7 +32,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _loadSavedServer() async {
-    _serverController.text = 'http://127.0.0.1:3000';
+    _serverController.text = 'http://192.168.1.35:3000';
   }
 
   @override
@@ -57,12 +57,12 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorMessage = '';
     });
 
-    // Candidates to auto-try: 1) USB Reverse Loopback, 2) Public HTTPS Tunnel, 3) LAN IP
+    // Candidates to auto-try: 1) Active LAN IP, 2) User-entered URL, 3) USB Reverse Loopback
     final List<String> candidateUrls = [
-      _serverController.text.trim().isNotEmpty ? _serverController.text.trim() : 'http://127.0.0.1:3000',
+      _serverController.text.trim().isNotEmpty ? _serverController.text.trim() : 'http://192.168.1.35:3000',
+      'http://192.168.1.35:3000',
       'http://127.0.0.1:3000',
-      'https://red-trams-hide.loca.lt',
-      'http://192.168.100.56:3000',
+      'https://rare-crews-bet.loca.lt',
     ];
 
     dynamic loginData;

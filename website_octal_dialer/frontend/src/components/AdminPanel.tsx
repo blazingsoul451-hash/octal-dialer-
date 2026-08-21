@@ -48,43 +48,43 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   ];
 
   return (
-    <div className="space-y-6 text-left transition-colors duration-200">
+    <div className="space-y-6 text-left select-none transition-colors duration-200">
       {/* ── Enterprise Control Center Header Card ── */}
       <div className={`border rounded-2xl p-6 shadow-2xl transition-colors ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+        isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center shadow-lg text-white font-bold">
+            <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center font-bold text-purple-400 shadow-sm">
               <Shield className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className={`text-2xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+                <h1 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
                   Enterprise Control Center
                 </h1>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase ${
+                <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border uppercase ${
                   isPlatformAdmin
-                    ? isLight ? 'bg-purple-100 text-purple-800 border-purple-300' : 'bg-purple-950/40 text-purple-400 border-purple-800'
-                    : isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-950/40 text-amber-400 border-amber-800'
+                    ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
+                    : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
                 }`}>
                   {isPlatformAdmin ? 'Platform Supreme Authority' : 'Tenant Administrator'}
                 </span>
               </div>
-              <p className={`text-xs mt-1 font-medium ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
+              <p className={`text-xs mt-1 font-medium ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
                 Centralized platform administration for business tenants, user lifecycle, commercial subscriptions, engine operations, and forensic auditing.
               </p>
             </div>
           </div>
 
-          <div className="text-right text-xs font-mono text-slate-500 self-start sm:self-auto">
+          <div className={`text-right text-xs font-mono self-start sm:self-auto ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
             <span>Operator: </span>
-            <span className={`font-bold ${isLight ? 'text-slate-800' : 'text-slate-300'}`}>{currentUser}</span>
+            <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{currentUser}</span>
           </div>
         </div>
 
         {/* ── Sub-navigation Tab Bar ── */}
-        <div className="flex flex-wrap items-center gap-2 pt-6 border-t border-slate-800/80 mt-6 select-none">
+        <div className={`flex flex-wrap items-center gap-2 pt-6 border-t mt-6 select-none ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
@@ -99,15 +99,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 }}
                 className={`px-3.5 py-2 rounded-xl text-xs font-bold font-mono transition-all flex items-center gap-2 cursor-pointer border ${
                   active
-                    ? isLight
-                      ? 'bg-purple-600 text-white border-purple-700 shadow-md shadow-purple-600/20'
-                      : 'bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-600/30'
+                    ? 'bg-amber-500 text-black border-amber-500 shadow-sm font-black'
                     : isLight
-                      ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
-                      : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
+                      ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700'
+                      : 'bg-[#18181b] hover:bg-[#27272a] border-[#27272a] text-zinc-300'
                 }`}
               >
-                <Icon className={`w-3.5 h-3.5 ${active ? 'text-white' : 'text-slate-400'}`} />
+                <Icon className={`w-3.5 h-3.5 ${active ? 'text-black' : 'text-zinc-400'}`} />
                 <span>{item.label}</span>
               </button>
             );
@@ -117,7 +115,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       {/* ── Main Tab Content Container ── */}
       <div className={`border rounded-2xl p-6 shadow-2xl transition-colors ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+        isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         {activeTab === 'overview' && (
           <AdminOverview

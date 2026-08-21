@@ -93,7 +93,7 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
     ? (dynamicTunnelUrl || qrPayload.serverUrl)
     : (serverUrl && serverUrl.startsWith('http') 
       ? serverUrl 
-      : `${apiProtocol}//${currentHost}:3000`);
+      : `${apiProtocol}//${currentHost}:5000`);
 
   const directApkUrl = `${safeServerUrl}/download/apk`;
 
@@ -207,19 +207,19 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   };
 
   return (
-    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left transition-colors ${
-      isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left select-none transition-colors ${
+      isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
     }`}>
       {/* Header */}
       <div className={`flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b gap-3 ${
-        isLight ? 'border-slate-200' : 'border-slate-800/80'
+        isLight ? 'border-slate-200' : 'border-[#18181b]'
       }`}>
         <div>
-          <h2 className={`text-xl font-black font-display tracking-tight flex items-center gap-2.5 ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+          <h2 className={`text-xl font-black font-display tracking-tight flex items-center gap-2.5 ${isLight ? 'text-slate-900' : 'text-white'}`}>
             <Smartphone className="w-5 h-5 text-amber-500" />
             GSM Hardware Calling Bridge
           </h2>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-zinc-400 mt-1">
             Connect your authenticated Android device to dial real SIM/GSM calls directly through your phone.
           </p>
         </div>
@@ -234,7 +234,7 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
           </div>
           <div className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full border shrink-0 ${
             isConnected 
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 emerald-glow' 
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
               : 'bg-red-500/10 border-red-500/30 text-red-400'
           }`}>
             <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
@@ -248,32 +248,32 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
       {/* Active Call / Connected Phone Banner */}
       {phoneConnected && (
         <div className={`p-5 border rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${
-          isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-emerald-950/20 border-emerald-900/30 text-emerald-200'
+          isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
         }`}>
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 text-emerald-400 shrink-0">
-              <CheckCircle className="w-6 h-6 animate-bounce" />
+              <CheckCircle className="w-6 h-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-base font-bold text-emerald-400 font-display">
                   Active Phone Connected
                 </h3>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                   READY TO DIAL
                 </span>
               </div>
-              <p className="text-xs text-slate-300 mt-0.5">
-                Device: <strong className="text-white font-mono">{phoneDeviceName || 'Android Handset'}</strong> • Network IP: <span className="font-mono text-slate-400">{phoneIpAddress || '127.0.0.1'}</span>
+              <p className="text-xs text-zinc-300 mt-0.5">
+                Device: <strong className="text-white font-mono">{phoneDeviceName || 'Android Handset'}</strong> • Network IP: <span className="font-mono text-zinc-400">{phoneIpAddress || '127.0.0.1'}</span>
               </p>
             </div>
           </div>
           <button
             onClick={() => handleDisconnect(phoneDeviceId || undefined)}
-            className="px-4 py-2.5 rounded-xl border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold transition flex items-center gap-2 shrink-0"
+            className="px-4 py-2.5 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold transition flex items-center gap-2 shrink-0 cursor-pointer"
           >
             <Power className="w-3.5 h-3.5" />
-            Disconnect Handset
+            <span>Disconnect Handset</span>
           </button>
         </div>
       )}
@@ -287,33 +287,33 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
       )}
 
       {/* Mode Navigation Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+      <div className={`flex items-center gap-2 border-b pb-2 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
         <button
           onClick={() => setActiveTab('devices')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
             activeTab === 'devices'
-              ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30 shadow-sm'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+              ? isLight ? 'bg-slate-100 text-amber-600 border border-slate-300 font-black' : 'bg-[#18181b] text-amber-400 border border-[#27272a]'
+              : isLight ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' : 'text-zinc-400 hover:text-white hover:bg-[#121215]'
           }`}
         >
           <Smartphone className="w-3.5 h-3.5" />
-          Registered Devices
+          <span>Registered Devices</span>
           {devices.length > 0 && (
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-amber-500/20 text-amber-300 font-bold">
+            <span className="px-2 py-0.2 rounded-full text-[10px] font-mono bg-amber-500/20 text-amber-600 dark:text-amber-300 font-bold">
               {devices.length}
             </span>
           )}
         </button>
         <button
           onClick={() => setActiveTab('qr')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
             activeTab === 'qr'
-              ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30 shadow-sm'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+              ? isLight ? 'bg-slate-100 text-amber-600 border border-slate-300 font-black' : 'bg-[#18181b] text-amber-400 border border-[#27272a]'
+              : isLight ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' : 'text-zinc-400 hover:text-white hover:bg-[#121215]'
           }`}
         >
           <QrCode className="w-3.5 h-3.5" />
-          Alternative / Recovery Pairing (QR)
+          <span>Alternative / Recovery Pairing (QR)</span>
         </button>
       </div>
 
@@ -322,52 +322,58 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">
+              <span className={`text-xs font-mono font-bold uppercase tracking-wider ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
                 Account Devices
               </span>
-              <span className="text-[11px] text-slate-500">
+              <span className={`text-[11px] ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
                 (Logged in with your Octal account)
               </span>
             </div>
             <button
               onClick={fetchDevices}
               disabled={loadingDevices}
-              className="p-1.5 rounded-lg border border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition text-xs flex items-center gap-1"
+              className={`p-2 rounded-xl border transition text-xs flex items-center gap-1.5 cursor-pointer ${
+                isLight ? 'border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-700' : 'border-[#27272a] bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white'
+              }`}
               title="Refresh Devices"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingDevices ? 'animate-spin text-amber-400' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingDevices ? 'animate-spin text-amber-500' : ''}`} />
               <span className="text-[11px]">Refresh</span>
             </button>
           </div>
 
           {devices.length === 0 ? (
             <div className={`p-8 border rounded-2xl text-center space-y-4 ${
-              isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-900/50 border-slate-800/80'
+              isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'
             }`}>
-              <div className="w-12 h-12 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+              <div className="w-12 h-12 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500">
                 <Smartphone className="w-6 h-6" />
               </div>
               <div className="max-w-md mx-auto space-y-1.5">
-                <h4 className="text-sm font-bold text-slate-200 font-display">No Registered Phones Yet</h4>
-                <p className="text-xs text-slate-400 leading-relaxed">
+                <h4 className={`text-sm font-bold font-display ${isLight ? 'text-slate-900' : 'text-white'}`}>No Registered Phones Yet</h4>
+                <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
                   Open the Octal Dialer Android application on your phone, log in with your Octal account, and it will instantly appear here ready to connect.
                 </p>
               </div>
               <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
                 <button
                   onClick={() => setActiveTab('qr')}
-                  className="px-4 py-2 rounded-xl border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-xs font-bold transition flex items-center gap-2"
+                  className={`px-4 py-2 rounded-xl border text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
+                    isLight ? 'border-slate-300 bg-white hover:bg-slate-50 text-amber-600' : 'border-[#27272a] bg-[#18181b] hover:bg-[#27272a] text-amber-400'
+                  }`}
                 >
                   <QrCode className="w-3.5 h-3.5" />
-                  Use QR Code Pairing
+                  <span>Use QR Code Pairing</span>
                 </button>
                 <a
                   href={directApkUrl}
                   download="OctalDialer.apk"
-                  className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-2"
+                  className={`px-4 py-2 rounded-xl border text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
+                    isLight ? 'border-slate-300 bg-white hover:bg-slate-50 text-slate-800 shadow-sm' : 'border-[#27272a] bg-[#18181b] hover:bg-[#27272a] text-white'
+                  }`}
                 >
                   <Download className="w-3.5 h-3.5" />
-                  Download Android APK
+                  <span>Download Android APK</span>
                 </a>
               </div>
             </div>
@@ -382,45 +388,47 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                     key={dev.id}
                     className={`p-4 border rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition ${
                       isThisPhoneActive
-                        ? 'border-emerald-500/40 bg-emerald-950/15'
+                        ? isLight ? 'border-emerald-300 bg-emerald-50' : 'border-emerald-500/40 bg-emerald-500/10'
                         : isOnline
-                        ? 'border-slate-700/80 bg-slate-900/60 hover:border-slate-600'
-                        : 'border-slate-800/60 bg-slate-900/30 opacity-75'
+                        ? isLight ? 'border-slate-200 bg-white hover:border-slate-300 shadow-sm' : 'border-[#27272a] bg-[#121215] hover:border-zinc-700'
+                        : isLight ? 'border-slate-200 bg-slate-50 opacity-75' : 'border-[#18181b] bg-[#121215]/50 opacity-75'
                     }`}
                   >
                     <div className="flex items-center gap-3.5">
                       <div className={`w-11 h-11 rounded-xl flex items-center justify-center border shrink-0 ${
                         isThisPhoneActive
-                          ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
+                          ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-500'
                           : isOnline
-                          ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
-                          : 'bg-slate-800/60 border-slate-700/40 text-slate-500'
+                          ? 'bg-amber-500/10 border-amber-500/20 text-amber-500'
+                          : isLight ? 'bg-slate-100 border-slate-200 text-slate-400' : 'bg-[#18181b] border-[#27272a] text-zinc-500'
                       }`}>
                         <Smartphone className="w-5 h-5" />
                       </div>
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-2">
-                          <h4 className="text-sm font-bold text-slate-100 font-display">
+                          <h4 className={`text-sm font-bold font-display ${isLight ? 'text-slate-900' : 'text-white'}`}>
                             {dev.name || 'Android Device'}
                           </h4>
                           {isThisPhoneActive ? (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                               Connected to Laptop
                             </span>
                           ) : isOnline ? (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                               Online
                             </span>
                           ) : (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
+                              isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-[#18181b] text-zinc-400 border-[#27272a]'
+                            }`}>
                               Offline
                             </span>
                           )}
                         </div>
-                        <p className="text-[11px] text-slate-400">
-                          {dev.osType || 'Android'} • Octal App v{dev.appVersion || '1.2.0'} • Last seen: <span className="text-slate-300 font-mono">{formatLastSeen(dev.lastSeenAt)}</span>
+                        <p className={`text-[11px] ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
+                          {dev.osType || 'Android'} • Octal App v{dev.appVersion || '1.2.0'} • Last seen: <span className={`font-mono ${isLight ? 'text-slate-800 font-bold' : 'text-zinc-300'}`}>{formatLastSeen(dev.lastSeenAt)}</span>
                         </p>
                       </div>
                     </div>
@@ -429,34 +437,38 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                       {isThisPhoneActive ? (
                         <button
                           onClick={() => handleDisconnect(dev.id)}
-                          className="px-3.5 py-2 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold transition flex items-center gap-1.5"
+                          className="px-4 py-2 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
                         >
                           <Power className="w-3.5 h-3.5" />
-                          Disconnect
+                          <span>Disconnect</span>
                         </button>
                       ) : isOnline ? (
                         <button
                           onClick={() => handleConnect(dev.id)}
                           disabled={deviceActionLoading === dev.id || !isConnected}
-                          className="px-4 py-2 rounded-xl border border-amber-500/40 bg-amber-500 text-slate-950 hover:bg-amber-400 text-xs font-black transition flex items-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-50"
+                          className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-black transition flex items-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-50 cursor-pointer"
                         >
                           <Wifi className="w-3.5 h-3.5" />
-                          {deviceActionLoading === dev.id ? 'Connecting...' : 'Connect to Laptop'}
+                          <span>{deviceActionLoading === dev.id ? 'Connecting...' : 'Connect to Laptop'}</span>
                         </button>
                       ) : (
                         <button
                           disabled
-                          className="px-3.5 py-2 rounded-xl border border-slate-800 bg-slate-800/60 text-slate-500 text-xs font-bold cursor-not-allowed flex items-center gap-1.5"
+                          className={`px-3.5 py-2 rounded-xl border text-xs font-bold cursor-not-allowed flex items-center gap-1.5 ${
+                            isLight ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-[#27272a] bg-[#18181b] text-zinc-500'
+                          }`}
                           title="Open the app on your phone to connect"
                         >
                           <WifiOff className="w-3.5 h-3.5" />
-                          Offline
+                          <span>Offline</span>
                         </button>
                       )}
 
                       <button
                         onClick={() => handleRevokeDevice(dev.id)}
-                        className="p-2 rounded-xl border border-slate-800 hover:border-red-500/30 hover:bg-red-500/10 text-slate-500 hover:text-red-400 transition"
+                        className={`p-2 rounded-xl border transition cursor-pointer ${
+                          isLight ? 'border-slate-200 hover:border-red-300 hover:bg-red-50 text-slate-400 hover:text-red-500' : 'border-[#27272a] hover:border-red-500/30 hover:bg-red-500/10 text-zinc-500 hover:text-red-400'
+                        }`}
                         title="Revoke device access"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -475,31 +487,35 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
             {/* Left QR Section */}
-            <div className="lg:col-span-5 flex flex-col items-center justify-center p-6 border rounded-2xl bg-[#090d16] border-slate-800/80 space-y-4">
-              <div className="flex bg-slate-900 border border-slate-800 p-1 rounded-xl w-full max-w-[240px]">
+            <div className={`lg:col-span-5 flex flex-col items-center justify-center p-6 border rounded-2xl space-y-4 ${
+              isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'
+            }`}>
+              <div className={`flex p-1 rounded-xl w-full max-w-[240px] border ${
+                isLight ? 'bg-slate-200 border-slate-300' : 'bg-[#18181b] border-[#27272a]'
+              }`}>
                 <button
                   onClick={() => setQrMode('download')}
-                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition ${
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer ${
                     qrMode === 'download' 
-                      ? 'bg-amber-500 text-slate-950 shadow-sm' 
-                      : 'text-slate-400 hover:text-white'
+                      ? 'bg-amber-500 text-black font-black shadow-sm' 
+                      : isLight ? 'text-slate-700 hover:text-slate-950' : 'text-zinc-400 hover:text-white'
                   }`}
                 >
                   1. Get APK
                 </button>
                 <button
                   onClick={() => setQrMode('pair')}
-                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition ${
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer ${
                     qrMode === 'pair' 
-                      ? 'bg-amber-500 text-slate-950 shadow-sm' 
-                      : 'text-slate-400 hover:text-white'
+                      ? 'bg-amber-500 text-black font-black shadow-sm' 
+                      : isLight ? 'text-slate-700 hover:text-slate-950' : 'text-zinc-400 hover:text-white'
                   }`}
                 >
                   2. Pair App
                 </button>
               </div>
 
-              <div className="p-4 bg-white rounded-2xl shadow-xl border-4 border-slate-800">
+              <div className="p-4 bg-white rounded-2xl shadow-xl border-4 border-slate-300 dark:border-[#27272a]">
                 <QRCodeSVG
                   value={activeQrValue}
                   size={190}
@@ -508,36 +524,42 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                 />
               </div>
 
-              <span className="text-[11px] font-mono font-bold text-amber-400 tracking-wider">
+              <span className="text-[11px] font-mono font-bold text-amber-500 tracking-wider">
                 {qrMode === 'download' ? 'SCAN TO DOWNLOAD APK' : 'SCAN FROM APP CAMERA'}
               </span>
             </div>
 
             {/* Right Instructions Section */}
             <div className="lg:col-span-7 space-y-4">
-              <div className="p-5 border border-slate-800 rounded-2xl bg-slate-900/40 space-y-3">
-                <h3 className="text-sm font-bold text-slate-200 font-display flex items-center gap-2">
+              <div className={`p-5 border rounded-2xl space-y-3 ${
+                isLight ? 'bg-slate-50 border-slate-200' : 'border-[#27272a] bg-[#121215]'
+              }`}>
+                <h3 className={`text-sm font-bold font-display flex items-center gap-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>
                   <QrCode className="w-4 h-4 text-amber-500" />
-                  Instant QR Pairing Instructions
+                  <span>Instant QR Pairing Instructions</span>
                 </h3>
-                <ol className="text-xs text-slate-400 space-y-2 list-decimal list-inside leading-relaxed">
+                <ol className={`text-xs space-y-2 list-decimal list-inside leading-relaxed ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
                   <li>Install and open the Octal Dialer Android APK on your device.</li>
                   <li>Tap the <strong>SCAN QR</strong> button on the connect screen.</li>
                   <li>Scan the pairing QR code displayed here to pair instantly.</li>
                 </ol>
               </div>
 
-              <div className="p-4 border border-slate-800/80 rounded-2xl bg-slate-900/30 flex items-center justify-between gap-3">
+              <div className={`p-4 border rounded-2xl flex items-center justify-between gap-3 ${
+                isLight ? 'bg-slate-50 border-slate-200' : 'border-[#27272a] bg-[#121215]'
+              }`}>
                 <div className="space-y-0.5">
-                  <div className="text-[10px] font-mono font-bold text-slate-400 uppercase">One-Time Pairing PIN</div>
-                  <div className="text-lg font-mono font-black text-amber-400 tracking-widest">{token?.substring(0, 8) || '8888-9999'}</div>
+                  <div className={`text-[10px] font-mono font-bold uppercase ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>One-Time Pairing PIN</div>
+                  <div className="text-lg font-mono font-black text-amber-500 tracking-widest">{token?.substring(0, 8) || '8888-9999'}</div>
                 </div>
                 <button
                   onClick={handleCopyLink}
-                  className="px-3.5 py-2 rounded-xl border border-slate-700 hover:bg-slate-800 text-slate-300 text-xs font-bold transition flex items-center gap-1.5 shrink-0"
+                  className={`px-4 py-2 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                    isLight ? 'border-slate-300 bg-white hover:bg-slate-100 text-slate-800' : 'border-[#27272a] bg-[#18181b] hover:bg-[#27272a] text-zinc-200'
+                  }`}
                 >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copied ? 'Copied APK Link' : 'Copy APK Link'}
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copied ? 'Copied APK Link' : 'Copy APK Link'}</span>
                 </button>
               </div>
             </div>

@@ -8,14 +8,96 @@
     text-size-adjust: 100%;
   }
 
-  html.dark body {
-    background-color: #030712;
-    color: #f1f5f9;
+  html.dark, html.dark body {
+    background-color: #000000 !important;
+    color: #f4f4f5;
   }
 
   html:not(.dark) body {
     background-color: #f1f5f9;
     color: #0f172a;
+  }
+
+  /* ☀️ High-Contrast Sharp Text for Bright Mode */
+  html:not(.dark) .text-zinc-400,
+  html:not(.dark) .text-slate-400 {
+    color: #334155 !important; /* slate-700 */
+  }
+
+  html:not(.dark) .text-zinc-500,
+  html:not(.dark) .text-slate-500 {
+    color: #475569 !important; /* slate-600 */
+  }
+
+  html:not(.dark) .text-zinc-600,
+  html:not(.dark) .text-slate-600 {
+    color: #1e293b !important; /* slate-800 */
+  }
+
+  html:not(.dark) .text-amber-400 {
+    color: #b45309 !important; /* amber-700 for maximum readability on bright backgrounds */
+  }
+
+  html:not(.dark) .text-emerald-400 {
+    color: #047857 !important; /* emerald-700 */
+  }
+
+  html:not(.dark) .text-blue-400 {
+    color: #1d4ed8 !important; /* blue-700 */
+  }
+
+  html:not(.dark) .text-purple-400 {
+    color: #6d28d9 !important; /* purple-700 */
+  }
+
+  /* 🌌 Deep OLED Pitch Black Theme Overrides */
+  html.dark .bg-\[\#030712\],
+  html.dark .bg-\[\#020617\],
+  html.dark .bg-\[\#090d16\],
+  html.dark .bg-slate-950 {
+    background-color: #000000 !important;
+  }
+
+  html.dark .bg-\[\#0f172a\],
+  html.dark .bg-\[\#0a0f1d\],
+  html.dark .bg-\[\#0a101f\],
+  html.dark .bg-\[\#0c1527\],
+  html.dark .bg-slate-900 {
+    background-color: #09090b !important;
+  }
+
+  html.dark .bg-\[\#1e293b\],
+  html.dark .bg-slate-850,
+  html.dark .bg-slate-800 {
+    background-color: #121215 !important;
+  }
+
+  html.dark .border-slate-800,
+  html.dark .border-slate-850,
+  html.dark .border-slate-700,
+  html.dark .border-\[\#1e293b\] {
+    border-color: #18181b !important;
+  }
+
+  /* Active selected tabs in Pitch Black theme */
+  html.dark .bg-amber-500\/15 {
+    background-color: #18181b !important;
+    border-color: #f59e0b !important;
+  }
+
+  html.dark .bg-blue-500\/15 {
+    background-color: #18181b !important;
+    border-color: #3b82f6 !important;
+  }
+
+  html.dark .bg-purple-500\/15 {
+    background-color: #18181b !important;
+    border-color: #a855f7 !important;
+  }
+
+  html.dark .bg-emerald-500\/15 {
+    background-color: #18181b !important;
+    border-color: #10b981 !important;
   }
 
   h1, h2, h3, .font-display {
@@ -27,10 +109,23 @@
   }
 }
 
-/* Custom Scrollbar */
+/* Custom Scrollbar in Pitch Black Mode */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
+}
+
+html.dark ::-webkit-scrollbar-track {
+  background: #000000;
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 9999px;
+}
+
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
 }
 
 ::-webkit-scrollbar-track {
@@ -59,7 +154,7 @@
 
 /* Glassmorphism & UI Utilities */
 .glass-panel {
-  background: rgba(15, 23, 42, 0.75);
+  background: rgba(9, 9, 11, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.08);

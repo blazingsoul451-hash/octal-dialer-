@@ -185,8 +185,8 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({ onImportSu
   };
 
   return (
-    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left transition-colors ${
-      isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left select-none transition-colors ${
+      isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
     }`}>
       <div className={`flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b gap-3 ${
         isLight ? 'border-slate-200' : 'border-slate-800/80'

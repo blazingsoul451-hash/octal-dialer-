@@ -178,7 +178,9 @@ class PhoneBridgeService extends ChangeNotifier {
     _socket = io.io(
       _serverUrl,
       io.OptionBuilder()
-          .setTransports(['polling', 'websocket'])
+          .setTransports(['websocket', 'polling'])
+          .setExtraHeaders({'bypass-tunnel-reminder': 'true'})
+          .setAuth({'token': _authToken})
           .enableAutoConnect()
           .enableReconnection()
           .setReconnectionAttempts(9999)

@@ -104,7 +104,7 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
             onClick={fetchOverview}
             disabled={loading}
             className={`px-3 py-1.5 rounded-xl border text-xs font-bold font-mono flex items-center gap-1.5 cursor-pointer transition ${
-              isLight ? 'bg-white border-slate-300 hover:bg-slate-50 text-slate-700' : 'bg-slate-900 border-slate-800 hover:bg-slate-850 text-slate-300'
+              isLight ? 'bg-white border-slate-300 hover:bg-slate-50 text-slate-700' : 'bg-[#18181b] border-[#18181b] hover:bg-[#27272a] text-slate-300'
             }`}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
@@ -117,52 +117,52 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Total Businesses */}
         <div className={`p-4 rounded-2xl border transition-all ${
-          isLight ? 'bg-white border-slate-200/90 shadow-sm' : 'bg-slate-900/90 border-slate-800/90 shadow-lg'
+          isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b] shadow-2xl'
         }`}>
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-[11px] font-mono uppercase tracking-wider font-bold">Total Businesses</span>
-            <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+          <div className="flex items-center justify-between text-zinc-400 mb-2">
+            <span className={`text-[11px] font-mono uppercase tracking-wider font-bold ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>Total Businesses</span>
+            <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500">
               <Building2 className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-black font-mono text-white">{metrics.totalTenants}</div>
+          <div className={`text-2xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics.totalTenants}</div>
           <div className="flex items-center gap-2 mt-2 text-[10px] font-mono">
-            <span className="text-emerald-400 font-bold">{metrics.activeTenants} Active</span>
-            <span className="text-slate-600">•</span>
-            <span className="text-amber-400 font-bold">{metrics.trialTenants} Starter/Trial</span>
+            <span className="text-emerald-500 font-bold">{metrics.activeTenants} Active</span>
+            <span className="text-zinc-400">•</span>
+            <span className="text-amber-500 font-bold">{metrics.trialTenants} Starter/Trial</span>
           </div>
         </div>
 
         {/* Global Users */}
         <div className={`p-4 rounded-2xl border transition-all ${
-          isLight ? 'bg-white border-slate-200/90 shadow-sm' : 'bg-slate-900/90 border-slate-800/90 shadow-lg'
+          isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b] shadow-2xl'
         }`}>
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-[11px] font-mono uppercase tracking-wider font-bold">Active Users</span>
-            <div className="w-8 h-8 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
+          <div className="flex items-center justify-between text-zinc-400 mb-2">
+            <span className={`text-[11px] font-mono uppercase tracking-wider font-bold ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>Active Users</span>
+            <div className="w-8 h-8 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-500">
               <Users className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-black font-mono text-white">{metrics.totalUsers}</div>
+          <div className={`text-2xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics.totalUsers}</div>
           <div className="flex items-center gap-2 mt-2 text-[10px] font-mono">
-            <span className="text-purple-400 font-bold">{metrics.adminUsers} Admins</span>
-            <span className="text-slate-600">•</span>
-            <span className="text-slate-400">{metrics.agentUsers} Agents/Users</span>
+            <span className="text-purple-500 font-bold">{metrics.adminUsers} Admins</span>
+            <span className="text-zinc-400">•</span>
+            <span className={isLight ? 'text-slate-600' : 'text-zinc-400'}>{metrics.agentUsers} Agents/Users</span>
           </div>
         </div>
 
         {/* Subscriptions */}
         <div className={`p-4 rounded-2xl border transition-all ${
-          isLight ? 'bg-white border-slate-200/90 shadow-sm' : 'bg-slate-900/90 border-slate-800/90 shadow-lg'
+          isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b] shadow-2xl'
         }`}>
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-[11px] font-mono uppercase tracking-wider font-bold">Active Subscriptions</span>
-            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+          <div className="flex items-center justify-between text-zinc-400 mb-2">
+            <span className={`text-[11px] font-mono uppercase tracking-wider font-bold ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>Active Subscriptions</span>
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500">
               <CreditCard className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-black font-mono text-white">{metrics.activeSubscriptions}</div>
-          <div className="flex items-center gap-1.5 mt-2 text-[10px] font-mono text-emerald-400">
+          <div className={`text-2xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics.activeSubscriptions}</div>
+          <div className="flex items-center gap-1.5 mt-2 text-[10px] font-mono text-emerald-500 font-bold">
             <CheckCircle2 className="w-3.5 h-3.5" />
             <span>100% Entitlement Synchronized</span>
           </div>
@@ -170,17 +170,17 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
 
         {/* Active Connected Devices */}
         <div className={`p-4 rounded-2xl border transition-all ${
-          isLight ? 'bg-white border-slate-200/90 shadow-sm' : 'bg-slate-900/90 border-slate-800/90 shadow-lg'
+          isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b] shadow-2xl'
         }`}>
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-[11px] font-mono uppercase tracking-wider font-bold">Connected Phones</span>
-            <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400">
+          <div className="flex items-center justify-between text-zinc-400 mb-2">
+            <span className={`text-[11px] font-mono uppercase tracking-wider font-bold ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>Connected Phones</span>
+            <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-500">
               <Smartphone className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-black font-mono text-white">{metrics.onlineDevices} <span className="text-xs text-slate-500 font-normal">/ {metrics.totalDevices} Total</span></div>
-          <div className="flex items-center gap-2 mt-2 text-[10px] font-mono text-slate-400">
-            <PhoneCall className="w-3.5 h-3.5 text-amber-400" />
+          <div className={`text-2xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics.onlineDevices} <span className={`text-xs font-normal ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>/ {metrics.totalDevices} Total</span></div>
+          <div className={`flex items-center gap-2 mt-2 text-[10px] font-mono ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
+            <PhoneCall className="w-3.5 h-3.5 text-amber-500" />
             <span>{metrics.callsToday} Calls Handled Today</span>
           </div>
         </div>
@@ -189,20 +189,20 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
       {/* ── Secondary Metrics & Recent Businesses ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Recent Businesses Table */}
-        <div className={`lg:col-span-2 p-5 rounded-2xl border ${
-          isLight ? 'bg-white border-slate-200' : 'bg-slate-900/90 border-slate-800'
+        <div className={`lg:col-span-2 p-5 rounded-2xl border shadow-2xl ${
+          isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
         }`}>
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <Building2 className="w-4 h-4 text-amber-400" />
-              <h3 className="text-xs font-bold font-mono uppercase tracking-wider text-slate-300">
+              <Building2 className="w-4 h-4 text-amber-500" />
+              <h3 className={`text-xs font-bold font-mono uppercase tracking-wider ${isLight ? 'text-slate-800' : 'text-zinc-300'}`}>
                 Recent Businesses
               </h3>
             </div>
             {onNavigateToTab && (
               <button
                 onClick={() => onNavigateToTab('businesses')}
-                className="text-xs font-mono font-bold text-amber-400 hover:text-amber-300 flex items-center gap-1 cursor-pointer"
+                className="text-xs font-mono font-bold text-amber-500 hover:text-amber-600 flex items-center gap-1 cursor-pointer"
               >
                 <span>View All</span>
                 <ArrowRight className="w-3 h-3" />
@@ -210,41 +210,43 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
             )}
           </div>
 
-          <div className="overflow-x-auto">
+          <div className={`overflow-x-auto rounded-xl border ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
             <table className="w-full text-left text-xs font-mono">
               <thead>
-                <tr className="border-b border-slate-800 text-[10px] text-slate-500 uppercase">
-                  <th className="pb-2">Business Name</th>
-                  <th className="pb-2">Country</th>
-                  <th className="pb-2">Plan</th>
-                  <th className="pb-2">Status</th>
-                  <th className="pb-2 text-right">Action</th>
+                <tr className={`border-b text-[10px] uppercase ${isLight ? 'border-slate-200 bg-slate-50 text-slate-600' : 'border-[#18181b] bg-[#121215] text-zinc-400'}`}>
+                  <th className="py-2.5 px-3">Business Name</th>
+                  <th className="py-2.5 px-3">Country</th>
+                  <th className="py-2.5 px-3">Plan</th>
+                  <th className="py-2.5 px-3">Status</th>
+                  <th className="py-2.5 px-3 text-right">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60">
+              <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b]'}`}>
                 {(data?.recentTenants || []).map((t: any) => (
-                  <tr key={t.id} className="hover:bg-slate-800/30 transition">
-                    <td className="py-2.5 font-bold text-white flex items-center gap-2">
-                      <div className="w-6 h-6 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-[10px] font-black text-amber-400">
+                  <tr key={t.id} className={`${isLight ? 'hover:bg-slate-50' : 'hover:bg-[#121215]/60'} transition`}>
+                    <td className={`py-2.5 px-3 font-bold flex items-center gap-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                      <div className="w-6 h-6 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-[10px] font-black text-amber-500">
                         {t.name.charAt(0).toUpperCase()}
                       </div>
                       <span>{t.name}</span>
                     </td>
-                    <td className="py-2.5 text-slate-400">{t.country || 'US'}</td>
-                    <td className="py-2.5 text-purple-300">{t.planName || 'Starter'}</td>
-                    <td className="py-2.5">
-                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase border ${
+                    <td className={`py-2.5 px-3 ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>{t.country || 'US'}</td>
+                    <td className="py-2.5 px-3 text-purple-400 font-bold">{t.planName || 'Starter'}</td>
+                    <td className="py-2.5 px-3">
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${
                         t.status === 'active' 
-                          ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800' 
-                          : 'bg-red-950/40 text-red-400 border-red-800'
+                          ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' 
+                          : 'bg-red-500/10 text-red-500 border-red-500/30'
                       }`}>
                         {t.status}
                       </span>
                     </td>
-                    <td className="py-2.5 text-right">
+                    <td className="py-2.5 px-3 text-right">
                       <button
                         onClick={() => onSelectBusiness ? onSelectBusiness(t.id) : onNavigateToTab?.('businesses')}
-                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] font-bold cursor-pointer transition"
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition border ${
+                          isLight ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-200' : 'bg-[#18181b] hover:bg-[#27272a] text-zinc-300 border-[#27272a]'
+                        }`}
                       >
                         Inspect
                       </button>
@@ -253,7 +255,7 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
                 ))}
                 {(!data?.recentTenants || data.recentTenants.length === 0) && (
                   <tr>
-                    <td colSpan={5} className="py-6 text-center text-slate-500">
+                    <td colSpan={5} className={`py-6 text-center ${isLight ? 'text-slate-400' : 'text-zinc-500'}`}>
                       No businesses registered yet.
                     </td>
                   </tr>
@@ -264,37 +266,37 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
         </div>
 
         {/* Global Engine Status Card */}
-        <div className={`p-5 rounded-2xl border space-y-4 ${
-          isLight ? 'bg-white border-slate-200' : 'bg-slate-900/90 border-slate-800'
+        <div className={`p-5 rounded-2xl border shadow-2xl space-y-4 ${
+          isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
         }`}>
           <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-xs font-bold font-mono uppercase tracking-wider text-slate-300">
+            <Activity className="w-4 h-4 text-emerald-500" />
+            <h3 className={`text-xs font-bold font-mono uppercase tracking-wider ${isLight ? 'text-slate-800' : 'text-zinc-300'}`}>
               Engine Status
             </h3>
           </div>
 
           <div className="space-y-3 font-mono text-xs">
-            <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-850">
-              <span className="text-slate-400">Total System Leads</span>
-              <span className="font-bold text-white">{metrics.totalLeads.toLocaleString()}</span>
+            <div className={`flex items-center justify-between p-3 rounded-xl border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'}`}>
+              <span className={isLight ? 'text-slate-600' : 'text-zinc-400'}>Total System Leads</span>
+              <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics.totalLeads.toLocaleString()}</span>
             </div>
 
-            <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-850">
-              <span className="text-slate-400">Active Campaigns</span>
-              <span className="font-bold text-white">{metrics.totalCampaigns}</span>
+            <div className={`flex items-center justify-between p-3 rounded-xl border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'}`}>
+              <span className={isLight ? 'text-slate-600' : 'text-zinc-400'}>Active Campaigns</span>
+              <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics.totalCampaigns}</span>
             </div>
 
-            <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-850">
-              <span className="text-slate-400">Security Invariants</span>
-              <span className="font-bold text-emerald-400 flex items-center gap-1">
+            <div className={`flex items-center justify-between p-3 rounded-xl border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'}`}>
+              <span className={isLight ? 'text-slate-600' : 'text-zinc-400'}>Security Invariants</span>
+              <span className="font-bold text-emerald-500 flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5" /> Enforced
               </span>
             </div>
 
-            <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-850">
-              <span className="text-slate-400">Multi-Tenant Isolation</span>
-              <span className="font-bold text-purple-400">Strict (DB Clustered)</span>
+            <div className={`flex items-center justify-between p-3 rounded-xl border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'}`}>
+              <span className={isLight ? 'text-slate-600' : 'text-zinc-400'}>Multi-Tenant Isolation</span>
+              <span className="font-bold text-purple-500">Strict (DB Clustered)</span>
             </div>
           </div>
         </div>

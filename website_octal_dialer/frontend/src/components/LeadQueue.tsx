@@ -21,6 +21,7 @@ interface LeadQueueProps {
   latencyMs?: number | null;
   phoneDeviceName?: string | null;
   lastDispositionSaved?: DispositionResult | null;
+  sessionId?: string | null;
 }
 
 const formatTimer = (seconds: number): string => {
@@ -47,6 +48,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   latencyMs,
   phoneDeviceName,
   lastDispositionSaved,
+  sessionId,
 }) => {
   const [selectedCampId, setSelectedCampId] = useState<string>('');
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -218,7 +220,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     if (selectedCampId) {
       fetchLeads(selectedCampId);
       if (socket) {
-        socket.emit('campaign:select', { campaignId: selectedCampId, sessionId });
+        socket.emit('campaign:select', { campaignId: selectedCampId, sessionId: sessionId || '' });
       }
     } else {
       setLeads([]);
@@ -524,13 +526,13 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       
       {/* Top Title & Subtitle */}
       <div className={`p-6 border rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800/90 shadow-xl'
+        isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b] shadow-2xl'
       }`}>
         <div>
-          <h2 className={`text-2xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+          <h2 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
             Auto Dialer Workspace
           </h2>
-          <p className={`text-xs mt-1 ${isLight ? 'text-slate-600 font-medium' : 'text-slate-400'}`}>
+          <p className="text-xs mt-1 text-zinc-400 font-medium">
             Manage campaigns, monitor lead pipelines, and automatically connect calls through your paired GSM handset.
           </p>
         </div>
@@ -539,7 +541,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={emergencyStop}
-            className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/40 font-mono text-xs font-black rounded-xl transition cursor-pointer flex items-center gap-2 shadow-sm"
+            className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 font-mono text-xs font-black rounded-xl transition cursor-pointer flex items-center gap-2 shadow-sm"
             title="Trigger instant Emergency Stop on all active calls"
           >
             <AlertTriangle className="w-4 h-4 text-red-500" />
@@ -550,14 +552,14 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
       {/* ACTIVE CAMPAIGN CONTROL & REAL STATS CARDS */}
       <div className={`p-6 border rounded-2xl space-y-5 transition-colors ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800/90 shadow-xl'
+        isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b] shadow-2xl'
       }`}>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="space-y-1">
-            <span className="text-[10px] font-mono font-black text-amber-600 dark:text-amber-400 uppercase tracking-widest block">
+            <span className="text-[10px] font-mono font-black text-amber-500 uppercase tracking-widest block">
               ACTIVE CAMPAIGN
             </span>
-            <h3 className={`text-sm font-extrabold ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>
+            <h3 className={`text-sm font-extrabold ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Select Dialing Pipeline
             </h3>
           </div>
@@ -567,7 +569,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               value={selectedCampId}
               onChange={(e) => setSelectedCampId(e.target.value)}
               className={`flex-1 min-w-[200px] border focus:border-amber-500 rounded-xl px-4 py-2.5 text-xs font-mono font-bold focus:outline-none transition cursor-pointer ${
-                isLight ? 'bg-slate-50 border-slate-300 text-slate-900 shadow-sm' : 'bg-slate-950 border-slate-800 text-white'
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
               }`}
             >
               <option value="">-- Select Calling Campaign --</option>
@@ -576,14 +578,14 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
             {/* Ring Timeout selector */}
             <div className="flex items-center gap-1.5 shrink-0">
-              <span className={`text-[10px] font-mono font-bold uppercase ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+              <span className="text-[10px] font-mono font-bold uppercase text-zinc-400">
                 Ring Timeout:
               </span>
               <select
                 value={autoDialTimeout}
                 onChange={(e) => setAutoDialTimeout(Number(e.target.value))}
                 className={`border focus:border-amber-500 rounded-xl px-2.5 py-2 text-xs font-mono font-bold focus:outline-none transition cursor-pointer ${
-                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-850 text-white'
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
                 }`}
                 title="Max seconds to ring phone before marking NO ANSWER and hanging up"
               >
@@ -597,7 +599,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
             {/* Next Call Delay selector */}
             <div className="flex items-center gap-1.5 shrink-0">
-              <span className={`text-[10px] font-mono font-bold uppercase ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+              <span className="text-[10px] font-mono font-bold uppercase text-zinc-400">
                 Next Call Delay:
               </span>
               <select
@@ -608,7 +610,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                   localStorage.setItem('octal_inter_call_delay', String(val));
                 }}
                 className={`border focus:border-amber-500 rounded-xl px-2.5 py-2 text-xs font-mono font-bold focus:outline-none transition cursor-pointer ${
-                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-850 text-white'
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
                 }`}
                 title="Cooldown delay before automatically dialing the next lead after previous call finishes"
               >
@@ -633,7 +635,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                     }
                     setCountdownSeconds(null);
                   }}
-                  className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-md flex items-center gap-2"
+                  className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-sm flex items-center gap-2"
                 >
                   <Square className="w-3.5 h-3.5 fill-current" />
                   <span>Pause Campaign</span>
@@ -642,10 +644,10 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                 <button
                   onClick={handleStartAutoDial}
                   disabled={!phoneConnected}
-                  className={`px-5 py-2.5 font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-md flex items-center gap-2 ${
+                  className={`px-5 py-2.5 font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-sm flex items-center gap-2 ${
                     !phoneConnected
-                      ? (isLight ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-850 text-slate-600 cursor-not-allowed')
-                      : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-slate-950 shadow-emerald-500/20'
+                      ? (isLight ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-[#18181b] border border-[#27272a] text-zinc-600 cursor-not-allowed')
+                      : 'bg-emerald-500 hover:bg-emerald-400 text-black font-bold'
                   }`}
                   title={phoneConnected ? "Start Auto-Dialer Pilot" : "Connect Phone to Start Campaign"}
                 >
@@ -661,28 +663,28 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         {selectedCampId && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
             <div className={`p-3.5 rounded-xl border space-y-1 ${
-              isLight ? 'bg-slate-50 border-slate-200 shadow-sm' : 'bg-slate-950/60 border-slate-850'
+              isLight ? 'bg-slate-50 border-slate-200 shadow-sm' : 'bg-[#121215] border-[#27272a]'
             }`}>
-              <span className={`text-[9px] font-mono font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>TOTAL LEADS</span>
-              <p className={`text-xl font-black font-display ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>{totalLeadsCount}</p>
+              <span className="text-[9px] font-mono font-bold uppercase text-zinc-400">TOTAL LEADS</span>
+              <p className={`text-xl font-black font-display ${isLight ? 'text-slate-900' : 'text-white'}`}>{totalLeadsCount}</p>
             </div>
             <div className={`p-3.5 rounded-xl border space-y-1 ${
-              isLight ? 'bg-amber-500/10 border-amber-300 shadow-sm' : 'bg-slate-950/60 border-slate-850'
+              isLight ? 'bg-amber-500/10 border-amber-300 shadow-sm' : 'bg-[#121215] border-[#27272a]'
             }`}>
-              <span className="text-[9px] font-mono font-bold text-amber-700 dark:text-amber-400 uppercase">CALLS MADE</span>
-              <p className="text-xl font-black font-display text-amber-700 dark:text-amber-400">{callsMadeCount}</p>
+              <span className="text-[9px] font-mono font-bold text-amber-400 uppercase">CALLS MADE</span>
+              <p className="text-xl font-black font-display text-amber-400">{callsMadeCount}</p>
             </div>
             <div className={`p-3.5 rounded-xl border space-y-1 ${
-              isLight ? 'bg-emerald-50 border-emerald-200 shadow-sm' : 'bg-slate-950/60 border-slate-850'
+              isLight ? 'bg-emerald-50 border-emerald-200 shadow-sm' : 'bg-[#121215] border-[#27272a]'
             }`}>
-              <span className="text-[9px] font-mono font-bold text-emerald-700 dark:text-emerald-400 uppercase">CONNECTED</span>
-              <p className="text-xl font-black font-display text-emerald-700 dark:text-emerald-400">{connectedCount}</p>
+              <span className="text-[9px] font-mono font-bold text-emerald-400 uppercase">CONNECTED</span>
+              <p className="text-xl font-black font-display text-emerald-400">{connectedCount}</p>
             </div>
             <div className={`p-3.5 rounded-xl border space-y-1 ${
-              isLight ? 'bg-blue-50 border-blue-200 shadow-sm' : 'bg-slate-950/60 border-slate-850'
+              isLight ? 'bg-blue-50 border-blue-200 shadow-sm' : 'bg-[#121215] border-[#27272a]'
             }`}>
-              <span className="text-[9px] font-mono font-bold text-blue-700 dark:text-blue-400 uppercase">REMAINING</span>
-              <p className="text-xl font-black font-display text-blue-700 dark:text-blue-400">{remainingCount}</p>
+              <span className="text-[9px] font-mono font-bold text-blue-400 uppercase">REMAINING</span>
+              <p className="text-xl font-black font-display text-blue-400">{remainingCount}</p>
             </div>
           </div>
         )}
@@ -692,14 +694,12 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
         {/* LEFT COLUMN: Queue Lead List */}
-        <div className={`lg:col-span-5 border rounded-2xl p-5 shadow-xl flex flex-col h-[600px] transition-colors ${
-          isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800/90'
+        <div className={`lg:col-span-5 border rounded-2xl p-5 shadow-2xl flex flex-col h-[600px] transition-colors ${
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
-          <div className={`flex justify-between items-center pb-3 border-b ${isLight ? 'border-slate-200' : 'border-slate-800'}`}>
+          <div className={`flex justify-between items-center pb-3 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
             <div className="flex items-center gap-2">
-              <span className={`text-[10px] font-mono font-extrabold uppercase tracking-wider ${
-                isLight ? 'text-slate-700' : 'text-slate-400'
-              }`}>
+              <span className="text-[10px] font-mono font-extrabold uppercase tracking-wider text-zinc-400">
                 Lead Queue ({leads.length})
               </span>
               <button
@@ -715,12 +715,12 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                   className="text-[9px] font-mono font-bold text-red-500 hover:text-red-400 hover:underline cursor-pointer flex items-center gap-0.5"
                   title="Delete all leads in current campaign"
                 >
-                  <Trash2 className="w-3 h-3" />
-                  Clear All
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Clear All</span>
                 </button>
               )}
             </div>
-            <span className={`text-[10px] font-mono font-bold ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
+            <span className="text-[10px] font-mono font-bold text-zinc-400">
               Active: {currentIndex + 1} / {leads.length || 0}
             </span>
           </div>
@@ -729,10 +729,10 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
           <div className="flex-1 overflow-y-auto mt-3 space-y-2 pr-1 custom-scrollbar">
             {leads.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center p-6 space-y-3">
-                <PhoneCall className={`w-10 h-10 stroke-1 ${isLight ? 'text-slate-400' : 'text-slate-600'}`} />
+                <PhoneCall className="w-10 h-10 stroke-1 text-zinc-600" />
                 <div className="space-y-1">
-                  <p className={`text-xs font-extrabold ${isLight ? 'text-slate-900' : 'text-slate-300'}`}>No Campaign Selected</p>
-                  <p className={`text-[10px] font-mono max-w-[200px] ${isLight ? 'text-slate-600 font-medium' : 'text-slate-400'}`}>
+                  <p className="text-xs font-extrabold text-white">No Campaign Selected</p>
+                  <p className="text-[10px] font-mono max-w-[200px] text-zinc-400">
                     Choose a campaign from the selector above to load your calling list.
                   </p>
                 </div>
@@ -753,24 +753,24 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                       idx === currentIndex
                         ? isLight 
                           ? 'bg-amber-500/20 border-amber-500 text-slate-950 font-black border-l-4' 
-                          : 'bg-amber-500/10 border-amber-500/70 text-white font-bold border-l-4 border-l-amber-500'
+                          : 'bg-[#18181b] border-amber-500 text-white font-bold border-l-4 border-l-amber-500 shadow-sm'
                         : isLight
                           ? 'bg-slate-50 border-slate-200 hover:border-slate-300 text-slate-900 font-bold'
-                          : 'bg-slate-950/60 border-slate-850 hover:border-slate-750 text-slate-300'
+                          : 'bg-[#121215] border-[#27272a] hover:border-zinc-700 text-zinc-300'
                     }`}
                   >
                     <div className="min-w-0 pr-2 flex-1">
                       <p className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{lead.name}</p>
-                      <p className={`text-[10px] font-mono mt-0.5 ${isLight ? 'text-slate-600 font-semibold' : 'text-slate-400'}`}>{lead.phone}</p>
+                      <p className="text-[10px] font-mono mt-0.5 text-zinc-400">{lead.phone}</p>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-[9px] font-mono font-extrabold tracking-wider px-2 py-0.5 rounded border uppercase ${
+                      <span className={`text-[9px] font-mono font-extrabold tracking-wider px-2.5 py-0.5 rounded-full border uppercase ${
                         lead.status === 'COMPLETED'
                           ? isLight ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
                         : lead.status === 'CALLING'
-                          ? isLight ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
-                        : isLight ? 'bg-slate-200 border-slate-300 text-slate-700' : 'bg-slate-900 border-slate-800 text-slate-400'
+                          ? isLight ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-amber-500/10 border-amber-500/30 text-amber-400 animate-pulse'
+                        : isLight ? 'bg-slate-200 border-slate-300 text-slate-700' : 'bg-[#18181b] border-[#27272a] text-zinc-400'
                       }`}>
                         {lead.status === 'COMPLETED' ? lead.outcome || 'DONE' : lead.status}
                       </span>
@@ -779,7 +779,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                       <button
                         onClick={(e) => handleDeleteLead(lead.id, e)}
                         disabled={callState !== 'IDLE'}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition cursor-pointer"
+                        className="p-1.5 rounded-lg text-zinc-400 hover:text-red-500 hover:bg-red-500/10 transition cursor-pointer"
                         title="Delete lead permanently"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -794,12 +794,12 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
           {/* Pagination Controls for Large Queues */}
           {leads.length > PAGE_SIZE && (
             <div className={`flex items-center justify-between pt-2.5 mt-2 border-t text-[11px] font-mono select-none ${
-              isLight ? 'border-slate-200 text-slate-700' : 'border-slate-800 text-slate-400'
+              isLight ? 'border-slate-200 text-slate-700' : 'border-[#18181b] text-zinc-400'
             }`}>
               <button
                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                 disabled={currentPage === 1}
-                className="px-2.5 py-1 rounded-lg border font-bold disabled:opacity-30 hover:bg-amber-500/10 transition cursor-pointer"
+                className="px-2.5 py-1 rounded-lg border font-bold disabled:opacity-30 hover:bg-amber-500/10 transition cursor-pointer border-[#27272a]"
               >
                 ◀ Prev
               </button>
@@ -809,7 +809,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               <button
                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                 disabled={currentPage === totalPages}
-                className="px-2.5 py-1 rounded-lg border font-bold disabled:opacity-30 hover:bg-amber-500/10 transition cursor-pointer"
+                className="px-2.5 py-1 rounded-lg border font-bold disabled:opacity-30 hover:bg-amber-500/10 transition cursor-pointer border-[#27272a]"
               >
                 Next ▶
               </button>
@@ -821,33 +821,31 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         <div className="lg:col-span-7 space-y-6">
 
           {/* Quick Manual Dial Bar */}
-          <div className={`p-4 border rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center gap-3 transition-colors ${
-            isLight ? 'bg-white border-slate-200/90' : 'bg-[#0f172a]/95 border-slate-800/90'
+          <div className={`p-4 border rounded-2xl shadow-xl flex flex-col sm:flex-row sm:items-center gap-3 transition-colors ${
+            isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
           }`}>
-            <span className={`text-[10px] font-mono font-black uppercase tracking-widest min-w-[80px] ${
-              isLight ? 'text-slate-600' : 'text-slate-400'
-            }`}>
+            <span className="text-[10px] font-mono font-black uppercase tracking-widest min-w-[80px] text-zinc-400">
               QUICK DIAL
             </span>
             <input
               type="tel"
-              placeholder="+1 (555) 000-0000"
+              placeholder="+92 300 1234567"
               value={manualPhone}
               onChange={(e) => setManualPhone(e.target.value)}
               className={`flex-1 border focus:border-amber-500 rounded-xl px-4 py-2.5 text-xs font-mono font-bold focus:outline-none transition ${
-                isLight ? 'bg-slate-50 border-slate-300 text-slate-900 shadow-sm' : 'bg-slate-950 border-slate-800 text-white'
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
               }`}
             />
             <button
               onClick={handleManualDial}
               disabled={callState !== 'IDLE' || !manualPhone.trim() || !phoneConnected}
-              className={`px-6 py-2.5 font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-lg ${
+              className={`px-6 py-2.5 font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-sm ${
                 callState !== 'IDLE' || !manualPhone.trim() || !phoneConnected
-                  ? (isLight ? 'bg-slate-200 text-slate-500 border border-slate-300 cursor-not-allowed' : 'bg-slate-850 text-slate-600 border border-slate-800 cursor-not-allowed')
-                  : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 shadow-amber-500/20 amber-glow cursor-pointer'
+                  ? 'bg-[#18181b] border border-[#27272a] text-zinc-600 cursor-not-allowed'
+                  : 'bg-amber-500 hover:bg-amber-400 text-black cursor-pointer'
               }`}
             >
-              <PhoneCall className="w-4 h-4 fill-slate-950" />
+              <PhoneCall className="w-4 h-4 fill-current" />
               <span>Dial</span>
             </button>
           </div>
@@ -855,7 +853,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
           {/* Inter-Call Delay Active Countdown Banner */}
           {countdownSeconds !== null && (
             <div className={`p-4 border rounded-2xl flex items-center justify-between gap-3 shadow-lg transition-all animate-pulse ${
-              isLight ? 'bg-amber-50 border-amber-300 text-amber-950' : 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+              isLight ? 'bg-amber-50 border-amber-300 text-amber-950' : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
             }`}>
               <div className="flex items-center gap-3">
                 <span className="w-3 h-3 rounded-full bg-amber-500 animate-ping shrink-0" />
@@ -871,7 +869,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   onClick={handleInstantDialNow}
-                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-xs font-black rounded-xl transition cursor-pointer flex items-center gap-1 shadow-sm"
+                  className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-mono text-xs font-black rounded-xl transition cursor-pointer flex items-center gap-1 shadow-sm"
                   title="Skip cooldown timer and dial immediately"
                 >
                   <FastForward className="w-3 h-3 fill-current" />
@@ -879,8 +877,8 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                 </button>
                 <button
                   onClick={handlePauseCountdown}
-                  className={`px-3 py-1.5 font-mono text-xs font-bold rounded-xl border transition cursor-pointer flex items-center gap-1 ${
-                    isLight ? 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700' : 'bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-300'
+                  className={`px-3.5 py-1.5 font-mono text-xs font-bold rounded-xl border transition cursor-pointer flex items-center gap-1 ${
+                    isLight ? 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700' : 'bg-[#18181b] hover:bg-[#27272a] border-[#27272a] text-zinc-300'
                   }`}
                   title="Pause auto-dialing progression"
                 >
@@ -893,14 +891,12 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
           
           {/* Main Caller Card */}
           <div className={`border rounded-2xl p-6 shadow-2xl flex flex-col justify-between h-[360px] relative overflow-hidden transition-colors ${
-            isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800/90'
+            isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
           }`}>
             
             {/* Header Status Bar */}
-            <div className={`flex justify-between items-center pb-4 border-b ${isLight ? 'border-slate-200' : 'border-slate-800/60'}`}>
-              <span className={`text-[10px] font-mono font-extrabold uppercase tracking-widest ${
-                isLight ? 'text-slate-700' : 'text-slate-400'
-              }`}>
+            <div className={`flex justify-between items-center pb-4 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
+              <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-zinc-400">
                 CURRENT LEAD INTERFACE
               </span>
               <span className={`px-3 py-1 text-[10px] font-mono font-extrabold uppercase tracking-wider border rounded-full ${currentBadge.color}`}>
@@ -911,28 +907,28 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
             {activeLead ? (
               <div className="space-y-4 my-auto text-center">
                 {/* Large Contact Avatar */}
-                <div className={`w-16 h-16 rounded-2xl font-display font-black text-2xl flex items-center justify-center mx-auto shadow-lg border ${
+                <div className={`w-16 h-16 rounded-2xl font-display font-black text-2xl flex items-center justify-center mx-auto shadow-sm border ${
                   isLight
-                    ? 'bg-amber-500/15 border-amber-300 text-amber-900 shadow-amber-500/10'
-                    : 'bg-gradient-to-br from-amber-400/20 to-amber-600/10 border-amber-500/30 text-amber-400 shadow-amber-500/10'
+                    ? 'bg-amber-500/15 border-amber-300 text-amber-900'
+                    : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
                 }`}>
                   {activeLead.name.charAt(0).toUpperCase()}
                 </div>
 
                 <div className="space-y-1">
                   <h2 className={`text-2xl font-black font-display uppercase tracking-wider ${
-                    isLight ? 'text-slate-900' : 'text-slate-100'
+                    isLight ? 'text-slate-900' : 'text-white'
                   }`}>{activeLead.name}</h2>
-                  <p className="text-sm font-mono text-amber-600 dark:text-amber-400 font-extrabold tracking-widest">{activeLead.phone}</p>
+                  <p className="text-sm font-mono text-amber-400 font-extrabold tracking-widest">{activeLead.phone}</p>
                 </div>
 
                 {/* Call Duration Ticker */}
                 {callState === 'ACTIVE' && (
                   <div className="space-y-1">
-                    <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-600 dark:text-emerald-400 block font-bold">
+                    <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-400 block font-bold">
                       CONNECTED DURATION
                     </span>
-                    <span className="text-4xl font-mono font-black text-emerald-600 dark:text-emerald-400 tracking-widest">
+                    <span className="text-4xl font-mono font-black text-emerald-400 tracking-widest">
                       {formatTimer(callDuration)}
                     </span>
                   </div>
@@ -941,26 +937,26 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
             ) : (
               <div className="text-center my-auto space-y-3 py-8">
                 <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto border ${
-                  isLight ? 'bg-slate-100 border-slate-200 text-slate-500' : 'bg-slate-950 border-slate-850 text-slate-600'
+                  isLight ? 'bg-slate-100 border-slate-200 text-slate-500' : 'bg-[#121215] border-[#27272a] text-zinc-600'
                 }`}>
                   <PhoneCall className="w-7 h-7 stroke-1" />
                 </div>
                 <div className="space-y-1">
-                  <p className={`text-sm font-black ${isLight ? 'text-slate-900' : 'text-slate-300'}`}>No Lead Loaded</p>
-                  <p className={`text-xs font-mono ${isLight ? 'text-slate-600 font-semibold' : 'text-slate-400'}`}>
+                  <p className="text-sm font-black text-white">No Lead Loaded</p>
+                  <p className="text-xs font-mono text-zinc-400">
                     Select a campaign to begin dialing your pipeline.
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Powerful Call Controls Bar */}
-            <div className={`flex items-center gap-3 border-t pt-4 ${isLight ? 'border-slate-200' : 'border-slate-800/60'}`}>
+            {/* Call Controls Bar */}
+            <div className={`flex items-center gap-3 border-t pt-4 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
               <button
                 onClick={handlePrev}
                 disabled={callState !== 'IDLE' || currentIndex === 0}
-                className={`px-4 py-3 border disabled:opacity-40 text-xs font-mono font-bold rounded-xl transition cursor-pointer ${
-                  isLight ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200' : 'bg-slate-950 border-slate-850 hover:border-slate-700 text-slate-300 hover:text-white'
+                className={`px-4 py-3 border disabled:opacity-30 text-xs font-mono font-bold rounded-xl transition cursor-pointer ${
+                  isLight ? 'bg-slate-100 border-slate-300 text-slate-800' : 'bg-[#18181b] border-[#27272a] text-zinc-300 hover:text-white'
                 }`}
               >
                 Previous
@@ -970,19 +966,19 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                 <button
                   onClick={handleDial}
                   disabled={!activeLead || !phoneConnected}
-                  className={`flex-1 py-3 font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-lg ${
+                  className={`flex-1 py-3 font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-sm ${
                     !activeLead || !phoneConnected
-                      ? (isLight ? 'bg-slate-200 text-slate-500 border border-slate-300 cursor-not-allowed' : 'bg-slate-850 text-slate-600 border border-slate-800 cursor-not-allowed')
-                      : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 shadow-amber-500/20 amber-glow cursor-pointer'
+                      ? 'bg-[#18181b] border border-[#27272a] text-zinc-600 cursor-not-allowed'
+                      : 'bg-amber-500 hover:bg-amber-400 text-black cursor-pointer'
                   }`}
                 >
-                  <Play className="w-4 h-4 fill-slate-950" />
+                  <Play className="w-4 h-4 fill-current" />
                   <span>DIAL LEAD</span>
                 </button>
               ) : (
                 <button
                   onClick={handleHangup}
-                  className="flex-1 py-3 bg-red-600 hover:bg-red-500 text-white font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-red-600/30 cursor-pointer"
+                  className="flex-1 py-3 bg-red-600 hover:bg-red-500 text-white font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
                 >
                   <Square className="w-4 h-4 fill-white" />
                   <span>HANG UP CALL</span>
@@ -992,8 +988,8 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               <button
                 onClick={handleNext}
                 disabled={callState !== 'IDLE' || currentIndex >= leads.length - 1}
-                className={`px-4 py-3 border disabled:opacity-40 text-xs font-mono font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 ${
-                  isLight ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200' : 'bg-slate-950 border-slate-850 hover:border-slate-700 text-slate-300 hover:text-white'
+                className={`px-4 py-3 border disabled:opacity-30 text-xs font-mono font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 ${
+                  isLight ? 'bg-slate-100 border-slate-300 text-slate-800' : 'bg-[#18181b] border-[#27272a] text-zinc-300 hover:text-white'
                 }`}
               >
                 <span>Skip</span>
@@ -1003,26 +999,26 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
           </div>
 
           {/* Redesigned Bluetooth Bridge Console */}
-          <div className={`border rounded-2xl p-5 shadow-xl space-y-3 transition-colors ${
-            isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800/90'
+          <div className={`border rounded-2xl p-5 shadow-2xl space-y-3 transition-colors ${
+            isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
           }`}>
             <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
               <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${phoneConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'}`} />
-                <span className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>
+                <span className={`w-2 h-2 rounded-full ${phoneConnected ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'}`} />
+                <span className="text-xs font-black uppercase tracking-wider text-white">
                   PHONE CONNECTION LOGS
                 </span>
               </div>
               
               {phoneConnected && (
-                <div className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-500 self-start sm:self-auto">
+                <div className="text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 self-start sm:self-auto">
                   DEVICE: {phoneDeviceName || 'Connected'} | LATENCY: {latencyMs !== null ? `${latencyMs}ms` : 'measuring...'}
                 </div>
               )}
 
               <button
                 onClick={() => setShowConsole(!showConsole)}
-                className="text-[10px] font-mono font-bold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
+                className="text-[10px] font-mono font-bold text-amber-400 hover:underline cursor-pointer"
               >
                 {showConsole ? 'Hide Technical Console' : 'View Technical RFCOMM Console'}
               </button>
@@ -1030,10 +1026,10 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
             {showConsole && (
               <div className={`w-full h-40 p-4 rounded-xl border font-mono text-[10px] text-emerald-400 overflow-y-auto space-y-1 custom-scrollbar ${
-                isLight ? 'bg-slate-900 border-slate-800' : 'bg-slate-950 border-slate-850'
+                isLight ? 'bg-slate-900 border-slate-800' : 'bg-[#121215] border-[#27272a]'
               }`}>
                 {logs.length === 0 ? (
-                  <div className="text-slate-500">Console listening for RFCOMM handshake...</div>
+                  <div className="text-zinc-600">Console listening for RFCOMM handshake...</div>
                 ) : (
                   logs.map((log, i) => <div key={i} className="leading-relaxed">{log}</div>)
                 )}

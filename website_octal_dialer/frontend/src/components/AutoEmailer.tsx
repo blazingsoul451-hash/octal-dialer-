@@ -465,10 +465,10 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
     return getAccountProvider(a) === accountFilter;
   });
 
-  const card = `p-6 border rounded-2xl shadow-lg transition-all ${isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#090d16] border-slate-800'}`;
-  const inputCls = `w-full px-4 py-3 rounded-xl border text-sm font-sans outline-none transition ${isLight ? 'bg-white border-slate-300 text-slate-900 focus:border-amber-400' : 'bg-slate-900 border-slate-700 text-white focus:border-amber-500'}`;
-  const btnPrimary = 'px-6 py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-sm rounded-xl transition cursor-pointer shadow-md flex items-center justify-center gap-2';
-  const btnSecondary = `px-4 py-2.5 border rounded-xl text-xs font-bold transition cursor-pointer ${isLight ? 'border-slate-300 text-slate-700 hover:bg-slate-100' : 'border-slate-700 text-slate-300 hover:bg-slate-800'}`;
+  const card = `p-6 border rounded-2xl shadow-2xl transition-all ${isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'}`;
+  const inputCls = `w-full px-4 py-3 rounded-xl border text-sm font-sans outline-none transition ${isLight ? 'bg-white border-slate-200 text-slate-900 focus:border-amber-500' : 'bg-[#121215] border-[#27272a] text-white focus:border-amber-500'}`;
+  const btnPrimary = 'px-6 py-3 bg-amber-500 hover:bg-amber-400 text-black font-black text-sm rounded-xl transition cursor-pointer shadow-sm flex items-center justify-center gap-2';
+  const btnSecondary = `px-4 py-2.5 border rounded-xl text-xs font-bold transition cursor-pointer ${isLight ? 'border-slate-200 text-slate-700 hover:bg-slate-100' : 'border-[#27272a] text-zinc-300 hover:bg-[#18181b]'}`;
 
   const renderProviderBadge = (provider: ProviderType, authType?: string) => {
     if (authType === 'oauth_google' || (provider === 'google' && authType?.startsWith('oauth'))) {
@@ -537,7 +537,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
 
       {/* Top Banner */}
       <div className={`border rounded-2xl p-6 shadow-2xl transition-colors ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800/90'
+        isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800/80 gap-3">
           <div>

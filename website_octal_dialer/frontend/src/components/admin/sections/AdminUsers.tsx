@@ -270,7 +270,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
       case 'admin':
         return isLight ? 'bg-amber-100 border-amber-300 text-amber-800' : 'bg-amber-950/40 border-amber-800 text-amber-400';
       default:
-        return isLight ? 'bg-slate-100 border-slate-300 text-slate-700' : 'bg-slate-900 border-slate-800 text-slate-300';
+        return isLight ? 'bg-slate-100 border-slate-300 text-slate-700' : 'bg-[#18181b] border-[#18181b] text-slate-300';
     }
   };
 
@@ -328,7 +328,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             className={`w-full pl-9 pr-3 py-2 text-xs rounded-xl border font-mono transition-colors outline-none ${
-              isLight ? 'bg-slate-50 border-slate-300 text-slate-900 focus:border-amber-500' : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500/50'
+              isLight ? 'bg-slate-50 border-slate-300 text-slate-900 focus:border-amber-500' : 'bg-[#18181b] border-[#18181b] text-white focus:border-amber-500/50'
             }`}
           />
         </div>
@@ -339,7 +339,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
             value={roleFilter}
             onChange={e => setRoleFilter(e.target.value)}
             className={`text-xs rounded-xl border px-3 py-2 font-mono outline-none cursor-pointer ${
-              isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-slate-200'
+              isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-slate-200'
             }`}
           >
             <option value="ALL">All Roles</option>
@@ -353,7 +353,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
           onClick={fetchUsers}
           disabled={loading}
           className={`p-2 rounded-xl border transition-all cursor-pointer ${
-            isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700' : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
+            isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700' : 'bg-[#18181b] hover:bg-[#27272a] border-[#18181b] text-slate-300'
           }`}
           title="Refresh user list"
         >
@@ -367,15 +367,15 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
           Loading team members...
         </div>
       ) : filteredUsers.length === 0 ? (
-        <div className="h-40 border border-dashed rounded-2xl flex flex-col items-center justify-center text-center p-6 text-slate-500 text-xs font-mono border-slate-800">
+        <div className="h-40 border border-dashed rounded-2xl flex flex-col items-center justify-center text-center p-6 text-slate-500 text-xs font-mono border-[#18181b]">
           No team members found matching your search
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-slate-800/90">
+        <div className="overflow-x-auto rounded-2xl border border-[#18181b]">
           <table className="w-full text-left border-collapse text-xs font-mono">
             <thead>
               <tr className={`border-b text-[9px] uppercase tracking-wider ${
-                isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-slate-900 text-slate-400 border-slate-800'
+                isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-[#18181b] text-slate-400 border-[#18181b]'
               }`}>
                 <th className="p-3">User</th>
                 <th className="p-3">Hierarchy Role</th>
@@ -384,7 +384,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                 <th className="p-3 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-slate-900 text-slate-300'}`}>
+            <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b] text-slate-300'}`}>
               {filteredUsers.map(u => {
                 const isExpanded = expandedUser === u.id;
                 const isSelf = u.username === currentUser;
@@ -393,7 +393,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
                 return (
                   <React.Fragment key={u.id}>
-                    <tr className={isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-900/40'}>
+                    <tr className={isLight ? 'hover:bg-slate-50' : 'hover:bg-[#121215]'}>
                       <td className="p-3">
                         <div className="flex items-center gap-2">
                           <button
@@ -443,7 +443,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                           {u.role !== 'platform_admin' && (
                             <button
                               onClick={() => handleOpenEdit(u)}
-                              className="p-1.5 rounded-lg border border-slate-800 text-slate-400 hover:text-amber-400 hover:bg-slate-800 transition cursor-pointer"
+                              className="p-1.5 rounded-lg border border-[#18181b] text-slate-400 hover:text-amber-400 hover:bg-[#27272a] transition cursor-pointer"
                               title="Edit User & Module Permissions"
                             >
                               <Edit className="w-3.5 h-3.5" />
@@ -453,7 +453,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                           {!isSelf && u.role !== 'platform_admin' && (
                             <button
                               onClick={() => setUserToDelete(u)}
-                              className="p-1.5 rounded-lg border border-slate-800 text-slate-400 hover:text-red-400 hover:bg-red-950/20 transition cursor-pointer"
+                              className="p-1.5 rounded-lg border border-[#18181b] text-slate-400 hover:text-red-400 hover:bg-red-950/20 transition cursor-pointer"
                               title="Delete User"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -465,8 +465,8 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
                     {/* Expanded Module Permissions Row */}
                     {isExpanded && (
-                      <tr className={isLight ? 'bg-slate-50/80' : 'bg-slate-900/60'}>
-                        <td colSpan={5} className="p-4 pl-10 border-t border-slate-800/50">
+                      <tr className={isLight ? 'bg-slate-50/80' : 'bg-[#121215]'}>
+                        <td colSpan={5} className="p-4 pl-10 border-t border-[#18181b]">
                           <div className="space-y-3">
                             <div className="flex items-center justify-between">
                               <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
@@ -506,7 +506,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                                     className={`p-3 rounded-xl border flex items-center justify-between transition-all ${
                                       isGranted || isLockedAdmin
                                         ? isLight ? 'bg-emerald-50 border-emerald-300' : 'bg-emerald-950/20 border-emerald-900/40'
-                                        : isLight ? 'bg-white border-slate-200' : 'bg-slate-950 border-slate-850'
+                                        : isLight ? 'bg-white border-slate-200' : 'bg-[#121215] border-[#27272a]'
                                     }`}
                                   >
                                     <div className="flex items-center gap-2">
@@ -551,9 +551,9 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
       {showCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
           <div className={`w-full max-w-lg border rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto ${
-            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>
-            <div className="flex items-center justify-between border-b pb-3 border-slate-800">
+            <div className="flex items-center justify-between border-b pb-3 border-[#18181b]">
               <div className="flex items-center gap-2">
                 <UserPlus className="w-5 h-5 text-amber-500" />
                 <h3 className="text-base font-bold font-display">Add Organizational Team Member</h3>
@@ -571,7 +571,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                   value={newUsername}
                   onChange={e => setNewUsername(e.target.value)}
                   className={`w-full px-3 py-2 rounded-xl border outline-none ${
-                    isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500'
+                    isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white focus:border-amber-500'
                   }`}
                 />
               </div>
@@ -585,7 +585,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                   value={newPassword}
                   onChange={e => setNewPassword(e.target.value)}
                   className={`w-full px-3 py-2 rounded-xl border outline-none ${
-                    isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500'
+                    isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white focus:border-amber-500'
                   }`}
                 />
               </div>
@@ -597,7 +597,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                     value={newRole}
                     onChange={e => setNewRole(e.target.value as any)}
                     className={`w-full px-3 py-2 rounded-xl border outline-none cursor-pointer ${
-                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white'
+                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white'
                     }`}
                   >
                     <option value="agent">Employee / Agent (Restricted by module permissions)</option>
@@ -605,7 +605,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                   </select>
                 ) : (
                   <div className={`p-2.5 rounded-xl border text-xs ${
-                    isLight ? 'bg-slate-50 border-slate-200 text-slate-700' : 'bg-slate-900 border-slate-800 text-slate-300'
+                    isLight ? 'bg-slate-50 border-slate-200 text-slate-700' : 'bg-[#18181b] border-[#18181b] text-slate-300'
                   }`}>
                     <span className="font-bold">Employee / Agent</span> (Admins can only create operational employees)
                   </div>
@@ -613,7 +613,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
               </div>
 
               {/* Initial Module Permissions Checklist */}
-              <div className="space-y-2 pt-2 border-t border-slate-800">
+              <div className="space-y-2 pt-2 border-t border-[#18181b]">
                 <div className="flex items-center justify-between">
                   <label className="block text-[10px] text-slate-400 uppercase font-bold">
                     Initial Permitted Business Modules
@@ -634,7 +634,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                         className={`p-2 rounded-xl border flex items-center justify-between text-left transition cursor-pointer ${
                           isChecked
                             ? isLight ? 'bg-amber-50 border-amber-300 text-slate-900' : 'bg-amber-500/10 border-amber-500/40 text-amber-300'
-                            : isLight ? 'bg-slate-50 border-slate-200 text-slate-600' : 'bg-slate-900/60 border-slate-800 text-slate-400'
+                            : isLight ? 'bg-slate-50 border-slate-200 text-slate-600' : 'bg-[#121215] border-[#18181b] text-slate-400'
                         }`}
                       >
                         <div className="flex items-center gap-2">
@@ -648,11 +648,11 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#18181b]">
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
-                  className="px-4 py-2 rounded-xl border border-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                  className="px-4 py-2 rounded-xl border border-[#18181b] text-slate-400 hover:text-white cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -673,9 +673,9 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
       {editingUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
           <div className={`w-full max-w-xl border rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto ${
-            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>
-            <div className="flex items-center justify-between border-b pb-3 border-slate-800">
+            <div className="flex items-center justify-between border-b pb-3 border-[#18181b]">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
                   <Edit className="w-4 h-4" />
@@ -702,7 +702,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                     className={`w-full px-3 py-2 rounded-xl border outline-none ${
                       !isPlatformMaster ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
                     } ${
-                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white'
+                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white'
                     }`}
                   >
                     <option value="agent">Employee / Agent</option>
@@ -719,14 +719,14 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                     value={editPassword}
                     onChange={e => setEditPassword(e.target.value)}
                     className={`w-full px-3 py-2 rounded-xl border outline-none ${
-                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500'
+                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white focus:border-amber-500'
                     }`}
                   />
                 </div>
               </div>
 
               {/* Module & Tool Permissions Section */}
-              <div className="pt-2 border-t border-slate-800/80">
+              <div className="pt-2 border-t border-[#18181b]">
                 <div className="flex items-center justify-between mb-2.5">
                   <div>
                     <label className="block text-[10px] text-slate-400 uppercase font-bold">Business Modules & Tool Access</label>
@@ -753,7 +753,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                         MODULES.forEach(m => none[m.id] = false);
                         setEditModules(none);
                       }}
-                      className="px-2 py-0.5 rounded border text-[9px] uppercase font-bold border-slate-700 text-slate-400 hover:bg-slate-800 cursor-pointer"
+                      className="px-2 py-0.5 rounded border text-[9px] uppercase font-bold border-[#27272a] text-slate-400 hover:bg-[#27272a] cursor-pointer"
                     >
                       Deselect All
                     </button>
@@ -770,7 +770,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                         className={`p-2.5 rounded-xl border flex items-center justify-between cursor-pointer select-none transition-all ${
                           isChecked
                             ? isLight ? 'bg-amber-50 border-amber-300' : 'bg-amber-950/20 border-amber-500/40'
-                            : isLight ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-slate-900/50 border-slate-850 opacity-60'
+                            : isLight ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-[#121215] border-[#27272a] opacity-60'
                         }`}
                       >
                         <div className="flex items-center gap-2 min-w-0">
@@ -793,11 +793,11 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#18181b]">
                 <button
                   type="button"
                   onClick={() => setEditingUser(null)}
-                  className="px-4 py-2 rounded-xl border border-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                  className="px-4 py-2 rounded-xl border border-[#18181b] text-slate-400 hover:text-white cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -818,7 +818,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
       {userToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
           <div className={`w-full max-w-sm border rounded-2xl p-6 shadow-2xl space-y-4 ${
-            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>
             <div className="flex items-center gap-2 text-red-500">
               <AlertCircle className="w-5 h-5 shrink-0" />
@@ -827,11 +827,11 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
             <p className="text-xs text-slate-400 font-sans">
               Are you sure you want to permanently delete user <span className="font-bold text-white font-mono">"{userToDelete.username}"</span>? This will revoke all active sessions and module permissions.
             </p>
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800 font-mono text-xs">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#18181b] font-mono text-xs">
               <button
                 type="button"
                 onClick={() => setUserToDelete(null)}
-                className="px-4 py-2 rounded-xl border border-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                className="px-4 py-2 rounded-xl border border-[#18181b] text-slate-400 hover:text-white cursor-pointer"
               >
                 Cancel
               </button>

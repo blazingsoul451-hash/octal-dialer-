@@ -902,9 +902,11 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                   trailing: Text('Octal Gold >', style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
                 ),
                 const Divider(height: 1, color: OctalColors.border),
-                const ListTile(
-                  title: Text('Language', style: TextStyle(fontSize: 13, color: Colors.white)),
-                  trailing: Text('English >', style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
+                ListTile(
+                  title: const Text('Backend Server URL', style: TextStyle(fontSize: 13, color: Colors.white)),
+                  subtitle: Text(AppConfig.apiBaseUrl, style: const TextStyle(fontSize: 11, color: OctalColors.textSecondary, fontFamily: 'monospace')),
+                  trailing: const Text('Change >', style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold)),
+                  onTap: _showServerUrlDialog,
                 ),
                 const Divider(height: 1, color: OctalColors.border),
                 const ListTile(
@@ -1012,6 +1014,86 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
           ),
         );
       },
+    );
+  }
+
+  void _showServerUrlDialog() {
+    final controller = TextEditingController(text: AppConfig.apiBaseUrl);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: OctalColors.surfaceCard,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Backend Server URL',
+          style: TextStyle(fontFamily: 'Ubuntu', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter the address of your backend server:',
+              style: TextStyle(fontSize: 12, color: OctalColors.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
+              decoration: InputDecoration(
+                hintText: 'http://192.168.1.35:3000',
+                hintStyle: const TextStyle(color: OctalColors.textMuted, fontSize: 12),
+                filled: true,
+                fillColor: OctalColors.bgDark,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: OctalColors.border)),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: OctalColors.primaryGold)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                ActionChip(
+                  label: const Text('192.168.1.35 (WiFi)', style: TextStyle(fontSize: 10, color: OctalColors.primaryGold)),
+                  backgroundColor: OctalColors.bgDark,
+                  onPressed: () => controller.text = 'http://192.168.1.35:3000',
+                ),
+                ActionChip(
+                  label: const Text('127.0.0.1 (USB)', style: TextStyle(fontSize: 10, color: OctalColors.textSecondary)),
+                  backgroundColor: OctalColors.bgDark,
+                  onPressed: () => controller.text = 'http://127.0.0.1:3000',
+                ),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: OctalColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final newUrl = controller.text.trim();
+              if (newUrl.isNotEmpty) {
+                await AppConfig.setBaseUrl(newUrl);
+                await _bridge.reconnect();
+                if (mounted) {
+                  setState(() {});
+                  _fetchRealCampaignAndLeads();
+                }
+              }
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: OctalColors.primaryGold,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Save & Reconnect', style: TextStyle(color: OctalColors.bgDark, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
     );
   }
 

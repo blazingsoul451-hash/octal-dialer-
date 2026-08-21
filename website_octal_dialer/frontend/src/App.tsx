@@ -29,8 +29,22 @@ import { CRMWorkspacePage } from './components/crm/CRMWorkspacePage';
 import { GoogleProfileSetupModal } from './components/GoogleProfileSetupModal';
 import type { Campaign } from './types';
 
-const hostname = window.location.hostname === 'localhost' ? '127.0.0.1' : (window.location.hostname || '127.0.0.1');
-const SERVER_URL = `http://${hostname}:3000`;
+const getBackendUrl = () => {
+  if (import.meta.env.VITE_SERVER_URL) return import.meta.env.VITE_SERVER_URL;
+  if (typeof window !== 'undefined') {
+    const loc = window.location;
+    if (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') {
+      return 'http://127.0.0.1:5000';
+    }
+    if (loc.hostname.includes('vercel.app')) {
+      return 'http://140.245.215.156:5000';
+    }
+    return `http://${loc.hostname}:5000`;
+  }
+  return 'http://140.245.215.156:5000';
+};
+
+const SERVER_URL = getBackendUrl();
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs'>('dashboard');
@@ -365,7 +379,7 @@ export default function App() {
 
   return (
     <div className={`min-h-screen w-full max-w-full overflow-x-hidden flex flex-col font-sans transition-colors ${
-      isLight ? 'bg-slate-100 text-slate-900' : 'bg-[#030712] text-slate-100'
+      isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'
     }`}>
       
       {/* Toast Notification Banner (Bottom-Right, Non-Blocking) */}
@@ -405,12 +419,12 @@ export default function App() {
       } ${
         isLight 
           ? 'bg-[#f8fafc] text-slate-900' 
-          : 'bg-[#030712] text-white'
+          : 'bg-black text-white'
       }`}>
         <div className={`mr-4 ml-4 md:ml-0.5 my-2 px-5 h-14 rounded-2xl border flex items-center justify-between gap-4 transition-all duration-300 ${
           isLight
             ? 'bg-white border-slate-200 shadow-md shadow-slate-200/50 text-slate-900'
-            : 'bg-[#090d16] border-slate-800 shadow-lg text-white'
+            : 'bg-[#09090b] border-[#18181b] shadow-xl text-white'
         }`}>
           
           {/* Left: Brand Identity & Menu Toggle */}
@@ -490,15 +504,14 @@ export default function App() {
               <span className="text-slate-500 text-[10px] font-black">∨</span>
             </div>
 
-            {/* Action Circles (Octal Accounts circular button icons) */}
             {/* Quick Upload Action */}
             <button
               onClick={() => setActiveTab('upload')}
               title="Upload Lead Sheet"
-              className={`w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-sm ${
+              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
                 isLight 
-                  ? 'bg-slate-200 text-slate-850 hover:bg-slate-300' 
-                  : 'bg-slate-900 text-white hover:bg-slate-850'
+                  ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200' 
+                  : 'bg-slate-900 border-slate-800 text-white hover:bg-slate-800'
               }`}
             >
               <Upload className="w-4 h-4" />
@@ -508,7 +521,11 @@ export default function App() {
             <button
               onClick={() => setActiveTab('dialer')}
               title="Voice Search / Assistant"
-              className="w-8 h-8 rounded-full bg-slate-900 text-white hover:bg-slate-800 flex items-center justify-center text-xs transition-all cursor-pointer shadow-sm"
+              className={`w-8 h-8 rounded-full flex items-center justify-center border text-xs transition-all cursor-pointer shadow-sm ${
+                isLight
+                  ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
+                  : 'bg-slate-900 border-slate-800 text-white hover:bg-slate-800'
+              }`}
             >
               🎤
             </button>
@@ -590,7 +607,7 @@ export default function App() {
           } ${
             isMobileMenuOpen ? 'left-0 w-64 p-4' : ''
           } ${
-            isLight ? 'bg-white border-slate-200 text-slate-900 shadow-slate-300/50' : 'bg-[#090d16] border-slate-800 text-white'
+            isLight ? 'bg-white border-slate-200 text-slate-900 shadow-slate-300/50' : 'bg-[#09090b] border-[#18181b] text-white shadow-2xl'
           }`}
         >
           {/* Main Top Actions & Navigation */}
@@ -1272,6 +1289,7 @@ export default function App() {
           {activeTab === 'billing' && (
             userRole === 'platform_admin' ? (
               <BillingPage
+                isLight={isLight}
                 serverUrl={lanServerUrl}
                 authToken={authToken || ''}
                 userRole={userRole}
@@ -1327,6 +1345,7 @@ export default function App() {
               latencyMs={socketData.latencyMs}
               phoneDeviceName={socketData.phoneDeviceName}
               lastDispositionSaved={lastDispositionSaved}
+              sessionId={socketData.sessionId}
             />
           </div>
 

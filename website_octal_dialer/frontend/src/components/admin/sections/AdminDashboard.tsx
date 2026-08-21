@@ -31,7 +31,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isLight, serverU
   };
 
   const KpiCard = ({ icon: Icon, label, value }: any) => (
-    <div className={`p-6 rounded-lg border ${isLight ? 'bg-white border-slate-200' : 'bg-slate-800 border-slate-700'}`}>
+    <div className={`p-6 rounded-lg border ${isLight ? 'bg-white border-slate-200' : 'bg-slate-800 border-[#27272a]'}`}>
       <div className="flex items-center justify-between">
         <div>
           <p className={`text-sm font-medium ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>{label}</p>
@@ -43,7 +43,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isLight, serverU
   );
 
   return (
-    <div className={`p-6 ${isLight ? 'bg-white' : 'bg-slate-900'}`}>
+    <div className={`p-6 ${isLight ? 'bg-white' : 'bg-[#18181b]'}`}>
       <div className="max-w-7xl mx-auto">
         <h2 className={`text-2xl font-bold mb-6 ${isLight ? 'text-slate-900' : 'text-white'}`}>Dashboard</h2>
 

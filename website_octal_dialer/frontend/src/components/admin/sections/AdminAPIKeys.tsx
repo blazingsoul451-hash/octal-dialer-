@@ -176,15 +176,15 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
           Loading integration keys...
         </div>
       ) : keys.length === 0 ? (
-        <div className="h-40 border border-dashed rounded-2xl flex flex-col items-center justify-center text-center p-6 text-slate-500 text-xs font-mono border-slate-800">
+        <div className="h-40 border border-dashed rounded-2xl flex flex-col items-center justify-center text-center p-6 text-slate-500 text-xs font-mono border-[#18181b]">
           No API access keys generated yet. Click "Generate New API Key" above.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-slate-800/90">
+        <div className="overflow-x-auto rounded-2xl border border-[#18181b]">
           <table className="w-full text-left border-collapse text-xs font-mono">
             <thead>
               <tr className={`border-b text-[9px] uppercase tracking-wider ${
-                isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-slate-900 text-slate-400 border-slate-800'
+                isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-[#18181b] text-slate-400 border-[#18181b]'
               }`}>
                 <th className="p-3">Key Name</th>
                 <th className="p-3">Key Token Prefix</th>
@@ -194,19 +194,21 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
                 <th className="p-3 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-slate-900 text-slate-300'}`}>
+            <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b] text-slate-300'}`}>
               {keys.map((k) => {
                 const createdDate = k.createdAt ? new Date(k.createdAt).toLocaleDateString() : '—';
                 const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleDateString() : 'Never';
                 const isRevoked = k.status === 'revoked';
 
                 return (
-                  <tr key={k.id} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-900/40'}>
+                  <tr key={k.id} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-[#121215]'}>
                     <td className={`p-3 font-bold font-body text-sm ${isLight ? 'text-slate-900' : 'text-white'}`}>
                       {k.name}
                     </td>
                     <td className="p-3">
-                      <span className="px-2 py-1 rounded bg-slate-900 border border-slate-800 text-amber-400 text-[11px]">
+                      <span className={`px-2 py-1 rounded text-[11px] font-mono font-bold ${
+                        isLight ? 'bg-amber-50 border border-amber-200 text-amber-700' : 'bg-[#18181b] border border-[#18181b] text-amber-400'
+                      }`}>
                         {k.keyPrefix || 'oct_live_••••'}••••••••
                       </span>
                     </td>
@@ -225,7 +227,9 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
                       {!isRevoked && (
                         <button
                           onClick={() => setKeyToRevoke(k)}
-                          className="p-1.5 rounded-lg border border-slate-800 text-slate-400 hover:text-red-400 hover:bg-red-950/20 transition cursor-pointer"
+                          className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                            isLight ? 'border-slate-200 text-slate-400 hover:text-red-600 hover:bg-red-50' : 'border-[#18181b] text-slate-400 hover:text-red-400 hover:bg-red-950/20'
+                          }`}
                           title="Revoke Key"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -244,19 +248,19 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
       {showCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
           <div className={`w-full max-w-md border rounded-2xl p-6 shadow-2xl space-y-4 ${
-            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>
-            <div className="flex items-center justify-between border-b pb-3 border-slate-800">
+            <div className={`flex items-center justify-between border-b pb-3 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
               <div className="flex items-center gap-2">
                 <Key className="w-5 h-5 text-amber-500" />
                 <h3 className="text-base font-bold font-display">Generate API Key</h3>
               </div>
-              <button onClick={() => setShowCreateModal(false)} className="text-slate-400 hover:text-white text-lg">×</button>
+              <button onClick={() => setShowCreateModal(false)} className="text-slate-400 hover:text-white text-lg cursor-pointer">×</button>
             </div>
 
             <form onSubmit={handleGenerateKey} className="space-y-4 font-mono text-xs">
               <div>
-                <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Key Description / Client Name</label>
+                <label className={`block text-[10px] uppercase font-bold mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>Key Description / Client Name</label>
                 <input
                   type="text"
                   required
@@ -264,21 +268,21 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
                   value={newKeyName}
                   onChange={e => setNewKeyName(e.target.value)}
                   className={`w-full px-3 py-2 rounded-xl border outline-none ${
-                    isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500'
+                    isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white focus:border-amber-500'
                   }`}
                 />
               </div>
 
-              <div className="p-3 rounded-xl border border-amber-500/20 bg-amber-500/5 text-[10px] text-amber-300 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+              <div className="p-3 rounded-xl border border-amber-500/20 bg-amber-500/5 text-[10px] text-amber-600 dark:text-amber-300 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-500" />
                 <span>The raw API secret key will only be shown once after creation. Be prepared to copy and store it securely.</span>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <div className={`flex items-center justify-end gap-2 pt-2 border-t ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
-                  className="px-4 py-2 rounded-xl border border-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                  className="px-4 py-2 rounded-xl border border-slate-300 dark:border-[#18181b] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -299,14 +303,14 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
       {createdSecret && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
           <div className={`w-full max-w-lg border rounded-2xl p-6 shadow-2xl space-y-4 border-amber-500/40 ${
-            isLight ? 'bg-white text-slate-900' : 'bg-slate-950 text-white'
+            isLight ? 'bg-white text-slate-900' : 'bg-[#121215] text-white'
           }`}>
-            <div className="flex items-center gap-2 text-amber-500 border-b pb-3 border-slate-800">
+            <div className={`flex items-center gap-2 text-amber-500 border-b pb-3 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
               <Key className="w-5 h-5" />
               <h3 className="text-base font-bold font-display">Your New API Key Secret</h3>
             </div>
 
-            <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs">
+            <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-xs">
               <p className="font-bold flex items-center gap-1.5">
                 <AlertCircle className="w-4 h-4" />
                 Important: Copy this key now!
@@ -317,13 +321,15 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
             </div>
 
             <div className="space-y-1">
-              <label className="block text-[10px] text-slate-400 uppercase font-bold">API Secret Key</label>
+              <label className={`block text-[10px] uppercase font-bold ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>API Secret Key</label>
               <div className="flex items-center gap-2">
                 <input
                   type="text"
                   readOnly
                   value={createdSecret}
-                  className="flex-1 px-3 py-2.5 rounded-xl border border-slate-800 bg-slate-900 text-amber-400 font-mono text-xs outline-none select-all"
+                  className={`flex-1 px-3 py-2.5 rounded-xl border font-mono text-xs outline-none select-all ${
+                    isLight ? 'bg-slate-50 border-slate-300 text-amber-700 font-bold' : 'border-[#18181b] bg-[#18181b] text-amber-400'
+                  }`}
                 />
                 <button
                   onClick={copyToClipboard}
@@ -335,10 +341,12 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
               </div>
             </div>
 
-            <div className="flex justify-end pt-3 border-t border-slate-800">
+            <div className={`flex justify-end pt-3 border-t ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
               <button
                 onClick={() => setCreatedSecret(null)}
-                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white font-mono text-xs rounded-xl transition cursor-pointer"
+                className={`px-5 py-2 font-mono text-xs rounded-xl transition cursor-pointer border ${
+                  isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-800' : 'bg-[#18181b] hover:bg-[#27272a] border-[#18181b] text-white'
+                }`}
               >
                 I have saved this secret
               </button>
@@ -351,7 +359,7 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
       {keyToRevoke && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
           <div className={`w-full max-w-sm border rounded-2xl p-6 shadow-2xl space-y-4 ${
-            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>
             <div className="flex items-center gap-2 text-red-500">
               <AlertCircle className="w-5 h-5 shrink-0" />
@@ -360,11 +368,11 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
             <p className="text-xs text-slate-400 font-sans">
               Are you sure you want to revoke key <span className="font-bold text-white font-mono">"{keyToRevoke.name}"</span>? Any automated scripts or webhook integrations using this key will immediately fail with 401 Unauthorized.
             </p>
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800 font-mono text-xs">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#18181b] font-mono text-xs">
               <button
                 type="button"
                 onClick={() => setKeyToRevoke(null)}
-                className="px-4 py-2 rounded-xl border border-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                className="px-4 py-2 rounded-xl border border-[#18181b] text-slate-400 hover:text-white cursor-pointer"
               >
                 Cancel
               </button>

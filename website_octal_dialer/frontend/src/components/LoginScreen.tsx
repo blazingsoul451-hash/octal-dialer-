@@ -217,10 +217,10 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
 
     try {
       const candidateUrls = Array.from(new Set([
+        '',
         serverUrl,
-        'http://localhost:3000',
-        'http://127.0.0.1:3000',
-        ''
+        `http://${window.location.hostname}:5000`,
+        'http://140.245.215.156:5000'
       ]));
 
       let res: Response | null = null;
@@ -330,10 +330,10 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
 
     try {
       const candidateUrls = Array.from(new Set([
+        '',
         serverUrl,
-        'http://localhost:3000',
-        'http://127.0.0.1:3000',
-        `http://${window.location.hostname}:3000`
+        `http://${window.location.hostname}:5000`,
+        'http://140.245.215.156:5000'
       ]));
 
       let res: Response | null = null;
@@ -414,7 +414,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden bg-slate-950">
+    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden bg-black select-none">
       {/* Video Background */}
       <video
         autoPlay
@@ -422,18 +422,18 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         loop
         playsInline
         className="absolute inset-0 w-full h-full object-cover"
-        style={{ backgroundColor: '#0f172a' }}
+        style={{ backgroundColor: '#000000' }}
       >
         <source src="/merged-galaxy.webm" type="video/webm" />
         <source src="/merged-galaxy.mp4" type="video/mp4" />
       </video>
 
       {/* Overlay for optimal contrast & focus */}
-      <div className="absolute inset-0 bg-gradient-to-b from-slate-950/60 via-slate-950/75 to-slate-950/60 backdrop-blur-[2px] pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-black/80 via-black/90 to-black/80 backdrop-blur-[2px] pointer-events-none" />
 
       <div className="w-full max-w-md relative z-10 mx-auto">
         {/* Main Card */}
-        <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-700/60 rounded-3xl p-7 shadow-2xl shadow-black/80">
+        <div className="bg-[#09090b]/95 backdrop-blur-xl border border-[#18181b] rounded-3xl p-7 shadow-2xl shadow-black">
           
           {/* Brand Header */}
           <div className="text-center mb-6">

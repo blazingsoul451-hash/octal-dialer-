@@ -185,31 +185,27 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
   };
 
   return (
-    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left transition-colors ${
-      isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50 text-slate-900' : 'bg-[#0f172a]/95 border-slate-800/90 text-white'
+    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left select-none transition-colors ${
+      isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
     }`}>
-      <div className={`flex justify-between items-center pb-4 border-b ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
+      <div className={`flex justify-between items-center pb-4 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
         <div>
-          <h2 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+          <h2 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
             Upload Lead Spreadsheet (.CSV / .XLSX)
           </h2>
-          <p className={`text-xs mt-1 ${isLight ? 'text-slate-600 font-semibold' : 'text-slate-400'}`}>
+          <p className="text-xs text-zinc-400 mt-1">
             Import contacts into a dedicated calling campaign with automatic phone normalization and cross-campaign deduplication.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`px-3 py-1 border rounded-full font-mono text-[10px] font-extrabold uppercase ${
-            isLight ? 'bg-amber-500/15 text-amber-900 border-amber-300' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-          }`}>
+          <span className="px-3 py-1 border rounded-full font-mono text-[10px] font-extrabold uppercase bg-amber-500/10 text-amber-400 border-amber-500/30">
             CSV / XLSX Ready
           </span>
         </div>
       </div>
 
       {error && (
-        <div className={`p-3 border text-xs rounded-xl flex items-start gap-2 ${
-          isLight ? 'bg-red-50 border-red-200 text-red-700 font-bold' : 'bg-red-950/20 border-red-900/30 text-red-400'
-        }`}>
+        <div className="p-3.5 border text-xs rounded-2xl flex items-start gap-2 shadow-sm bg-red-500/10 border-red-500/30 text-red-400">
           <AlertCircle className="w-4.5 h-4.5 shrink-0" />
           <span>{error}</span>
         </div>
@@ -220,13 +216,13 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
           onClick={triggerFileSelect}
           className={`border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center cursor-pointer transition select-none ${
             isLight
-              ? 'border-slate-300 hover:border-amber-500 hover:bg-amber-50/40 bg-slate-50/50'
-              : 'border-slate-800 hover:border-amber-500/50 hover:bg-slate-950/20'
+              ? 'border-slate-300 hover:border-amber-500 hover:bg-amber-50/40 bg-slate-50'
+              : 'border-[#27272a] hover:border-amber-500 bg-[#121215]'
           }`}
         >
-          <Upload className={`w-10 h-10 mb-3 ${isLight ? 'text-amber-700' : 'text-amber-400'}`} />
-          <p className={`text-sm font-black ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>Drag & drop or click to upload file</p>
-          <p className={`text-xs mt-1 ${isLight ? 'text-slate-600 font-bold' : 'text-slate-400'}`}>Supports Excel (.xlsx, .xls) and CSV sheets</p>
+          <Upload className="w-10 h-10 mb-3 text-amber-500" />
+          <p className={`text-sm font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>Drag & drop or click to upload file</p>
+          <p className={`text-xs mt-1 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Supports Excel (.xlsx, .xls) and CSV sheets</p>
           <input
             type="file"
             ref={fileInputRef}
@@ -239,41 +235,41 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Mappings Form */}
           <div className="lg:col-span-6 space-y-4">
-            <div className={`flex items-center gap-2 p-3 border rounded-xl ${
-              isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-950 border-slate-850'
+            <div className={`flex items-center gap-3 p-3.5 border rounded-xl ${
+              isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'
             }`}>
               <FileSpreadsheet className="w-5 h-5 text-amber-500 shrink-0" />
               <div className="min-w-0">
                 <p className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{file.name}</p>
-                <p className="text-[10px] text-slate-500">{sheetData.length} records parsed</p>
+                <p className={`text-[10px] font-mono ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{sheetData.length} records parsed</p>
               </div>
             </div>
 
             <div className="space-y-3">
               <div className="space-y-1">
-                <label className="text-[10px] font-mono text-slate-500 block uppercase font-bold">
+                <label className={`text-[10px] font-mono block uppercase font-bold ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
                   Campaign Title
                 </label>
                 <input
                   type="text"
                   value={campaignName}
                   onChange={(e) => setCampaignName(e.target.value)}
-                  className={`w-full border focus:border-amber-500 rounded-xl px-3 py-2 text-xs focus:outline-none transition ${
-                    isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-850 text-white'
+                  className={`w-full border focus:border-amber-500 rounded-xl px-3.5 py-2 text-xs font-mono font-bold focus:outline-none transition ${
+                    isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
                   }`}
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-[10px] font-mono text-slate-500 block uppercase font-bold">
+                  <label className={`text-[10px] font-mono block uppercase font-bold ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
                     Phone Column *
                   </label>
                   <select
                     value={mappedPhone}
                     onChange={(e) => setMappedPhone(e.target.value)}
-                    className={`w-full border focus:border-amber-500 rounded-xl px-3 py-2 text-xs focus:outline-none transition ${
-                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-850 text-white'
+                    className={`w-full border focus:border-amber-500 rounded-xl px-3.5 py-2 text-xs font-mono font-bold focus:outline-none transition cursor-pointer ${
+                      isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
                     }`}
                   >
                     <option value="">-- Select Column --</option>
@@ -282,14 +278,14 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[10px] font-mono text-slate-500 block uppercase font-bold">
+                  <label className={`text-[10px] font-mono block uppercase font-bold ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
                     Name Column (Optional)
                   </label>
                   <select
                     value={mappedName}
                     onChange={(e) => setMappedName(e.target.value)}
-                    className={`w-full border focus:border-amber-500 rounded-xl px-3 py-2 text-xs focus:outline-none transition ${
-                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-850 text-white'
+                    className={`w-full border focus:border-amber-500 rounded-xl px-3.5 py-2 text-xs font-mono font-bold focus:outline-none transition cursor-pointer ${
+                      isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
                     }`}
                   >
                     <option value="">-- Default 'Unknown Lead' --</option>
@@ -302,10 +298,10 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
             <div className="flex gap-3 pt-3">
               <button
                 onClick={resetState}
-                className={`flex-1 py-2.5 px-4 border text-xs font-mono rounded-xl transition-all cursor-pointer shadow-sm hover:shadow-md ${
+                className={`flex-1 py-2.5 px-4 border text-xs font-mono font-bold rounded-xl transition-all cursor-pointer shadow-sm ${
                   isLight
-                    ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
-                    : 'bg-slate-950/80 hover:bg-slate-900 border-slate-700/70 hover:border-amber-500/40 text-slate-300 hover:text-white'
+                    ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700'
+                    : 'bg-[#18181b] hover:bg-[#27272a] border-[#27272a] text-zinc-300'
                 }`}
               >
                 Reset Upload
@@ -313,15 +309,13 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
               <button
                 onClick={handleImport}
                 disabled={loading || !mappedPhone || !campaignName.trim()}
-                className={`flex-1 py-2.5 px-4 font-bold text-xs font-mono uppercase tracking-wider rounded-xl transition-all duration-200 flex items-center justify-center gap-1.5 transform ${
+                className={`flex-1 py-2.5 px-4 font-bold text-xs font-mono uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                   loading || !mappedPhone || !campaignName.trim()
-                    ? isLight
-                      ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed shadow-none'
-                      : 'bg-slate-800/90 text-slate-400 border border-slate-700/80 cursor-not-allowed shadow-none'
-                    : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 hover:shadow-amber-500/45 hover:-translate-y-0.5 active:translate-y-0 cursor-pointer'
+                    ? 'bg-[#18181b] border border-[#27272a] text-zinc-600 cursor-not-allowed shadow-none'
+                    : 'bg-amber-500 hover:bg-amber-400 text-black shadow-sm'
                 }`}
               >
-                {loading ? 'Importing...' : 'Import List'}
+                <span>{loading ? 'Importing...' : 'Import List'}</span>
                 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
@@ -330,42 +324,40 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
           {/* Preview panel with horizontal sliding support */}
           <div className="lg:col-span-6 space-y-2 min-w-0">
             <div className="flex justify-between items-center">
-              <h3 className="text-xs font-mono font-bold text-slate-500 uppercase tracking-wider">
+              <h3 className={`text-xs font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
                 File Preview (First 5 records)
               </h3>
-              <span className={`text-[9px] font-mono px-2 py-0.5 rounded border font-bold ${
-                isLight ? 'bg-amber-500/10 border-amber-300 text-amber-900' : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
-              }`}>
-                ↔ Slide to view all columns ({headers.length})
+              <span className="text-[9px] font-mono px-2.5 py-0.5 rounded-full border font-bold bg-amber-500/10 border-amber-500/20 text-amber-500">
+                ↔ Slide to view all ({headers.length}) columns
               </span>
             </div>
             <div 
               ref={tableContainerRef}
               onMouseDown={handleMouseDown}
-              className={`border rounded-xl overflow-x-auto max-w-full text-xs cursor-grab active:cursor-grabbing select-none ${
-                isLight ? 'border-slate-200 bg-white' : 'border-slate-850 bg-slate-950'
+              className={`border rounded-2xl overflow-x-auto max-w-full text-xs cursor-grab active:cursor-grabbing select-none ${
+                isLight ? 'border-slate-200 bg-white' : 'border-[#18181b] bg-[#121215]'
               }`}>
               <table className="w-full text-left border-collapse whitespace-nowrap min-w-max">
                 <thead>
-                  <tr className={`border-b font-mono text-[9px] uppercase ${
-                    isLight ? 'bg-slate-100 border-slate-200 text-slate-600' : 'bg-slate-900 border-slate-850 text-slate-400'
+                  <tr className={`border-b font-mono text-[10px] uppercase ${
+                    isLight ? 'bg-slate-50 border-slate-200 text-slate-600' : 'bg-[#121215] border-[#18181b] text-zinc-400'
                   }`}>
-                    <th className="p-3">#</th>
+                    <th className="p-3.5">#</th>
                     {headers.map(h => (
-                      <th key={h} className={`p-3 ${h === mappedPhone ? 'text-amber-500 font-extrabold' : h === mappedName ? 'text-emerald-500 font-extrabold' : ''}`}>
+                      <th key={h} className={`p-3.5 ${h === mappedPhone ? 'text-amber-500 font-extrabold' : h === mappedName ? 'text-emerald-500 font-extrabold' : ''}`}>
                         {h} {h === mappedPhone ? '(Phone)' : h === mappedName ? '(Name)' : ''}
                       </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className={`divide-y ${
-                  isLight ? 'divide-slate-200 text-slate-800' : 'divide-slate-900 text-slate-300'
+                  isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b] text-zinc-300'
                 }`}>
                   {sheetData.slice(0, 5).map((row, idx) => (
-                    <tr key={idx} className={isLight && idx % 2 === 1 ? 'bg-slate-50' : ''}>
-                      <td className="p-3 text-slate-400 font-mono">{idx + 1}</td>
+                    <tr key={idx} className={`${isLight ? 'hover:bg-slate-50' : 'hover:bg-[#18181b]/60'} transition`}>
+                      <td className={`p-3.5 font-mono ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{idx + 1}</td>
                       {headers.map(h => (
-                        <td key={h} className={`p-3 max-w-xs truncate ${h === mappedPhone ? 'font-mono text-amber-600 font-bold' : h === mappedName ? 'font-semibold text-emerald-600 dark:text-emerald-400' : ''}`}>
+                        <td key={h} className={`p-3.5 max-w-xs truncate ${h === mappedPhone ? 'font-mono text-amber-500 font-bold' : h === mappedName ? isLight ? 'font-bold text-slate-900' : 'font-bold text-white' : isLight ? 'text-slate-700' : ''}`}>
                           {String(row[h] || '—')}
                         </td>
                       ))}
@@ -379,44 +371,44 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
       )}
 
       {/* Active Campaigns List from Dashboard */}
-      <div className={`mt-8 p-6 border rounded-2xl shadow-xl space-y-4 ${
-        isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a] border-slate-850'
+      <div className={`mt-8 p-6 border rounded-2xl shadow-2xl space-y-4 ${
+        isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
-        <div className="flex justify-between items-center pb-3 border-b border-slate-200 dark:border-slate-800">
+        <div className={`flex justify-between items-center pb-3 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
           <div className="flex items-center gap-2">
-            <h3 className={`text-sm font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
+            <h3 className={`text-xs font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Campaign Pipelines ({campaigns.length})
             </h3>
           </div>
         </div>
 
         {campaigns.length === 0 ? (
-          <div className="text-center py-8 text-slate-500 text-xs font-mono">
+          <div className={`text-center py-8 text-xs font-mono ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
             No active campaigns imported yet. Upload a CSV/XLSX sheet to begin.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
+          <div className={`overflow-x-auto rounded-2xl border ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
+            <table className="w-full text-left border-collapse text-xs font-mono">
               <thead>
-                <tr className={`border-b font-mono text-[9px] uppercase ${
-                  isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-slate-900 text-slate-400 border-slate-850'
+                <tr className={`border-b text-[10px] uppercase tracking-wider ${
+                  isLight ? 'bg-slate-50 text-slate-600 border-slate-200' : 'bg-[#121215] text-zinc-400 border-[#18181b]'
                 }`}>
-                  <th className="p-3">Campaign Name</th>
-                  <th className="p-3">Leads Count</th>
-                  <th className="p-3">Source File</th>
-                  <th className="p-3">Status</th>
+                  <th className="p-3.5">Campaign Name</th>
+                  <th className="p-3.5">Leads Count</th>
+                  <th className="p-3.5">Source File</th>
+                  <th className="p-3.5">Status</th>
                 </tr>
               </thead>
               <tbody className={`divide-y ${
-                isLight ? 'divide-slate-200 text-slate-800' : 'divide-slate-900 text-slate-300'
+                isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b] text-zinc-300'
               }`}>
                 {campaigns.map((c, cIdx) => (
-                  <tr key={c?.id || cIdx} className={`hover:bg-amber-500/5 transition ${isLight ? 'hover:bg-amber-500/10' : ''}`}>
-                    <td className="p-3 font-bold">{c?.name || 'Unnamed Campaign'}</td>
-                    <td className="p-3 font-mono font-bold text-amber-600 dark:text-amber-400">{c?.leadCount || 0} leads</td>
-                    <td className="p-3 font-mono text-[11px] text-slate-500 truncate max-w-[150px]">{c?.fileName || 'Manual Import'}</td>
-                    <td className="p-3">
-                      <span className="px-2 py-0.5 rounded text-[9px] font-mono font-bold bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
+                  <tr key={c?.id || cIdx} className={`${isLight ? 'hover:bg-slate-50' : 'hover:bg-[#121215]/60'} transition`}>
+                    <td className={`p-3.5 font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{c?.name || 'Unnamed Campaign'}</td>
+                    <td className="p-3.5 font-mono font-bold text-amber-500">{c?.leadCount || 0} leads</td>
+                    <td className={`p-3.5 font-mono text-[11px] truncate max-w-[150px] ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{c?.fileName || 'Manual Import'}</td>
+                    <td className="p-3.5">
+                      <span className="px-2.5 py-0.5 rounded-full text-[9px] font-mono font-bold bg-emerald-500/10 border border-emerald-500/30 text-emerald-500">
                         ACTIVE
                       </span>
                     </td>

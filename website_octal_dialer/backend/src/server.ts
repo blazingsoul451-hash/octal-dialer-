@@ -192,7 +192,7 @@ io.use((socket, next) => {
     const user = validateToken(token);
     if (user) {
       socket.data.user = user;
-      socket.data.tenantId = user.id;
+      socket.data.tenantId = user.tenantId || user.id;
       return next();
     } else {
       return next(new Error('Authentication failed: Invalid token'));
@@ -206,7 +206,7 @@ io.use((socket, next) => {
   next();
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 5000;
 const SCRAPER_PATHS = [
   'C:\\Users\\ice\\.gemini\\antigravity\\scratch\\MY_PROJECTS\\Lead_And_Data_Scrapers\\google-maps-scraper-pro\\output',
   'C:\\Users\\ice\\.gemini\\antigravity\\scratch\\MY_PROJECTS\\Lead_And_Data_Scrapers\\google-maps-scraper-pro',
@@ -429,9 +429,12 @@ app.get(['/auth/config', '/api/auth/config'], (_req, res) => {
 // POST /auth/google/initiate — Returns direct Google OAuth URL
 app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
   const { intent = 'signin' } = req.body || {};
-  const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : 'http://localhost:5173';
+  const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : (req.headers.origin || `http://${req.headers.host || 'localhost'}`);
   const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/google/callback`;
+  
+  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || `localhost:${PORT}`;
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${proto}://${host}/auth/google/callback`;
   const state = crypto.randomBytes(24).toString('hex');
 
   oauthStates.set(state, {
@@ -448,9 +451,12 @@ app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
 
 // GET /auth/google & GET /api/auth/google — Initiates OAuth Redirect
 app.get(['/auth/google', '/api/auth/google'], (req, res) => {
-  const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : 'http://localhost:5173';
+  const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : `http://${req.headers.host || 'localhost'}`;
   const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/google/callback`;
+  
+  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || `localhost:${PORT}`;
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${proto}://${host}/auth/google/callback`;
   const intent = (req.query.intent as string) || 'signin';
   const state = crypto.randomBytes(24).toString('hex');
 
@@ -1106,6 +1112,124 @@ app.get(['/campaigns', '/api/campaigns'], requireAuth, (req, res) => {
 app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, (req, res) => {
   const tenantId = (req as any).user?.tenantId || 'tenant_default';
   res.json(getLeads(req.params.id, tenantId));
+});
+
+// REST: Global Leads search & pagination (protected)
+app.get(['/leads', '/api/leads'], requireAuth, (req, res) => {
+  try {
+    const tenantId = (req as any).user?.tenantId || 'tenant_default';
+    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
+    const offset = (page - 1) * limit;
+    const source = (req.query.source as string || '').trim();
+    const status = (req.query.status as string || '').trim();
+
+    let query = `
+      SELECT l.id, l.name, l.phone, l.status, l.outcome, l.duration, l.createdAt, l.campaignId,
+             c.name as campaignName
+      FROM leads l
+      LEFT JOIN campaigns c ON l.campaignId = c.id
+      WHERE l.tenantId = ? AND l.status != 'ARCHIVED'
+    `;
+    const params: any[] = [tenantId];
+
+    if (source) {
+      query += ` AND (c.name LIKE ? OR l.campaignId = ?)`;
+      params.push(`%${source}%`, source);
+    }
+    if (status) {
+      query += ` AND l.status = ?`;
+      params.push(status);
+    }
+
+    const countQuery = query.replace(/SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM');
+    const totalRow = db.prepare(countQuery).get(...params) as { total: number };
+    const total = totalRow ? totalRow.total : 0;
+
+    query += ` ORDER BY l.createdAt DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const rows = db.prepare(query).all(...params) as any[];
+
+    const formattedLeads = rows.map(r => ({
+      id: r.id,
+      source: r.campaignName || 'Lead Queue',
+      businessName: r.name || 'Unknown Contact',
+      phone: r.phone || '',
+      email: null,
+      address: null,
+      website: null,
+      status: r.status === 'COMPLETED' ? 'converted' : (r.status === 'PENDING' ? 'new' : 'contacted'),
+      scrapedBy: 'Auto Dialer',
+      scrapedAt: r.createdAt || new Date().toISOString()
+    }));
+
+    res.json({
+      leads: formattedLeads,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit) || 1
+      }
+    });
+  } catch (err: any) {
+    console.error('Error fetching leads:', err);
+    res.status(500).json({ error: 'Internal server error while fetching leads' });
+  }
+});
+
+// REST: Update lead status (protected)
+app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, (req, res) => {
+  try {
+    const tenantId = (req as any).user?.tenantId || 'tenant_default';
+    const { status } = req.body;
+    if (status) {
+      db.prepare(`UPDATE leads SET status = ? WHERE id = ? AND tenantId = ?`).run(status, req.params.id, tenantId);
+      io.to(`tenant_${tenantId}`).emit('leads:updated');
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REST: CRM Campaign Workspace telemetry & leads (protected)
+app.get('/api/crm/campaigns/:id/workspace', requireAuth, (req, res) => {
+  try {
+    const tenantId = (req as any).user?.tenantId || 'tenant_default';
+    const campaignId = req.params.id;
+
+    const leads = db.prepare(`SELECT * FROM leads WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED' ORDER BY ROWID ASC`).all(campaignId, tenantId) as any[];
+
+    const totalLeads = leads.length;
+    const completedLeads = leads.filter(l => l.status === 'COMPLETED').length;
+    const pendingLeads = leads.filter(l => l.status === 'PENDING').length;
+    const callingLeads = leads.filter(l => l.status === 'CALLING').length;
+    const answeredLeads = leads.filter(l => l.outcome === 'ANSWERED' || l.outcome === 'CONNECTED').length;
+    const noAnswerLeads = leads.filter(l => l.outcome === 'NO_ANSWER' || l.outcome === 'NO_PICKUP' || l.outcome === 'MISSED').length;
+    const voicemailLeads = leads.filter(l => l.outcome === 'VOICEMAIL').length;
+
+    const totalProcessed = leads.filter(l => l.status !== 'PENDING').length;
+    const answerRate = totalProcessed > 0 ? `${((answeredLeads / totalProcessed) * 100).toFixed(1)}%` : '0.0%';
+
+    res.json({
+      stats: {
+        totalLeads,
+        completedLeads,
+        pendingLeads,
+        callingLeads,
+        answeredLeads,
+        noAnswerLeads,
+        voicemailLeads,
+        answerRate
+      },
+      leads
+    });
+  } catch (err: any) {
+    console.error('Error fetching campaign workspace:', err);
+    res.status(500).json({ error: 'Internal server error while fetching campaign workspace' });
+  }
 });
 
 // GET /download/apk — serve APK binary file to mobile clients

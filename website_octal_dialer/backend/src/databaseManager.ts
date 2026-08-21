@@ -402,8 +402,22 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
 `);
 
-// Safe column migrations for email_templates, custom_roles, and users
+// Safe column migrations for tenantId, email_templates, custom_roles, and users
 try {
+  const TENANT_TABLES = [
+    'users', 'campaigns', 'leads', 'call_logs', 'scraped_leads',
+    'email_leads', 'email_accounts', 'email_templates', 'devices',
+    'call_attempts', 'call_events', 'dispositions', 'suppression_list', 'module_settings'
+  ];
+  for (const tbl of TENANT_TABLES) {
+    try {
+      const cols = db.prepare(`PRAGMA table_info(${tbl})`).all() as any[];
+      if (!cols.some(c => c.name === 'tenantId')) {
+        db.prepare(`ALTER TABLE ${tbl} ADD COLUMN tenantId TEXT NOT NULL DEFAULT 'tenant_default'`).run();
+      }
+    } catch (_) {}
+  }
+
   const emailCols = db.prepare(`PRAGMA table_info(email_templates)`).all() as any[];
   if (!emailCols.some(c => c.name === 'templateType')) {
     db.prepare(`ALTER TABLE email_templates ADD COLUMN templateType TEXT DEFAULT 'campaign'`).run();

@@ -97,7 +97,7 @@ export const AdminSystemSettings: React.FC<AdminSystemSettingsProps> = ({
           onClick={fetchSettings}
           disabled={loading}
           className={`p-2 rounded-xl border transition-all cursor-pointer self-start sm:self-auto ${
-            isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700' : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
+            isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700' : 'bg-[#18181b] hover:bg-[#27272a] border-[#18181b] text-slate-300'
           }`}
           title="Reload settings"
         >
@@ -126,18 +126,18 @@ export const AdminSystemSettings: React.FC<AdminSystemSettingsProps> = ({
       <form onSubmit={handleSave} className="space-y-6">
         {/* Category 1: Telephony Engine Defaults */}
         <div className={`border rounded-2xl p-5 shadow-xl space-y-4 ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200 text-slate-900 shadow-sm' : 'bg-[#09090b] border-[#18181b] text-white'
         }`}>
-          <div className="flex items-center gap-2 border-b pb-3 border-slate-800">
+          <div className={`flex items-center gap-2 border-b pb-3 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
             <Phone className="w-4 h-4 text-amber-500" />
-            <h3 className="text-sm font-bold font-display uppercase tracking-wider text-amber-400">
+            <h3 className="text-sm font-bold font-display uppercase tracking-wider text-amber-500">
               Telephony Engine Safeguards
             </h3>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 font-mono text-xs">
             <div>
-              <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+              <label className={`block text-[10px] uppercase font-bold mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                 Default Ring Timeout (seconds)
               </label>
               <input
@@ -147,14 +147,14 @@ export const AdminSystemSettings: React.FC<AdminSystemSettingsProps> = ({
                 value={settings.ringTimeoutSecs}
                 onChange={e => setSettings({ ...settings, ringTimeoutSecs: Number(e.target.value) })}
                 className={`w-full px-3 py-2 rounded-xl border outline-none ${
-                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500'
+                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white focus:border-amber-500'
                 }`}
               />
               <span className="text-[9px] text-slate-500 mt-0.5 block">Time before call auto-drops as NO_ANSWER</span>
             </div>
 
             <div>
-              <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+              <label className={`block text-[10px] uppercase font-bold mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                 Delay Between Leads (seconds)
               </label>
               <input
@@ -164,21 +164,21 @@ export const AdminSystemSettings: React.FC<AdminSystemSettingsProps> = ({
                 value={settings.dialDelaySecs}
                 onChange={e => setSettings({ ...settings, dialDelaySecs: Number(e.target.value) })}
                 className={`w-full px-3 py-2 rounded-xl border outline-none ${
-                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500'
+                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white focus:border-amber-500'
                 }`}
               />
               <span className="text-[9px] text-slate-500 mt-0.5 block">Cooldown between auto-dialed queue calls</span>
             </div>
 
             <div>
-              <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+              <label className={`block text-[10px] uppercase font-bold mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                 Strict DNC Enforcement
               </label>
               <select
                 value={settings.enforceStrictDnc ? 'true' : 'false'}
                 onChange={e => setSettings({ ...settings, enforceStrictDnc: e.target.value === 'true' })}
                 className={`w-full px-3 py-2 rounded-xl border outline-none cursor-pointer ${
-                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white'
+                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white'
                 }`}
               >
                 <option value="true">Enabled (Block all suppression list numbers)</option>
@@ -191,18 +191,18 @@ export const AdminSystemSettings: React.FC<AdminSystemSettingsProps> = ({
 
         {/* Category 2: Automation & Session Controls */}
         <div className={`border rounded-2xl p-5 shadow-xl space-y-4 ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200 text-slate-900 shadow-sm' : 'bg-[#09090b] border-[#18181b] text-white'
         }`}>
-          <div className="flex items-center gap-2 border-b pb-3 border-slate-800">
-            <Sliders className="w-4 h-4 text-purple-400" />
-            <h3 className="text-sm font-bold font-display uppercase tracking-wider text-purple-400">
+          <div className={`flex items-center gap-2 border-b pb-3 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
+            <Sliders className="w-4 h-4 text-purple-500" />
+            <h3 className="text-sm font-bold font-display uppercase tracking-wider text-purple-500">
               Automation & Session Governance
             </h3>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 font-mono text-xs">
             <div>
-              <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+              <label className={`block text-[10px] uppercase font-bold mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                 Session Idle Timeout (minutes)
               </label>
               <input
@@ -212,14 +212,14 @@ export const AdminSystemSettings: React.FC<AdminSystemSettingsProps> = ({
                 value={settings.sessionTimeoutMins}
                 onChange={e => setSettings({ ...settings, sessionTimeoutMins: Number(e.target.value) })}
                 className={`w-full px-3 py-2 rounded-xl border outline-none ${
-                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500'
+                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white focus:border-amber-500'
                 }`}
               />
               <span className="text-[9px] text-slate-500 mt-0.5 block">JWT token expiration window</span>
             </div>
 
             <div>
-              <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+              <label className={`block text-[10px] uppercase font-bold mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                 Daily Scraper Safeguard Limit
               </label>
               <input
@@ -229,7 +229,7 @@ export const AdminSystemSettings: React.FC<AdminSystemSettingsProps> = ({
                 value={settings.dailyScrapeLimit}
                 onChange={e => setSettings({ ...settings, dailyScrapeLimit: Number(e.target.value) })}
                 className={`w-full px-3 py-2 rounded-xl border outline-none ${
-                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-800 text-white focus:border-amber-500'
+                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white focus:border-amber-500'
                 }`}
               />
               <span className="text-[9px] text-slate-500 mt-0.5 block">Max business records extractable per day</span>

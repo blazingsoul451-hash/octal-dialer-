@@ -113,7 +113,7 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 font-mono text-xs">
         {/* Engine Mode */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>Storage Engine</span>
@@ -129,7 +129,7 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
 
         {/* Foreign Keys */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>FK Integrity Check</span>
@@ -145,7 +145,7 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
 
         {/* Isolation Mode */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>Snapshot Engine</span>
@@ -161,7 +161,7 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
 
         {/* Backup Target */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>Storage Directory</span>
@@ -189,30 +189,30 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 font-mono text-xs pt-1">
-            <div className="p-3 rounded-xl border border-emerald-900/30 bg-slate-900/60">
+            <div className={`p-3 rounded-xl border ${isLight ? 'bg-white border-emerald-200 shadow-sm' : 'border-emerald-900/30 bg-[#121215]'}`}>
               <span className="text-[9px] text-slate-500 uppercase block">Snapshot Filename</span>
-              <span className="font-bold text-amber-400 truncate block">
+              <span className="font-bold text-amber-500 truncate block">
                 {getSafeFileName(lastBackup.backupPath)}
               </span>
             </div>
 
-            <div className="p-3 rounded-xl border border-emerald-900/30 bg-slate-900/60">
+            <div className={`p-3 rounded-xl border ${isLight ? 'bg-white border-emerald-200 shadow-sm' : 'border-emerald-900/30 bg-[#121215]'}`}>
               <span className="text-[9px] text-slate-500 uppercase block">Snapshot File Size</span>
-              <span className="font-bold text-slate-200">
+              <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>
                 {formatBytes(lastBackup.sizeBytes)}
               </span>
             </div>
 
-            <div className="p-3 rounded-xl border border-emerald-900/30 bg-slate-900/60">
+            <div className={`p-3 rounded-xl border ${isLight ? 'bg-white border-emerald-200 shadow-sm' : 'border-emerald-900/30 bg-[#121215]'}`}>
               <span className="text-[9px] text-slate-500 uppercase block">Timestamp (UTC)</span>
-              <span className="font-bold text-slate-200">
+              <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>
                 {lastBackup.timestamp ? new Date(lastBackup.timestamp).toLocaleTimeString() : '—'}
               </span>
             </div>
 
-            <div className="p-3 rounded-xl border border-emerald-900/30 bg-slate-900/60">
+            <div className={`p-3 rounded-xl border ${isLight ? 'bg-white border-emerald-200 shadow-sm' : 'border-emerald-900/30 bg-[#121215]'}`}>
               <span className="text-[9px] text-slate-500 uppercase block">Automated Validation</span>
-              <span className="font-bold text-emerald-400">
+              <span className="font-bold text-emerald-500">
                 PRAGMA Integrity: PASS (ok)
               </span>
             </div>
@@ -222,11 +222,13 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
 
       {/* ── Expandable Recovery Information Accordion ── */}
       <div className={`border rounded-2xl overflow-hidden shadow-xl transition-colors ${
-        isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+        isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
       }`}>
         <button
           onClick={() => setShowRecoveryGuide(!showRecoveryGuide)}
-          className="w-full p-4 flex items-center justify-between font-display text-xs font-bold text-slate-300 hover:text-amber-400 transition cursor-pointer"
+          className={`w-full p-4 flex items-center justify-between font-display text-xs font-bold transition cursor-pointer ${
+            isLight ? 'text-slate-800 hover:text-amber-600' : 'text-slate-300 hover:text-amber-400'
+          }`}
         >
           <div className="flex items-center gap-2">
             <Info className="w-4 h-4 text-amber-500" />
@@ -236,12 +238,14 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
         </button>
 
         {showRecoveryGuide && (
-          <div className="p-5 pt-0 space-y-3 text-xs font-mono border-t border-slate-800 text-slate-400">
+          <div className={`p-5 pt-0 space-y-3 text-xs font-mono border-t ${
+            isLight ? 'border-slate-200 text-slate-600' : 'border-[#18181b] text-slate-400'
+          }`}>
             <div className="space-y-2 pt-3">
-              <p className="font-bold text-white font-sans text-xs">
+              <p className={`font-bold font-sans text-xs ${isLight ? 'text-slate-900' : 'text-white'}`}>
                 To execute an offline database recovery from a snapshot:
               </p>
-              <ol className="list-decimal list-inside space-y-1.5 text-[11px] text-slate-300">
+              <ol className={`list-decimal list-inside space-y-1.5 text-[11px] ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
                 <li>Gracefully shut down the Octal Dialer backend service (`Ctrl+C` or `process.exit()`).</li>
                 <li>Archive current database files (`octal_dialer.db`, `octal_dialer.db-wal`, `octal_dialer.db-shm`).</li>
                 <li>Copy desired snapshot file from `data/backups/backup_*.db` to `data/octal_dialer.db`.</li>
@@ -257,22 +261,24 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
       {showConfirmModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
           <div className={`w-full max-w-md border rounded-2xl p-6 shadow-2xl space-y-4 ${
-            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>
-            <div className="flex items-center gap-2 text-amber-500 border-b pb-3 border-slate-800">
+            <div className={`flex items-center gap-2 text-amber-500 border-b pb-3 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
               <Database className="w-5 h-5" />
               <h3 className="text-base font-bold font-display">Confirm Live Database Backup</h3>
             </div>
 
-            <p className="text-xs text-slate-400 font-sans">
-              This operation uses the native SQLite Online Backup API to generate an atomic, transactionally consistent snapshot in <span className="font-mono text-amber-400">data/backups/</span> without locking or pausing live active phone calls.
+            <p className={`text-xs font-sans ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
+              This operation uses the native SQLite Online Backup API to generate an atomic, transactionally consistent snapshot in <span className="font-mono text-amber-500 font-bold">data/backups/</span> without locking or pausing live active phone calls.
             </p>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800 font-mono text-xs">
+            <div className={`flex items-center justify-end gap-2 pt-2 border-t font-mono text-xs ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
               <button
                 type="button"
                 onClick={() => setShowConfirmModal(false)}
-                className="px-4 py-2 rounded-xl border border-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                className={`px-4 py-2 rounded-xl border cursor-pointer ${
+                  isLight ? 'border-slate-300 text-slate-700 hover:bg-slate-100' : 'border-[#18181b] text-slate-400 hover:text-white'
+                }`}
               >
                 Cancel
               </button>

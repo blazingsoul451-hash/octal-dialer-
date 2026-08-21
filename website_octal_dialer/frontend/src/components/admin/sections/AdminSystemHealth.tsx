@@ -154,7 +154,7 @@ export const AdminSystemHealth: React.FC<AdminSystemHealthProps> = ({
             onClick={() => { setLoading(true); fetchHealthAndMetrics(); }}
             disabled={loading}
             className={`p-2 rounded-xl border transition-all cursor-pointer ${
-              isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700' : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
+              isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700' : 'bg-[#18181b] hover:bg-[#27272a] border-[#18181b] text-slate-300'
             }`}
             title="Refresh diagnostics now"
           >
@@ -206,7 +206,7 @@ export const AdminSystemHealth: React.FC<AdminSystemHealthProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 font-mono text-xs">
         {/* Uptime */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>Process Uptime</span>
@@ -222,7 +222,7 @@ export const AdminSystemHealth: React.FC<AdminSystemHealthProps> = ({
 
         {/* Total HTTP Requests */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>Total Requests</span>
@@ -238,7 +238,7 @@ export const AdminSystemHealth: React.FC<AdminSystemHealthProps> = ({
 
         {/* HTTP Errors */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>HTTP Errors (5xx)</span>
@@ -254,7 +254,7 @@ export const AdminSystemHealth: React.FC<AdminSystemHealthProps> = ({
 
         {/* Auth Failures */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>Auth Failures</span>
@@ -270,7 +270,7 @@ export const AdminSystemHealth: React.FC<AdminSystemHealthProps> = ({
 
         {/* Rate Limit Hits */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>Rate Limit Hits</span>
@@ -286,7 +286,7 @@ export const AdminSystemHealth: React.FC<AdminSystemHealthProps> = ({
 
         {/* Memory RSS */}
         <div className={`border rounded-2xl p-4 shadow-xl ${
-          isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a]/95 border-slate-800'
+          isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex items-center justify-between text-slate-400 text-[10px] font-bold uppercase">
             <span>Memory (RSS)</span>

@@ -79,15 +79,19 @@ export const AdminModuleControl: React.FC<AdminModuleControlProps> = ({
         <button
           onClick={fetchModules}
           disabled={loading}
-          className="px-3 py-1.5 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer transition"
+          className={`px-3 py-1.5 rounded-xl border text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer transition ${
+            isLight ? 'border-slate-300 bg-white hover:bg-slate-50 text-slate-700' : 'border-[#18181b] bg-[#18181b] hover:bg-[#27272a] text-slate-300'
+          }`}
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           <span>Refresh</span>
         </button>
       </div>
 
-      <div className="p-4 rounded-xl bg-purple-950/20 border border-purple-800/40 text-xs font-mono text-purple-300 flex items-center gap-2">
-        <Shield className="w-4 h-4 text-purple-400 shrink-0" />
+      <div className={`p-4 rounded-xl text-xs font-mono flex items-center gap-2 ${
+        isLight ? 'bg-purple-50 border border-purple-200 text-purple-800' : 'bg-purple-950/20 border border-purple-800/40 text-purple-300'
+      }`}>
+        <Shield className="w-4 h-4 text-purple-500 shrink-0" />
         <span>
           <strong>Hierarchy Note:</strong> Global Module State controls platform availability. A module must be globally enabled here before tenants and users can access it.
         </span>
@@ -102,12 +106,12 @@ export const AdminModuleControl: React.FC<AdminModuleControlProps> = ({
             <div
               key={mod.id}
               className={`p-5 rounded-2xl border transition-all ${
-                isLight ? 'bg-white border-slate-200' : 'bg-slate-900/90 border-slate-800'
+                isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
               } flex flex-col justify-between space-y-4`}
             >
               <div>
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold font-mono text-white">{mod.name}</h3>
+                  <h3 className={`text-sm font-bold font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{mod.name}</h3>
                   <span className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase border ${
                     isEnabled
                       ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800'
@@ -116,12 +120,12 @@ export const AdminModuleControl: React.FC<AdminModuleControlProps> = ({
                     {isEnabled ? 'GLOBAL: ACTIVE' : 'GLOBAL: DISABLED'}
                   </span>
                 </div>
-                <p className="text-xs text-slate-400 font-mono mt-2 leading-relaxed">
+                <p className={`text-xs font-mono mt-2 leading-relaxed ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                   {mod.description}
                 </p>
               </div>
 
-              <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
+              <div className={`pt-3 border-t flex items-center justify-between ${isLight ? 'border-slate-100' : 'border-[#18181b]'}`}>
                 <span className="text-[10px] font-mono text-slate-500">ID: {mod.id}</span>
                 <button
                   onClick={() => handleToggleModule(mod.id, isEnabled ? 1 : 0)}

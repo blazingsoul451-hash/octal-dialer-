@@ -148,17 +148,17 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
     <div className="space-y-6 select-none text-left">
       {/* Top Banner Header */}
       <div className={`p-6 rounded-2xl border shadow-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition-colors ${
-        isLight ? 'bg-white border-slate-200/90 shadow-slate-200/50' : 'bg-[#0f172a]/95 border-slate-800/90'
+        isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500 shrink-0">
-            <ShieldAlert className="w-6 h-6 animate-pulse" />
+          <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 shrink-0 shadow-sm">
+            <ShieldAlert className="w-6 h-6" />
           </div>
           <div>
-            <h2 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+            <h2 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
               DNC / Suppression Gate
             </h2>
-            <p className={`text-xs font-mono mt-1 ${isLight ? 'text-slate-600 font-semibold' : 'text-slate-400'}`}>
+            <p className="text-xs font-mono mt-1 text-zinc-400">
               Backend-enforced compliance list ({entries.length} numbers permanently suppressed)
             </p>
           </div>
@@ -166,37 +166,37 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
 
         <button
           onClick={() => setShowBulkModal(true)}
-          className="flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl font-mono font-bold text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg shadow-red-950/30"
+          className="flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl font-mono font-bold text-xs uppercase tracking-wider transition-all cursor-pointer shadow-sm"
         >
           <Upload className="w-4 h-4" />
-          Bulk Import CSV
+          <span>Bulk Import CSV</span>
         </button>
       </div>
 
       {/* Notifications */}
       {successMsg && (
-        <div className="bg-emerald-950/40 border border-emerald-500/40 text-emerald-400 p-4 rounded-xl text-xs font-mono flex items-center gap-2">
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-4 rounded-2xl text-xs font-mono flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          {successMsg}
+          <span>{successMsg}</span>
         </div>
       )}
       {error && (
-        <div className="bg-red-950/40 border border-red-500/40 text-red-400 p-4 rounded-xl text-xs font-mono flex items-center gap-2">
+        <div className="bg-red-500/10 border border-red-500/30 text-red-400 p-4 rounded-2xl text-xs font-mono flex items-center gap-2">
           <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-          {error}
+          <span>{error}</span>
         </div>
       )}
 
       {/* Add Single DNC Form */}
-      <div className={`p-6 rounded-2xl border shadow-xl ${
-        isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+      <div className={`p-6 rounded-2xl border shadow-2xl ${
+        isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
-        <h3 className="text-xs font-mono font-bold text-slate-400 uppercase tracking-widest mb-4">
+        <h3 className="text-xs font-mono font-black text-zinc-400 uppercase tracking-widest mb-4">
           Add Single Number to DNC List
         </h3>
         <form onSubmit={handleAddSingle} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
           <div className="md:col-span-5">
-            <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">
+            <label className="block text-[10px] font-mono text-zinc-400 uppercase tracking-wider mb-1 font-bold">
               Phone Number
             </label>
             <input
@@ -205,14 +205,14 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
               onChange={e => setNewPhone(e.target.value)}
               placeholder="+923001234567"
               required
-              className={`w-full px-4 py-2.5 text-xs font-mono rounded-xl border focus:outline-none focus:ring-1 focus:ring-red-500/50 ${
-                isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+              className={`w-full px-4 py-2.5 text-xs font-mono rounded-xl border focus:outline-none focus:border-red-500 transition ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
               }`}
             />
           </div>
 
           <div className="md:col-span-5">
-            <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">
+            <label className="block text-[10px] font-mono text-zinc-400 uppercase tracking-wider mb-1 font-bold">
               Suppression Reason
             </label>
             <input
@@ -220,8 +220,8 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
               value={newReason}
               onChange={e => setNewReason(e.target.value)}
               placeholder="e.g. Requested Opt-Out"
-              className={`w-full px-4 py-2.5 text-xs font-mono rounded-xl border focus:outline-none focus:ring-1 focus:ring-red-500/50 ${
-                isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+              className={`w-full px-4 py-2.5 text-xs font-mono rounded-xl border focus:outline-none focus:border-red-500 transition ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
               }`}
             />
           </div>
@@ -229,74 +229,74 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
           <div className="md:col-span-2">
             <button
               type="submit"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white font-mono font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white font-mono font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-sm"
             >
               <Plus className="w-4 h-4" />
-              Add DNC
+              <span>Add DNC</span>
             </button>
           </div>
         </form>
       </div>
 
       {/* Suppression List Table */}
-      <div className={`p-6 rounded-2xl border shadow-xl ${
-        isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+      <div className={`p-6 rounded-2xl border shadow-2xl ${
+        isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-6">
           <div className="relative w-full max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
             <input
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Search DNC list by phone, reason, source..."
-              className={`w-full pl-9 pr-4 py-2 text-xs font-mono rounded-xl border focus:outline-none focus:ring-1 focus:ring-red-500/50 ${
-                isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+              className={`w-full pl-9 pr-4 py-2 text-xs font-mono rounded-xl border focus:outline-none focus:border-red-500 transition ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
               }`}
             />
           </div>
-          <span className="text-xs font-mono text-slate-500">
+          <span className="text-xs font-mono text-zinc-400">
             Showing {filteredEntries.length} of {entries.length} blocked numbers
           </span>
         </div>
 
         {filteredEntries.length === 0 ? (
-          <div className="text-center py-12 text-slate-500 font-mono text-xs">
+          <div className="text-center py-12 text-zinc-500 font-mono text-xs">
             {search ? 'No DNC entries match your search query.' : 'No numbers currently on the DNC suppression list.'}
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className={`overflow-x-auto rounded-2xl border ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
             <table className="w-full text-left text-xs font-mono">
               <thead>
-                <tr className={`border-b text-slate-500 uppercase tracking-widest text-[10px] ${
-                  isLight ? 'border-slate-200' : 'border-slate-800'
+                <tr className={`border-b uppercase tracking-widest text-[10px] ${
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-600' : 'bg-[#121215] border-[#18181b] text-zinc-400'
                 }`}>
-                  <th className="pb-3 px-3">Phone Number</th>
-                  <th className="pb-3 px-3">Reason</th>
-                  <th className="pb-3 px-3">Source</th>
-                  <th className="pb-3 px-3">Added Date</th>
-                  <th className="pb-3 px-3 text-right">Action</th>
+                  <th className="p-3.5">Phone Number</th>
+                  <th className="p-3.5">Reason</th>
+                  <th className="p-3.5">Source</th>
+                  <th className="p-3.5">Added Date</th>
+                  <th className="p-3.5 text-right">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/40">
+              <tbody className={`divide-y ${isLight ? 'divide-slate-200 text-slate-800' : 'divide-[#18181b] text-zinc-300'}`}>
                 {filteredEntries.map(entry => (
-                  <tr key={entry.id} className="hover:bg-slate-800/20 transition-colors">
-                    <td className="py-3 px-3 font-bold text-red-400">
+                  <tr key={entry.id} className={`${isLight ? 'hover:bg-slate-50' : 'hover:bg-[#121215]/60'} transition-colors`}>
+                    <td className="p-3.5 font-bold text-red-500">
                       {entry.phone}
                     </td>
-                    <td className="py-3 px-3 text-slate-400">
+                    <td className={`p-3.5 ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>
                       {entry.reason || 'Manual DNC'}
                     </td>
-                    <td className="py-3 px-3 text-slate-500 uppercase text-[10px]">
+                    <td className={`p-3.5 uppercase text-[10px] ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
                       {entry.source || 'dashboard'}
                     </td>
-                    <td className="py-3 px-3 text-slate-500 text-[10px]">
+                    <td className={`p-3.5 text-[10px] ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
                       {new Date(entry.addedAt).toLocaleString()}
                     </td>
-                    <td className="py-3 px-3 text-right">
+                    <td className="p-3.5 text-right">
                       <button
                         onClick={() => handleDelete(entry.id, entry.phone)}
-                        className="p-1.5 hover:bg-red-500/20 text-red-400 rounded-lg transition-colors cursor-pointer"
+                        className="p-1.5 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors cursor-pointer"
                         title="Remove from DNC list"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -312,24 +312,24 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
 
       {/* Bulk Import Modal */}
       {showBulkModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className={`w-full max-w-lg p-6 rounded-2xl border shadow-2xl ${
-            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-900 border-slate-800 text-white'
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
           }`}>
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-sm font-mono font-bold uppercase tracking-wider flex items-center gap-2">
                 <FileText className="w-4 h-4 text-red-400" />
-                Bulk Import DNC Numbers
+                <span>Bulk Import DNC Numbers</span>
               </h3>
               <button
                 onClick={() => setShowBulkModal(false)}
-                className="text-slate-500 hover:text-white font-mono text-sm cursor-pointer"
+                className="text-zinc-500 hover:text-white font-mono text-sm cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            <p className="text-xs font-mono text-slate-500 mb-4">
+            <p className="text-xs font-mono text-zinc-400 mb-4">
               Paste phone numbers (one per line, optional comma-separated reason):
             </p>
 
@@ -338,21 +338,21 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
               value={bulkText}
               onChange={e => setBulkText(e.target.value)}
               placeholder="+923001112233, Requested Opt-Out&#10;+923004445566, Customer Complaint&#10;+923219998877"
-              className={`w-full p-3 text-xs font-mono rounded-xl border mb-4 focus:outline-none focus:ring-1 focus:ring-red-500/50 ${
-                isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+              className={`w-full p-3 text-xs font-mono rounded-xl border mb-4 focus:outline-none focus:border-red-500 transition ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
               }`}
             />
 
             <div className="mb-4">
-              <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">
+              <label className="block text-[10px] font-mono text-zinc-400 uppercase tracking-wider mb-1 font-bold">
                 Default Reason (if omitted)
               </label>
               <input
                 type="text"
                 value={bulkReason}
                 onChange={e => setBulkReason(e.target.value)}
-                className={`w-full px-3 py-2 text-xs font-mono rounded-xl border ${
-                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+                className={`w-full px-3.5 py-2 text-xs font-mono rounded-xl border ${
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
                 }`}
               />
             </div>
@@ -360,13 +360,13 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setShowBulkModal(false)}
-                className="px-4 py-2 rounded-xl text-xs font-mono text-slate-400 hover:text-white cursor-pointer"
+                className="px-4 py-2 rounded-xl text-xs font-mono text-zinc-400 hover:text-white cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 onClick={handleBulkImport}
-                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-mono font-bold text-xs uppercase tracking-wider rounded-xl cursor-pointer"
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-mono font-bold text-xs uppercase tracking-wider rounded-xl cursor-pointer shadow-sm"
               >
                 Import Numbers
               </button>
