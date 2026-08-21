@@ -547,12 +547,12 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
       throw new Error('Could not retrieve verified email from Google.');
     }
 
-    const result = handleGoogleAuthWithIntent({
+    const result = findOrCreateGoogleUser({
       email,
       name,
       googleId,
       picture
-    }, authIntent);
+    });
 
     res.redirect(`${clientOrigin}/?token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&displayName=${encodeURIComponent((result.user as any).displayName || result.user.username)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
   } catch (err: any) {
