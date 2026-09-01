@@ -2,41 +2,34 @@
  * db/dbAdapter.ts
  * ─────────────────────────────────────────────────────────────────────────────
  * PostgreSQL Database Adapter for Octal Dialer.
- * 
+ *
+ * This is the ONLY production database adapter.
+ * All operations are asynchronous and route through src/db/pool.ts → pg.Pool → PostgreSQL.
+ *
+ * SQLite is NOT available through this adapter.
+ * SQLite exists ONLY in isolated migration tooling (src/db/migrator.ts).
+ *
  * Provides:
- *  - Native PostgreSQL connection pooling via pool.ts
- *  - Automated SQL query translation (? -> $1, $2 and @named -> $1, $2)
- *  - Automated conflict resolution (INSERT OR IGNORE -> ON CONFLICT DO NOTHING)
- *  - Compatibility layer supporting both async (allAsync, getAsync, runAsync)
- *    and synchronous statement execution
- *  - Feature flag toggle (USE_POSTGRES) for safe rollback to SQLite if needed
+ *  - query<T>(sql, params)        → { rows: T[], rowCount: number }
+ *  - queryOne<T>(sql, params)     → T | undefined
+ *  - queryAll<T>(sql, params)     → T[]
+ *  - execute(sql, params)         → { rowCount: number, rows: any[] }
+ *  - withTransaction<T>(fn)       → T
+ *  - init()                       → void (initializes pool + schema)
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import path from 'path';
-import fs from 'fs';
 import { QueryResultRow } from 'pg';
-import { getPool, query as pgQuery, withTransaction as pgWithTransaction, initializeSchema, isInMemoryDatabase } from './pool';
+import { getPool, query as pgQuery, withTransaction as pgWithTransaction, initializeSchema } from './pool';
 
-export const USE_POSTGRES = process.env.USE_POSTGRES !== 'false';
-
-const DATA_DIR = path.join(__dirname, '../../data');
-const DB_FILE = path.join(DATA_DIR, 'octal_dialer.db');
-
-let sqliteFallback: any = null;
-
-function getSqliteFallback(): any {
-  if (!sqliteFallback) {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    // Dynamic import strictly isolated to rollback/legacy mode
-    const SQLite = require('better-sqlite3');
-    sqliteFallback = new SQLite(DB_FILE);
-    sqliteFallback.pragma('journal_mode = WAL');
-    sqliteFallback.pragma('foreign_keys = ON');
-  }
-  return sqliteFallback;
-}
-
+/**
+ * Transform SQL for PostgreSQL compatibility:
+ *  - Convert ? placeholders to $1, $2, $3 positional params
+ *  - Convert @named placeholders to $1, $2, $3 positional params
+ *  - Rewrite INSERT OR IGNORE → INSERT ... ON CONFLICT DO NOTHING
+ *  - Rewrite datetime('now') → now()
+ */
 export function transformSql(sql: string, params: any[] = []): { sql: string; params: any[] } {
   let finalSql = sql;
   let finalParams: any[] = [];
@@ -87,36 +80,23 @@ export function transformSql(sql: string, params: any[] = []): { sql: string; pa
   return { sql: finalSql, params: finalParams };
 }
 
+/**
+ * PostgreSQL-only database adapter.
+ * All methods are asynchronous. No SQLite fallback.
+ */
 export class DbAdapter {
   private initialized = false;
 
   public async init(): Promise<void> {
     if (this.initialized) return;
-    if (USE_POSTGRES) {
-      console.log('[DbAdapter] Initializing PostgreSQL engine...');
-      getPool();
-      await initializeSchema(path.join(__dirname, 'schema.sql'));
-      console.log('[DbAdapter] PostgreSQL engine online and schema ready.');
-    } else {
-      console.log('[DbAdapter] SQLite fallback mode active.');
-      getSqliteFallback();
-    }
+    console.log('[DbAdapter] Initializing PostgreSQL engine...');
+    getPool();
+    await initializeSchema(path.join(__dirname, 'schema.sql'));
+    console.log('[DbAdapter] PostgreSQL engine online and schema ready.');
     this.initialized = true;
   }
 
   public async query<T extends QueryResultRow = any>(sql: string, params: any[] = []): Promise<{ rows: T[]; rowCount: number }> {
-    if (!USE_POSTGRES) {
-      const db = getSqliteFallback();
-      const stmt = db.prepare(sql);
-      if (/^\s*(SELECT|PRAGMA)/i.test(sql)) {
-        const rows = stmt.all(...params) as T[];
-        return { rows, rowCount: rows.length };
-      } else {
-        const info = stmt.run(...params);
-        return { rows: [], rowCount: info.changes };
-      }
-    }
-
     const { sql: pgSql, params: pgParams } = transformSql(sql, params);
     const result = await pgQuery<T>(pgSql, pgParams);
     return {
@@ -140,79 +120,7 @@ export class DbAdapter {
   }
 
   public async withTransaction<T>(fn: (client: any) => Promise<T>): Promise<T> {
-    if (!USE_POSTGRES) {
-      const db = getSqliteFallback();
-      return db.transaction(fn as any)();
-    }
     return pgWithTransaction(fn);
-  }
-
-  /**
-   * Compatibility wrapper matching better-sqlite3 db.prepare()
-   */
-  public prepare(sql: string) {
-    if (!USE_POSTGRES) {
-      return getSqliteFallback().prepare(sql);
-    }
-
-    const self = this;
-    return {
-      all(...params: any[]) {
-        const { sql: pgSql, params: pgParams } = transformSql(sql, params);
-        return self.queryAll(pgSql, pgParams);
-      },
-      get(...params: any[]) {
-        const { sql: pgSql, params: pgParams } = transformSql(sql, params);
-        return self.queryOne(pgSql, pgParams);
-      },
-      run(...params: any[]) {
-        const { sql: pgSql, params: pgParams } = transformSql(sql, params);
-        return self.execute(pgSql, pgParams).then(res => ({
-          changes: res.rowCount,
-          rowCount: res.rowCount,
-          lastInsertRowid: res.rows[0]?.id
-        }));
-      },
-      allAsync(...params: any[]) {
-        const { sql: pgSql, params: pgParams } = transformSql(sql, params);
-        return self.queryAll(pgSql, pgParams);
-      },
-      getAsync(...params: any[]) {
-        const { sql: pgSql, params: pgParams } = transformSql(sql, params);
-        return self.queryOne(pgSql, pgParams);
-      },
-      runAsync(...params: any[]) {
-        const { sql: pgSql, params: pgParams } = transformSql(sql, params);
-        return self.execute(pgSql, pgParams).then(res => ({
-          changes: res.rowCount,
-          rowCount: res.rowCount,
-          lastInsertRowid: res.rows[0]?.id
-        }));
-      }
-    };
-  }
-
-  public pragma(setting: string): void {
-    if (!USE_POSTGRES) {
-      getSqliteFallback().pragma(setting);
-    }
-  }
-
-  public exec(sql: string): Promise<void> {
-    if (!USE_POSTGRES) {
-      getSqliteFallback().exec(sql);
-      return Promise.resolve();
-    }
-    return pgQuery(sql).then(() => {});
-  }
-
-  public transaction(fn: Function): Function {
-    if (!USE_POSTGRES) {
-      return getSqliteFallback().transaction(fn as any);
-    }
-    return async (...args: any[]) => {
-      return this.withTransaction(async () => fn(...args));
-    };
   }
 }
 

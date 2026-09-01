@@ -180,14 +180,16 @@ export async function logBillingAudit(action: string, tenantId: string, details:
     delete sanitizedDetails.token;
     delete sanitizedDetails.password;
 
+    const now = new Date().toISOString();
     await db.execute(`
       INSERT INTO audit_logs (id, action, "entityType", "entityId", "performedBy", details, timestamp, "tenantId")
-      VALUES ($1, $2, 'billing', $3, 'SYSTEM_BILLING', $4, now(), $5)
+      VALUES ($1, $2, 'billing', $3, 'SYSTEM_BILLING', $4, $5, $6)
     `, [
       'audit_' + crypto.randomBytes(8).toString('hex'),
       action,
       details.subscriptionId || details.planId || '',
       JSON.stringify(sanitizedDetails),
+      now,
       tenantId || 'system'
     ]);
   } catch {
@@ -327,8 +329,8 @@ export async function confirmPayment(subscriptionId: string, providerEventId: st
         await logBillingAudit('webhook_stale_ignored', sub.tenantId, { subscriptionId, providerEventId, eventTimestamp, subStatus: sub.status });
         await db.execute(`
           INSERT INTO billing_events (id, provider, "providerEventId", "eventType", "tenantId", "subscriptionId", "eventTimestamp", "processedAt", "createdAt")
-          VALUES ($1, $2, $3, 'payment_succeeded_stale_ignored', $4, $5, $6, now(), now())
-        `, ['evt_' + crypto.randomBytes(8).toString('hex'), getProvider().name, providerEventId, sub.tenantId, subscriptionId, String(eventTimestamp)]);
+          VALUES ($1, $2, $3, 'payment_succeeded_stale_ignored', $4, $5, $6, $7, $8)
+        `, ['evt_' + crypto.randomBytes(8).toString('hex'), getProvider().name, providerEventId, sub.tenantId, subscriptionId, String(eventTimestamp), new Date().toISOString(), new Date().toISOString()]);
         return true;
       }
     }
@@ -347,8 +349,8 @@ export async function confirmPayment(subscriptionId: string, providerEventId: st
 
     await db.execute(`
       INSERT INTO billing_events (id, provider, "providerEventId", "eventType", "tenantId", "subscriptionId", "eventTimestamp", "processedAt", "createdAt")
-      VALUES ($1, $2, $3, 'payment_succeeded', $4, $5, $6, now(), now())
-    `, ['evt_' + crypto.randomBytes(8).toString('hex'), getProvider().name, providerEventId, sub.tenantId, subscriptionId, eventTimestamp ? String(eventTimestamp) : now]);
+      VALUES ($1, $2, $3, 'payment_succeeded', $4, $5, $6, $7, $8)
+    `, ['evt_' + crypto.randomBytes(8).toString('hex'), getProvider().name, providerEventId, sub.tenantId, subscriptionId, eventTimestamp ? String(eventTimestamp) : now, now, now]);
 
     await logBillingAudit('payment_succeeded', sub.tenantId, { subscriptionId, planId: sub.planId });
     await logBillingAudit('subscription_created', sub.tenantId, { subscriptionId, planId: sub.planId });
@@ -390,8 +392,8 @@ export async function failPayment(subscriptionId: string, providerEventId: strin
 
     await db.execute(`
       INSERT INTO billing_events (id, provider, "providerEventId", "eventType", "tenantId", "subscriptionId", "eventTimestamp", "processedAt", "createdAt")
-      VALUES ($1, $2, $3, 'payment_failed', $4, $5, $6, now(), now())
-    `, ['evt_' + crypto.randomBytes(8).toString('hex'), getProvider().name, providerEventId, sub.tenantId, subscriptionId, eventTimestamp ? String(eventTimestamp) : now]);
+      VALUES ($1, $2, $3, 'payment_failed', $4, $5, $6, $7, $8)
+    `, ['evt_' + crypto.randomBytes(8).toString('hex'), getProvider().name, providerEventId, sub.tenantId, subscriptionId, eventTimestamp ? String(eventTimestamp) : now, now, now]);
 
     await logBillingAudit('payment_failed', sub.tenantId, { subscriptionId, planId: sub.planId });
 
@@ -421,9 +423,10 @@ export async function changePlan(tenantId: string, newPlanId: string, isPlatform
       ? ['active', 'trialing', 'past_due', 'suspended', 'cancelled'] 
       : ['active', 'trialing', 'past_due'];
     
+    const placeholders = allowedStatuses.map((_, i) => `$${i + 2}`).join(', ');
     const currentSub = await db.queryOne<any>(`
-      SELECT * FROM subscriptions WHERE "tenantId" = $1 AND status = ANY($2::text[]) ORDER BY "createdAt" DESC LIMIT 1
-    `, [cleanTenantId, allowedStatuses]);
+      SELECT * FROM subscriptions WHERE "tenantId" = $1 AND status IN (${placeholders}) ORDER BY "createdAt" DESC LIMIT 1
+    `, [cleanTenantId, ...allowedStatuses]);
     if (!currentSub) throw new Error('No active subscription found.');
 
     if (currentSub.planId === cleanPlanId) {
@@ -493,7 +496,7 @@ export async function reactivateSubscription(tenantId: string): Promise<BillingS
 
   return await db.withTransaction(async () => {
     const sub = await db.queryOne<any>(`
-      SELECT * FROM subscriptions WHERE "tenantId" = $1 AND ("cancelAtPeriodEnd" = 1 OR "cancelAtPeriodEnd" = true) AND status IN ('active', 'trialing', 'cancelled') ORDER BY "createdAt" DESC LIMIT 1
+      SELECT * FROM subscriptions WHERE "tenantId" = $1 AND "cancelAtPeriodEnd" = 1 AND status IN ('active', 'trialing', 'cancelled') ORDER BY "createdAt" DESC LIMIT 1
     `, [cleanTenantId]);
     if (!sub) throw new Error('No cancellation pending to reactivate.');
 
@@ -658,22 +661,25 @@ export async function processWebhookEvent(payload: string, signature: string): P
       if (event.tenantId) {
         const sub = await getActiveSubscription(event.tenantId);
         if (sub && (sub.status === 'active' || sub.status === 'cancelled')) {
-          await db.execute(`UPDATE subscriptions SET status = 'expired', "updatedAt" = now() WHERE id = $1`, [sub.id]);
+          const now = new Date().toISOString();
+          await db.execute(`UPDATE subscriptions SET status = 'expired', "updatedAt" = $1 WHERE id = $2`, [now, sub.id]);
           await db.execute(`
             INSERT INTO billing_events (id, provider, "providerEventId", "eventType", "tenantId", "subscriptionId", "eventTimestamp", "processedAt", "createdAt")
-            VALUES ($1, $2, $3, 'subscription_expired', $4, $5, $6, now(), now())
-          `, ['evt_' + crypto.randomBytes(8).toString('hex'), provider.name, event.id, event.tenantId, sub.id, event.timestamp ? String(event.timestamp) : new Date().toISOString()]);
+            VALUES ($1, $2, $3, 'subscription_expired', $4, $5, $6, $7, $8)
+          `, ['evt_' + crypto.randomBytes(8).toString('hex'), provider.name, event.id, event.tenantId, sub.id, event.timestamp ? String(event.timestamp) : now, now, now]);
           await logBillingAudit('subscription_expired', event.tenantId, { subscriptionId: sub.id });
         }
       }
       break;
 
-    default:
+    default: {
+      const now = new Date().toISOString();
       await db.execute(`
         INSERT INTO billing_events (id, provider, "providerEventId", "eventType", "tenantId", "subscriptionId", payload, "eventTimestamp", "processedAt", "createdAt")
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
-      `, ['evt_' + crypto.randomBytes(8).toString('hex'), provider.name, event.id, event.type, event.tenantId || null, event.subscriptionId || null, payload, event.timestamp ? String(event.timestamp) : new Date().toISOString()]);
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `, ['evt_' + crypto.randomBytes(8).toString('hex'), provider.name, event.id, event.type, event.tenantId || null, event.subscriptionId || null, payload, event.timestamp ? String(event.timestamp) : now, now, now]);
       break;
+    }
   }
 
   return { processed: true, eventId: event.id };
@@ -698,7 +704,7 @@ export async function processGracePeriods(): Promise<number> {
 
   const expiredCancelled = await db.queryAll<any>(`
     SELECT id, "tenantId" FROM subscriptions
-    WHERE status IN ('cancelled', 'active') AND ("cancelAtPeriodEnd" = 1 OR "cancelAtPeriodEnd" = true) AND "currentPeriodEnd" < $1
+    WHERE status IN ('cancelled', 'active') AND "cancelAtPeriodEnd" = 1 AND "currentPeriodEnd" < $1
   `, [now]);
 
   for (const sub of expiredCancelled) {

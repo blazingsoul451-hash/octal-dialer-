@@ -131,13 +131,14 @@ export async function initializeCatalogPlans(): Promise<void> {
     }
   ];
 
+  const now = new Date().toISOString();
   await db.withTransaction(async () => {
     for (const p of standardPlans) {
       await db.execute(`
         INSERT INTO plans (id, name, "priceMonthly", "priceYearly", status, "createdAt", "updatedAt")
-        VALUES ($1, $2, $3, $4, $5, now(), now())
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT ("id") DO NOTHING
-      `, [p.id, p.name, p.priceMonthly, p.priceYearly, p.status]);
+      `, [p.id, p.name, p.priceMonthly, p.priceYearly, p.status, now, now]);
 
       for (const [limitKey, val] of Object.entries(p.limits)) {
         await db.execute(`
