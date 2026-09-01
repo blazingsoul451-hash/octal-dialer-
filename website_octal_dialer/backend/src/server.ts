@@ -85,7 +85,6 @@ import {
   validateToken,
   changePassword,
   registerPublicUser,
-  findOrCreateGoogleUser,
   handleGoogleAuthWithIntent,
   updateUserRole,
   requirePlatformAdmin,
@@ -93,6 +92,14 @@ import {
   requireModule,
   signupTenant
 } from './authManager';
+
+import {
+  runGoogleMapsScraper,
+  getScraperStatus,
+  stopScraperJob,
+  listScraperOutputFiles,
+  importScraperFileToCampaign
+} from './googleMapsScraperService';
 
 import {
   checkCallAllowed,
@@ -362,30 +369,13 @@ app.post(['/auth/login', '/api/auth/login'], (req, res) => {
   res.json({ token, username: user.username, role: user.role, user });
 });
 
-// POST /auth/register & /api/auth/register — Public Sign Up
-app.post(['/auth/register', '/api/auth/register'], (req, res) => {
-  const { username, password, email } = req.body as { username: string; password: string; email?: string };
-  if (!username || !password) {
-    res.status(400).json({ error: 'Username and password are required.' });
-    return;
-  }
-  if (password.length < 6) {
-    res.status(400).json({ error: 'Password must be at least 6 characters.' });
-    return;
-  }
-
-  try {
-    const result = registerPublicUser({ username, password, email });
-    res.status(201).json({
-      success: true,
-      token: result.token,
-      username: result.user.username,
-      role: result.user.role,
-      user: result.user
-    });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Registration failed.' });
-  }
+// POST /auth/register & /api/auth/register — Public Email/Password Registration Disabled
+app.post(['/auth/register', '/api/auth/register'], (_req, res) => {
+  res.status(403).json({
+    success: false,
+    code: 'REGISTRATION_DISABLED',
+    error: 'Direct email/password registration is disabled. New accounts must sign up using Google OAuth.'
+  });
 });
 
 // GET /auth/verify & GET /api/auth/verify — Verifies current JWT auth token
@@ -547,19 +537,19 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
       throw new Error('Could not retrieve verified email from Google.');
     }
 
-    const result = findOrCreateGoogleUser({
+    const result = handleGoogleAuthWithIntent({
       email,
       name,
       googleId,
       picture
-    });
+    }, authIntent);
 
     res.redirect(`${clientOrigin}/?token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&displayName=${encodeURIComponent((result.user as any).displayName || result.user.username)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
   } catch (err: any) {
     console.error('[Google OAuth Callback Error]:', err);
-    const code = err.code || '';
+    const code = err.code || 'GOOGLE_AUTH_FAILED';
     const emailParam = err.email ? `&email=${encodeURIComponent(err.email)}` : '';
-    res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(code || err.message || 'Google authentication failed.')}${emailParam}`);
+    res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(code)}&message=${encodeURIComponent(err.message || 'Google authentication failed.')}${emailParam}`);
   }
 });
 
@@ -618,11 +608,12 @@ app.post(['/auth/google/verify', '/api/auth/google/verify'], (req, res) => {
       isNewUser: result.isNewUser
     });
   } catch (err: any) {
-    if (err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
+    if (err.code === 'ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' || 
+        err.code === 'ACCOUNT_EXISTS' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
       res.status(400).json({ code: err.code, error: err.message, email: err.email });
       return;
     }
-    res.status(400).json({ error: err.message || 'Google authentication failed.' });
+    res.status(400).json({ code: err.code || 'GOOGLE_AUTH_FAILED', error: err.message || 'Google authentication failed.' });
   }
 });
 
@@ -682,11 +673,12 @@ app.post(['/auth/google', '/api/auth/google'], (req, res) => {
       isNewUser: result.isNewUser
     });
   } catch (err: any) {
-    if (err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
+    if (err.code === 'ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' || 
+        err.code === 'ACCOUNT_EXISTS' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
       res.status(400).json({ code: err.code, error: err.message, email: err.email });
       return;
     }
-    res.status(400).json({ error: err.message || 'Google authentication failed.' });
+    res.status(400).json({ code: err.code || 'GOOGLE_AUTH_FAILED', error: err.message || 'Google authentication failed.' });
   }
 });
 
@@ -720,7 +712,7 @@ app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, (req, res) 
 });
 
 // POST /api/mobile/login — Dedicated Mobile App Login & Instant Session Sync
-app.post('/api/mobile/login', (req, res) => {
+app.post('/api/mobile/login', async (req, res) => {
   const { username, password, email, googleAuthData, deviceName, phoneBtAddress, phoneOsType, phoneIpAddress } = req.body as {
     username?: string;
     password?: string;
@@ -736,12 +728,13 @@ app.post('/api/mobile/login', (req, res) => {
     let authResult: { token: string; user: any } | null = null;
 
     if (googleAuthData && (googleAuthData.email || googleAuthData.credential)) {
-      authResult = findOrCreateGoogleUser({
+      const gIntent = googleAuthData.intent === 'signup' ? 'signup' : 'signin';
+      authResult = handleGoogleAuthWithIntent({
         email: googleAuthData.email || '',
         name: googleAuthData.name || '',
         googleId: googleAuthData.googleId || googleAuthData.sub || '',
         picture: googleAuthData.picture || ''
-      });
+      }, gIntent);
     } else if (username && password) {
       const token = login(username, password);
       if (token) {
@@ -778,8 +771,8 @@ app.post('/api/mobile/login', (req, res) => {
     );
 
     // Retrieve database campaigns & leads summary
-    const campaigns = db.prepare(`SELECT * FROM campaigns WHERE tenantId = ? ORDER BY createdAt DESC`).all(tenantId);
-    const leads = db.prepare(`SELECT id, campaignId, name, phone, status, outcome, duration FROM leads WHERE tenantId = ? LIMIT 100`).all(tenantId);
+    const campaigns = await db.queryAll(`SELECT * FROM campaigns WHERE "tenantId" = $1 ORDER BY "createdAt" DESC`, [tenantId]);
+    const leads = await db.queryAll(`SELECT id, "campaignId", name, phone, status, outcome, duration FROM leads WHERE "tenantId" = $1 LIMIT 100`, [tenantId]);
 
     res.json({
       success: true,
@@ -982,12 +975,12 @@ app.post('/api/devices/register', requireAuth, (req, res) => {
 });
 
 // GET /api/devices — list registered devices for current user and tenant
-app.get('/api/devices', requireAuth, (req, res) => {
+app.get('/api/devices', requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
     let devices: DeviceRecord[] = [];
     if (req.query.all === 'true' && (user.role === 'platform_admin' || user.role === 'admin')) {
-      devices = db.prepare(`SELECT * FROM devices WHERE tenantId = ? AND isRevoked = 0 ORDER BY lastSeenAt DESC`).all(user.tenantId) as DeviceRecord[];
+      devices = await db.queryAll(`SELECT * FROM devices WHERE "tenantId" = $1 AND "isRevoked" = 0 ORDER BY "lastSeenAt" DESC`, [user.tenantId]) as DeviceRecord[];
     } else {
       devices = getDevicesForUser(user.id, user.tenantId);
     }
@@ -1042,14 +1035,18 @@ app.post('/api/devices/:id/revoke', requireAuth, (req, res) => {
 });
 
 // GET /api/audit-logs — view system audit logs
-app.get('/api/audit-logs', requireAuth, (req, res) => {
-  const logs = db.prepare(`SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 200`).all();
+app.get('/api/audit-logs', requireAuth, async (req, res) => {
+  const user = (req as any).user;
+  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const logs = isPlatform
+    ? await db.queryAll(`SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 200`)
+    : await db.queryAll(`SELECT * FROM audit_logs WHERE "tenantId" = $1 ORDER BY timestamp DESC LIMIT 200`, [user.tenantId]);
   res.json(logs);
 });
 
 // POST /api/leads/:id/unlock — manually unlock a lead
-app.post('/api/leads/:id/unlock', requireAuth, (req, res) => {
-  releaseLeadLock(req.params.id);
+app.post('/api/leads/:id/unlock', requireAuth, async (req, res) => {
+  await releaseLeadLock(req.params.id);
   res.json({ success: true, message: `Lead ${req.params.id} unlocked.` });
 });
 
@@ -1115,7 +1112,7 @@ app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, (req,
 });
 
 // REST: Global Leads search & pagination (protected)
-app.get(['/leads', '/api/leads'], requireAuth, (req, res) => {
+app.get(['/leads', '/api/leads'], requireAuth, async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId || 'tenant_default';
     const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
@@ -1125,31 +1122,31 @@ app.get(['/leads', '/api/leads'], requireAuth, (req, res) => {
     const status = (req.query.status as string || '').trim();
 
     let query = `
-      SELECT l.id, l.name, l.phone, l.status, l.outcome, l.duration, l.createdAt, l.campaignId,
-             c.name as campaignName
+      SELECT l.id, l.name, l.phone, l.status, l.outcome, l.duration, l."createdAt", l."campaignId",
+             c.name as "campaignName"
       FROM leads l
-      LEFT JOIN campaigns c ON l.campaignId = c.id
-      WHERE l.tenantId = ? AND l.status != 'ARCHIVED'
+      LEFT JOIN campaigns c ON l."campaignId" = c.id
+      WHERE l."tenantId" = $1 AND l.status != 'ARCHIVED'
     `;
     const params: any[] = [tenantId];
 
     if (source) {
-      query += ` AND (c.name LIKE ? OR l.campaignId = ?)`;
+      query += ` AND (c.name LIKE $${params.length + 1} OR l."campaignId" = $${params.length + 2})`;
       params.push(`%${source}%`, source);
     }
     if (status) {
-      query += ` AND l.status = ?`;
+      query += ` AND l.status = $${params.length + 1}`;
       params.push(status);
     }
 
     const countQuery = query.replace(/SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM');
-    const totalRow = db.prepare(countQuery).get(...params) as { total: number };
-    const total = totalRow ? totalRow.total : 0;
+    const totalRow = await db.queryOne(countQuery, params) as { total: number } | undefined;
+    const total = totalRow ? parseInt(String(totalRow.total), 10) : 0;
 
-    query += ` ORDER BY l.createdAt DESC LIMIT ? OFFSET ?`;
+    query += ` ORDER BY l."createdAt" DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.queryAll(query, params) as any[];
 
     const formattedLeads = rows.map(r => ({
       id: r.id,
@@ -1180,12 +1177,12 @@ app.get(['/leads', '/api/leads'], requireAuth, (req, res) => {
 });
 
 // REST: Update lead status (protected)
-app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, (req, res) => {
+app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId || 'tenant_default';
     const { status } = req.body;
     if (status) {
-      db.prepare(`UPDATE leads SET status = ? WHERE id = ? AND tenantId = ?`).run(status, req.params.id, tenantId);
+      await db.execute(`UPDATE leads SET status = $1 WHERE id = $2 AND "tenantId" = $3`, [status, req.params.id, tenantId]);
       io.to(`tenant_${tenantId}`).emit('leads:updated');
     }
     res.json({ success: true });
@@ -1195,12 +1192,12 @@ app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, (req, res) => {
 });
 
 // REST: CRM Campaign Workspace telemetry & leads (protected)
-app.get('/api/crm/campaigns/:id/workspace', requireAuth, (req, res) => {
+app.get('/api/crm/campaigns/:id/workspace', requireAuth, async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId || 'tenant_default';
     const campaignId = req.params.id;
 
-    const leads = db.prepare(`SELECT * FROM leads WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED' ORDER BY ROWID ASC`).all(campaignId, tenantId) as any[];
+    const leads = await db.queryAll(`SELECT * FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED' ORDER BY "createdAt" ASC, "id" ASC`, [campaignId, tenantId]) as any[];
 
     const totalLeads = leads.length;
     const completedLeads = leads.filter(l => l.status === 'COMPLETED').length;
@@ -1288,7 +1285,7 @@ app.get(['/logs', '/api/logs'], requireAuth, (req, res) => {
 });
 
 // POST /api/logs/update & /logs/update — Update call disposition (protected)
-app.post(['/api/logs/update', '/logs/update'], requireAuth, (req, res) => {
+app.post(['/api/logs/update', '/logs/update'], requireAuth, async (req, res) => {
   const { leadId, outcome, notes } = req.body as { leadId?: string; outcome?: string; notes?: string };
   const user = (req as any).user;
   const tenantId = user?.tenantId;
@@ -1303,7 +1300,7 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, (req, res) => {
     return;
   }
 
-  const leadRow = db.prepare('SELECT campaignId FROM leads WHERE id = ? AND tenantId = ?').get(leadId, tenantId) as any;
+  const leadRow = await db.queryOne('SELECT "campaignId" FROM leads WHERE id = $1 AND "tenantId" = $2', [leadId, tenantId]) as any;
 
   const updated = updateLogDisposition({
     leadId,
@@ -1347,12 +1344,25 @@ app.get('/api/campaigns/:id/next-lead', requireAuth, (req, res) => {
 // REST: Scan sibling scraper folders (protected)
 app.get('/api/scraper-files', requireAuth, (req, res) => {
   const list: { name: string; path: string; sizeBytes: number; lastModified: string }[] = [];
+  
+  // 1. Check generated output files from built-in scraper service
+  const generatedFiles = listScraperOutputFiles();
+  for (const gf of generatedFiles) {
+    list.push({
+      name: gf.name,
+      path: gf.path,
+      sizeBytes: gf.size,
+      lastModified: gf.mtime.toISOString()
+    });
+  }
+
+  // 2. Also check external legacy scraper folders
   for (const folder of SCRAPER_PATHS) {
     if (fs.existsSync(folder)) {
       try {
         const files = fs.readdirSync(folder);
         for (const file of files) {
-          if (file.endsWith('.xlsx') || file.endsWith('.xls') || file.endsWith('.csv')) {
+          if ((file.endsWith('.xlsx') || file.endsWith('.xls') || file.endsWith('.csv')) && !list.some(item => item.name === file)) {
             const filePath = path.join(folder, file);
             const stats = fs.statSync(filePath);
             list.push({
@@ -1369,6 +1379,24 @@ app.get('/api/scraper-files', requireAuth, (req, res) => {
     }
   }
   res.json(list);
+});
+
+// REST: Download scraped file
+app.get('/api/scraper-files/download/:filename', requireAuth, (req, res) => {
+  const filename = path.basename(req.params.filename);
+  const candidateDirs = [
+    path.resolve(__dirname, '../data/scraper_output'),
+    ...SCRAPER_PATHS
+  ];
+
+  for (const dir of candidateDirs) {
+    const filePath = path.join(dir, filename);
+    if (fs.existsSync(filePath)) {
+      res.download(filePath, filename);
+      return;
+    }
+  }
+  res.status(404).json({ error: 'File not found.' });
 });
 
 // REST: Import leads from scraped file (protected)
@@ -1466,161 +1494,66 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
   }
 });
 
-let activeScrapeProcess: any = null;
-let activeScrapeTask = {
-  status: 'idle',
-  keyword: '',
-  location: '',
-  logs: [] as string[]
-};
-
 // REST: Run Scraper (protected)
-app.post('/api/scraper/run', requireAuth, (req, res) => {
-  if (activeScrapeTask.status === 'running') {
+app.post('/api/scraper/run', requireAuth, async (req, res) => {
+  const currentStatus = getScraperStatus();
+  if (currentStatus.status === 'running') {
     res.status(400).json({ error: 'A scraper job is already running.' });
     return;
   }
 
   const user = (req as any).user;
-  const isPlatformAdmin = user.role === 'platform_admin' || user.role === 'admin';
-
-  const { keyword, location, requirePhone, requireEmail, maxLeads } = req.body as {
+  const { keyword, location = '', requirePhone = false, requireEmail = false, maxLeads = 50 } = req.body as {
     keyword: string;
-    location: string;
-    requirePhone: boolean;
-    requireEmail: boolean;
+    location?: string;
+    requirePhone?: boolean;
+    requireEmail?: boolean;
     maxLeads?: number | string;
   };
 
-  if (!keyword) {
-    res.status(400).json({ error: 'Keyword is required.' });
+  if (!keyword || !keyword.trim()) {
+    res.status(400).json({ error: 'Search keyword is required.' });
     return;
   }
 
-  const scraperInfo = findScraperInfo();
-  if (!scraperInfo) {
-    console.error('[Scraper] Error: scraper.js could not be located.');
-    activeScrapeTask = {
-      status: 'failed',
-      keyword,
-      location: location || 'all',
-      logs: [
-        '🚀 Starting Google Maps Scraper Pro in background...',
-        '❌ Error: Could not locate scraper.js in google-maps-scraper-pro directory.'
-      ]
-    };
-    res.status(500).json({ error: 'Google Maps Scraper script (scraper.js) not found.' });
-    return;
-  }
+  const parsedLimit = parseInt(String(maxLeads || '50'), 10) || 50;
+  const tenantId = user.tenantId || 'tenant_default';
 
-  // Calculate target lead limit
-  let effectiveLimit = 0;
-  const requestedLimit = parseInt(String(maxLeads || '0'), 10) || 0;
+  // Run asynchronously so the REST request responds immediately
+  runGoogleMapsScraper({
+    keyword: keyword.trim(),
+    location: location ? location.trim() : '',
+    maxLeads: parsedLimit,
+    requirePhone: !!requirePhone,
+    requireEmail: !!requireEmail,
+    tenantId,
+    username: user.username || 'admin'
+  }).then(result => {
+    io.to(`tenant_${tenantId}`).emit('scraper:completed', result);
+  }).catch(err => {
+    console.error('[Scraper Job Error]:', err);
+    io.to(`tenant_${tenantId}`).emit('scraper:failed', { error: err.message });
+  });
 
-  if (user.role !== 'admin' && user.role !== 'platform_admin') {
-    const remaining = 1000;
-    if (requestedLimit > 0) {
-      effectiveLimit = Math.min(requestedLimit, remaining);
-    } else {
-      effectiveLimit = remaining;
-    }
-  } else {
-    effectiveLimit = requestedLimit; // 0 means unlimited
-  }
-
-  const limitDesc = effectiveLimit > 0 ? `${effectiveLimit} leads max` : 'Unlimited';
-  activeScrapeTask = {
-    status: 'running',
+  res.json({
+    success: true,
+    message: 'Google Maps Scraper engine started successfully.',
     keyword,
-    location: location || 'all',
-    logs: [
-      `🚀 Starting Google Maps Scraper Pro in background...`,
-      `👤 User: ${user.username} (${user.role.toUpperCase()}) | 🎯 Limit: ${limitDesc}`
-    ]
-  };
-
-  const quoteArg = (str: string) => str.includes(' ') ? `"${str.replace(/"/g, '')}"` : str;
-
-  const workers = '2';
-
-  const args = [
-    `"${scraperInfo.scriptPath}"`,
-    '--industry', quoteArg(keyword),
-    '--country', quoteArg(location || 'all'),
-    '--workers', workers,
-    '--headless'
-  ];
-
-  if (effectiveLimit > 0) {
-    args.push('--max-leads', String(effectiveLimit));
-  }
-
-  if (requirePhone) args.push('--require-phone');
-  if (requireEmail) args.push('--require-email');
-
-  console.log(`[Scraper] Launching: node ${args.join(' ')} in ${scraperInfo.dir}`);
-
-  let leadsScrapedThisRun = 0;
-
-  try {
-    activeScrapeProcess = spawn('node', args, {
-      cwd: scraperInfo.dir,
-      shell: true
-    });
-
-    activeScrapeProcess.stdout.on('data', (data: Buffer) => {
-      const text = data.toString('utf8').trim();
-      if (text) {
-        const lines = text.split('\n').map(l => l.replace(/\r/g, '').trim()).filter(Boolean);
-        for (const line of lines) {
-          activeScrapeTask.logs.push(line);
-          if (line.includes('✅ #')) {
-            leadsScrapedThisRun++;
-          }
-        }
-        if (activeScrapeTask.logs.length > 300) {
-          activeScrapeTask.logs = activeScrapeTask.logs.slice(-300);
-        }
-      }
-    });
-
-    activeScrapeProcess.stderr.on('data', (data: Buffer) => {
-      const text = data.toString('utf8').trim();
-      if (text) {
-        activeScrapeTask.logs.push(`⚠️ ${text}`);
-      }
-    });
-
-    activeScrapeProcess.on('close', (code: number) => {
-      console.log(`[Scraper] Finished with exit code ${code}. Extracted: ${leadsScrapedThisRun} leads.`);
-      activeScrapeTask.status = code === 0 ? 'completed' : 'failed';
-      activeScrapeTask.logs.push(code === 0 ? `✅ Scraper finished successfully! (${leadsScrapedThisRun} leads extracted)` : `❌ Scraper failed with exit code ${code}`);
-      activeScrapeProcess = null;
-    });
-
-  } catch (err: any) {
-    console.error('[Scraper] Spawn error:', err);
-    activeScrapeTask.status = 'failed';
-    activeScrapeTask.logs.push(`❌ Spawn error: ${err.message}`);
-    activeScrapeProcess = null;
-  }
-
-  res.json({ success: true, message: 'Scraper started successfully.', effectiveLimit });
+    location,
+    targetLimit: parsedLimit
+  });
 });
 
 // REST: Scraper Status (protected)
 app.get('/api/scraper/status', requireAuth, (req, res) => {
-  res.json(activeScrapeTask);
+  res.json(getScraperStatus());
 });
 
 // REST: Stop Scraper (protected)
-app.post('/api/scraper/stop', requireAuth, (req, res) => {
-  if (activeScrapeProcess) {
-    activeScrapeProcess.kill('SIGINT');
-    activeScrapeTask.status = 'failed';
-    activeScrapeTask.logs.push('🛑 Scraper stopped by user request.');
-    activeScrapeProcess = null;
-    res.json({ success: true, message: 'Scraper task killed.' });
+app.post('/api/scraper/stop', requireAuth, async (req, res) => {
+  const stopped = await stopScraperJob();
+  if (stopped) {
+    res.json({ success: true, message: 'Scraper task stopped.' });
   } else {
     res.status(400).json({ error: 'No active scraper task is running.' });
   }
@@ -1629,41 +1562,41 @@ app.post('/api/scraper/stop', requireAuth, (req, res) => {
 // ─── ADMIN AUTHORITY MASTER CONTROL REST ENDPOINTS ────────────────────────────
 
 // GET /api/admin/overview
-app.get('/api/admin/overview', requireAuth, requireAdmin, (req, res) => {
+app.get('/api/admin/overview', requireAuth, requireAdmin, async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const tenantId = user.tenantId;
 
-  const totalUsers = isPlatform 
-    ? (db.prepare(`SELECT COUNT(*) as c FROM users`).get() as any).c
-    : (db.prepare(`SELECT COUNT(*) as c FROM users WHERE tenantId = ?`).get(tenantId) as any).c;
-  const totalCampaigns = isPlatform
-    ? (db.prepare(`SELECT COUNT(*) as c FROM campaigns`).get() as any).c
-    : (db.prepare(`SELECT COUNT(*) as c FROM campaigns WHERE tenantId = ?`).get(tenantId) as any).c;
-  const totalLeads = isPlatform
-    ? (db.prepare(`SELECT COUNT(*) as c FROM leads`).get() as any).c
-    : (db.prepare(`SELECT COUNT(*) as c FROM leads WHERE tenantId = ?`).get(tenantId) as any).c;
-  const totalLogs = isPlatform
-    ? (db.prepare(`SELECT COUNT(*) as c FROM call_logs`).get() as any).c
-    : (db.prepare(`SELECT COUNT(*) as c FROM call_logs WHERE tenantId = ?`).get(tenantId) as any).c;
+  const totalUsersRow = isPlatform
+    ? await db.queryOne(`SELECT COUNT(*) as c FROM users`)
+    : await db.queryOne(`SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1`, [tenantId]);
+  const totalCampaignsRow = isPlatform
+    ? await db.queryOne(`SELECT COUNT(*) as c FROM campaigns`)
+    : await db.queryOne(`SELECT COUNT(*) as c FROM campaigns WHERE "tenantId" = $1`, [tenantId]);
+  const totalLeadsRow = isPlatform
+    ? await db.queryOne(`SELECT COUNT(*) as c FROM leads`)
+    : await db.queryOne(`SELECT COUNT(*) as c FROM leads WHERE "tenantId" = $1`, [tenantId]);
+  const totalLogsRow = isPlatform
+    ? await db.queryOne(`SELECT COUNT(*) as c FROM call_logs`)
+    : await db.queryOne(`SELECT COUNT(*) as c FROM call_logs WHERE "tenantId" = $1`, [tenantId]);
 
   res.json({
-    totalUsers,
-    totalCampaigns,
-    totalLeads,
-    totalLogs,
-    activeScraper: activeScrapeTask,
+    totalUsers: parseInt(totalUsersRow?.c || '0', 10),
+    totalCampaigns: parseInt(totalCampaignsRow?.c || '0', 10),
+    totalLeads: parseInt(totalLeadsRow?.c || '0', 10),
+    totalLogs: parseInt(totalLogsRow?.c || '0', 10),
+    activeScraper: getScraperStatus(),
     systemUptimeSeconds: Math.floor(process.uptime())
   });
 });
 
 // GET /api/admin/users
-app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const users = isPlatform
-    ? db.prepare(`SELECT id, username, email, role, tenantId, createdAt, updatedAt FROM users ORDER BY createdAt DESC`).all()
-    : db.prepare(`SELECT id, username, email, role, tenantId, createdAt, updatedAt FROM users WHERE tenantId = ? ORDER BY createdAt DESC`).all(user.tenantId);
+    ? await db.queryAll(`SELECT id, username, email, role, "tenantId", "createdAt", "updatedAt" FROM users ORDER BY "createdAt" DESC`)
+    : await db.queryAll(`SELECT id, username, email, role, "tenantId", "createdAt", "updatedAt" FROM users WHERE "tenantId" = $1 ORDER BY "createdAt" DESC`, [user.tenantId]);
   res.json(users);
 });
 
@@ -1712,10 +1645,10 @@ app.put('/api/admin/users/:id/role', requireAuth, requireAdmin, (req, res) => {
 });
 
 // POST /api/admin/users/:id/password
-app.post('/api/admin/users/:id/password', requireAuth, requireAdmin, (req, res) => {
+app.post('/api/admin/users/:id/password', requireAuth, requireAdmin, async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-  const targetUser = db.prepare(`SELECT id, role, tenantId FROM users WHERE id = ?`).get(req.params.id) as any;
+  const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
 
   if (!targetUser) {
     res.status(404).json({ error: 'User not found.' });
@@ -1737,15 +1670,15 @@ app.post('/api/admin/users/:id/password', requireAuth, requireAdmin, (req, res) 
     res.status(400).json({ error: 'New password must be at least 4 characters.' });
     return;
   }
-  changePassword(req.params.id, newPassword);
+  await changePassword(req.params.id, newPassword);
   res.json({ success: true, message: 'Password updated successfully.' });
 });
 
 // DELETE /api/admin/users/:id
-app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req, res) => {
+app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-  const targetUser = db.prepare(`SELECT id, role, tenantId FROM users WHERE id = ?`).get(req.params.id) as any;
+  const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
 
   if (!targetUser) {
     res.status(404).json({ error: 'User not found.' });
@@ -1762,8 +1695,8 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req, res) => {
     return;
   }
 
-  const info = db.prepare(`DELETE FROM users WHERE id = ?`).run(req.params.id);
-  if (info.changes > 0) {
+  const info = await db.execute(`DELETE FROM users WHERE id = $1`, [req.params.id]);
+  if (info.rowCount > 0) {
     res.json({ success: true, message: 'User deleted.' });
   } else {
     res.status(404).json({ error: 'User not found.' });
@@ -1771,41 +1704,46 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req, res) => {
 });
 
 // GET /api/admin/settings
-app.get('/api/admin/settings', requireAuth, requireAdmin, (req, res) => {
-  const rows = db.prepare(`SELECT settingKey, settingValue FROM system_settings`).all() as any[];
+app.get('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
+  const rows = await db.queryAll(`SELECT "settingKey", "settingValue" FROM system_settings`) as any[];
   const map: Record<string, string> = {};
   for (const r of rows) map[r.settingKey] = r.settingValue;
   res.json(map);
 });
 
 // POST /api/admin/settings
-app.post('/api/admin/settings', requireAuth, requireAdmin, (req, res) => {
+app.post('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
   const { default_free_scraper_limit, max_workers_allowed, scraper_engine_status } = req.body;
   if (default_free_scraper_limit !== undefined) {
-    db.prepare(`INSERT OR REPLACE INTO system_settings (id, category, settingKey, settingValue, description, updatedAt) VALUES (?, 'scraper', 'default_free_scraper_limit', ?, 'Default free leads quota', datetime('now'))`).run('set_free_lim', String(default_free_scraper_limit));
+    await db.execute(`
+      INSERT INTO system_settings (id, category, "settingKey", "settingValue", description, "updatedAt")
+      VALUES ($1, 'scraper', 'default_free_scraper_limit', $2, 'Default free leads quota', now())
+      ON CONFLICT ("id") DO UPDATE SET "settingValue" = excluded."settingValue", "updatedAt" = now()
+    `, ['set_free_lim', String(default_free_scraper_limit)]);
   }
   if (max_workers_allowed !== undefined) {
-    db.prepare(`INSERT OR REPLACE INTO system_settings (id, category, settingKey, settingValue, description, updatedAt) VALUES (?, 'scraper', 'max_workers_allowed', ?, 'Max browser workers', datetime('now'))`).run('set_workers', String(max_workers_allowed));
+    await db.execute(`
+      INSERT INTO system_settings (id, category, "settingKey", "settingValue", description, "updatedAt")
+      VALUES ($1, 'scraper', 'max_workers_allowed', $2, 'Max browser workers', now())
+      ON CONFLICT ("id") DO UPDATE SET "settingValue" = excluded."settingValue", "updatedAt" = now()
+    `, ['set_workers', String(max_workers_allowed)]);
   }
   if (scraper_engine_status !== undefined) {
-    db.prepare(`INSERT OR REPLACE INTO system_settings (id, category, settingKey, settingValue, description, updatedAt) VALUES (?, 'scraper', 'scraper_engine_status', ?, 'Scraper engine status', datetime('now'))`).run('set_status', String(scraper_engine_status));
+    await db.execute(`
+      INSERT INTO system_settings (id, category, "settingKey", "settingValue", description, "updatedAt")
+      VALUES ($1, 'scraper', 'scraper_engine_status', $2, 'Scraper engine status', now())
+      ON CONFLICT ("id") DO UPDATE SET "settingValue" = excluded."settingValue", "updatedAt" = now()
+    `, ['set_status', String(scraper_engine_status)]);
   }
-  const rows = db.prepare(`SELECT settingKey, settingValue FROM system_settings`).all() as any[];
+  const rows = await db.queryAll(`SELECT "settingKey", "settingValue" FROM system_settings`);
   const map: Record<string, string> = {};
   for (const r of rows) map[r.settingKey] = r.settingValue;
   res.json({ success: true, settings: map });
 });
 
 // POST /api/admin/scraper/force-stop
-app.post('/api/admin/scraper/force-stop', requireAuth, requireAdmin, (req, res) => {
-  if (activeScrapeProcess) {
-    try {
-      activeScrapeProcess.kill('SIGINT');
-    } catch {}
-    activeScrapeProcess = null;
-  }
-  activeScrapeTask.status = 'failed';
-  activeScrapeTask.logs.push('🛑 Scraper force-stopped by administrator authority.');
+app.post('/api/admin/scraper/force-stop', requireAuth, requireAdmin, async (req, res) => {
+  await stopScraperJob();
   res.json({ success: true, message: 'Scraper terminated by admin.' });
 });
 
@@ -1821,26 +1759,8 @@ app.post('/api/admin/system/unlock-all-leads', requireAuth, requireAdmin, (req, 
   res.json({ success: true, count, message: `Unlocked ${count} locked lead(s).` });
 });
 
-// REST: Scraper Status (protected)
-app.get('/api/scraper/status', requireAuth, (req, res) => {
-  res.json(activeScrapeTask);
-});
-
-// REST: Stop Scraper (protected)
-app.post('/api/scraper/stop', requireAuth, (req, res) => {
-  if (activeScrapeProcess) {
-    activeScrapeProcess.kill('SIGINT');
-    activeScrapeTask.status = 'failed';
-    activeScrapeTask.logs.push('🛑 Scraper stopped by user request.');
-    activeScrapeProcess = null;
-    res.json({ success: true, message: 'Scraper task killed.' });
-  } else {
-    res.status(400).json({ error: 'No active scraper task is running.' });
-  }
-});
-
 // REST: App Version & OTA Update Check with SHA-256 integrity verification
-app.get('/api/app-version', (req, res) => {
+app.get('/api/app-version', async (req, res) => {
   const localIP = getLocalIP();
   const apkPath = path.join(
     __dirname,
@@ -1854,16 +1774,13 @@ app.get('/api/app-version', (req, res) => {
       sha256Hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
       // Record version & hash in ota_versions table
-      db.prepare(`
-        INSERT INTO ota_versions (id, version, buildNumber, apkHash, signature, releaseNotes, isActive)
-        VALUES (@id, '1.4.0', 4, @hash, 'OCTAL_KEY_SIG_V1', 'Production Foundation build with SQLite, Auth, Safety Gate, Command IDs, DNC, and Heartbeat.', 1)
+      await db.execute(`
+        INSERT INTO ota_versions (id, version, "buildNumber", "apkHash", signature, "releaseNotes", "isActive")
+        VALUES ($1, '1.4.0', 4, $2, 'OCTAL_KEY_SIG_V1', 'Production Foundation build with PostgreSQL, Auth, Safety Gate, Command IDs, DNC, and Heartbeat.', 1)
         ON CONFLICT(version) DO UPDATE SET
-          apkHash = @hash,
-          uploadedAt = datetime('now')
-      `).run({
-        id: 'ota_v1.4.0',
-        hash: sha256Hash
-      });
+          "apkHash" = excluded."apkHash",
+          "uploadedAt" = now()
+      `, ['ota_v1.4.0', sha256Hash]);
     } catch (err) {
       console.error('[OTA] Error computing hash:', err);
     }
@@ -2982,8 +2899,6 @@ ensureDefaultAdmin();
 // AUTO-EMAILER MODULE ROUTES
 // ══════════════════════════════════════════════════════════════════════════════
 
-const emailDb = db; // uses the same better-sqlite3 instance
-
 // Job state for the emailer campaign runner
 const emailerJob: { running: boolean; logs: string[]; stop: boolean } = {
   running: false,
@@ -2999,18 +2914,18 @@ function emailLog(msg: string) {
 }
 
 // ── GET /email/leads
-app.get('/email/leads', requireAuth, (req: express.Request, res: express.Response): void => {
+app.get('/email/leads', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const rows = emailDb.prepare('SELECT * FROM email_leads WHERE tenantId = ? ORDER BY createdAt ASC').all(tenantId);
+  const rows = await db.queryAll('SELECT * FROM email_leads WHERE "tenantId" = $1 ORDER BY "createdAt" ASC', [tenantId]);
   res.json(rows);
 });
 
 // ── POST /email/upload
-app.post('/email/upload', requireAuth, (req: express.Request, res: express.Response): void => {
+app.post('/email/upload', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -3023,42 +2938,43 @@ app.post('/email/upload', requireAuth, (req: express.Request, res: express.Respo
   }
   let added = 0;
   let skipped = 0;
-  const insert = emailDb.prepare(`
-    INSERT OR IGNORE INTO email_leads (email, name, company, status, stage, tenantId)
-    VALUES (?, ?, ?, 'pending', 1, ?)
-  `);
   for (const lead of leads) {
     if (!lead.email?.includes('@')) continue;
-    const result = insert.run(lead.email.toLowerCase().trim(), lead.name || 'Client', lead.company || '', tenantId);
-    if ((result as any).changes > 0) added++; else skipped++;
+    const leadId = `eml_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const result = await db.execute(`
+      INSERT INTO email_leads (id, email, name, company, status, stage, "tenantId")
+      VALUES ($1, $2, $3, $4, 'pending', 1, $5)
+      ON CONFLICT ("id") DO NOTHING
+    `, [leadId, lead.email.toLowerCase().trim(), lead.name || 'Client', lead.company || '', tenantId]);
+    if (result.rowCount > 0) added++; else skipped++;
   }
   res.json({ success: true, added, duplicates: skipped });
 });
 
 // ── DELETE /email/leads
-app.delete('/email/leads', requireAuth, (req: express.Request, res: express.Response): void => {
+app.delete('/email/leads', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  emailDb.prepare('DELETE FROM email_leads WHERE tenantId = ?').run(tenantId);
+  await db.execute('DELETE FROM email_leads WHERE "tenantId" = $1', [tenantId]);
   res.json({ success: true });
 });
 
 // ── GET /email/accounts
-app.get('/email/accounts', requireAuth, (req: express.Request, res: express.Response): void => {
+app.get('/email/accounts', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const rows = emailDb.prepare('SELECT id, email, senderName, smtpHost, smtpPort, status FROM email_accounts WHERE tenantId = ?').all(tenantId);
+  const rows = await db.queryAll('SELECT id, email, "senderName", "smtpHost", "smtpPort", status FROM email_accounts WHERE "tenantId" = $1', [tenantId]);
   res.json(rows);
 });
 
 // ── POST /email/accounts
-app.post('/email/accounts', requireAuth, (req: express.Request, res: express.Response): void => {
+app.post('/email/accounts', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -3069,19 +2985,20 @@ app.post('/email/accounts', requireAuth, (req: express.Request, res: express.Res
     res.status(400).json({ error: 'accounts array required' });
     return;
   }
-  const upsert = emailDb.prepare(`
-    INSERT INTO email_accounts (email, password, senderName, smtpHost, smtpPort, status, tenantId)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(email) DO UPDATE SET
-      password = CASE WHEN excluded.password = '***keep***' THEN password ELSE excluded.password END,
-      senderName = excluded.senderName,
-      smtpHost = excluded.smtpHost,
-      smtpPort = excluded.smtpPort,
-      status = excluded.status,
-      tenantId = excluded.tenantId
-  `);
   for (const acc of accounts) {
-    upsert.run(
+    const accId = `eml_acc_${acc.email.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    await db.execute(`
+      INSERT INTO email_accounts (id, email, password, "senderName", "smtpHost", "smtpPort", status, "tenantId")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT ("id") DO UPDATE SET
+        password = CASE WHEN excluded.password = '***keep***' THEN email_accounts.password ELSE excluded.password END,
+        "senderName" = excluded."senderName",
+        "smtpHost" = excluded."smtpHost",
+        "smtpPort" = excluded."smtpPort",
+        status = excluded.status,
+        "tenantId" = excluded."tenantId"
+    `, [
+      accId,
       acc.email.toLowerCase(),
       acc.password,
       acc.senderName || null,
@@ -3089,24 +3006,24 @@ app.post('/email/accounts', requireAuth, (req: express.Request, res: express.Res
       acc.smtpPort || 587,
       acc.status || 'active',
       tenantId
-    );
+    ]);
   }
   res.json({ success: true });
 });
 
 // ── GET /email/templates
-app.get('/email/templates', requireAuth, (req: express.Request, res: express.Response): void => {
+app.get('/email/templates', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const rows = emailDb.prepare('SELECT * FROM email_templates WHERE (tenantId = ? OR systemTemplate = 1) ORDER BY stage ASC, id ASC').all(tenantId);
+  const rows = await db.queryAll('SELECT * FROM email_templates WHERE ("tenantId" = $1 OR "systemTemplate" = 1) ORDER BY stage ASC, id ASC', [tenantId]);
   res.json(rows);
 });
 
 // ── POST /email/templates
-app.post('/email/templates', requireAuth, (req: express.Request, res: express.Response): void => {
+app.post('/email/templates', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -3117,10 +3034,10 @@ app.post('/email/templates', requireAuth, (req: express.Request, res: express.Re
     res.status(400).json({ error: 'templates array required' });
     return;
   }
-  emailDb.prepare('DELETE FROM email_templates WHERE tenantId = ?').run(tenantId);
-  const insert = emailDb.prepare('INSERT INTO email_templates (subject, body, stage, tenantId) VALUES (?, ?, ?, ?)');
+  await db.execute('DELETE FROM email_templates WHERE "tenantId" = $1', [tenantId]);
   for (const t of templates) {
-    insert.run(t.subject, t.body, t.stage || 1, tenantId);
+    const tplId = `tpl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    await db.execute('INSERT INTO email_templates (id, subject, body, stage, "tenantId") VALUES ($1, $2, $3, $4, $5)', [tplId, t.subject, t.body, t.stage || 1, tenantId]);
   }
   res.json({ success: true });
 });
@@ -3144,9 +3061,9 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
   (async () => {
     try {
       const { default: nodemailer } = await import('nodemailer');
-      const leads = emailDb.prepare(`SELECT * FROM email_leads WHERE tenantId = ? AND status IN ('pending','sent')`).all(tenantId) as any[];
-      const accounts = emailDb.prepare(`SELECT * FROM email_accounts WHERE tenantId = ? AND status = 'active'`).all(tenantId) as any[];
-      const templates = emailDb.prepare(`SELECT * FROM email_templates WHERE (tenantId = ? OR systemTemplate = 1) ORDER BY stage ASC, id ASC`).all(tenantId) as any[];
+      const leads = await db.queryAll(`SELECT * FROM email_leads WHERE "tenantId" = $1 AND status IN ('pending','sent')`, [tenantId]) as any[];
+      const accounts = await db.queryAll(`SELECT * FROM email_accounts WHERE "tenantId" = $1 AND status = 'active'`, [tenantId]) as any[];
+      const templates = await db.queryAll(`SELECT * FROM email_templates WHERE ("tenantId" = $1 OR "systemTemplate" = 1) ORDER BY stage ASC, id ASC`, [tenantId]) as any[];
 
       emailLog(`=== Campaign Started [Tenant: ${tenantId}]: ${leads.length} eligible leads, ${accounts.length} accounts, ${templates.length} templates ===`);
 
@@ -3168,9 +3085,6 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
 
       let leadIdx = 0;
       let tplIdx = 0;
-
-      const updateLead = emailDb.prepare(`UPDATE email_leads SET status=?, stage=?, lastSentAt=? WHERE id=? AND tenantId=?`);
-      const disableAcc = emailDb.prepare(`UPDATE email_accounts SET status='disabled' WHERE id=? AND tenantId=?`);
 
       for (const acc of accounts) {
         if (leadIdx >= eligible.length || emailerJob.stop) break;
@@ -3202,7 +3116,7 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
             });
             const newStage = Math.min(lead.stage + 1, 3);
             const newStatus = newStage >= 3 ? 'completed' : 'sent';
-            updateLead.run(newStatus, newStage, new Date().toISOString(), lead.id, tenantId);
+            await db.execute('UPDATE email_leads SET status = $1, stage = $2, "lastSentAt" = $3 WHERE id = $4 AND "tenantId" = $5', [newStatus, newStage, new Date().toISOString(), lead.id, tenantId]);
             emailLog(`✅ Sent to ${lead.email} (Stage ${lead.stage})`);
             sent++;
             const delay = 30000 + Math.random() * 30000;
@@ -3210,7 +3124,7 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
           } catch (err: unknown) {
             emailLog(`❌ Failed: ${lead.email} — ${(err as Error).message}`);
             if ((err as Error).message?.includes('Authentication') || (err as Error).message?.includes('Username and Password')) {
-              disableAcc.run(acc.id, tenantId);
+              await db.execute('UPDATE email_accounts SET status = \'disabled\' WHERE id = $1 AND "tenantId" = $2', [acc.id, tenantId]);
               emailLog(`⚠️ Disabled account ${acc.email} (auth failure)`);
               break;
             }

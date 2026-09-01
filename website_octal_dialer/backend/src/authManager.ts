@@ -191,10 +191,10 @@ export function authenticateGoogleSignIn(profile: { googleId: string; email: str
     }
   }
 
-  // If no account exists, STRICTLY reject without creating an account
+// If no account exists, STRICTLY reject without creating an account
   if (!user) {
-    const err: any = new Error('No Octal Dialer account exists with this Google account. Please sign up first.');
-    err.code = 'GOOGLE_ACCOUNT_NOT_FOUND';
+    const err: any = new Error('No Octal Dialer account was found for this Google account. Please sign up first.');
+    err.code = 'ACCOUNT_NOT_FOUND';
     err.email = email;
     throw err;
   }
@@ -223,7 +223,7 @@ export function authenticateGoogleSignIn(profile: { googleId: string; email: str
 
 /**
  * Google Sign Up: Creates a NEW Octal Dialer account if one does not already exist.
- * INVARIANT: If account already exists, rejects with GOOGLE_ACCOUNT_ALREADY_EXISTS.
+ * INVARIANT: If account already exists, rejects with ACCOUNT_EXISTS.
  */
 export function registerGoogleSignUp(profile: { googleId: string; email: string; name?: string; picture?: string }): { token: string; user: AuthUser; isNewUser: boolean } {
   const email = profile.email.toLowerCase().trim();
@@ -234,7 +234,7 @@ export function registerGoogleSignUp(profile: { googleId: string; email: string;
   let existing = db.prepare(`SELECT * FROM users WHERE googleId = ? OR email = ? OR username = ?`).get(googleId, email, email) as any;
   if (existing) {
     const err: any = new Error('An Octal Dialer account already exists with this Google account. Please sign in instead.');
-    err.code = 'GOOGLE_ACCOUNT_ALREADY_EXISTS';
+    err.code = 'ACCOUNT_EXISTS';
     err.email = email;
     throw err;
   }
@@ -390,16 +390,13 @@ export function completeGoogleProfileSetup(userId: string, params: { username?: 
   };
 }
 
-/** Legacy / Internal helper */
+/**
+ * findOrCreateGoogleUser
+ * @deprecated Use handleGoogleAuthWithIntent(profile, intent) instead.
+ * Fallback strictly defaults to signin mode without auto-creation.
+ */
 export function findOrCreateGoogleUser(profile: { googleId: string; email: string; name?: string; picture?: string }): { token: string; user: AuthUser; isNewUser: boolean } {
-  try {
-    return authenticateGoogleSignIn(profile);
-  } catch (err: any) {
-    if (err.code === 'GOOGLE_ACCOUNT_NOT_FOUND') {
-      return registerGoogleSignUp(profile);
-    }
-    throw err;
-  }
+  return authenticateGoogleSignIn(profile);
 }
 
 // ─── Email Verification & OTP Signup (Phase 15) ──────────────────────────────
@@ -1152,7 +1149,7 @@ export function signupTenant(input: SignupInput): SignupResult {
       username: username,
       email: email || null,
       passwordHash: hash,
-      role: 'user',
+      role: 'admin',
       tenantId: tenantId,
       googleId: null,
       authProvider: 'local',

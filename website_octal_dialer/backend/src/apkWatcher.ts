@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { Server as SocketIOServer } from 'socket.io';
-import { Database } from 'better-sqlite3';
 
 export interface ApkSyncResult {
   freshestPath: string;
@@ -19,7 +18,7 @@ export class ApkWatcher {
   private lastProcessedMtime = 0;
   private isProcessing = false;
   private io: SocketIOServer | null = null;
-  private db: Database | null = null;
+  private db: any = null;
   private currentVersion = '1.4.0';
   private currentBuildNumber = 4;
 
@@ -45,18 +44,18 @@ export class ApkWatcher {
     return ApkWatcher.instance;
   }
 
-  public init(io: SocketIOServer, db: Database): void {
+  public init(io: SocketIOServer, db: any): void {
     this.io = io;
     this.db = db;
 
     // Initial sync scan on startup
-    this.syncFreshestApk();
+    this.syncFreshestApk().catch(err => console.warn('[APK Watcher] Initial sync error:', err));
 
     // Start watching build directories
     this.startWatching();
   }
 
-  public syncFreshestApk(): ApkSyncResult | null {
+  public async syncFreshestApk(): Promise<ApkSyncResult | null> {
     if (this.isProcessing) return null;
     this.isProcessing = true;
 
@@ -128,23 +127,23 @@ export class ApkWatcher {
         }
       }
 
-      // Record in SQLite OTA table
+      // Record in PostgreSQL OTA table
       if (this.db) {
         try {
-          this.db.prepare(`
-            INSERT INTO ota_versions (id, version, buildNumber, apkHash, signature, releaseNotes, isActive)
-            VALUES (@id, @version, @buildNumber, @hash, 'OCTAL_KEY_SIG_V1', 'Automatic production build sync.', 1)
-            ON CONFLICT(version) DO UPDATE SET
-              apkHash = @hash,
-              uploadedAt = datetime('now')
-          `).run({
-            id: `ota_v${this.currentVersion}`,
-            version: this.currentVersion,
-            buildNumber: this.currentBuildNumber,
-            hash: sha256
-          });
+          await this.db.execute(`
+            INSERT INTO ota_versions (id, version, "buildNumber", "apkHash", signature, "releaseNotes", "isActive")
+            VALUES ($1, $2, $3, $4, 'OCTAL_KEY_SIG_V1', 'Automatic production build sync.', 1)
+            ON CONFLICT (version) DO UPDATE SET
+              "apkHash" = excluded."apkHash",
+              "uploadedAt" = now()
+          `, [
+            `ota_v${this.currentVersion}`,
+            this.currentVersion,
+            this.currentBuildNumber,
+            sha256
+          ]);
         } catch (dbErr) {
-          console.warn('[APK Watcher] SQLite update notice:', dbErr);
+          console.warn('[APK Watcher] OTA database update notice:', dbErr);
         }
       }
 

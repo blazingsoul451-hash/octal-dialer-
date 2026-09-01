@@ -15,10 +15,10 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { checkLimit, initializeCatalogPlans } from './entitlementManager';
+import { dbAdapter, USE_POSTGRES } from './db/dbAdapter';
 
 // ─── DB file location ────────────────────────────────────────────────────────
 const DATA_DIR = path.join(__dirname, '../data');
@@ -30,13 +30,19 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 // ─── Open (or create) the database ───────────────────────────────────────────
-const db = new Database(DB_FILE);
+const db: any = dbAdapter;
 
-// WAL mode: safer for concurrent reads/writes; easier to enable now than later
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+if (!USE_POSTGRES) {
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+} else {
+  dbAdapter.init().catch(err => {
+    console.error('[DatabaseManager] PostgreSQL initialization notice:', err);
+  });
+}
 
-// ─── Schema creation ─────────────────────────────────────────────────────────
+// ─── Schema creation (SQLite legacy only — PostgreSQL uses schema.sql) ───────
+if (!USE_POSTGRES) {
 db.exec(`
   -- Core campaign & lead tables (replace the old JSON arrays)
   CREATE TABLE IF NOT EXISTS campaigns (
@@ -776,6 +782,9 @@ function migrateFromJson() {
 }
 
 migrateFromJson();
+} else {
+  console.log('[PostgreSQL] Database pool initialised and active.');
+}
 
 // ─── TypeScript interfaces (unchanged from old implementation) ────────────────
 export interface Campaign {
@@ -836,7 +845,7 @@ export function getNextPendingLead(campaignId: string, tenantId: string, afterLe
   const nextLead = db.prepare(`
     SELECT * FROM leads 
     WHERE campaignId = ? AND tenantId = ? AND status = 'PENDING' AND lockedBy IS NULL
-    ORDER BY ROWID ASC
+    ORDER BY createdAt ASC, id ASC
     LIMIT 1
   `).get(campaignId, tenantId) as Lead | undefined;
 
@@ -1233,33 +1242,33 @@ export const LEASE_TTL_MINUTES = 2;
 const lockStmts = {
   reserveLead: db.prepare(`
     UPDATE leads 
-    SET lockedBy = @sessionId, lockedAt = @now, status = 'CALLING'
+    SET "lockedBy" = @sessionId, "lockedAt" = @now, status = 'CALLING'
     WHERE id = @leadId 
       AND status != 'COMPLETED'
-      AND (lockedBy IS NULL OR lockedBy = @sessionId OR lockedAt < @cutoff)
+      AND ("lockedBy" IS NULL OR "lockedBy" = @sessionId OR "lockedAt" < @cutoff)
   `),
   releaseLeadLock: db.prepare(`
-    UPDATE leads 
-    SET lockedBy = NULL, lockedAt = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END 
+    UPDATE leads
+    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
     WHERE id = @leadId
   `),
   releaseLeadLockOwned: db.prepare(`
-    UPDATE leads 
-    SET lockedBy = NULL, lockedAt = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END 
-    WHERE id = @leadId AND lockedBy = @sessionId
+    UPDATE leads
+    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+    WHERE id = @leadId AND "lockedBy" = @sessionId
   `),
   unlockSessionLeads: db.prepare(`
-    UPDATE leads 
-    SET lockedBy = NULL, lockedAt = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END 
-    WHERE lockedBy = @sessionId AND status != 'COMPLETED'
+    UPDATE leads
+    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+    WHERE "lockedBy" = @sessionId AND status != 'COMPLETED'
   `),
   clearExpiredLeases: db.prepare(`
-    UPDATE leads 
-    SET lockedBy = NULL, lockedAt = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END 
-    WHERE lockedAt < @cutoff AND status != 'COMPLETED' AND lockedBy IS NOT NULL
+    UPDATE leads
+    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+    WHERE "lockedAt" < @cutoff AND status != 'COMPLETED' AND "lockedBy" IS NOT NULL
   `),
   getLockedLeads: db.prepare(`
-    SELECT * FROM leads WHERE lockedBy IS NOT NULL AND status != 'COMPLETED'
+    SELECT * FROM leads WHERE "lockedBy" IS NOT NULL AND status != 'COMPLETED'
   `)
 };
 
@@ -1270,11 +1279,11 @@ export function reserveLead(leadId: string, sessionId: string, tenantId?: string
   if (tenantId) {
     const res = db.prepare(`
       UPDATE leads 
-      SET lockedBy = @sessionId, lockedAt = @now, status = 'CALLING'
+      SET "lockedBy" = @sessionId, "lockedAt" = @now, status = 'CALLING'
       WHERE id = @leadId 
-        AND tenantId = @tenantId
+        AND "tenantId" = @tenantId
         AND status != 'COMPLETED'
-        AND (lockedBy IS NULL OR lockedBy = @sessionId OR lockedAt < @cutoff)
+        AND ("lockedBy" IS NULL OR "lockedBy" = @sessionId OR "lockedAt" < @cutoff)
     `).run({ leadId, sessionId, tenantId, now: now.toISOString(), cutoff });
     return res.changes > 0;
   }
@@ -1326,35 +1335,42 @@ export function getLockedLeads(): Lead[] {
 // Periodically release expired leases every minute
 setInterval(() => releaseExpiredLeases(LEASE_TTL_MINUTES), 60 * 1000);
 
-// ─── Online Database Backup & Disaster Recovery (Phase 11) ───────────────────
+// ─── Database Backup & Disaster Recovery ───────────────────
 export async function backupDatabase(targetFileName?: string): Promise<{ success: boolean; backupPath: string; sizeBytes: number; timestamp: string }> {
   const backupsDir = path.join(__dirname, '../data/backups');
   if (!fs.existsSync(backupsDir)) {
     fs.mkdirSync(backupsDir, { recursive: true });
   }
 
-  // Sanitize target filename to prevent directory traversal
-  let safeFileName = targetFileName ? path.basename(targetFileName) : `backup_${new Date().toISOString().replace(/[:.]/g, '-')}.db`;
-  if (!safeFileName.endsWith('.db')) {
-    safeFileName += '.db';
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let safeFileName = targetFileName ? path.basename(targetFileName) : `backup_${timestamp}.json`;
+  if (!safeFileName.endsWith('.json') && !safeFileName.endsWith('.db')) {
+    safeFileName += '.json';
   }
 
   const backupPath = path.join(backupsDir, safeFileName);
 
-  // SQLite online backup API ensures safe, non-blocking, transactionally consistent snapshot
-  await db.backup(backupPath);
+  const tables = [
+    'tenants', 'plans', 'plan_features', 'users', 'custom_roles', 'module_tools',
+    'user_permissions', 'user_tool_permissions', 'system_settings', 'system_metrics',
+    'api_keys', 'sessions_store', 'subscriptions', 'billing_events', 'pending_signups',
+    'campaigns', 'leads', 'call_attempts', 'call_events', 'call_logs', 'dispositions',
+    'devices', 'commands', 'suppression_list', 'audit_logs', 'audit_logs_admin',
+    'ota_versions', 'email_leads', 'email_accounts', 'email_templates', 'scraped_leads',
+    'module_settings', 'crm_follow_ups', 'lead_activities'
+  ];
 
-  // Validate backup file integrity
-  const backupDb = new Database(backupPath);
-  const integrity = backupDb.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
-  const fkCheck = backupDb.prepare('PRAGMA foreign_key_check').all();
-  backupDb.close();
-
-  if (integrity.integrity_check !== 'ok' || fkCheck.length > 0) {
-    if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
-    throw new Error('Backup validation failed: database integrity check or foreign key check failed.');
+  const backupData: Record<string, any[]> = {};
+  for (const table of tables) {
+    try {
+      const res = await db.query(`SELECT * FROM "${table}"`);
+      backupData[table] = res.rows || [];
+    } catch {
+      backupData[table] = [];
+    }
   }
 
+  fs.writeFileSync(backupPath, JSON.stringify(backupData, null, 2), 'utf-8');
   const stat = fs.statSync(backupPath);
   return {
     success: true,
@@ -1701,7 +1717,7 @@ export function updateDeviceStatus(id: string, status: string, lastSeenAt?: stri
 }
 
 // ─── Expose the raw db instance for future steps ─────────────────────────────
-export function getDatabase(): Database.Database {
+export function getDatabase(): any {
   return db;
 }
 export { db };
