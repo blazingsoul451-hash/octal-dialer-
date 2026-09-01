@@ -53,7 +53,7 @@ const DEFAULT_LIMITS: PlanLimits = {
 /**
  * Initialize default catalog plans and plan features if not already seeded
  */
-export function initializeCatalogPlans(): void {
+export async function initializeCatalogPlans(): Promise<void> {
   const db = getDatabase();
 
   const standardPlans = [
@@ -131,50 +131,41 @@ export function initializeCatalogPlans(): void {
     }
   ];
 
-  const insertPlan = db.prepare(`
-    INSERT OR IGNORE INTO plans (id, name, priceMonthly, priceYearly, status, createdAt, updatedAt)
-    VALUES (@id, @name, @priceMonthly, @priceYearly, @status, datetime('now'), datetime('now'))
-  `);
-
-  const insertFeature = db.prepare(`
-    INSERT OR REPLACE INTO plan_features (planId, featureKey, value)
-    VALUES (?, ?, ?)
-  `);
-
-  const seedTx = db.transaction(() => {
+  await db.withTransaction(async () => {
     for (const p of standardPlans) {
-      insertPlan.run({
-        id: p.id,
-        name: p.name,
-        priceMonthly: p.priceMonthly,
-        priceYearly: p.priceYearly,
-        status: p.status
-      });
+      await db.execute(`
+        INSERT INTO plans (id, name, "priceMonthly", "priceYearly", status, "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, $4, $5, now(), now())
+        ON CONFLICT ("id") DO NOTHING
+      `, [p.id, p.name, p.priceMonthly, p.priceYearly, p.status]);
 
-      // Seed limits as plan_features
       for (const [limitKey, val] of Object.entries(p.limits)) {
-        insertFeature.run(p.id, limitKey, String(val));
+        await db.execute(`
+          INSERT INTO plan_features ("planId", "featureKey", value)
+          VALUES ($1, $2, $3)
+          ON CONFLICT ("planId", "featureKey") DO UPDATE SET value = EXCLUDED.value
+        `, [p.id, limitKey, String(val)]);
       }
 
-      // Seed boolean features
       for (const [featKey, val] of Object.entries(p.features)) {
-        insertFeature.run(p.id, featKey, val ? 'true' : 'false');
+        await db.execute(`
+          INSERT INTO plan_features ("planId", "featureKey", value)
+          VALUES ($1, $2, $3)
+          ON CONFLICT ("planId", "featureKey") DO UPDATE SET value = EXCLUDED.value
+        `, [p.id, featKey, val ? 'true' : 'false']);
       }
     }
   });
-
-  seedTx();
 }
 
 /**
  * Resolves current subscription and full entitlement matrix for a tenant
  */
-export function getTenantEntitlements(tenantId: string): TenantEntitlements {
+export async function getTenantEntitlements(tenantId: string): Promise<TenantEntitlements> {
   if (!tenantId) {
     return createEmptyEntitlements('none');
   }
 
-  // Root platform admin tenant is always fully entitled
   if (tenantId === 'tenant_default') {
     return {
       isValid: true,
@@ -206,19 +197,17 @@ export function getTenantEntitlements(tenantId: string): TenantEntitlements {
 
   const db = getDatabase();
 
-  // Find latest subscription for tenant
-  const sub = db.prepare(`
-    SELECT s.id, s.tenantId, s.planId, s.status, s.currentPeriodStart, s.currentPeriodEnd,
-           p.name as planName, p.status as planStatus
+  const sub = await db.queryOne<any>(`
+    SELECT s.id, s."tenantId", s."planId", s.status, s."currentPeriodStart", s."currentPeriodEnd",
+           p.name as "planName", p.status as "planStatus"
     FROM subscriptions s
-    JOIN plans p ON p.id = s.planId
-    WHERE s.tenantId = ?
-    ORDER BY s.createdAt DESC
+    JOIN plans p ON p.id = s."planId"
+    WHERE s."tenantId" = $1
+    ORDER BY s."createdAt" DESC
     LIMIT 1
-  `).get(tenantId) as any;
+  `, [tenantId]);
 
   if (!sub) {
-    // Default active trial for new tenants without explicit subscription record
     return {
       isValid: true,
       subscriptionId: null,
@@ -241,7 +230,6 @@ export function getTenantEntitlements(tenantId: string): TenantEntitlements {
     };
   }
 
-  // Check expiration if periodEnd is specified
   let effectiveStatus = sub.status as TenantEntitlements['status'];
   if (sub.currentPeriodEnd) {
     const periodEnd = new Date(sub.currentPeriodEnd);
@@ -252,7 +240,6 @@ export function getTenantEntitlements(tenantId: string): TenantEntitlements {
 
   const isValid = (effectiveStatus === 'active' || effectiveStatus === 'trialing') && sub.planStatus === 'active';
 
-  // If subscription is not valid (e.g. suspended/expired/cancelled), return blocked entitlements
   if (!isValid) {
     return {
       isValid: false,
@@ -267,10 +254,9 @@ export function getTenantEntitlements(tenantId: string): TenantEntitlements {
     };
   }
 
-  // Fetch plan_features for the active plan
-  const featureRows = db.prepare(`
-    SELECT featureKey, value FROM plan_features WHERE planId = ?
-  `).all(sub.planId) as Array<{ featureKey: string; value: string }>;
+  const featureRows = await db.queryAll<{ featureKey: string; value: string }>(`
+    SELECT "featureKey", value FROM plan_features WHERE "planId" = $1
+  `, [sub.planId]);
 
   const features: Record<string, boolean> = {};
   const limits: PlanLimits = { ...DEFAULT_LIMITS };
@@ -319,37 +305,37 @@ function createEmptyEntitlements(status: TenantEntitlements['status']): TenantEn
 /**
  * Derives current real-time usage for a tenant strictly from database
  */
-export function getTenantUsage(tenantId: string): TenantUsage {
+export async function getTenantUsage(tenantId: string): Promise<TenantUsage> {
   if (!tenantId) {
     return { users: 0, devices: 0, campaigns: 0, apiKeys: 0, leads: 0 };
   }
 
   const db = getDatabase();
 
-  const userCount = db.prepare(`SELECT COUNT(*) as c FROM users WHERE tenantId = ?`).get(tenantId) as { c: number };
-  const deviceCount = db.prepare(`SELECT COUNT(*) as c FROM devices WHERE tenantId = ? AND isRevoked = 0`).get(tenantId) as { c: number };
-  const campaignCount = db.prepare(`SELECT COUNT(*) as c FROM campaigns WHERE tenantId = ?`).get(tenantId) as { c: number };
-  const apiKeyCount = db.prepare(`SELECT COUNT(*) as c FROM api_keys WHERE tenantId = ? AND revokedAt IS NULL`).get(tenantId) as { c: number };
-  const leadCount = db.prepare(`SELECT COUNT(*) as c FROM scraped_leads WHERE tenantId = ?`).get(tenantId) as { c: number };
+  const userCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1`, [tenantId]);
+  const deviceCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM devices WHERE "tenantId" = $1 AND "isRevoked" = 0`, [tenantId]);
+  const campaignCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM campaigns WHERE "tenantId" = $1`, [tenantId]);
+  const apiKeyCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM api_keys WHERE "tenantId" = $1 AND "revokedAt" IS NULL`, [tenantId]);
+  const leadCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM scraped_leads WHERE "tenantId" = $1`, [tenantId]);
 
   return {
-    users: userCount?.c || 0,
-    devices: deviceCount?.c || 0,
-    campaigns: campaignCount?.c || 0,
-    apiKeys: apiKeyCount?.c || 0,
-    leads: leadCount?.c || 0
+    users: Number(userCount?.c || 0),
+    devices: Number(deviceCount?.c || 0),
+    campaigns: Number(campaignCount?.c || 0),
+    apiKeys: Number(apiKeyCount?.c || 0),
+    leads: Number(leadCount?.c || 0)
   };
 }
 
 /**
  * Checks if creating additional resources of a specific type is permitted under the tenant plan
  */
-export function checkLimit(
+export async function checkLimit(
   tenantId: string,
   limitKey: LimitKey,
   increment: number = 1
-): { allowed: boolean; current: number; limit: number; error?: string } {
-  const entitlements = getTenantEntitlements(tenantId);
+): Promise<{ allowed: boolean; current: number; limit: number; error?: string }> {
+  const entitlements = await getTenantEntitlements(tenantId);
 
   if (!entitlements.isValid) {
     return {
@@ -360,7 +346,7 @@ export function checkLimit(
     };
   }
 
-  const usage = getTenantUsage(tenantId);
+  const usage = await getTenantUsage(tenantId);
 
   let current = 0;
   switch (limitKey) {
@@ -398,8 +384,8 @@ export function checkLimit(
 /**
  * Checks if a specific feature is enabled for a tenant
  */
-export function isFeatureEnabled(tenantId: string, featureKey: string): boolean {
-  const entitlements = getTenantEntitlements(tenantId);
+export async function isFeatureEnabled(tenantId: string, featureKey: string): Promise<boolean> {
+  const entitlements = await getTenantEntitlements(tenantId);
   if (!entitlements.isValid) return false;
   return !!entitlements.features[featureKey];
 }
@@ -407,20 +393,19 @@ export function isFeatureEnabled(tenantId: string, featureKey: string): boolean 
 /**
  * Express Middleware: Requires an active, valid subscription for the tenant
  */
-export function requireActiveSubscription(req: Request, res: Response, next: NextFunction): void {
+export async function requireActiveSubscription(req: Request, res: Response, next: NextFunction): Promise<void> {
   const user = (req as any).user;
   if (!user || !user.tenantId) {
     res.status(401).json({ error: 'Authentication required with valid tenant context.' });
     return;
   }
 
-  // Platform admin operating on platform routes bypasses tenant subscription requirement
   if (user.role === 'platform_admin' && req.path.startsWith('/admin/tenants')) {
     next();
     return;
   }
 
-  const entitlements = getTenantEntitlements(user.tenantId);
+  const entitlements = await getTenantEntitlements(user.tenantId);
   if (!entitlements.isValid) {
     res.status(402).json({
       error: `Active subscription required. Current status: ${entitlements.status}.`,
@@ -437,20 +422,19 @@ export function requireActiveSubscription(req: Request, res: Response, next: Nex
  * Express Middleware: Requires a specific plan feature to be enabled for the tenant
  */
 export function requireFeature(featureKey: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const user = (req as any).user;
     if (!user || !user.tenantId) {
       res.status(401).json({ error: 'Authentication required with valid tenant context.' });
       return;
     }
 
-    // Platform admin operating in tenant context inherits access for maintenance
     if (user.role === 'platform_admin') {
       next();
       return;
     }
 
-    const entitlements = getTenantEntitlements(user.tenantId);
+    const entitlements = await getTenantEntitlements(user.tenantId);
     if (!entitlements.isValid) {
       res.status(402).json({
         error: `Active subscription required. Current status: ${entitlements.status}.`,

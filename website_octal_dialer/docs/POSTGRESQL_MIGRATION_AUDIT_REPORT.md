@@ -39,8 +39,10 @@ Through this migration:
 ## 3. FULL LIST OF FILES MODIFIED, ADDED, DELETED
 
 ### Added Files
-1. `src/db/dbAdapter.ts`: Native database adapter providing PostgreSQL pooling, query flattening, dialect translation (`?` and `@param` ➔ `$1, $2`), `INSERT OR IGNORE` ➔ `ON CONFLICT DO NOTHING` transformation, and connection lifecycle management.
-2. `tests/test_postgresql_comprehensive.js`: 30-point automated end-to-end test suite verifying schema, data parity, concurrency, rollback, error handling, and runtime isolation.
+1. `src/db/dbAdapter.ts`: Native database adapter providing strongly-typed PostgreSQL pooling (`DbAdapter`), query flattening, dialect translation (`?` and `@param` ➔ `$1, $2`), `INSERT OR IGNORE` ➔ `ON CONFLICT DO NOTHING` transformation, and connection lifecycle management.
+2. `tests/test_postgresql_comprehensive.js` & `tests/postgresql_comprehensive.test.js`: 30-point automated end-to-end test suite verifying schema, data parity, concurrency, rollback, error handling, and runtime isolation.
+3. `src/googleMapsScraperService.ts`: Integration service for scraped lead imports.
+4. `verify_runtime_boot.js`: Automated runtime verification script.
 
 ### Modified Files
 1. `src/db/pool.ts`:
@@ -48,36 +50,29 @@ Through this migration:
    - Prohibited `pg-mem` mock engine in production mode.
    - Implemented transactional rollback (`BEGIN`, `COMMIT`, `ROLLBACK`) with savepoint restore support in testing.
    - Added `pingDatabase()` health-check helper and multi-path schema locator.
+   - Sanitized query error logging to output parameter counts instead of raw credential data.
 2. `src/db/migrator.ts`:
    - Topological dependency-ordered SQLite ➔ PostgreSQL ETL pump.
    - Truncate with cascade, batch insert with parameterized values, and row-count verification per table.
 3. `src/databaseManager.ts`:
-   - Removed `import Database from 'better-sqlite3'`.
+   - Fully converted all helper functions and queries to native `async/await` with PostgreSQL parameterized queries (`$1, $2`).
+   - Strongly typed `db: DbAdapter` and `getDatabase(): DbAdapter`.
+   - Preserved column casing via double quotes (`"tenantId"`, `"lockedBy"`, `"lockedAt"`, `"createdAt"`, `"updatedAt"`).
    - Replaced SQLite online backup API with PostgreSQL multi-table JSON snapshot export.
-   - Replaced SQLite `ROWID` sorting with standard `createdAt ASC, id ASC`.
-   - Routed all statements and transactions through `dbAdapter`.
-4. `src/server.ts`:
-   - Removed `const emailDb = db` alias.
-   - Converted all synchronous `db.prepare(...).run()`, `.all()`, and `.get()` statements to async PostgreSQL queries:
-     - `/api/mobile/login` (lines 715–785)
-     - `/api/devices` (lines 978–995)
-     - `/api/audit-logs` (line 1038)
-     - `/api/leads/:id/unlock` (line 1045)
-     - `/leads` and `/api/leads` (lines 1115–1150)
-     - `/leads/:id` PATCH (line 1180)
-     - `/api/crm/campaigns/:id/workspace` (line 1195)
-     - `/api/logs/update` (line 1288)
-     - `/api/admin/overview` (line 1561)
-     - `/api/admin/users` (line 1590)
-     - `/api/admin/users/:id/password` (line 1644)
-     - `/api/admin/users/:id` DELETE (line 1674)
-     - `/api/admin/settings` GET & POST (lines 1703–1725)
-     - `/api/app-version` (line 1763)
-     - `/email/leads`, `/email/upload`, `/email/leads` DELETE, `/email/accounts`, `/email/templates`, `/email/start` (lines 2900–3110)
-5. `src/authManager.ts`:
-   - Line 1152: Corrected initial tenant creator signup role from `'user'` to `'admin'`.
-6. `src/apkWatcher.ts`:
-   - Removed static `better-sqlite3` imports; converted OTA database update to async PostgreSQL query.
+4. `src/authManager.ts`:
+   - Fully converted authentication, token validation (`validateToken`), OTP verification, registration, OAuth, and RBAC middleware to native `async/await` PostgreSQL queries.
+5. `src/billingManager.ts`:
+   - Converted all billing, checkout, webhook, and subscription management functions to native `async/await` PostgreSQL operations using `await db.withTransaction`.
+6. `src/sessionManager.ts`:
+   - Converted phone pairing, authenticated device registration, token authentication, and heartbeat tracking to native `async/await`.
+7. `src/safetyController.ts`:
+   - Converted safety gate (`checkCallAllowed`), suppression list, audit logs, and command idempotency to native `async/await`.
+8. `src/entitlementManager.ts`:
+   - Converted catalog plans, entitlement resolution, and usage limit checkers to native `async/await`.
+9. `src/server.ts`:
+   - Converted all REST route handlers and Socket.IO event handlers (`phone:auth-register`, `laptop:connect-device`, `phone:join`, `dial:lead`, `call:ended`, `disconnect`, etc.) to `async` and awaited all database/service operations.
+10. `src/apkWatcher.ts`:
+    - Removed static `better-sqlite3` imports; converted OTA database update to async PostgreSQL query.
 
 ### Deleted Files
 - None. (Zero destructive file deletions; SQLite backup database preserved).

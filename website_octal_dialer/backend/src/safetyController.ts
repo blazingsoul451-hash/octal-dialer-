@@ -123,26 +123,6 @@ export function getCallsInLastHour(campaignId: string, tenantId: string): number
   return timestamps.filter(t => now - t < windowMs).length;
 }
 
-// ─── Prepared statements ──────────────────────────────────────────────────────
-const stmts = {
-  getCampaign:      db.prepare(`SELECT * FROM campaigns WHERE id = @id AND tenantId = @tenantId`),
-  getLead:          db.prepare(`SELECT * FROM leads WHERE id = @id AND tenantId = @tenantId`),
-  getLeadByPhone:   db.prepare(`SELECT * FROM leads WHERE phone = @phone AND tenantId = @tenantId LIMIT 1`),
-  isSuppressed:     db.prepare(`SELECT id FROM suppression_list WHERE phone = @phone AND (tenantId = @tenantId OR tenantId = '${GLOBAL_DNC_SCOPE}' OR tenantId = 'tenant_default') LIMIT 1`),
-  addSuppressed:    db.prepare(`INSERT OR IGNORE INTO suppression_list (id, phone, reason, source, tenantId, addedAt) VALUES (@id, @phone, @reason, @source, @tenantId, @addedAt)`),
-  removeSuppressed: db.prepare(`DELETE FROM suppression_list WHERE id = @id AND tenantId = @tenantId`),
-  listSuppressed:   db.prepare(`SELECT * FROM suppression_list WHERE tenantId = @tenantId ORDER BY addedAt DESC`),
-  logAudit:         db.prepare(`INSERT INTO audit_logs (id, action, entityType, entityId, performedBy, details, timestamp) VALUES (@id, @action, @entityType, @entityId, @performedBy, @details, @timestamp)`),
-  // Command ID idempotency
-  insertCommand:       db.prepare(`INSERT OR IGNORE INTO commands (id, leadId, sessionId, issuedAt, expiresAt) VALUES (@id, @leadId, @sessionId, @issuedAt, @expiresAt)`),
-  findActiveCommand:   db.prepare(`SELECT * FROM commands WHERE leadId = @leadId AND expiresAt > @now LIMIT 1`),
-  markCommandExpired:  db.prepare(`UPDATE commands SET expiresAt = @now WHERE id = @id`),
-  deleteExpiredCmds:   db.prepare(`DELETE FROM commands WHERE expiresAt <= @now`),
-  listActiveCommands:  db.prepare(`SELECT * FROM commands WHERE expiresAt > @now ORDER BY issuedAt DESC`),
-};
-
-// ─── Core gate function ───────────────────────────────────────────────────────
-
 export interface CallRequest {
   sessionId: string;
   leadId?: string;   // optional — if provided, lead-level checks run
@@ -151,7 +131,7 @@ export interface CallRequest {
   tenantId?: string;
 }
 
-export function checkCallAllowed(req: CallRequest): SafetyResult {
+export async function checkCallAllowed(req: CallRequest): Promise<SafetyResult> {
   const tenantId = req.tenantId;
   if (!tenantId) {
     return { allowed: false, reason: 'UNAUTHORIZED_TENANT', message: 'Missing tenant identity for dial request (fail-closed).' };
@@ -164,7 +144,7 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
 
   // ── Layer 1: Campaign checks ──────────────────────────────────────────────
   if (req.campaignId) {
-    const campaign = stmts.getCampaign.get({ id: req.campaignId, tenantId }) as any;
+    const campaign = await db.queryOne<any>(`SELECT * FROM campaigns WHERE id = $1 AND "tenantId" = $2`, [req.campaignId, tenantId]);
     if (!campaign) {
       return { allowed: false, reason: 'CAMPAIGN_NOT_FOUND', message: 'Campaign not found or not owned by your tenant.' };
     }
@@ -197,14 +177,18 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
   const normalizedPhone = normalizePhone(req.phone || '');
 
   if (normalizedPhone) {
-    const suppressed = stmts.isSuppressed.get({ phone: normalizedPhone, tenantId }) as any;
+    const suppressed = await db.queryOne<{ id: string }>(`
+      SELECT id FROM suppression_list 
+      WHERE phone = $1 AND ("tenantId" = $2 OR "tenantId" = '${GLOBAL_DNC_SCOPE}' OR "tenantId" = 'tenant_default') 
+      LIMIT 1
+    `, [normalizedPhone, tenantId]);
     if (suppressed) {
       return { allowed: false, reason: 'LEAD_SUPPRESSED', message: `Number ${req.phone} (${normalizedPhone}) is on the suppression list (DNC).` };
     }
   }
 
   if (req.leadId) {
-    const lead = stmts.getLead.get({ id: req.leadId, tenantId }) as any;
+    const lead = await db.queryOne<any>(`SELECT * FROM leads WHERE id = $1 AND "tenantId" = $2`, [req.leadId, tenantId]);
     if (!lead) {
       return { allowed: false, reason: 'LEAD_NOT_FOUND', message: 'Lead record not found in your tenant.' };
     }
@@ -220,11 +204,10 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
 
     // ── Layer 3.5: Command ID idempotency check ──────────────────────────────
     const now = new Date().toISOString();
-    const existingCmd = stmts.findActiveCommand.get({ leadId: req.leadId, now }) as any;
+    const existingCmd = await db.queryOne<any>(`SELECT * FROM commands WHERE "leadId" = $1 AND "expiresAt" > $2 LIMIT 1`, [req.leadId, now]);
     if (existingCmd) {
-      // If the command is from the same session (which is idle) or stale, expire it automatically
       if (existingCmd.sessionId === req.sessionId) {
-        stmts.markCommandExpired.run({ id: existingCmd.id, now });
+        await db.execute(`UPDATE commands SET "expiresAt" = $1 WHERE id = $2`, [now, existingCmd.id]);
         console.log(`[SafetyController] Stale command ${existingCmd.id} automatically expired for lead ${req.leadId}`);
       } else {
         return {
@@ -236,7 +219,7 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
     }
 
     // ── Layer 3.6: Lead Reservation & Lock Check (Only AFTER all checks succeed) ──
-    const reserved = reserveLead(req.leadId, req.sessionId, tenantId);
+    const reserved = await reserveLead(req.leadId, req.sessionId, tenantId);
     if (!reserved) {
       return {
         allowed: false,
@@ -251,29 +234,32 @@ export function checkCallAllowed(req: CallRequest): SafetyResult {
     recordCall(req.campaignId, tenantId);
   }
 
-  const commandId = issueCommandId(req.leadId || req.phone, req.sessionId);
+  const commandId = await issueCommandId(req.leadId || req.phone, req.sessionId);
 
   return { allowed: true, commandId };
 }
 
 // ─── Audit log helper ─────────────────────────────────────────────────────────
-export function writeAuditLog(
+export async function writeAuditLog(
   action: string,
   entityType: string,
   entityId: string,
   performedBy: string,
   details?: string
-): void {
+): Promise<void> {
   try {
-    stmts.logAudit.run({
-      id: 'audit_' + Math.random().toString(36).substring(2, 11),
+    await db.execute(`
+      INSERT INTO audit_logs (id, action, "entityType", "entityId", "performedBy", details, timestamp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `, [
+      'audit_' + Math.random().toString(36).substring(2, 11),
       action,
       entityType,
       entityId,
       performedBy,
-      details: details || null,
-      timestamp: new Date().toISOString()
-    });
+      details || null,
+      new Date().toISOString()
+    ]);
   } catch (err) {
     console.error('[AuditLog] Failed to write:', err);
   }
@@ -289,51 +275,59 @@ export interface SuppressionEntry {
   addedAt: string;
 }
 
-export function addToSuppressionList(phone: string, reason: string, source: string, addedBy: string, tenantId: string): boolean {
+export async function addToSuppressionList(phone: string, reason: string, source: string, addedBy: string, tenantId: string): Promise<boolean> {
   if (!tenantId) return false;
   const normalized = normalizePhone(phone);
   if (!normalized) return false;
   
-  const result = stmts.addSuppressed.run({
-    id: 'dnc_' + Math.random().toString(36).substring(2, 11),
-    phone: normalized,
-    reason: reason || 'Manual DNC',
-    source: source || 'dashboard',
+  const result = await db.execute(`
+    INSERT INTO suppression_list (id, phone, reason, source, "tenantId", "addedAt")
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT ("id") DO NOTHING
+  `, [
+    'dnc_' + Math.random().toString(36).substring(2, 11),
+    normalized,
+    reason || 'Manual DNC',
+    source || 'dashboard',
     tenantId,
-    addedAt: new Date().toISOString()
-  });
-  if (result.changes > 0) {
-    writeAuditLog('DNC_ADD', 'suppression_list', normalized, addedBy, `Reason: ${reason} (Tenant: ${tenantId})`);
+    new Date().toISOString()
+  ]);
+  if (result.rowCount > 0) {
+    await writeAuditLog('DNC_ADD', 'suppression_list', normalized, addedBy, `Reason: ${reason} (Tenant: ${tenantId})`);
     return true;
   }
   return false;
 }
 
-export function bulkAddToSuppressionList(
+export async function bulkAddToSuppressionList(
   entries: { phone: string; reason?: string }[],
   source: string,
   addedBy: string,
   tenantId: string
-): { added: number; skipped: number } {
+): Promise<{ added: number; skipped: number }> {
   if (!tenantId) return { added: 0, skipped: entries.length };
   let added = 0;
   let skipped = 0;
 
-  const insertTx = db.transaction(() => {
+  await db.withTransaction(async () => {
     for (const entry of entries) {
       const norm = normalizePhone(entry.phone);
       if (!norm) { skipped++; continue; }
       
-      const res = stmts.addSuppressed.run({
-        id: 'dnc_' + Math.random().toString(36).substring(2, 11),
-        phone: norm,
-        reason: entry.reason || 'Bulk DNC Import',
-        source: source || 'csv_import',
+      const res = await db.execute(`
+        INSERT INTO suppression_list (id, phone, reason, source, "tenantId", "addedAt")
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT ("id") DO NOTHING
+      `, [
+        'dnc_' + Math.random().toString(36).substring(2, 11),
+        norm,
+        entry.reason || 'Bulk DNC Import',
+        source || 'csv_import',
         tenantId,
-        addedAt: new Date().toISOString()
-      });
+        new Date().toISOString()
+      ]);
 
-      if (res.changes > 0) {
+      if (res.rowCount > 0) {
         added++;
       } else {
         skipped++;
@@ -341,68 +335,71 @@ export function bulkAddToSuppressionList(
     }
   });
 
-  insertTx();
-  writeAuditLog('DNC_BULK_ADD', 'suppression_list', `${added}_added`, addedBy, `Imported ${added} entries, ${skipped} skipped (Tenant: ${tenantId})`);
+  await writeAuditLog('DNC_BULK_ADD', 'suppression_list', `${added}_added`, addedBy, `Imported ${added} entries, ${skipped} skipped (Tenant: ${tenantId})`);
   return { added, skipped };
 }
 
-export function isPhoneSuppressed(phone: string, tenantId: string): boolean {
-  if (!tenantId) return true; // fail-closed on missing tenant
+export async function isPhoneSuppressed(phone: string, tenantId: string): Promise<boolean> {
+  if (!tenantId) return true;
   const norm = normalizePhone(phone);
   if (!norm) return false;
-  const suppressed = stmts.isSuppressed.get({ phone: norm, tenantId }) as any;
+  const suppressed = await db.queryOne<{ id: string }>(`
+    SELECT id FROM suppression_list 
+    WHERE phone = $1 AND ("tenantId" = $2 OR "tenantId" = '${GLOBAL_DNC_SCOPE}' OR "tenantId" = 'tenant_default')
+    LIMIT 1
+  `, [norm, tenantId]);
   return !!suppressed;
 }
 
-export function removeFromSuppressionList(id: string, removedBy: string, tenantId: string): boolean {
+export async function removeFromSuppressionList(id: string, removedBy: string, tenantId: string): Promise<boolean> {
   if (!tenantId || !id) return false;
-  const result = stmts.removeSuppressed.run({ id, tenantId });
-  if (result.changes > 0) {
-    writeAuditLog('DNC_REMOVE', 'suppression_list', id, removedBy, `Tenant: ${tenantId}`);
+  const result = await db.execute(`DELETE FROM suppression_list WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+  if (result.rowCount > 0) {
+    await writeAuditLog('DNC_REMOVE', 'suppression_list', id, removedBy, `Tenant: ${tenantId}`);
     return true;
   }
   return false;
 }
 
-export function getSuppressionList(tenantId: string): SuppressionEntry[] {
+export async function getSuppressionList(tenantId: string): Promise<SuppressionEntry[]> {
   if (!tenantId) return [];
-  return stmts.listSuppressed.all({ tenantId }) as SuppressionEntry[];
+  return await db.queryAll<SuppressionEntry>(`SELECT * FROM suppression_list WHERE "tenantId" = $1 ORDER BY "addedAt" DESC`, [tenantId]);
 }
 
 // ─── Command ID & Idempotency Management ─────────────────────────────────────
 export const COMMAND_TTL_MINUTES = 5;
 
-export function issueCommandId(leadId: string, sessionId: string): string {
+export async function issueCommandId(leadId: string, sessionId: string): Promise<string> {
   const commandId = 'cmd_' + Math.random().toString(36).substring(2, 11);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + COMMAND_TTL_MINUTES * 60 * 1000).toISOString();
 
-  stmts.insertCommand.run({
-    id: commandId,
-    leadId,
-    sessionId,
-    issuedAt: now.toISOString(),
-    expiresAt
-  });
+  await db.execute(`
+    INSERT INTO commands (id, "leadId", "sessionId", "issuedAt", "expiresAt")
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT ("id") DO NOTHING
+  `, [commandId, leadId, sessionId, now.toISOString(), expiresAt]);
 
   return commandId;
 }
 
-export function expireCommand(commandId: string): void {
+export async function expireCommand(commandId: string): Promise<void> {
   const now = new Date().toISOString();
-  stmts.markCommandExpired.run({ id: commandId, now });
+  await db.execute(`UPDATE commands SET "expiresAt" = $1 WHERE id = $2`, [now, commandId]);
 }
 
-export function cleanupExpiredCommands(): void {
+export async function cleanupExpiredCommands(): Promise<void> {
   const now = new Date().toISOString();
-  stmts.deleteExpiredCmds.run({ now });
+  await db.execute(`DELETE FROM commands WHERE "expiresAt" <= $1`, [now]);
 }
 
-export function getActiveCommands(): any[] {
+export async function getActiveCommands(): Promise<any[]> {
   const now = new Date().toISOString();
-  return stmts.listActiveCommands.all({ now });
+  return await db.queryAll<any>(`SELECT * FROM commands WHERE "expiresAt" > $1 ORDER BY "issuedAt" DESC`, [now]);
 }
 
 // Run cleanup every 5 minutes
-setInterval(cleanupExpiredCommands, 5 * 60 * 1000);
+setInterval(() => {
+  cleanupExpiredCommands().catch(err => console.error('[SafetyController] cleanupExpiredCommands error:', err));
+}, 5 * 60 * 1000);
 

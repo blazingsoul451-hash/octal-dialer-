@@ -18,7 +18,7 @@
 import fs from 'fs';
 import path from 'path';
 import { checkLimit, initializeCatalogPlans } from './entitlementManager';
-import { dbAdapter, USE_POSTGRES } from './db/dbAdapter';
+import { dbAdapter, DbAdapter, USE_POSTGRES } from './db/dbAdapter';
 
 // ─── DB file location ────────────────────────────────────────────────────────
 const DATA_DIR = path.join(__dirname, '../data');
@@ -30,7 +30,7 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 // ─── Open (or create) the database ───────────────────────────────────────────
-const db: any = dbAdapter;
+const db: DbAdapter = dbAdapter;
 
 if (!USE_POSTGRES) {
   db.pragma('journal_mode = WAL');
@@ -822,39 +822,28 @@ interface LegacyCampaign { id: string; name: string; fileName: string; leadCount
 interface LegacyLead     { id: string; campaignId: string; name: string; phone: string; status: string; outcome?: string; duration?: number; }
 interface LegacyLog      { id: string; leadId: string; leadName: string; leadPhone: string; campaignName: string; outcome: string; duration: number; timestamp: string; }
 
-// ─── Prepared statements ──────────────────────────────────────────────────────
-const stmts = {
-  getCampaigns:    db.prepare(`SELECT * FROM campaigns WHERE tenantId = @tenantId ORDER BY createdAt DESC`),
-  getCampaignById: db.prepare(`SELECT * FROM campaigns WHERE id = @id AND tenantId = @tenantId`),
-  insertCampaign:  db.prepare(`INSERT INTO campaigns (id, name, fileName, leadCount, tenantId, createdAt) VALUES (@id, @name, @fileName, @leadCount, @tenantId, @createdAt)`),
-  getLeadsByCamp:  db.prepare(`SELECT * FROM leads WHERE campaignId = @campaignId AND tenantId = @tenantId AND status != 'ARCHIVED'`),
-  insertLead:      db.prepare(`INSERT OR IGNORE INTO leads (id, campaignId, name, phone, status, tenantId, createdAt) VALUES (@id, @campaignId, @name, @phone, @status, @tenantId, @createdAt)`),
-  getLead:         db.prepare(`SELECT * FROM leads WHERE id = @id AND tenantId = @tenantId`),
-  getLeadByIdOnly: db.prepare(`SELECT * FROM leads WHERE id = @id`),
-  updateLeadStatus:db.prepare(`UPDATE leads SET status = @status, outcome = COALESCE(@outcome, outcome), duration = COALESCE(@duration, duration) WHERE id = @id AND tenantId = @tenantId`),
-  getLogs:         db.prepare(`SELECT * FROM call_logs WHERE tenantId = @tenantId ORDER BY timestamp DESC`),
-  getLogByLeadId:  db.prepare(`SELECT * FROM call_logs WHERE leadId = @leadId AND tenantId = @tenantId LIMIT 1`),
-  insertLog:       db.prepare(`INSERT INTO call_logs (id, leadId, leadName, leadPhone, campaignName, outcome, duration, tenantId, timestamp) VALUES (@id, @leadId, @leadName, @leadPhone, @campaignName, @outcome, @duration, @tenantId, @timestamp)`),
-  updateLogOutcome:db.prepare(`UPDATE call_logs SET outcome = @outcome WHERE leadId = @leadId AND tenantId = @tenantId`),
-};
-
 // ─── Exported API (explicit tenantId required - fail closed) ─────────────
 
-export function getNextPendingLead(campaignId: string, tenantId: string, afterLeadId?: string): Lead | null {
+export async function getNextPendingLead(campaignId: string, tenantId: string, afterLeadId?: string): Promise<Lead | null> {
   if (!campaignId || !tenantId) return null;
-  const nextLead = db.prepare(`
+  const row = await db.queryOne<Lead>(`
     SELECT * FROM leads 
-    WHERE campaignId = ? AND tenantId = ? AND status = 'PENDING' AND lockedBy IS NULL
-    ORDER BY createdAt ASC, id ASC
+    WHERE "campaignId" = $1 AND "tenantId" = $2 AND status = 'PENDING' AND "lockedBy" IS NULL
+    ORDER BY "createdAt" ASC, id ASC
     LIMIT 1
-  `).get(campaignId, tenantId) as Lead | undefined;
+  `, [campaignId, tenantId]);
 
-  return nextLead || null;
+  return row || null;
 }
 
-export function getCampaigns(tenantId: string): Campaign[] {
+export async function getCampaigns(tenantId: string): Promise<Campaign[]> {
   if (!tenantId) return [];
-  return stmts.getCampaigns.all({ tenantId }) as Campaign[];
+  return db.queryAll<Campaign>(`SELECT * FROM campaigns WHERE "tenantId" = $1 ORDER BY "createdAt" DESC`, [tenantId]);
+}
+
+export async function getCampaignById(id: string, tenantId: string): Promise<Campaign | undefined> {
+  if (!id || !tenantId) return undefined;
+  return db.queryOne<Campaign>(`SELECT * FROM campaigns WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
 }
 
 export interface CampaignImportResult {
@@ -865,12 +854,12 @@ export interface CampaignImportResult {
   finalCount: number;
 }
 
-export function createCampaign(
+export async function createCampaign(
   name: string,
   fileName: string,
   rawLeads: { name: string; phone: string }[],
   tenantId: string
-): CampaignImportResult {
+): Promise<CampaignImportResult> {
   if (!tenantId) {
     throw new Error('Tenant ID is required to create a campaign (fail-closed).');
   }
@@ -879,11 +868,11 @@ export function createCampaign(
   const now = new Date().toISOString();
 
   // Get current DNC list numbers for fast lookup within this tenant
-  const dncRows = db.prepare(`SELECT phone FROM suppression_list WHERE tenantId = ?`).all(tId) as { phone: string }[];
+  const dncRows = await db.queryAll<{ phone: string }>(`SELECT phone FROM suppression_list WHERE "tenantId" = $1`, [tId]);
   const dncSet = new Set<string>(dncRows.map(r => r.phone));
 
   // Get existing lead phones across all campaigns in this tenant to avoid cross-campaign duplicates
-  const existingRows = db.prepare(`SELECT phone FROM leads WHERE tenantId = ?`).all(tId) as { phone: string }[];
+  const existingRows = await db.queryAll<{ phone: string }>(`SELECT phone FROM leads WHERE "tenantId" = $1`, [tId]);
   const existingSet = new Set<string>(existingRows.map(r => r.phone));
 
   let dedupedCount = 0;
@@ -921,41 +910,39 @@ export function createCampaign(
     createdAt: now
   };
 
-  const insertLeads = db.transaction(() => {
-    // Phase 7 Invariant: Atomic check for campaign and lead limits inside serialized transaction
-    const campaignLimitCheck = checkLimit(tId, 'maxCampaigns', 1);
+  await db.withTransaction(async () => {
+    // Limit check for campaigns and leads
+    const campaignLimitCheck = await checkLimit(tId, 'maxCampaigns', 1);
     if (!campaignLimitCheck.allowed) {
       throw new Error(campaignLimitCheck.error || `Campaign limit reached for your plan (${campaignLimitCheck.current}/${campaignLimitCheck.limit}).`);
     }
 
     if (validLeads.length > 0) {
-      const leadLimitCheck = checkLimit(tId, 'maxLeads', validLeads.length);
+      const leadLimitCheck = await checkLimit(tId, 'maxLeads', validLeads.length);
       if (!leadLimitCheck.allowed) {
         throw new Error(leadLimitCheck.error || `Lead quota exceeded (${leadLimitCheck.current + validLeads.length}/${leadLimitCheck.limit}).`);
       }
     }
 
-    stmts.insertCampaign.run(newCampaign);
+    await db.execute(`
+      INSERT INTO campaigns (id, name, "fileName", "leadCount", "tenantId", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [newCampaign.id, newCampaign.name, newCampaign.fileName, newCampaign.leadCount, newCampaign.tenantId, newCampaign.createdAt]);
 
     for (let i = 0; i < validLeads.length; i++) {
-      stmts.insertLead.run({
-        id: `lead_${campaignId}_${i}_${Math.random().toString(36).substring(2, 6)}`,
-        campaignId,
-        name: validLeads[i].name,
-        phone: validLeads[i].phone,
-        status: 'PENDING',
-        tenantId: tId,
-        createdAt: now
-      });
+      const leadId = `lead_${campaignId}_${i}_${Math.random().toString(36).substring(2, 6)}`;
+      await db.execute(`
+        INSERT INTO leads (id, "campaignId", name, phone, status, "tenantId", "createdAt")
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT ("id") DO NOTHING
+      `, [leadId, campaignId, validLeads[i].name, validLeads[i].phone, 'PENDING', tId, now]);
     }
 
-    const actualCount = (db.prepare(`SELECT COUNT(*) as c FROM leads WHERE campaignId = ? AND tenantId = ?`).get(campaignId, tId) as { c: number }).c;
-    db.prepare(`UPDATE campaigns SET leadCount = @count WHERE id = @id AND tenantId = @tenantId`)
-      .run({ count: actualCount, id: campaignId, tenantId: tId });
+    const countRow = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2`, [campaignId, tId]);
+    const actualCount = countRow ? Number(countRow.c) : validLeads.length;
+    await db.execute(`UPDATE campaigns SET "leadCount" = $1 WHERE id = $2 AND "tenantId" = $3`, [actualCount, campaignId, tId]);
     newCampaign.leadCount = actualCount;
   });
-
-  insertLeads();
 
   return {
     campaign: newCampaign,
@@ -966,24 +953,24 @@ export function createCampaign(
   };
 }
 
-export function appendLeadsToCampaign(
+export async function appendLeadsToCampaign(
   campaignId: string,
   rawLeads: { name: string; phone: string }[],
   tenantId: string
-): CampaignImportResult {
+): Promise<CampaignImportResult> {
   if (!tenantId || !campaignId) {
     throw new Error('Tenant ID and Campaign ID are required (fail-closed).');
   }
-  const campaign = stmts.getCampaignById.get({ id: campaignId, tenantId }) as Campaign | undefined;
+  const campaign = await getCampaignById(campaignId, tenantId);
   if (!campaign) {
     throw new Error('Campaign not found in this tenant.');
   }
 
   const now = new Date().toISOString();
-  const dncRows = db.prepare(`SELECT phone FROM suppression_list WHERE tenantId = ?`).all(tenantId) as { phone: string }[];
+  const dncRows = await db.queryAll<{ phone: string }>(`SELECT phone FROM suppression_list WHERE "tenantId" = $1`, [tenantId]);
   const dncSet = new Set<string>(dncRows.map(r => r.phone));
 
-  const existingRows = db.prepare(`SELECT phone FROM leads WHERE tenantId = ?`).all(tenantId) as { phone: string }[];
+  const existingRows = await db.queryAll<{ phone: string }>(`SELECT phone FROM leads WHERE "tenantId" = $1`, [tenantId]);
   const existingSet = new Set<string>(existingRows.map(r => r.phone));
 
   let dedupedCount = 0;
@@ -1009,33 +996,28 @@ export function appendLeadsToCampaign(
     validLeads.push({ name: lead.name || 'Unknown Lead', phone: norm });
   }
 
-  const runInsert = db.transaction(() => {
+  await db.withTransaction(async () => {
     if (validLeads.length > 0) {
-      const leadLimitCheck = checkLimit(tenantId, 'maxLeads', validLeads.length);
+      const leadLimitCheck = await checkLimit(tenantId, 'maxLeads', validLeads.length);
       if (!leadLimitCheck.allowed) {
         throw new Error(leadLimitCheck.error || `Lead quota exceeded (${leadLimitCheck.current + validLeads.length}/${leadLimitCheck.limit}).`);
       }
     }
 
     for (let i = 0; i < validLeads.length; i++) {
-      stmts.insertLead.run({
-        id: `lead_${campaignId}_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`,
-        campaignId,
-        name: validLeads[i].name,
-        phone: validLeads[i].phone,
-        status: 'PENDING',
-        tenantId,
-        createdAt: now
-      });
+      const leadId = `lead_${campaignId}_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`;
+      await db.execute(`
+        INSERT INTO leads (id, "campaignId", name, phone, status, "tenantId", "createdAt")
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT ("id") DO NOTHING
+      `, [leadId, campaignId, validLeads[i].name, validLeads[i].phone, 'PENDING', tenantId, now]);
     }
 
-    const actualCount = (db.prepare(`SELECT COUNT(*) as c FROM leads WHERE campaignId = ? AND tenantId = ?`).get(campaignId, tenantId) as { c: number }).c;
-    db.prepare(`UPDATE campaigns SET leadCount = @count WHERE id = @id AND tenantId = @tenantId`)
-      .run({ count: actualCount, id: campaignId, tenantId });
+    const countRow = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2`, [campaignId, tenantId]);
+    const actualCount = countRow ? Number(countRow.c) : validLeads.length;
+    await db.execute(`UPDATE campaigns SET "leadCount" = $1 WHERE id = $2 AND "tenantId" = $3`, [actualCount, campaignId, tenantId]);
     campaign.leadCount = actualCount;
   });
-
-  runInsert();
 
   return {
     campaign,
@@ -1046,74 +1028,90 @@ export function appendLeadsToCampaign(
   };
 }
 
-export function getLeads(campaignId: string, tenantId: string): Lead[] {
+export async function getLeads(campaignId: string, tenantId: string): Promise<Lead[]> {
   if (!tenantId || !campaignId) return [];
-  return stmts.getLeadsByCamp.all({ campaignId, tenantId }) as Lead[];
+  return db.queryAll<Lead>(`SELECT * FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED'`, [campaignId, tenantId]);
 }
 
-export function deleteLead(id: string, tenantId: string): boolean {
+export async function getLead(id: string, tenantId: string): Promise<Lead | undefined> {
+  if (!id || !tenantId) return undefined;
+  return db.queryOne<Lead>(`SELECT * FROM leads WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+}
+
+export async function getLeadById(id: string): Promise<Lead | undefined> {
+  if (!id) return undefined;
+  return db.queryOne<Lead>(`SELECT * FROM leads WHERE id = $1`, [id]);
+}
+
+export async function deleteLead(id: string, tenantId: string): Promise<boolean> {
   if (!tenantId || !id) return false;
-  const lead = stmts.getLead.get({ id, tenantId }) as Lead | undefined;
+  const lead = await getLead(id, tenantId);
   if (!lead) return false;
   const campaignId = lead.campaignId;
-  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE id = ? AND tenantId = ?`).run(id, tenantId);
+  const info = await db.execute(`UPDATE leads SET status = 'ARCHIVED' WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
   if (campaignId) {
-    db.prepare(`UPDATE campaigns SET leadCount = (SELECT COUNT(*) FROM leads WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED') WHERE id = ? AND tenantId = ?`).run(campaignId, tenantId, campaignId, tenantId);
+    await db.execute(`
+      UPDATE campaigns 
+      SET "leadCount" = (SELECT COUNT(*) FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED') 
+      WHERE id = $3 AND "tenantId" = $4
+    `, [campaignId, tenantId, campaignId, tenantId]);
   }
-  return info.changes > 0;
+  return info.rowCount > 0;
 }
 
-export function clearAllLeadsInCampaign(campaignId: string, tenantId: string): number {
+export async function clearAllLeadsInCampaign(campaignId: string, tenantId: string): Promise<number> {
   if (!tenantId || !campaignId) return 0;
-  const info = db.prepare(`UPDATE leads SET status = 'ARCHIVED' WHERE campaignId = ? AND tenantId = ? AND status != 'ARCHIVED'`).run(campaignId, tenantId);
-  db.prepare(`UPDATE campaigns SET leadCount = 0 WHERE id = ? AND tenantId = ?`).run(campaignId, tenantId);
-  return info.changes;
+  const info = await db.execute(`UPDATE leads SET status = 'ARCHIVED' WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED'`, [campaignId, tenantId]);
+  await db.execute(`UPDATE campaigns SET "leadCount" = 0 WHERE id = $1 AND "tenantId" = $2`, [campaignId, tenantId]);
+  return info.rowCount;
 }
 
-export function clearFakeQueueLeads(tenantId: string): number {
+export async function clearFakeQueueLeads(tenantId: string): Promise<number> {
   if (!tenantId) return 0;
-  const info = db.prepare(`
+  const info = await db.execute(`
     UPDATE leads SET status = 'ARCHIVED' 
-    WHERE (name LIKE '%Sample%' OR name LIKE '%Dummy%' OR name LIKE '%Fake%' OR phone LIKE '%0000000%' OR campaignId LIKE '%sample%') AND status != 'ARCHIVED' AND tenantId = ?
-  `).run(tenantId);
-  db.prepare(`
+    WHERE (name LIKE '%Sample%' OR name LIKE '%Dummy%' OR name LIKE '%Fake%' OR phone LIKE '%0000000%' OR "campaignId" LIKE '%sample%') AND status != 'ARCHIVED' AND "tenantId" = $1
+  `, [tenantId]);
+  await db.execute(`
     UPDATE campaigns 
-    SET leadCount = (SELECT COUNT(*) FROM leads WHERE campaignId = campaigns.id AND tenantId = ? AND status != 'ARCHIVED')
-    WHERE tenantId = ?
-  `).run(tenantId, tenantId);
-  return info.changes;
+    SET "leadCount" = (SELECT COUNT(*) FROM leads WHERE "campaignId" = campaigns.id AND "tenantId" = $1 AND status != 'ARCHIVED')
+    WHERE "tenantId" = $2
+  `, [tenantId, tenantId]);
+  return info.rowCount;
 }
 
-export function updateLeadStatus(
+export async function updateLeadStatus(
   id: string,
   status: 'PENDING' | 'CALLING' | 'COMPLETED',
   outcome?: string,
   duration?: number,
   tenantId?: string
-) {
+): Promise<void> {
   if (!id || !tenantId) return;
-  stmts.updateLeadStatus.run({
-    id: id,
-    status,
-    outcome: outcome ?? null,
-    duration: duration ?? null,
-    tenantId: tenantId
-  });
+  await db.execute(`
+    UPDATE leads 
+    SET status = $1, outcome = COALESCE($2, outcome), duration = COALESCE($3, duration) 
+    WHERE id = $4 AND "tenantId" = $5
+  `, [status, outcome ?? null, duration ?? null, id, tenantId]);
 }
 
-export function getLogs(tenantId: string): CallLog[] {
+export async function getLogs(tenantId: string): Promise<CallLog[]> {
   if (!tenantId) return [];
-  return stmts.getLogs.all({ tenantId }) as CallLog[];
+  return db.queryAll<CallLog>(`SELECT * FROM call_logs WHERE "tenantId" = $1 ORDER BY timestamp DESC`, [tenantId]);
 }
 
-export function createLog(leadId: string, outcome: string, duration: number, tenantId: string): CallLog | null {
+export async function getLogByLeadId(leadId: string, tenantId: string): Promise<CallLog | undefined> {
+  if (!leadId || !tenantId) return undefined;
+  return db.queryOne<CallLog>(`SELECT * FROM call_logs WHERE "leadId" = $1 AND "tenantId" = $2 LIMIT 1`, [leadId, tenantId]);
+}
+
+export async function createLog(leadId: string, outcome: string, duration: number, tenantId: string): Promise<CallLog | null> {
   if (!tenantId || !leadId) return null;
-  const lead = (stmts.getLead.get({ id: leadId, tenantId }) || stmts.getLeadByIdOnly.get({ id: leadId })) as Lead | undefined;
+  const lead = (await getLead(leadId, tenantId)) || (await getLeadById(leadId));
   if (!lead) return null;
 
   const resolvedTenantId = (lead as any).tenantId || tenantId;
-  const campaign = db.prepare(`SELECT * FROM campaigns WHERE id = @campaignId AND tenantId = @tenantId`)
-    .get({ campaignId: lead.campaignId, tenantId: resolvedTenantId }) as Campaign | undefined;
+  const campaign = await db.queryOne<Campaign>(`SELECT * FROM campaigns WHERE id = $1 AND "tenantId" = $2`, [lead.campaignId, resolvedTenantId]);
 
   const log: CallLog & { tenantId: string } = {
     id: 'log_' + Math.random().toString(36).substring(2, 11),
@@ -1127,22 +1125,19 @@ export function createLog(leadId: string, outcome: string, duration: number, ten
     timestamp: new Date().toISOString()
   };
 
-  const insertAndUpdate = db.transaction(() => {
-    stmts.insertLog.run(log);
-    stmts.updateLeadStatus.run({
-      id: leadId,
-      status: 'COMPLETED',
-      outcome,
-      duration,
-      tenantId: resolvedTenantId
-    });
+  await db.withTransaction(async () => {
+    await db.execute(`
+      INSERT INTO call_logs (id, "leadId", "leadName", "leadPhone", "campaignName", outcome, duration, "tenantId", timestamp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `, [log.id, log.leadId, log.leadName, log.leadPhone, log.campaignName, log.outcome, log.duration, log.tenantId, log.timestamp]);
+
+    await updateLeadStatus(leadId, 'COMPLETED', outcome, duration, resolvedTenantId);
   });
 
-  insertAndUpdate();
   return log;
 }
 
-export function createManualLog(phone: string, name: string, outcome: string, duration: number, tenantId: string): CallLog {
+export async function createManualLog(phone: string, name: string, outcome: string, duration: number, tenantId: string): Promise<CallLog> {
   const tId = tenantId;
   const log: CallLog & { tenantId: string } = {
     id: 'log_' + Math.random().toString(36).substring(2, 11),
@@ -1155,7 +1150,10 @@ export function createManualLog(phone: string, name: string, outcome: string, du
     tenantId: tId,
     timestamp: new Date().toISOString()
   };
-  stmts.insertLog.run(log);
+  await db.execute(`
+    INSERT INTO call_logs (id, "leadId", "leadName", "leadPhone", "campaignName", outcome, duration, "tenantId", timestamp)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+  `, [log.id, log.leadId, log.leadName, log.leadPhone, log.campaignName, log.outcome, log.duration, log.tenantId, log.timestamp]);
   return log;
 }
 
@@ -1166,69 +1164,50 @@ export interface LegacyDb {
   logs: CallLog[];
 }
 
-export function loadDb(tenantId: string): LegacyDb {
+export async function loadDb(tenantId: string): Promise<LegacyDb> {
   if (!tenantId) return { campaigns: [], leads: [], logs: [] };
-  return {
-    campaigns: getCampaigns(tenantId),
-    leads: db.prepare(`SELECT * FROM leads WHERE tenantId = ?`).all(tenantId) as Lead[],
-    logs: getLogs(tenantId)
-  };
+  const campaigns = await getCampaigns(tenantId);
+  const leads = await db.queryAll<Lead>(`SELECT * FROM leads WHERE "tenantId" = $1`, [tenantId]);
+  const logs = await getLogs(tenantId);
+  return { campaigns, leads, logs };
 }
 
-export function saveDb(data: LegacyDb) {
-  // Only the lead update and log outcome update paths call saveDb.
-  // Flush any mutation back to SQLite individually.
-  const updateLead = db.prepare(`
-    UPDATE leads SET status = @status, outcome = @outcome, duration = @duration WHERE id = @id
-  `);
-  const updateLogOutcome = db.prepare(`
-    UPDATE call_logs SET outcome = @outcome WHERE leadId = @leadId
-  `);
-
-  const flush = db.transaction(() => {
+export async function saveDb(data: LegacyDb): Promise<void> {
+  await db.withTransaction(async () => {
     for (const lead of data.leads) {
-      updateLead.run({
-        id: lead.id,
-        status: lead.status,
-        outcome: lead.outcome ?? null,
-        duration: lead.duration ?? null
-      });
+      await db.execute(`
+        UPDATE leads SET status = $1, outcome = $2, duration = $3 WHERE id = $4
+      `, [lead.status, lead.outcome ?? null, lead.duration ?? null, lead.id]);
     }
     for (const log of data.logs) {
-      updateLogOutcome.run({ leadId: log.leadId, outcome: log.outcome });
+      await db.execute(`
+        UPDATE call_logs SET outcome = $1 WHERE "leadId" = $2
+      `, [log.outcome, log.leadId]);
     }
   });
-  flush();
 }
 
 // ─── Phone-number normalisation helper ───────────────────────────────────────
-// Strips spaces, dashes, dots, parentheses, slashes; canonicalizes Pakistani and international numbers
 export function normalizePhone(raw: string): string {
   if (!raw) return '';
   let stripped = raw.toString().trim().replace(/[\s\-\(\)\.\/\\]/g, '');
   if (!stripped) return '';
 
-  // Handle local Pakistani 03xx format: 03001234567 -> +923001234567
   if (/^03\d{9}$/.test(stripped)) {
     return '+92' + stripped.substring(1);
   }
-  // Handle 923xx without +: 923001234567 -> +923001234567
   if (/^923\d{9}$/.test(stripped)) {
     return '+' + stripped;
   }
-  // Handle +923xx: +923001234567 -> +923001234567
   if (/^\+923\d{9}$/.test(stripped)) {
     return stripped;
   }
-  // Handle 00923xx: 00923001234567 -> +923001234567
   if (/^00923\d{9}$/.test(stripped)) {
     return '+' + stripped.substring(2);
   }
-  // If already starts with + and has 10-15 digits
   if (/^\+\d{10,15}$/.test(stripped)) {
     return stripped;
   }
-  // If purely numeric without leading +, add + if >= 10 digits
   if (/^\d{10,15}$/.test(stripped)) {
     return '+' + stripped;
   }
@@ -1239,101 +1218,89 @@ export function normalizePhone(raw: string): string {
 // ─── Lead Reservation & Locking API ──────────────────────────────────────────
 export const LEASE_TTL_MINUTES = 2;
 
-const lockStmts = {
-  reserveLead: db.prepare(`
-    UPDATE leads 
-    SET "lockedBy" = @sessionId, "lockedAt" = @now, status = 'CALLING'
-    WHERE id = @leadId 
-      AND status != 'COMPLETED'
-      AND ("lockedBy" IS NULL OR "lockedBy" = @sessionId OR "lockedAt" < @cutoff)
-  `),
-  releaseLeadLock: db.prepare(`
-    UPDATE leads
-    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
-    WHERE id = @leadId
-  `),
-  releaseLeadLockOwned: db.prepare(`
-    UPDATE leads
-    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
-    WHERE id = @leadId AND "lockedBy" = @sessionId
-  `),
-  unlockSessionLeads: db.prepare(`
-    UPDATE leads
-    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
-    WHERE "lockedBy" = @sessionId AND status != 'COMPLETED'
-  `),
-  clearExpiredLeases: db.prepare(`
-    UPDATE leads
-    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
-    WHERE "lockedAt" < @cutoff AND status != 'COMPLETED' AND "lockedBy" IS NOT NULL
-  `),
-  getLockedLeads: db.prepare(`
-    SELECT * FROM leads WHERE "lockedBy" IS NOT NULL AND status != 'COMPLETED'
-  `)
-};
-
-export function reserveLead(leadId: string, sessionId: string, tenantId?: string, leaseMinutes: number = LEASE_TTL_MINUTES): boolean {
+export async function reserveLead(leadId: string, sessionId: string, tenantId?: string, leaseMinutes: number = LEASE_TTL_MINUTES): Promise<boolean> {
   const now = new Date();
   const cutoff = new Date(now.getTime() - leaseMinutes * 60 * 1000).toISOString();
   
   if (tenantId) {
-    const res = db.prepare(`
+    const res = await db.execute(`
       UPDATE leads 
-      SET "lockedBy" = @sessionId, "lockedAt" = @now, status = 'CALLING'
-      WHERE id = @leadId 
-        AND "tenantId" = @tenantId
+      SET "lockedBy" = $1, "lockedAt" = $2, status = 'CALLING'
+      WHERE id = $3 
+        AND "tenantId" = $4
         AND status != 'COMPLETED'
-        AND ("lockedBy" IS NULL OR "lockedBy" = @sessionId OR "lockedAt" < @cutoff)
-    `).run({ leadId, sessionId, tenantId, now: now.toISOString(), cutoff });
-    return res.changes > 0;
+        AND ("lockedBy" IS NULL OR "lockedBy" = $1 OR "lockedAt" < $5)
+    `, [sessionId, now.toISOString(), leadId, tenantId, cutoff]);
+    return res.rowCount > 0;
   }
 
-  const result = lockStmts.reserveLead.run({
-    leadId,
-    sessionId,
-    now: now.toISOString(),
-    cutoff
-  });
+  const result = await db.execute(`
+    UPDATE leads 
+    SET "lockedBy" = $1, "lockedAt" = $2, status = 'CALLING'
+    WHERE id = $3 
+      AND status != 'COMPLETED'
+      AND ("lockedBy" IS NULL OR "lockedBy" = $1 OR "lockedAt" < $4)
+  `, [sessionId, now.toISOString(), leadId, cutoff]);
 
-  return result.changes > 0;
+  return result.rowCount > 0;
 }
 
-export function releaseLeadLock(leadId: string, sessionId?: string): void {
+export async function releaseLeadLock(leadId: string, sessionId?: string): Promise<void> {
   if (sessionId) {
-    // Ownership-verified release: only release if this session holds the lock
-    const result = lockStmts.releaseLeadLockOwned.run({ leadId, sessionId });
-    if (result.changes === 0) {
+    const result = await db.execute(`
+      UPDATE leads
+      SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+      WHERE id = $1 AND "lockedBy" = $2
+    `, [leadId, sessionId]);
+    if (result.rowCount === 0) {
       console.warn(`[LeadLock] Rejected lock release for lead ${leadId} — not owned by session ${sessionId}`);
     }
   } else {
-    // Unverified release (admin/cleanup path)
-    lockStmts.releaseLeadLock.run({ leadId });
+    await db.execute(`
+      UPDATE leads
+      SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+      WHERE id = $1
+    `, [leadId]);
   }
 }
 
-export function unlockLeadsForSession(sessionId: string): void {
-  const result = lockStmts.unlockSessionLeads.run({ sessionId });
-  if (result.changes > 0) {
-    console.log(`[LeadLock] Released ${result.changes} locked lead(s) for disconnected session ${sessionId}`);
+export async function releaseLeadLockOwned(leadId: string, sessionId: string): Promise<void> {
+  await releaseLeadLock(leadId, sessionId);
+}
+
+export async function unlockLeadsForSession(sessionId: string): Promise<void> {
+  const result = await db.execute(`
+    UPDATE leads
+    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+    WHERE "lockedBy" = $1 AND status != 'COMPLETED'
+  `, [sessionId]);
+  if (result.rowCount > 0) {
+    console.log(`[LeadLock] Released ${result.rowCount} locked lead(s) for disconnected session ${sessionId}`);
   }
 }
 
-export function releaseExpiredLeases(leaseMinutes: number = LEASE_TTL_MINUTES): number {
+export async function releaseExpiredLeases(leaseMinutes: number = LEASE_TTL_MINUTES): Promise<number> {
   const now = new Date();
   const cutoff = new Date(now.getTime() - leaseMinutes * 60 * 1000).toISOString();
-  const result = lockStmts.clearExpiredLeases.run({ cutoff });
-  if (result.changes > 0) {
-    console.log(`[LeadLock] Released ${result.changes} expired lead lease(s) (older than ${leaseMinutes} mins)`);
+  const result = await db.execute(`
+    UPDATE leads
+    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+    WHERE "lockedAt" < $1 AND status != 'COMPLETED' AND "lockedBy" IS NOT NULL
+  `, [cutoff]);
+  if (result.rowCount > 0) {
+    console.log(`[LeadLock] Released ${result.rowCount} expired lead lease(s) (older than ${leaseMinutes} mins)`);
   }
-  return result.changes;
+  return result.rowCount;
 }
 
-export function getLockedLeads(): Lead[] {
-  return lockStmts.getLockedLeads.all() as Lead[];
+export async function getLockedLeads(): Promise<Lead[]> {
+  return db.queryAll<Lead>(`SELECT * FROM leads WHERE "lockedBy" IS NOT NULL AND status != 'COMPLETED'`);
 }
 
 // Periodically release expired leases every minute
-setInterval(() => releaseExpiredLeases(LEASE_TTL_MINUTES), 60 * 1000);
+setInterval(() => {
+  releaseExpiredLeases(LEASE_TTL_MINUTES).catch(err => console.error('[LeadLock Interval Error]:', err));
+}, 60 * 1000);
 
 // ─── Database Backup & Disaster Recovery ───────────────────
 export async function backupDatabase(targetFileName?: string): Promise<{ success: boolean; backupPath: string; sizeBytes: number; timestamp: string }> {
@@ -1380,7 +1347,7 @@ export async function backupDatabase(targetFileName?: string): Promise<{ success
   };
 }
 
-// ─── CRM Workspace & Lead Intelligence Helper Functions (Phase E) ─────────────
+// ─── CRM Workspace & Lead Intelligence Helper Functions ─────────────
 export interface FollowUpItem {
   id: string;
   leadId: string;
@@ -1410,7 +1377,7 @@ export interface LeadActivity {
   createdAt: string;
 }
 
-export function createFollowUp(data: {
+export async function createFollowUp(data: {
   leadId: string;
   leadName?: string;
   leadPhone?: string;
@@ -1421,17 +1388,17 @@ export function createFollowUp(data: {
   assignedAgent?: string;
   scheduledAt: string;
   notes?: string;
-}): FollowUpItem {
+}): Promise<FollowUpItem> {
   const id = `fu_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO crm_follow_ups (id, leadId, leadName, leadPhone, campaignId, campaignName, tenantId, userId, assignedAgent, scheduledAt, status, notes, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
-  `).run(
+  await db.execute(`
+    INSERT INTO crm_follow_ups (id, "leadId", "leadName", "leadPhone", "campaignId", "campaignName", "tenantId", "userId", "assignedAgent", "scheduledAt", status, notes, "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, $13)
+  `, [
     id, data.leadId, data.leadName || '', data.leadPhone || '', data.campaignId || null,
     data.campaignName || '', data.tenantId, data.userId || null, data.assignedAgent || null,
     data.scheduledAt, data.notes || '', now, now
-  );
+  ]);
 
   return {
     id,
@@ -1451,34 +1418,36 @@ export function createFollowUp(data: {
   };
 }
 
-export function getFollowUps(tenantId: string, filter?: { status?: string }): FollowUpItem[] {
-  let query = `SELECT * FROM crm_follow_ups WHERE tenantId = ?`;
+export async function getFollowUps(tenantId: string, filter?: { status?: string }): Promise<FollowUpItem[]> {
+  let query = `SELECT * FROM crm_follow_ups WHERE "tenantId" = $1`;
   const params: any[] = [tenantId];
 
   if (filter?.status) {
-    query += ` AND status = ?`;
+    query += ` AND status = $2`;
     params.push(filter.status);
   }
 
-  query += ` ORDER BY scheduledAt ASC`;
-  return db.prepare(query).all(...params) as FollowUpItem[];
+  query += ` ORDER BY "scheduledAt" ASC`;
+  return db.queryAll<FollowUpItem>(query, params);
 }
 
-export function updateFollowUpStatus(id: string, tenantId: string, status: string, notes?: string): boolean {
-  let query = `UPDATE crm_follow_ups SET status = ?, updatedAt = datetime('now')`;
+export async function updateFollowUpStatus(id: string, tenantId: string, status: string, notes?: string): Promise<boolean> {
+  let query = `UPDATE crm_follow_ups SET status = $1, "updatedAt" = now()`;
   const params: any[] = [status];
   if (notes !== undefined) {
-    query += `, notes = ?`;
+    query += `, notes = $2`;
     params.push(notes);
   }
-  query += ` WHERE id = ? AND tenantId = ?`;
+  const idIdx = params.length + 1;
+  const tenantIdx = params.length + 2;
+  query += ` WHERE id = $${idIdx} AND "tenantId" = $${tenantIdx}`;
   params.push(id, tenantId);
 
-  const res = db.prepare(query).run(...params);
-  return res.changes > 0;
+  const res = await db.execute(query, params);
+  return res.rowCount > 0;
 }
 
-export function recordLeadActivity(data: {
+export async function recordLeadActivity(data: {
   leadId: string;
   tenantId: string;
   userId?: string;
@@ -1486,20 +1455,20 @@ export function recordLeadActivity(data: {
   eventType: string;
   description: string;
   metadata?: any;
-}): void {
+}): Promise<void> {
   const id = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const metaStr = data.metadata ? (typeof data.metadata === 'string' ? data.metadata : JSON.stringify(data.metadata)) : null;
   const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO lead_activities (id, leadId, tenantId, userId, username, eventType, description, metadata, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, data.leadId, data.tenantId, data.userId || null, data.username || null, data.eventType, data.description, metaStr, now);
+  await db.execute(`
+    INSERT INTO lead_activities (id, "leadId", "tenantId", "userId", username, "eventType", description, metadata, "createdAt")
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+  `, [id, data.leadId, data.tenantId, data.userId || null, data.username || null, data.eventType, data.description, metaStr, now]);
 }
 
-export function getLeadActivities(leadId: string, tenantId: string): LeadActivity[] {
-  return db.prepare(`
-    SELECT * FROM lead_activities WHERE leadId = ? AND tenantId = ? ORDER BY createdAt DESC, id DESC LIMIT 100
-  `).all(leadId, tenantId) as LeadActivity[];
+export async function getLeadActivities(leadId: string, tenantId: string): Promise<LeadActivity[]> {
+  return db.queryAll<LeadActivity>(`
+    SELECT * FROM lead_activities WHERE "leadId" = $1 AND "tenantId" = $2 ORDER BY "createdAt" DESC, id DESC LIMIT 100
+  `, [leadId, tenantId]);
 }
 
 export const ALL_BUSINESS_MODULES = [
@@ -1514,62 +1483,60 @@ export const ALL_BUSINESS_MODULES = [
   'facebookPoster'
 ] as const;
 
-export function hasUserModulePermission(userId: string, tenantId: string, moduleId: string): boolean {
-  const perm = db.prepare(`SELECT enabled FROM user_permissions WHERE userId = ? AND tenantId = ? AND moduleId = ?`).get(userId, tenantId, moduleId) as { enabled: number } | undefined;
-  return perm ? perm.enabled === 1 : false;
+export async function hasUserModulePermission(userId: string, tenantId: string, moduleId: string): Promise<boolean> {
+  const perm = await db.queryOne<{ enabled: number | boolean }>(`
+    SELECT enabled FROM user_permissions WHERE "userId" = $1 AND "tenantId" = $2 AND "moduleId" = $3
+  `, [userId, tenantId, moduleId]);
+  return perm ? (perm.enabled === 1 || perm.enabled === true) : false;
 }
 
-export function getUserPermissions(userId: string, tenantId: string): Record<string, boolean> {
-  const rows = db.prepare(`SELECT moduleId, enabled FROM user_permissions WHERE userId = ? AND tenantId = ?`).all(userId, tenantId) as { moduleId: string; enabled: number }[];
+export async function getUserPermissions(userId: string, tenantId: string): Promise<Record<string, boolean>> {
+  const rows = await db.queryAll<{ moduleId: string; enabled: number | boolean }>(`
+    SELECT "moduleId", enabled FROM user_permissions WHERE "userId" = $1 AND "tenantId" = $2
+  `, [userId, tenantId]);
   const permissions: Record<string, boolean> = {};
   for (const row of rows) {
-    permissions[row.moduleId] = row.enabled === 1;
+    permissions[row.moduleId] = row.enabled === 1 || row.enabled === true;
   }
   return permissions;
 }
 
-export function updateLogDisposition(data: {
+export async function updateLogDisposition(data: {
   leadId: string;
   outcome: string;
   notes?: string;
   tenantId: string;
   userId?: string;
   username?: string;
-}): boolean {
+}): Promise<boolean> {
   const { leadId, outcome, notes, tenantId, userId, username } = data;
   if (!leadId || !tenantId) return false;
 
-  const lead = stmts.getLead.get({ id: leadId, tenantId }) as Lead | undefined;
+  const lead = await getLead(leadId, tenantId);
   if (!lead) return false;
 
   const now = new Date().toISOString();
-  const updateTxn = db.transaction(() => {
+  await db.withTransaction(async () => {
     // 1. Update Lead status and outcome
-    stmts.updateLeadStatus.run({
-      id: leadId,
-      status: 'COMPLETED',
-      outcome,
-      duration: lead.duration || 0,
-      tenantId
-    });
+    await updateLeadStatus(leadId, 'COMPLETED', outcome, lead.duration || 0, tenantId);
 
     // 2. Update existing call log or create disposition log
-    const existingLog = stmts.getLogByLeadId.get({ leadId, tenantId }) as any;
+    const existingLog = await getLogByLeadId(leadId, tenantId);
     if (existingLog) {
-      db.prepare(`UPDATE call_logs SET outcome = ? WHERE leadId = ? AND tenantId = ?`).run(outcome, leadId, tenantId);
+      await db.execute(`UPDATE call_logs SET outcome = $1 WHERE "leadId" = $2 AND "tenantId" = $3`, [outcome, leadId, tenantId]);
     } else {
-      createLog(leadId, outcome, lead.duration || 0, tenantId);
+      await createLog(leadId, outcome, lead.duration || 0, tenantId);
     }
 
     // 3. Record in dispositions table
     const dispId = 'disp_' + Math.random().toString(36).substring(2, 11);
-    db.prepare(`
-      INSERT INTO dispositions (id, leadId, outcome, notes, loggedAt)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(dispId, leadId, outcome, notes || '', now);
+    await db.execute(`
+      INSERT INTO dispositions (id, "leadId", outcome, notes, "loggedAt")
+      VALUES ($1, $2, $3, $4, $5)
+    `, [dispId, leadId, outcome, notes || '', now]);
 
     // 4. Record in lead activities
-    recordLeadActivity({
+    await recordLeadActivity({
       leadId,
       tenantId,
       userId,
@@ -1580,7 +1547,6 @@ export function updateLogDisposition(data: {
     });
   });
 
-  updateTxn();
   return true;
 }
 
@@ -1602,7 +1568,7 @@ export interface DeviceRecord {
   updatedAt?: string;
 }
 
-export function registerOrUpdateDevice(data: {
+export async function registerOrUpdateDevice(data: {
   id?: string;
   name: string;
   userId: string;
@@ -1613,11 +1579,11 @@ export function registerOrUpdateDevice(data: {
   platform?: string;
   appVersion?: string;
   deviceUid?: string;
-}): DeviceRecord {
+}): Promise<DeviceRecord> {
   const now = new Date().toISOString();
   let deviceId = data.id;
   if (!deviceId && data.deviceUid) {
-    const existing = db.prepare(`SELECT id FROM devices WHERE deviceUid = ? AND tenantId = ?`).get(data.deviceUid, data.tenantId) as { id: string } | undefined;
+    const existing = await db.queryOne<{ id: string }>(`SELECT id FROM devices WHERE "deviceUid" = $1 AND "tenantId" = $2`, [data.deviceUid, data.tenantId]);
     if (existing) {
       deviceId = existing.id;
     }
@@ -1626,98 +1592,107 @@ export function registerOrUpdateDevice(data: {
     deviceId = 'dev_' + (data.deviceUid ? data.deviceUid.replace(/[^a-zA-Z0-9_-]/g, '_') : Math.random().toString(36).substring(2, 11));
   }
 
-  const existingDevice = db.prepare(`SELECT * FROM devices WHERE id = ?`).get(deviceId) as any;
+  const existingDevice = await db.queryOne<DeviceRecord>(`SELECT * FROM devices WHERE id = $1`, [deviceId]);
 
   if (existingDevice) {
     if (existingDevice.tenantId && existingDevice.tenantId !== data.tenantId) {
       throw new Error(`Device belongs to another tenant.`);
     }
 
-    db.prepare(`
+    await db.execute(`
       UPDATE devices
-      SET name = @name,
-          userId = @userId,
-          tenantId = @tenantId,
-          btAddress = COALESCE(@btAddress, btAddress),
-          osType = COALESCE(@osType, osType),
-          ipAddress = COALESCE(@ipAddress, ipAddress),
-          platform = COALESCE(@platform, platform),
-          appVersion = COALESCE(@appVersion, appVersion),
-          deviceUid = COALESCE(@deviceUid, deviceUid),
+      SET name = $1,
+          "userId" = $2,
+          "tenantId" = $3,
+          "btAddress" = COALESCE($4, "btAddress"),
+          "osType" = COALESCE($5, "osType"),
+          "ipAddress" = COALESCE($6, "ipAddress"),
+          platform = COALESCE($7, platform),
+          "appVersion" = COALESCE($8, "appVersion"),
+          "deviceUid" = COALESCE($9, "deviceUid"),
           status = 'ONLINE',
-          isRevoked = 0,
-          lastSeenAt = @now,
-          updatedAt = @now
-      WHERE id = @id
-    `).run({
-      id: deviceId,
-      name: data.name || 'Android Device',
-      userId: data.userId,
-      tenantId: data.tenantId,
-      btAddress: data.btAddress || null,
-      osType: data.osType || 'Android',
-      ipAddress: data.ipAddress || '127.0.0.1',
-      platform: data.platform || 'android',
-      appVersion: data.appVersion || '1.2.0',
-      deviceUid: data.deviceUid || null,
-      now
-    });
+          "isRevoked" = 0,
+          "lastSeenAt" = $10,
+          "updatedAt" = $10
+      WHERE id = $11
+    `, [
+      data.name || 'Android Device',
+      data.userId,
+      data.tenantId,
+      data.btAddress || null,
+      data.osType || 'Android',
+      data.ipAddress || '127.0.0.1',
+      data.platform || 'android',
+      data.appVersion || '1.2.0',
+      data.deviceUid || null,
+      now,
+      deviceId
+    ]);
   } else {
-    db.prepare(`
-      INSERT INTO devices (id, name, btAddress, osType, ipAddress, status, userId, tenantId, platform, appVersion, deviceUid, isRevoked, lastSeenAt, createdAt, updatedAt)
-      VALUES (@id, @name, @btAddress, @osType, @ipAddress, 'ONLINE', @userId, @tenantId, @platform, @appVersion, @deviceUid, 0, @now, @now, @now)
-    `).run({
-      id: deviceId,
-      name: data.name || 'Android Device',
-      btAddress: data.btAddress || null,
-      osType: data.osType || 'Android',
-      ipAddress: data.ipAddress || '127.0.0.1',
-      userId: data.userId,
-      tenantId: data.tenantId,
-      platform: data.platform || 'android',
-      appVersion: data.appVersion || '1.2.0',
-      deviceUid: data.deviceUid || null,
+    await db.execute(`
+      INSERT INTO devices (id, name, "btAddress", "osType", "ipAddress", status, "userId", "tenantId", platform, "appVersion", "deviceUid", "isRevoked", "lastSeenAt", "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, 'ONLINE', $6, $7, $8, $9, $10, 0, $11, $11, $11)
+      ON CONFLICT ("id") DO UPDATE SET
+        name = EXCLUDED.name,
+        "userId" = EXCLUDED."userId",
+        "tenantId" = EXCLUDED."tenantId",
+        status = 'ONLINE',
+        "isRevoked" = 0,
+        "lastSeenAt" = EXCLUDED."lastSeenAt",
+        "updatedAt" = EXCLUDED."updatedAt"
+    `, [
+      deviceId,
+      data.name || 'Android Device',
+      data.btAddress || null,
+      data.osType || 'Android',
+      data.ipAddress || '127.0.0.1',
+      data.userId,
+      data.tenantId,
+      data.platform || 'android',
+      data.appVersion || '1.2.0',
+      data.deviceUid || null,
       now
-    });
+    ]);
   }
 
-  return db.prepare(`SELECT * FROM devices WHERE id = ?`).get(deviceId) as DeviceRecord;
+  const result = await db.queryOne<DeviceRecord>(`SELECT * FROM devices WHERE id = $1`, [deviceId]);
+  return result!;
 }
 
-export function getDevicesForUser(userId: string, tenantId: string): DeviceRecord[] {
-  return db.prepare(`
+export async function getDevicesForUser(userId: string, tenantId: string): Promise<DeviceRecord[]> {
+  return db.queryAll<DeviceRecord>(`
     SELECT * FROM devices 
-    WHERE tenantId = ? AND (userId = ? OR userId IS NULL) AND isRevoked = 0
-    ORDER BY lastSeenAt DESC, createdAt DESC
-  `).all(tenantId, userId) as DeviceRecord[];
+    WHERE "tenantId" = $1 AND ("userId" = $2 OR "userId" IS NULL) AND "isRevoked" = 0
+    ORDER BY "lastSeenAt" DESC, "createdAt" DESC
+  `, [tenantId, userId]);
 }
 
-export function getDeviceById(id: string, tenantId?: string): DeviceRecord | undefined {
+export async function getDeviceById(id: string, tenantId?: string): Promise<DeviceRecord | undefined> {
   if (tenantId) {
-    return db.prepare(`SELECT * FROM devices WHERE id = ? AND tenantId = ?`).get(id, tenantId) as DeviceRecord | undefined;
+    return db.queryOne<DeviceRecord>(`SELECT * FROM devices WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
   }
-  return db.prepare(`SELECT * FROM devices WHERE id = ?`).get(id) as DeviceRecord | undefined;
+  return db.queryOne<DeviceRecord>(`SELECT * FROM devices WHERE id = $1`, [id]);
 }
 
-export function revokeDevice(id: string, userId: string, tenantId: string, isAdmin: boolean = false): boolean {
-  let query = `UPDATE devices SET isRevoked = 1, status = 'OFFLINE', updatedAt = datetime('now') WHERE id = ? AND tenantId = ?`;
+export async function revokeDevice(id: string, userId: string, tenantId: string, isAdmin: boolean = false): Promise<boolean> {
+  let query = `UPDATE devices SET "isRevoked" = 1, status = 'OFFLINE', "updatedAt" = now() WHERE id = $1 AND "tenantId" = $2`;
   const params: any[] = [id, tenantId];
   if (!isAdmin) {
-    query += ` AND userId = ?`;
+    query += ` AND "userId" = $3`;
     params.push(userId);
   }
-  const result = db.prepare(query).run(...params);
-  return result.changes > 0;
+  const result = await db.execute(query, params);
+  return result.rowCount > 0;
 }
 
-export function updateDeviceStatus(id: string, status: string, lastSeenAt?: string): boolean {
+export async function updateDeviceStatus(id: string, status: string, lastSeenAt?: string): Promise<boolean> {
   const now = lastSeenAt || new Date().toISOString();
-  const result = db.prepare(`UPDATE devices SET status = ?, lastSeenAt = ?, updatedAt = ? WHERE id = ?`).run(status, now, now, id);
-  return result.changes > 0;
+  const result = await db.execute(`UPDATE devices SET status = $1, "lastSeenAt" = $2, "updatedAt" = $3 WHERE id = $4`, [status, now, now, id]);
+  return result.rowCount > 0;
 }
 
 // ─── Expose the raw db instance for future steps ─────────────────────────────
-export function getDatabase(): any {
+export function getDatabase(): DbAdapter {
   return db;
 }
 export { db };

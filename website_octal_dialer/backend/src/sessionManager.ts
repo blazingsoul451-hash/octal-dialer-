@@ -136,7 +136,7 @@ export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId
   return createSession(laptopSocketId, tenantId, userId);
 }
 
-export function pairPhone(
+export async function pairPhone(
   tokenOrSessionId: string,
   phoneSocketId: string,
   phoneDeviceName: string,
@@ -144,14 +144,12 @@ export function pairPhone(
   phoneOsType: string,
   phoneIpAddress: string,
   sessionIdHint?: string
-): Session | null {
+): Promise<Session | null> {
   const cleanKey = (tokenOrSessionId || '').trim();
   const cleanHint = (sessionIdHint || '').trim();
 
-  // 1. Try matching by sessionId directly
   let session = (cleanHint && sessions.get(cleanHint)) || (cleanKey && sessions.get(cleanKey));
 
-  // 2. Try matching by token (case-insensitive)
   if (!session && cleanKey) {
     session = Array.from(sessions.values()).find(
       s => s.token.toUpperCase() === cleanKey.toUpperCase()
@@ -163,23 +161,19 @@ export function pairPhone(
     return null;
   }
 
-  // Fail-closed: session must belong to a verified tenant
   const tenantId = session.tenantId;
   if (!tenantId) {
     console.error(`[Pairing] Failed: Session ${session.id} has no assigned tenantId. Pairing rejected (fail-closed).`);
     return null;
   }
 
-  // Hardened Invariant: If session is paired with an authenticated device, reject anonymous/QR phone:join attempts
   if (session.phoneDeviceId != null) {
     console.warn(`[Pairing] Rejected: Session ${session.id} is paired with authenticated device ${session.phoneDeviceId} and cannot be hijacked via phone:join.`);
     return null;
   }
 
-  // If another phone is already paired in QR mode, explicitly handle it (prevent silent orphaning)
   if (session.phoneSocketId && session.phoneSocketId !== phoneSocketId) {
     console.warn(`[Pairing] Replacing QR phone ${session.phoneSocketId} with ${phoneSocketId} in session ${session.id}`);
-    // The old phone will be notified via socket events by the caller (server.ts)
   }
 
   session.phoneSocketId = phoneSocketId;
@@ -191,13 +185,15 @@ export function pairPhone(
   session.lastHeartbeat = new Date();
   session.updatedAt = new Date();
 
-  // Phase 7 Invariant: Atomic check for plan device limit and registration inside transaction
   try {
-    const pairDeviceTxn = db.transaction(() => {
+    await db.withTransaction(async () => {
       const devId = phoneBtAddress || 'dev_' + phoneDeviceName.replace(/\s+/g, '_');
-      const existingDevice = db.prepare(`SELECT id FROM devices WHERE (id = ? OR (btAddress IS NOT NULL AND btAddress = ?)) AND tenantId = ?`).get(devId, phoneBtAddress || '', tenantId) as { id: string } | undefined;
+      const existingDevice = await db.queryOne<{ id: string }>(`
+        SELECT id FROM devices WHERE (id = $1 OR ("btAddress" IS NOT NULL AND "btAddress" = $2)) AND "tenantId" = $3
+      `, [devId, phoneBtAddress || '', tenantId]);
+
       if (!existingDevice) {
-        const limitCheck = checkLimit(tenantId, 'maxDevices', 1);
+        const limitCheck = await checkLimit(tenantId, 'maxDevices', 1);
         if (!limitCheck.allowed) {
           const err: any = new Error(`Tenant ${tenantId} reached device limit (${limitCheck.current}/${limitCheck.limit}).`);
           (err as any).limitRejected = true;
@@ -206,29 +202,20 @@ export function pairPhone(
       }
 
       const targetId = existingDevice ? existingDevice.id : devId;
+      const now = new Date().toISOString();
 
-      db.prepare(`
-        INSERT INTO devices (id, name, btAddress, osType, ipAddress, status, tenantId, lastSeenAt)
-        VALUES (@id, @name, @btAddress, @osType, @ipAddress, 'ONLINE', @tenantId, @lastSeenAt)
-        ON CONFLICT(id) DO UPDATE SET
-          name = @name,
-          osType = @osType,
-          ipAddress = @ipAddress,
+      await db.execute(`
+        INSERT INTO devices (id, name, "btAddress", "osType", "ipAddress", status, "tenantId", "lastSeenAt")
+        VALUES ($1, $2, $3, $4, $5, 'ONLINE', $6, $7)
+        ON CONFLICT ("id") DO UPDATE SET
+          name = EXCLUDED.name,
+          "osType" = EXCLUDED."osType",
+          "ipAddress" = EXCLUDED."ipAddress",
           status = 'ONLINE',
-          tenantId = @tenantId,
-          lastSeenAt = @lastSeenAt
-      `).run({
-        id: targetId,
-        name: phoneDeviceName,
-        btAddress: phoneBtAddress,
-        osType: phoneOsType,
-        ipAddress: phoneIpAddress,
-        tenantId: tenantId,
-        lastSeenAt: new Date().toISOString()
-      });
+          "tenantId" = EXCLUDED."tenantId",
+          "lastSeenAt" = EXCLUDED."lastSeenAt"
+      `, [targetId, phoneDeviceName, phoneBtAddress, phoneOsType, phoneIpAddress, tenantId, now]);
     });
-
-    pairDeviceTxn();
   } catch (err: any) {
     if (err.limitRejected) {
       console.error(`[Pairing] Rejected: ${err.message}`);
@@ -241,7 +228,7 @@ export function pairPhone(
   return session;
 }
 
-export function pairAuthenticatedDevice(
+export async function pairAuthenticatedDevice(
   sessionId: string,
   deviceId: string,
   phoneSocketId: string,
@@ -251,20 +238,18 @@ export function pairAuthenticatedDevice(
   phoneIpAddress: string,
   userId: string,
   tenantId: string
-): Session | null {
+): Promise<Session | null> {
   const session = sessions.get(sessionId);
   if (!session) {
     console.warn(`[Pairing] Failed: Session ${sessionId} not found`);
     return null;
   }
 
-  // Tenant isolation check
   if (!session.tenantId || session.tenantId !== tenantId) {
     console.error(`[Pairing] Rejected: Session tenant ${session.tenantId} != device tenant ${tenantId}`);
     return null;
   }
 
-  // If another phone is already paired, cleanly replace it
   if (session.phoneSocketId && session.phoneSocketId !== phoneSocketId) {
     console.warn(`[Pairing] Replacing phone ${session.phoneSocketId} with ${phoneSocketId} in session ${session.id}`);
   }
@@ -280,15 +265,12 @@ export function pairAuthenticatedDevice(
   session.updatedAt = new Date();
 
   try {
-    db.prepare(`
+    const now = new Date().toISOString();
+    await db.execute(`
       UPDATE devices 
-      SET status = 'PAIRED', lastSeenAt = @now, updatedAt = @now 
-      WHERE id = @id AND tenantId = @tenantId
-    `).run({
-      id: deviceId,
-      tenantId,
-      now: new Date().toISOString()
-    });
+      SET status = 'PAIRED', "lastSeenAt" = $1, "updatedAt" = $1 
+      WHERE id = $2 AND "tenantId" = $3
+    `, [now, deviceId, tenantId]);
   } catch (err) {
     console.error('[SessionManager] Error updating device status:', err);
   }
@@ -296,14 +278,14 @@ export function pairAuthenticatedDevice(
   return session;
 }
 
-export function revokePhone(sessionId: string): string | null {
+export async function revokePhone(sessionId: string): Promise<string | null> {
   const session = sessions.get(sessionId);
   if (!session) return null;
 
   const prevDevId = session.phoneDeviceId || session.phoneBtAddress;
   if (prevDevId) {
     try {
-      db.prepare(`UPDATE devices SET status = 'ONLINE', updatedAt = datetime('now') WHERE id = ?`).run(prevDevId);
+      await db.execute(`UPDATE devices SET status = 'ONLINE', "updatedAt" = now() WHERE id = $1`, [prevDevId]);
     } catch {}
   }
 
@@ -348,43 +330,34 @@ export function handleLaptopDisconnect(socketId: string): void {
   }
 }
 
-export function updateHeartbeat(socketId: string): Session | undefined {
+export async function updateHeartbeat(socketId: string): Promise<Session | undefined> {
   const session = getSessionBySocketId(socketId);
   if (session && session.phoneSocketId === socketId) {
     session.lastHeartbeat = new Date();
     session.updatedAt = new Date();
 
-    // Update SQLite device lastSeenAt
     const devId = session.phoneBtAddress || (session.phoneDeviceName ? 'dev_' + session.phoneDeviceName.replace(/\s+/g, '_') : null);
     if (devId) {
       try {
-        db.prepare(`UPDATE devices SET lastSeenAt = @now, status = 'ONLINE' WHERE id = @id`).run({
-          now: new Date().toISOString(),
-          id: devId
-        });
+        await db.execute(`UPDATE devices SET "lastSeenAt" = $1, status = 'ONLINE' WHERE id = $2`, [new Date().toISOString(), devId]);
       } catch {}
     }
   }
   return session;
 }
 
-export function handlePhoneDisconnect(socketId: string): Session | undefined {
+export async function handlePhoneDisconnect(socketId: string): Promise<Session | undefined> {
   const session = getSessionBySocketId(socketId);
   if (!session || session.phoneSocketId !== socketId) return undefined;
 
   const devId = session.phoneBtAddress || (session.phoneDeviceName ? 'dev_' + session.phoneDeviceName.replace(/\s+/g, '_') : null);
   if (devId) {
     try {
-      db.prepare(`UPDATE devices SET status = 'OFFLINE', lastSeenAt = @now WHERE id = @id`).run({
-        now: new Date().toISOString(),
-        id: devId
-      });
+      await db.execute(`UPDATE devices SET status = 'OFFLINE', "lastSeenAt" = $1 WHERE id = $2`, [new Date().toISOString(), devId]);
     } catch {}
   }
 
-  // IMPORTANT: Keep device name/address so the reconnect fallback can find the same session!
-  session.phoneSocketId = null;  // clear socket — phone is gone
-  // Do NOT clear phoneDeviceName, phoneBtAddress etc — needed to re-pair on reconnect
+  session.phoneSocketId = null;
   session.status = 'WAITING';
   session.lastHeartbeat = null;
   session.updatedAt = new Date();

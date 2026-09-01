@@ -32,4 +32,5 @@ supabase_credentials
 # Archives & Review Bundles
 *.zip
 FOR_GPT_REVIEW/
+website_octal_dialer/backend/data/scraper_output/
 

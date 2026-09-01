@@ -84,25 +84,10 @@ function verifyPassword(password: string, stored: string): boolean {
   }
 }
 
-// ─── Prepared statements ──────────────────────────────────────────────────────
-const stmts = {
-  findUserByUsername:        db.prepare(`SELECT * FROM users WHERE username = @username`),
-  findUserByUsernameOrEmail: db.prepare(`SELECT * FROM users WHERE username = @ident OR (email IS NOT NULL AND email = @ident)`),
-  findUserById:              db.prepare(`SELECT * FROM users WHERE id = @id`),
-  insertUser:                db.prepare(`INSERT INTO users (id, username, email, passwordHash, role, tenantId, googleId, authProvider, createdAt, updatedAt) VALUES (@id, @username, @email, @passwordHash, @role, @tenantId, @googleId, @authProvider, @createdAt, @updatedAt)`),
-  countUsers:                db.prepare(`SELECT COUNT(*) as c FROM users`),
-  insertSession:             db.prepare(`INSERT INTO sessions_store (id, userId, token, expiresAt, createdAt) VALUES (@id, @userId, @token, @expiresAt, @createdAt)`),
-  findSession:               db.prepare(`SELECT * FROM sessions_store WHERE token = @token`),
-  deleteSession:             db.prepare(`DELETE FROM sessions_store WHERE token = @token`),
-  deleteExpired:             db.prepare(`DELETE FROM sessions_store WHERE expiresAt < @now`),
-  updatePassword:            db.prepare(`UPDATE users SET passwordHash = @passwordHash WHERE id = @id`),
-};
-
 // ─── CAPTCHA Verification (Cloudflare Turnstile) ─────────────────────────────
 export async function verifyCaptcha(token?: string, remoteIp?: string): Promise<{ success: boolean; error?: string }> {
   const secret = process.env.CAPTCHA_SECRET_KEY || process.env.TURNSTILE_SECRET_KEY || '';
   
-  // If no secret configured or set to local test/development dummy, pass gracefully
   if (!secret || secret === 'test' || secret === 'dummy' || process.env.NODE_ENV === 'test') {
     return { success: true };
   }
@@ -111,7 +96,6 @@ export async function verifyCaptcha(token?: string, remoteIp?: string): Promise<
     return { success: false, error: 'CAPTCHA token is required.' };
   }
 
-  // Allow standard Cloudflare Turnstile testing pass tokens
   if (token.startsWith('1x00000000000000000000AA') || token === 'test_pass') {
     return { success: true };
   }
@@ -167,31 +151,29 @@ export async function verifyGoogleIdToken(idToken: string): Promise<{ googleId: 
   };
 }
 
-/** Link or create user via Google OAuth (Always forces role='user' for new accounts) */
-/**
- * Google Sign In: Authenticates an EXISTING Octal Dialer account.
- * INVARIANT: Never creates an account if none exists.
- */
-export function authenticateGoogleSignIn(profile: { googleId: string; email: string; name?: string; picture?: string }): { token: string; user: AuthUser; isNewUser: boolean } {
+/** Link or create user via Google OAuth */
+export async function authenticateGoogleSignIn(profile: { googleId: string; email: string; name?: string; picture?: string }): Promise<{ token: string; user: AuthUser; isNewUser: boolean }> {
   const email = profile.email.toLowerCase().trim();
   const googleId = profile.googleId;
   const now = new Date().toISOString();
 
   // 1. Look up user by googleId
-  let user = db.prepare(`SELECT * FROM users WHERE googleId = ?`).get(googleId) as any;
+  let user = await db.queryOne<any>(`SELECT * FROM users WHERE "googleId" = $1`, [googleId]);
 
   // 2. If not found by googleId, check by verified email
   if (!user) {
-    user = db.prepare(`SELECT * FROM users WHERE email = ? OR username = ?`).get(email, email) as any;
+    user = await db.queryOne<any>(`SELECT * FROM users WHERE email = $1 OR username = $2`, [email, email]);
     if (user) {
-      // Link googleId to existing internal account without altering permissions or existing role!
       const updateDisplayName = (!user.displayName && profile.name) ? profile.name : user.displayName;
-      db.prepare(`UPDATE users SET googleId = ?, authProvider = 'google_linked', displayName = COALESCE(?, displayName), updatedAt = ? WHERE id = ?`).run(googleId, updateDisplayName, now, user.id);
+      await db.execute(`
+        UPDATE users 
+        SET "googleId" = $1, "authProvider" = 'google_linked', "displayName" = COALESCE($2, "displayName"), "updatedAt" = $3 
+        WHERE id = $4
+      `, [googleId, updateDisplayName, now, user.id]);
       if (updateDisplayName) user.displayName = updateDisplayName;
     }
   }
 
-// If no account exists, STRICTLY reject without creating an account
   if (!user) {
     const err: any = new Error('No Octal Dialer account was found for this Google account. Please sign up first.');
     err.code = 'ACCOUNT_NOT_FOUND';
@@ -199,7 +181,6 @@ export function authenticateGoogleSignIn(profile: { googleId: string; email: str
     throw err;
   }
 
-  // Existing user: PRESERVE authoritative ID, role (e.g. platform_admin or admin), and tenantId
   const payload = {
     sub: user.id,
     username: user.username,
@@ -223,15 +204,14 @@ export function authenticateGoogleSignIn(profile: { googleId: string; email: str
 
 /**
  * Google Sign Up: Creates a NEW Octal Dialer account if one does not already exist.
- * INVARIANT: If account already exists, rejects with ACCOUNT_EXISTS.
  */
-export function registerGoogleSignUp(profile: { googleId: string; email: string; name?: string; picture?: string }): { token: string; user: AuthUser; isNewUser: boolean } {
+export async function registerGoogleSignUp(profile: { googleId: string; email: string; name?: string; picture?: string }): Promise<{ token: string; user: AuthUser; isNewUser: boolean }> {
   const email = profile.email.toLowerCase().trim();
   const googleId = profile.googleId;
   const now = new Date().toISOString();
 
-  // 1. Check if user already exists (by googleId or email)
-  let existing = db.prepare(`SELECT * FROM users WHERE googleId = ? OR email = ? OR username = ?`).get(googleId, email, email) as any;
+  // 1. Check if user already exists
+  const existing = await db.queryOne<any>(`SELECT * FROM users WHERE "googleId" = $1 OR email = $2 OR username = $3`, [googleId, email, email]);
   if (existing) {
     const err: any = new Error('An Octal Dialer account already exists with this Google account. Please sign in instead.');
     err.code = 'ACCOUNT_EXISTS';
@@ -239,11 +219,11 @@ export function registerGoogleSignUp(profile: { googleId: string; email: string;
     throw err;
   }
 
-  // 2. New User Registration: STRICTLY force role = 'user' and generate dedicated tenant
+  // 2. New User Registration
   const userId = 'user_' + crypto.randomBytes(8).toString('hex');
   const cleanBase = (profile.name || email.split('@')[0]).toLowerCase().replace(/[^a-z0-9_]/g, '');
   let candidateUsername = cleanBase.length >= 3 ? cleanBase : 'user';
-  const existingWithUsername = db.prepare(`SELECT id FROM users WHERE username = ?`).get(candidateUsername) as any;
+  const existingWithUsername = await db.queryOne<any>(`SELECT id FROM users WHERE username = $1`, [candidateUsername]);
   const username = existingWithUsername ? `${candidateUsername}_${crypto.randomBytes(2).toString('hex')}` : candidateUsername;
   const displayName = profile.name || cleanBase;
   const tenantId = 'tenant_' + crypto.randomBytes(8).toString('hex');
@@ -251,39 +231,37 @@ export function registerGoogleSignUp(profile: { googleId: string; email: string;
   const companyName = profile.name ? `${profile.name}'s Organization` : `${candidateUsername}'s Team`;
   const { hash } = hashPassword(crypto.randomBytes(32).toString('hex'));
 
-  const signupTransaction = db.transaction(() => {
+  await db.withTransaction(async () => {
     // 2a. Insert Tenant
-    db.prepare(`
-      INSERT INTO tenants (id, name, slug, country, logoUrl, ownerEmail, status, createdAt, updatedAt)
-      VALUES (?, ?, ?, 'US', ?, ?, 'active', ?, ?)
-    `).run(tenantId, companyName, `${tenantSlug}_${crypto.randomBytes(3).toString('hex')}`, profile.picture || null, email, now, now);
+    await db.execute(`
+      INSERT INTO tenants (id, name, slug, country, "logoUrl", "ownerEmail", status, "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, 'US', $4, $5, 'active', $6, $7)
+    `, [tenantId, companyName, `${tenantSlug}_${crypto.randomBytes(3).toString('hex')}`, profile.picture || null, email, now, now]);
 
     // 2b. Insert User
-    db.prepare(`
-      INSERT INTO users (id, username, displayName, email, passwordHash, role, tenantId, googleId, authProvider, emailVerified, emailVerifiedAt, needsProfileSetup, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, 'user', ?, ?, 'google', 1, ?, 1, ?, ?)
-    `).run(userId, username, displayName, email, hash, tenantId, googleId, now, now, now);
+    await db.execute(`
+      INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "googleId", "authProvider", "emailVerified", "emailVerifiedAt", "needsProfileSetup", "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, 'user', $6, $7, 'google', 1, $8, 1, $9, $10)
+    `, [userId, username, displayName, email, hash, tenantId, googleId, now, now, now]);
 
     // 2c. Provision standard starter subscription
     const subId = 'sub_' + crypto.randomBytes(8).toString('hex');
     const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare(`
-      INSERT INTO subscriptions (id, tenantId, planId, status, currentPeriodStart, currentPeriodEnd, createdAt, updatedAt)
-      VALUES (?, ?, 'plan_starter', 'active', ?, ?, ?, ?)
-    `).run(subId, tenantId, now, periodEnd, now, now);
+    await db.execute(`
+      INSERT INTO subscriptions (id, "tenantId", "planId", status, "currentPeriodStart", "currentPeriodEnd", "createdAt", "updatedAt")
+      VALUES ($1, $2, 'plan_starter', 'active', $3, $4, $5, $6)
+    `, [subId, tenantId, now, periodEnd, now, now]);
 
-    // 2d. Provision standard default permissions (all modules except admin & crm which require admin elevation)
+    // 2d. Provision standard default permissions
     const modules = ['octalDialer', 'campaigns', 'leads', 'reports', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
-    const insertPerm = db.prepare(`
-      INSERT OR IGNORE INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
-      VALUES (?, ?, ?, 1, 'SYSTEM_GOOGLE_SIGNUP', ?, ?)
-    `);
     for (const m of modules) {
-      insertPerm.run(`perm_${userId}_${m}`, userId, m, tenantId, now);
+      await db.execute(`
+        INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
+        VALUES ($1, $2, $3, 1, 'SYSTEM_GOOGLE_SIGNUP', $4, $5)
+        ON CONFLICT ("id") DO NOTHING
+      `, [`perm_${userId}_${m}`, userId, m, tenantId, now]);
     }
   });
-
-  signupTransaction();
 
   const authUser: AuthUser = {
     id: userId,
@@ -309,10 +287,10 @@ export function registerGoogleSignUp(profile: { googleId: string; email: string;
 }
 
 /** Handle Google OAuth with explicit intent */
-export function handleGoogleAuthWithIntent(
+export async function handleGoogleAuthWithIntent(
   profile: { googleId: string; email: string; name?: string; picture?: string },
   intent: 'signin' | 'signup' = 'signin'
-): { token: string; user: AuthUser; isNewUser: boolean } {
+): Promise<{ token: string; user: AuthUser; isNewUser: boolean }> {
   if (intent === 'signup') {
     return registerGoogleSignUp(profile);
   } else {
@@ -323,8 +301,8 @@ export function handleGoogleAuthWithIntent(
 /**
  * Complete Google Profile Setup (One-Time Setup for Username & Optional Password)
  */
-export function completeGoogleProfileSetup(userId: string, params: { username?: string; password?: string; skip?: boolean }): { token: string; user: AuthUser } {
-  const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(userId) as any;
+export async function completeGoogleProfileSetup(userId: string, params: { username?: string; password?: string; skip?: boolean }): Promise<{ token: string; user: AuthUser }> {
+  const user = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [userId]);
   if (!user) {
     throw new Error('User not found.');
   }
@@ -335,7 +313,7 @@ export function completeGoogleProfileSetup(userId: string, params: { username?: 
   const nowIso = new Date().toISOString();
 
   if (params.skip) {
-    db.prepare(`UPDATE users SET needsProfileSetup = 0, updatedAt = ? WHERE id = ?`).run(nowIso, userId);
+    await db.execute(`UPDATE users SET "needsProfileSetup" = 0, "updatedAt" = $1 WHERE id = $2`, [nowIso, userId]);
   } else {
     let newUsername = user.username;
     let newPasswordHash = user.passwordHash;
@@ -348,7 +326,7 @@ export function completeGoogleProfileSetup(userId: string, params: { username?: 
       if (!/^[a-z0-9_.-]+$/.test(trimmedUsername)) {
         throw new Error('Username can only contain lowercase letters, numbers, underscores, dots, and hyphens.');
       }
-      const collision = db.prepare(`SELECT id FROM users WHERE username = ? AND id != ?`).get(trimmedUsername, userId) as any;
+      const collision = await db.queryOne<any>(`SELECT id FROM users WHERE username = $1 AND id != $2`, [trimmedUsername, userId]);
       if (collision) {
         throw new Error('This username is already taken. Please choose another.');
       }
@@ -363,8 +341,9 @@ export function completeGoogleProfileSetup(userId: string, params: { username?: 
       newPasswordHash = hash;
     }
 
-    db.prepare(`UPDATE users SET username = ?, passwordHash = ?, needsProfileSetup = 0, updatedAt = ? WHERE id = ?`)
-      .run(newUsername, newPasswordHash, nowIso, userId);
+    await db.execute(`
+      UPDATE users SET username = $1, "passwordHash" = $2, "needsProfileSetup" = 0, "updatedAt" = $3 WHERE id = $4
+    `, [newUsername, newPasswordHash, nowIso, userId]);
 
     user.username = newUsername;
   }
@@ -390,12 +369,7 @@ export function completeGoogleProfileSetup(userId: string, params: { username?: 
   };
 }
 
-/**
- * findOrCreateGoogleUser
- * @deprecated Use handleGoogleAuthWithIntent(profile, intent) instead.
- * Fallback strictly defaults to signin mode without auto-creation.
- */
-export function findOrCreateGoogleUser(profile: { googleId: string; email: string; name?: string; picture?: string }): { token: string; user: AuthUser; isNewUser: boolean } {
+export async function findOrCreateGoogleUser(profile: { googleId: string; email: string; name?: string; picture?: string }): Promise<{ token: string; user: AuthUser; isNewUser: boolean }> {
   return authenticateGoogleSignIn(profile);
 }
 
@@ -418,22 +392,18 @@ export async function initiateEmailSignup(params: {
   const email = (params.email || '').trim().toLowerCase();
   const password = params.password || '';
 
-  // 1. Email format syntax check
   if (!isValidEmailFormat(email)) {
     throw new Error('Please enter a valid email address.');
   }
 
-  // 2. Disposable / temporary email check
   if (isDisposableEmail(email)) {
     throw new Error('Disposable or temporary email addresses are not allowed. Please use a permanent email address.');
   }
 
-  // 3. Password validation
   if (password.length < 6) {
     throw new Error('Password must be at least 6 characters long.');
   }
 
-  // 4. Derive or validate username
   let username = (params.username || '').trim().toLowerCase();
   if (!username) {
     const base = email.split('@')[0].replace(/[^a-z0-9_]/g, '');
@@ -443,38 +413,33 @@ export async function initiateEmailSignup(params: {
     throw new Error('Username must be at least 3 characters long.');
   }
 
-  // 5. Check if active user already exists
-  const existingUser = db.prepare(`SELECT id, username, email FROM users WHERE username = ? OR (email IS NOT NULL AND email = ?)`).get(username, email) as any;
+  const existingUser = await db.queryOne<any>(`SELECT id, username, email FROM users WHERE username = $1 OR (email IS NOT NULL AND email = $2)`, [username, email]);
   if (existingUser) {
     throw new Error('An account with this username or email already exists.');
   }
 
-  // 6. Check existing pending signups for rate limiting / cooldown
-  const recentPending = db.prepare(`SELECT * FROM pending_signups WHERE email = ? AND verifiedAt IS NULL ORDER BY createdAt DESC LIMIT 1`).get(email) as any;
+  const recentPending = await db.queryOne<any>(`SELECT * FROM pending_signups WHERE email = $1 AND "verifiedAt" IS NULL ORDER BY "createdAt" DESC LIMIT 1`, [email]);
   const nowMs = Date.now();
   if (recentPending) {
     const lastSentMs = new Date(recentPending.lastSentAt).getTime();
-    if (nowMs - lastSentMs < 15 * 1000) { // 15s initial throttle
+    if (nowMs - lastSentMs < 15 * 1000) {
       const waitSecs = Math.ceil((15000 - (nowMs - lastSentMs)) / 1000);
       throw new Error(`Please wait ${waitSecs}s before requesting another verification code.`);
     }
   }
 
-  // 7. Generate 6-digit OTP code & hashes
   const otpCode = generateVerificationCode();
   const codeHash = hashVerificationCode(otpCode);
   const { hash: passwordHash } = hashPassword(password);
   const signupId = 'signup_' + crypto.randomBytes(8).toString('hex');
   const nowIso = new Date().toISOString();
-  const expiresIso = new Date(nowMs + 10 * 60 * 1000).toISOString(); // 10 minutes
+  const expiresIso = new Date(nowMs + 10 * 60 * 1000).toISOString();
 
-  // 8. Store in pending_signups table
-  db.prepare(`
-    INSERT INTO pending_signups (id, email, username, passwordHash, codeHash, attempts, resendCount, lastSentAt, expiresAt, ip, tenantId, createdAt)
-    VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'tenant_default', ?)
-  `).run(signupId, email, username, passwordHash, codeHash, nowIso, expiresIso, params.ip || 'unknown', nowIso);
+  await db.execute(`
+    INSERT INTO pending_signups (id, email, username, "passwordHash", "codeHash", attempts, "resendCount", "lastSentAt", "expiresAt", ip, "tenantId", "createdAt")
+    VALUES ($1, $2, $3, $4, $5, 0, 0, $6, $7, $8, 'tenant_default', $9)
+  `, [signupId, email, username, passwordHash, codeHash, nowIso, expiresIso, params.ip || 'unknown', nowIso]);
 
-  // 9. Send verification email via SMTP/mailer
   await sendVerificationEmail(email, otpCode);
 
   return {
@@ -485,19 +450,11 @@ export async function initiateEmailSignup(params: {
   };
 }
 
-/**
- * Step 2: Verify Email OTP Code & Activate User Account
- * - Checks attempt limits (max 5)
- * - Verifies expiration (10 min)
- * - Timing-safe OTP hash comparison
- * - Inserts active user strictly with role = 'user'
- * - Returns JWT session token
- */
-export function verifyEmailCode(params: {
+export async function verifyEmailCode(params: {
   signupId?: string;
   email: string;
   code: string;
-}): { token: string; username: string; user: AuthUser } {
+}): Promise<{ token: string; username: string; user: AuthUser }> {
   const email = (params.email || '').trim().toLowerCase();
   const code = (params.code || '').trim();
 
@@ -505,36 +462,32 @@ export function verifyEmailCode(params: {
     throw new Error('Email and 6-digit verification code are required.');
   }
 
-  // Find pending signup
   let pending: any;
   if (params.signupId) {
-    pending = db.prepare(`SELECT * FROM pending_signups WHERE id = ? AND verifiedAt IS NULL`).get(params.signupId);
+    pending = await db.queryOne<any>(`SELECT * FROM pending_signups WHERE id = $1 AND "verifiedAt" IS NULL`, [params.signupId]);
   }
   if (!pending) {
-    pending = db.prepare(`SELECT * FROM pending_signups WHERE email = ? AND verifiedAt IS NULL ORDER BY createdAt DESC LIMIT 1`).get(email);
+    pending = await db.queryOne<any>(`SELECT * FROM pending_signups WHERE email = $1 AND "verifiedAt" IS NULL ORDER BY "createdAt" DESC LIMIT 1`, [email]);
   }
 
   if (!pending) {
     throw new Error('No pending verification request found for this email. Please sign up again.');
   }
 
-  // Check attempts limit
   if (pending.attempts >= 5) {
     throw new Error('Too many invalid attempts. This verification code has been locked. Please request a new code.');
   }
 
-  // Check expiration
   const nowMs = Date.now();
   const expiresMs = new Date(pending.expiresAt).getTime();
   if (nowMs > expiresMs) {
     throw new Error('Verification code has expired. Please request a new code.');
   }
 
-  // Verify code hash
   const isValid = verifyVerificationCode(code, pending.codeHash);
   if (!isValid) {
     const newAttempts = pending.attempts + 1;
-    db.prepare(`UPDATE pending_signups SET attempts = ? WHERE id = ?`).run(newAttempts, pending.id);
+    await db.execute(`UPDATE pending_signups SET attempts = $1 WHERE id = $2`, [newAttempts, pending.id]);
     const remaining = Math.max(0, 5 - newAttempts);
     if (remaining === 0) {
       throw new Error('Too many invalid attempts. This code has been locked. Please request a new code.');
@@ -542,32 +495,30 @@ export function verifyEmailCode(params: {
     throw new Error(`Invalid verification code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`);
   }
 
-  // Mark pending signup as verified
   const nowIso = new Date().toISOString();
-  db.prepare(`UPDATE pending_signups SET verifiedAt = ? WHERE id = ?`).run(nowIso, pending.id);
+  await db.execute(`UPDATE pending_signups SET "verifiedAt" = $1 WHERE id = $2`, [nowIso, pending.id]);
 
-  // Check if user already exists
-  let user = db.prepare(`SELECT * FROM users WHERE email = ? OR username = ?`).get(pending.email, pending.username) as any;
+  let user = await db.queryOne<any>(`SELECT * FROM users WHERE email = $1 OR username = $2`, [pending.email, pending.username]);
 
   if (!user) {
-    // SECURITY INVARIANT: Public signup is strictly assigned role = 'user'
     const userId = 'user_' + crypto.randomBytes(8).toString('hex');
     const tenantId = pending.tenantId || 'tenant_default';
 
-    db.prepare(`
-      INSERT INTO users (id, username, email, passwordHash, role, tenantId, authProvider, emailVerified, emailVerifiedAt, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, 'user', ?, 'local', 1, ?, ?, ?)
-    `).run(userId, pending.username, pending.email, pending.passwordHash, tenantId, nowIso, nowIso, nowIso);
+    await db.withTransaction(async () => {
+      await db.execute(`
+        INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "emailVerifiedAt", "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, $4, 'user', $5, 'local', 1, $6, $7, $8)
+      `, [userId, pending.username, pending.email, pending.passwordHash, tenantId, nowIso, nowIso, nowIso]);
 
-    // Provision basic default permissions (all modules except admin & crm which require admin elevation)
-    const modules = ['octalDialer', 'campaigns', 'leads', 'reports', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
-    const insertPerm = db.prepare(`
-      INSERT OR IGNORE INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
-      VALUES (?, ?, ?, 1, 'SYSTEM_VERIFIED_SIGNUP', ?, ?)
-    `);
-    for (const m of modules) {
-      insertPerm.run(`perm_${userId}_${m}`, userId, m, tenantId, nowIso);
-    }
+      const modules = ['octalDialer', 'campaigns', 'leads', 'reports', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
+      for (const m of modules) {
+        await db.execute(`
+          INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
+          VALUES ($1, $2, $3, 1, 'SYSTEM_VERIFIED_SIGNUP', $4, $5)
+          ON CONFLICT ("id") DO NOTHING
+        `, [`perm_${userId}_${m}`, userId, m, tenantId, nowIso]);
+      }
+    });
 
     user = {
       id: userId,
@@ -577,7 +528,7 @@ export function verifyEmailCode(params: {
       tenantId: tenantId
     };
   } else {
-    db.prepare(`UPDATE users SET emailVerified = 1, emailVerifiedAt = ? WHERE id = ?`).run(nowIso, user.id);
+    await db.execute(`UPDATE users SET "emailVerified" = 1, "emailVerifiedAt" = $1 WHERE id = $2`, [nowIso, user.id]);
   }
 
   const authUser: AuthUser = {
@@ -603,9 +554,6 @@ export function verifyEmailCode(params: {
   };
 }
 
-/**
- * Resend Verification OTP Code with Rate Limiting Cooldown
- */
 export async function resendVerificationCode(params: {
   signupId?: string;
   email: string;
@@ -618,17 +566,16 @@ export async function resendVerificationCode(params: {
 
   let pending: any;
   if (params.signupId) {
-    pending = db.prepare(`SELECT * FROM pending_signups WHERE id = ? AND verifiedAt IS NULL`).get(params.signupId);
+    pending = await db.queryOne<any>(`SELECT * FROM pending_signups WHERE id = $1 AND "verifiedAt" IS NULL`, [params.signupId]);
   }
   if (!pending) {
-    pending = db.prepare(`SELECT * FROM pending_signups WHERE email = ? AND verifiedAt IS NULL ORDER BY createdAt DESC LIMIT 1`).get(email);
+    pending = await db.queryOne<any>(`SELECT * FROM pending_signups WHERE email = $1 AND "verifiedAt" IS NULL ORDER BY "createdAt" DESC LIMIT 1`, [email]);
   }
 
   if (!pending) {
     throw new Error('No pending verification request found for this email.');
   }
 
-  // Cooldown enforcement: 45 seconds between resends
   const nowMs = Date.now();
   const lastSentMs = new Date(pending.lastSentAt).getTime();
   const cooldownMs = 45 * 1000;
@@ -637,7 +584,6 @@ export async function resendVerificationCode(params: {
     throw new Error(`Please wait ${waitSecs} seconds before requesting a new code.`);
   }
 
-  // Limit max resends
   if (pending.resendCount >= 5) {
     throw new Error('Maximum resend limit reached for this session. Please start registration again.');
   }
@@ -647,11 +593,11 @@ export async function resendVerificationCode(params: {
   const nowIso = new Date().toISOString();
   const expiresIso = new Date(nowMs + 10 * 60 * 1000).toISOString();
 
-  db.prepare(`
+  await db.execute(`
     UPDATE pending_signups
-    SET codeHash = ?, attempts = 0, resendCount = resendCount + 1, lastSentAt = ?, expiresAt = ?
-    WHERE id = ?
-  `).run(newCodeHash, nowIso, expiresIso, pending.id);
+    SET "codeHash" = $1, attempts = 0, "resendCount" = "resendCount" + 1, "lastSentAt" = $2, "expiresAt" = $3
+    WHERE id = $4
+  `, [newCodeHash, nowIso, expiresIso, pending.id]);
 
   await sendVerificationEmail(pending.email, newOtp);
 
@@ -662,8 +608,7 @@ export async function resendVerificationCode(params: {
   };
 }
 
-/** Public User Registration: STRICTLY defaults to role='user' regardless of request payload */
-export function registerPublicUser(params: { username: string; email?: string; password: string; requestedRole?: string; tenantId?: string }): { token: string; user: AuthUser } {
+export async function registerPublicUser(params: { username: string; email?: string; password: string; requestedRole?: string; tenantId?: string }): Promise<{ token: string; user: AuthUser }> {
   const username = params.username.trim().toLowerCase();
   const email = params.email ? params.email.trim().toLowerCase() : null;
   const password = params.password;
@@ -684,23 +629,21 @@ export function registerPublicUser(params: { username: string; email?: string; p
     throw new Error('Password must be at least 6 characters long.');
   }
 
-  // Check uniqueness
-  const existing = db.prepare(`SELECT id FROM users WHERE username = ? OR (email IS NOT NULL AND email = ?)`).get(username, email || '') as any;
+  const existing = await db.queryOne<any>(`SELECT id FROM users WHERE username = $1 OR (email IS NOT NULL AND email = $2)`, [username, email || '']);
   if (existing) {
     throw new Error('Username or email is already taken.');
   }
 
-  // SECURITY RULE: Public signups NEVER receive admin or master_admin. Always role = 'user'.
   const role = 'user';
   const tenantId = params.tenantId || 'tenant_default';
   const userId = 'user_' + crypto.randomBytes(8).toString('hex');
   const { hash } = hashPassword(password);
   const now = new Date().toISOString();
 
-  db.prepare(`
-    INSERT INTO users (id, username, email, passwordHash, role, tenantId, authProvider, emailVerified, emailVerifiedAt, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, 'user', ?, 'local', 1, ?, ?, ?)
-  `).run(userId, username, email, hash, tenantId, now, now, now);
+  await db.execute(`
+    INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "emailVerifiedAt", "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, 'user', $5, 'local', 1, $6, $7, $8)
+  `, [userId, username, email, hash, tenantId, now, now, now]);
 
   const authUser: AuthUser = {
     id: userId,
@@ -725,25 +668,25 @@ export function registerPublicUser(params: { username: string; email?: string; p
 }
 
 // ─── Default admin bootstrap ──────────────────────────────────────────────────
-export function ensureDefaultAdmin(): void {
-  // 1. If mohsin1 exists, ensure mohsin1 is platform_admin and no one else is platform_admin
-  const primaryOwner = db.prepare(`SELECT * FROM users WHERE username = 'mohsin1' OR email = 'blazingsoul451@gmail.com'`).get() as any;
+export async function ensureDefaultAdmin(): Promise<void> {
+  const primaryOwner = await db.queryOne<any>(`SELECT * FROM users WHERE username = 'mohsin1' OR email = 'blazingsoul451@gmail.com'`);
   if (primaryOwner) {
-    db.prepare(`UPDATE users SET role = 'platform_admin' WHERE id = ?`).run(primaryOwner.id);
-    db.prepare(`UPDATE users SET role = 'user' WHERE role = 'platform_admin' AND id != ?`).run(primaryOwner.id);
+    await db.execute(`UPDATE users SET role = 'platform_admin' WHERE id = $1`, [primaryOwner.id]);
+    await db.execute(`UPDATE users SET role = 'user' WHERE role = 'platform_admin' AND id != $1`, [primaryOwner.id]);
     return;
   }
 
-  const count = (stmts.countUsers.get() as { c: number }).c;
+  const countRow = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM users`);
+  const count = countRow ? Number(countRow.c) : 0;
   if (count > 0) return;
 
   const defaultPassword = 'octal' + Math.random().toString(36).substring(2, 8).toUpperCase();
   const { hash } = hashPassword(defaultPassword);
 
-  db.prepare(`
-    INSERT INTO users (id, username, email, passwordHash, role, tenantId, authProvider, createdAt, updatedAt)
-    VALUES (?, ?, 'admin@octaldialer.local', ?, 'user', 'tenant_default', 'local', ?, ?)
-  `).run('user_admin_' + crypto.randomBytes(4).toString('hex'), 'admin', hash, new Date().toISOString(), new Date().toISOString());
+  await db.execute(`
+    INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "createdAt", "updatedAt")
+    VALUES ($1, $2, 'admin@octaldialer.local', $3, 'user', 'tenant_default', 'local', $4, $5)
+  `, ['user_admin_' + crypto.randomBytes(4).toString('hex'), 'admin', hash, new Date().toISOString(), new Date().toISOString()]);
 
   console.log('');
   console.log('╔══════════════════════════════════════════════╗');
@@ -760,22 +703,20 @@ export function ensureDefaultAdmin(): void {
 // ─── Auth operations ──────────────────────────────────────────────────────────
 
 /** Validate credentials (by username or email) → return JWT token or null */
-export function login(identifier: string, password: string): string | null {
+export async function login(identifier: string, password: string): Promise<string | null> {
   const cleanIdent = (identifier || '').trim().toLowerCase();
-  const user = stmts.findUserByUsernameOrEmail.get({ ident: cleanIdent }) as any;
+  const user = await db.queryOne<any>(`SELECT * FROM users WHERE username = $1 OR (email IS NOT NULL AND email = $2)`, [cleanIdent, cleanIdent]);
   if (!user) return null;
   if (!verifyPassword(password, user.passwordHash)) return null;
 
-  // Strict check: User must belong to a valid tenant (fail-closed)
   if (!user.tenantId) {
     console.error(`[Auth] User ${identifier} has no associated tenantId. Login rejected.`);
     return null;
   }
 
-  // Clean up expired legacy sessions (maintenance)
-  stmts.deleteExpired.run({ now: new Date().toISOString() });
+  // Clean up expired legacy sessions
+  await db.execute(`DELETE FROM sessions_store WHERE "expiresAt" < $1`, [new Date().toISOString()]);
 
-  // Include trusted tenant context in JWT token
   const payload = {
     sub: user.id,
     username: user.username,
@@ -787,59 +728,51 @@ export function login(identifier: string, password: string): string | null {
   return token;
 }
 
-/** Validate a token → return user or null (Strict Fail-Closed: requires valid tenantId) */
-export function validateToken(token: string): AuthUser | null {
+/** Validate a token → return user or null */
+export async function validateToken(token: string): Promise<AuthUser | null> {
   if (!token) return null;
 
-  // ─── PHASE 4 & 6: JWT verification with DB tenant & role consistency check ───
   try {
     const decoded = jwt.verify(token, getJWTSecret(), { algorithms: ['HS256'] }) as any;
 
     if (decoded.sub && decoded.username && decoded.role && decoded.tenantId) {
-      // Re-verify against database to prevent stale token usage upon tenant move, role change, or user deletion
-      const dbUser = stmts.findUserById.get({ id: decoded.sub }) as any;
+      const dbUser = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [decoded.sub]);
       if (!dbUser || !dbUser.tenantId || dbUser.tenantId !== decoded.tenantId) {
-        // User no longer exists, tenant membership changed, or user disabled -> Fail closed!
         return null;
       }
 
-      // Check tenant active status
-      const dbTenant = db.prepare(`SELECT status FROM tenants WHERE id = ?`).get(dbUser.tenantId) as { status: string } | undefined;
+      const dbTenant = await db.queryOne<{ status: string }>(`SELECT status FROM tenants WHERE id = $1`, [dbUser.tenantId]);
       if (dbTenant && dbTenant.status === 'suspended' && dbUser.role !== 'platform_admin' && dbUser.role !== 'master_admin') {
-        return null; // Block access for suspended tenants (platform admin exempt)
+        return null;
       }
 
       return {
         id: dbUser.id,
         username: dbUser.username,
         displayName: dbUser.displayName || dbUser.username,
-        role: dbUser.role, // Use authoritative current database role
-        tenantId: dbUser.tenantId, // Use authoritative current database tenant
+        role: dbUser.role,
+        tenantId: dbUser.tenantId,
         email: dbUser.email
       };
     }
-    // If tenantId is missing from JWT payload, fail closed
     if (decoded.sub && !decoded.tenantId) {
       console.warn('[Auth] Rejected JWT token missing tenantId claim.');
       return null;
     }
   } catch (err) {
-    // Not a valid JWT or expired — fall through to legacy validation
+    // Fall through to legacy session check
   }
 
-  // ─── LEGACY: sessions_store lookup for 64-char hex tokens ───
-  const session = stmts.findSession.get({ token }) as any;
+  const session = await db.queryOne<any>(`SELECT * FROM sessions_store WHERE token = $1`, [token]);
   if (!session) return null;
 
-  // Check expiry
   if (new Date(session.expiresAt) < new Date()) {
-    stmts.deleteSession.run({ token });
+    await db.execute(`DELETE FROM sessions_store WHERE token = $1`, [token]);
     return null;
   }
 
-  const user = stmts.findUserById.get({ id: session.userId }) as any;
+  const user = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [session.userId]);
   if (!user || !user.tenantId) {
-    // Missing user or unassigned tenant -> fail closed
     return null;
   }
 
@@ -853,28 +786,27 @@ export function validateToken(token: string): AuthUser | null {
 }
 
 /** Destroy a session (logout) */
-export function logout(token: string): void {
-  stmts.deleteSession.run({ token });
+export async function logout(token: string): Promise<void> {
+  await db.execute(`DELETE FROM sessions_store WHERE token = $1`, [token]);
 }
 
 /** Change password for a user */
-export function changePassword(userId: string, newPassword: string): void {
+export async function changePassword(userId: string, newPassword: string): Promise<void> {
   const { hash } = hashPassword(newPassword);
-  stmts.updatePassword.run({ id: userId, passwordHash: hash });
+  await db.execute(`UPDATE users SET "passwordHash" = $1 WHERE id = $2`, [hash, userId]);
 }
 
 /** Password Reset: generate reset token */
-export function requestPasswordReset(identifier: string): { success: boolean; message: string; resetToken?: string } {
+export async function requestPasswordReset(identifier: string): Promise<{ success: boolean; message: string; resetToken?: string }> {
   const clean = (identifier || '').trim().toLowerCase();
-  const user = db.prepare(`SELECT id, email, username FROM users WHERE username = ? OR (email IS NOT NULL AND email = ?)`).get(clean, clean) as any;
+  const user = await db.queryOne<any>(`SELECT id, email, username FROM users WHERE username = $1 OR (email IS NOT NULL AND email = $2)`, [clean, clean]);
   if (!user) {
-    // Prevent account enumeration: return success even if not found
     return { success: true, message: 'If an account matches that email/username, a reset link has been issued.' };
   }
 
   const resetToken = crypto.randomBytes(32).toString('hex');
-  const expires = new Date(Date.now() + 3600 * 1000).toISOString(); // 1 hour
-  db.prepare(`UPDATE users SET resetToken = ?, resetTokenExpires = ? WHERE id = ?`).run(resetToken, expires, user.id);
+  const expires = new Date(Date.now() + 3600 * 1000).toISOString();
+  await db.execute(`UPDATE users SET "resetToken" = $1, "resetTokenExpires" = $2 WHERE id = $3`, [resetToken, expires, user.id]);
 
   if (user.email) {
     sendPasswordResetEmail(user.email, resetToken).catch(err => console.error('[Auth] Failed to send password reset email:', err));
@@ -885,40 +817,38 @@ export function requestPasswordReset(identifier: string): { success: boolean; me
 }
 
 /** Password Reset: execute with token */
-export function resetPasswordWithToken(resetToken: string, newPassword: string): { success: boolean; message: string } {
+export async function resetPasswordWithToken(resetToken: string, newPassword: string): Promise<{ success: boolean; message: string }> {
   if (!resetToken || !newPassword || newPassword.length < 6) {
     throw new Error('Valid reset token and new password (min 6 chars) are required.');
   }
 
   const now = new Date().toISOString();
-  const user = db.prepare(`SELECT id FROM users WHERE resetToken = ? AND resetTokenExpires > ?`).get(resetToken, now) as any;
+  const user = await db.queryOne<any>(`SELECT id FROM users WHERE "resetToken" = $1 AND "resetTokenExpires" > $2`, [resetToken, now]);
   if (!user) {
     throw new Error('Invalid or expired password reset token.');
   }
 
   const { hash } = hashPassword(newPassword);
-  db.prepare(`UPDATE users SET passwordHash = ?, resetToken = NULL, resetTokenExpires = NULL, updatedAt = ? WHERE id = ?`).run(hash, now, user.id);
+  await db.execute(`UPDATE users SET "passwordHash" = $1, "resetToken" = NULL, "resetTokenExpires" = NULL, "updatedAt" = $2 WHERE id = $3`, [hash, now, user.id]);
 
   return { success: true, message: 'Password successfully updated. You may now log in.' };
 }
 
 /** Update user role — STRICTLY restricted to Super Admin (Platform Owner) */
-export function updateUserRole(executorUser: AuthUser, targetUserId: string, newRole: string): { success: boolean; user: any } {
+export async function updateUserRole(executorUser: AuthUser, targetUserId: string, newRole: string): Promise<{ success: boolean; user: any }> {
   if (executorUser.role !== 'platform_admin' && executorUser.role !== 'master_admin') {
     throw new Error('Forbidden: Only Super Admin can change user roles.');
   }
 
-  const target = db.prepare(`SELECT id, username, role, tenantId FROM users WHERE id = ?`).get(targetUserId) as any;
+  const target = await db.queryOne<any>(`SELECT id, username, role, "tenantId" FROM users WHERE id = $1`, [targetUserId]);
   if (!target) {
     throw new Error('User not found.');
   }
 
-  // Prevent creating or promoting additional Super Admin accounts
   if ((newRole === 'platform_admin' || newRole === 'master_admin') && target.role !== 'platform_admin') {
     throw new Error('Forbidden: No new Super Admin accounts can be created. There is only one Super Admin.');
   }
 
-  // Prevent demoting the Super Admin account
   if ((target.username === 'mohsin1' || target.role === 'platform_admin') && newRole !== 'platform_admin') {
     throw new Error('Forbidden: The Super Admin account cannot be demoted.');
   }
@@ -931,7 +861,7 @@ export function updateUserRole(executorUser: AuthUser, targetUserId: string, new
 
   const normalized = (newRole === 'agent' ? 'user' : newRole);
   const now = new Date().toISOString();
-  db.prepare(`UPDATE users SET role = ?, updatedAt = ? WHERE id = ?`).run(normalized, now, targetUserId);
+  await db.execute(`UPDATE users SET role = $1, "updatedAt" = $2 WHERE id = $3`, [normalized, now, targetUserId]);
 
   return {
     success: true,
@@ -945,10 +875,10 @@ export function updateUserRole(executorUser: AuthUser, targetUserId: string, new
 }
 
 /** Middleware: require platform admin role (Master Admin) */
-export function requirePlatformAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
+export async function requirePlatformAdmin(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  const user = validateToken(token);
+  const user = await validateToken(token);
 
   if (!user) {
     res.status(401).json({ error: 'Unauthorized. Please log in.' });
@@ -966,11 +896,11 @@ export function requirePlatformAdmin(req: express.Request, res: express.Response
 
 export const requireMasterAdmin = requirePlatformAdmin;
 
-/** Middleware: require tenant admin role (Tenant Admin or Master Admin) */
-export function requireTenantAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
+/** Middleware: require tenant admin role */
+export async function requireTenantAdmin(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  const user = validateToken(token);
+  const user = await validateToken(token);
 
   if (!user) {
     res.status(401).json({ error: 'Unauthorized. Please log in.' });
@@ -986,15 +916,14 @@ export function requireTenantAdmin(req: express.Request, res: express.Response, 
   next();
 }
 
-/** Backward compatibility alias for tenant admin routes */
 export const requireAdmin = requireTenantAdmin;
 
-/** Middleware: require specific business module permission (Master Admin, Tenant Admin, or authorized Employee) */
+/** Middleware: require specific business module permission */
 export function requireModule(moduleId: string) {
-  return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+  return async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
     const authHeader = req.headers['authorization'] || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    const user = validateToken(token);
+    const user = await validateToken(token);
 
     if (!user) {
       res.status(401).json({ error: 'Unauthorized. Please log in.' });
@@ -1007,9 +936,10 @@ export function requireModule(moduleId: string) {
       return;
     }
 
-    // For agents/employees, check user_permissions
-    const perm = db.prepare(`SELECT enabled FROM user_permissions WHERE userId = ? AND tenantId = ? AND moduleId = ?`).get(user.id, user.tenantId, moduleId) as { enabled: number } | undefined;
-    if (!perm || perm.enabled !== 1) {
+    const perm = await db.queryOne<{ enabled: number | boolean }>(`
+      SELECT enabled FROM user_permissions WHERE "userId" = $1 AND "tenantId" = $2 AND "moduleId" = $3
+    `, [user.id, user.tenantId, moduleId]);
+    if (!perm || (perm.enabled !== 1 && perm.enabled !== true)) {
       res.status(403).json({ error: `Forbidden. You do not have permission to access the ${moduleId} module.` });
       return;
     }
@@ -1018,7 +948,6 @@ export function requireModule(moduleId: string) {
     next();
   };
 }
-
 
 // ─── PHASE 5: SaaS Signup & Tenant Onboarding ────────────────────────────────
 
@@ -1047,7 +976,7 @@ export interface SignupResult {
 }
 
 /** Helper to generate a collision-safe URL slug */
-function generateTenantSlug(companyName: string): string {
+async function generateTenantSlug(companyName: string): Promise<string> {
   let baseSlug = companyName
     .toLowerCase()
     .trim()
@@ -1058,45 +987,26 @@ function generateTenantSlug(companyName: string): string {
     baseSlug = 'company';
   }
 
-  // Check if slug already exists in tenants table
-  const checkSlug = db.prepare(`SELECT id FROM tenants WHERE slug = ?`);
-  const existing = checkSlug.get(baseSlug);
-
+  const existing = await db.queryOne<{ id: string }>(`SELECT id FROM tenants WHERE slug = $1`, [baseSlug]);
   if (!existing) {
     return baseSlug;
   }
 
-  // Collision resolution: append a unique hex suffix
   let candidateSlug = `${baseSlug}-${crypto.randomBytes(2).toString('hex')}`;
   let attempts = 0;
-  while (checkSlug.get(candidateSlug) && attempts < 10) {
+  while ((await db.queryOne<{ id: string }>(`SELECT id FROM tenants WHERE slug = $1`, [candidateSlug])) && attempts < 10) {
     candidateSlug = `${baseSlug}-${crypto.randomBytes(3).toString('hex')}`;
     attempts++;
   }
   return candidateSlug;
 }
 
-/**
- * signupTenant
- * ─────────────────────────────────────────────────────────────────────────────
- * Atomic Signup & Onboarding:
- * 1. Validates input fields
- * 2. Generates unique tenant and collision-safe slug
- * 3. Creates tenant record
- * 4. Creates first admin user with secure scrypt password hash
- * 5. Provisions default module permissions (all 5 core modules enabled)
- * 6. Assigns active starter subscription linking to catalog plan
- * 7. Issues signed JWT with trusted tenantId
- * 8. Rolls back entire transaction if any step fails
- * ─────────────────────────────────────────────────────────────────────────────
- */
-export function signupTenant(input: SignupInput): SignupResult {
+export async function signupTenant(input: SignupInput): Promise<SignupResult> {
   const companyName = (input.companyName || '').trim();
   const username = (input.username || '').trim().toLowerCase();
   const password = input.password || '';
   const email = (input.email || '').trim().toLowerCase() || null;
 
-  // 1. Validation
   if (!companyName || companyName.length < 2) {
     throw new Error('Company name must be at least 2 characters long.');
   }
@@ -1113,104 +1023,65 @@ export function signupTenant(input: SignupInput): SignupResult {
     throw new Error('Password must be at least 6 characters long.');
   }
 
-  // 2. Pre-check: Username uniqueness (fail fast)
-  const existingUser = stmts.findUserByUsername.get({ username });
+  const existingUser = await db.queryOne<any>(`SELECT id FROM users WHERE username = $1`, [username]);
   if (existingUser) {
     throw new Error(`Username "${username}" is already taken.`);
   }
 
   const now = new Date().toISOString();
   const tenantId = 'tenant_' + crypto.randomBytes(8).toString('hex');
-  const slug = generateTenantSlug(companyName);
+  const slug = await generateTenantSlug(companyName);
   const userId = 'user_admin_' + crypto.randomBytes(6).toString('hex');
   const { hash } = hashPassword(password);
 
-  // 3. Execute atomic onboarding transaction
-  const executeSignupTransaction = db.transaction(() => {
+  await db.withTransaction(async () => {
     // 3a. Insert Tenant
     const country = (input.country || 'US').trim().toUpperCase();
-    db.prepare(`
-      INSERT INTO tenants (id, name, slug, country, logoUrl, ownerEmail, status, createdAt, updatedAt)
-      VALUES (@id, @name, @slug, @country, @logoUrl, @ownerEmail, 'active', @createdAt, @updatedAt)
-    `).run({
-      id: tenantId,
-      name: companyName,
-      slug: slug,
-      country: country,
-      logoUrl: input.logoUrl || null,
-      ownerEmail: email || null,
-      createdAt: now,
-      updatedAt: now
-    });
+    await db.execute(`
+      INSERT INTO tenants (id, name, slug, country, "logoUrl", "ownerEmail", status, "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8)
+    `, [tenantId, companyName, slug, country, input.logoUrl || null, email || null, now, now]);
 
-    // 3b. Insert First Tenant User (Starts as standard user until approved/promoted by Super Admin)
-    stmts.insertUser.run({
-      id: userId,
-      username: username,
-      email: email || null,
-      passwordHash: hash,
-      role: 'admin',
-      tenantId: tenantId,
-      googleId: null,
-      authProvider: 'local',
-      createdAt: now,
-      updatedAt: now
-    });
+    // 3b. Insert First Tenant User (admin)
+    await db.execute(`
+      INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, 'admin', $5, 'local', $6, $7)
+    `, [userId, username, email || null, hash, tenantId, now, now]);
 
-    // 3c. Provision Default User Module Permissions (all 5 core modules enabled for admin)
+    // 3c. Provision Default User Module Permissions
     const modules = ['octalDialer', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
-    const insertPerm = db.prepare(`
-      INSERT INTO user_permissions (id, userId, moduleId, enabled, grantedBy, tenantId, grantedAt)
-      VALUES (?, ?, ?, 1, ?, ?, ?)
-    `);
-
     for (const moduleId of modules) {
-      insertPerm.run(
-        `perm_${userId}_${moduleId}`,
-        userId,
-        moduleId,
-        'SYSTEM_ONBOARDING',
-        tenantId,
-        now
-      );
+      await db.execute(`
+        INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
+        VALUES ($1, $2, $3, 1, 'SYSTEM_ONBOARDING', $4, $5)
+        ON CONFLICT ("id") DO NOTHING
+      `, [`perm_${userId}_${moduleId}`, userId, moduleId, tenantId, now]);
     }
 
-    // 3d. Find or ensure the default Public Starter Plan (Never plan_legacy)
-    let plan = db.prepare(`SELECT id FROM plans WHERE id = 'plan_starter' AND status = 'active'`).get() as { id: string } | undefined;
+    // 3d. Find or ensure Starter Plan
+    let plan = await db.queryOne<{ id: string }>(`SELECT id FROM plans WHERE id = 'plan_starter' AND status = 'active'`);
     if (!plan) {
-      plan = db.prepare(`SELECT id FROM plans WHERE id != 'plan_legacy' AND status = 'active' ORDER BY priceMonthly ASC LIMIT 1`).get() as { id: string } | undefined;
+      plan = await db.queryOne<{ id: string }>(`SELECT id FROM plans WHERE id != 'plan_legacy' AND status = 'active' ORDER BY "priceMonthly" ASC LIMIT 1`);
     }
     if (!plan) {
       const defaultPlanId = 'plan_starter';
-      db.prepare(`
-        INSERT INTO plans (id, name, priceMonthly, priceYearly, status, createdAt, updatedAt)
-        VALUES (?, 'Starter Plan', 29, 290, 'active', ?, ?)
-      `).run(defaultPlanId, now, now);
+      await db.execute(`
+        INSERT INTO plans (id, name, "priceMonthly", "priceYearly", status, "createdAt", "updatedAt")
+        VALUES ($1, 'Starter Plan', 29, 290, 'active', $2, $3)
+        ON CONFLICT ("id") DO NOTHING
+      `, [defaultPlanId, now, now]);
       plan = { id: defaultPlanId };
     }
 
-    // 3e. Assign Subscription (Active for 1 year)
+    // 3e. Assign Subscription
     const subId = 'sub_' + crypto.randomBytes(8).toString('hex');
     const periodEnd = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-
-    db.prepare(`
-      INSERT INTO subscriptions (id, tenantId, planId, status, currentPeriodStart, currentPeriodEnd, createdAt, updatedAt)
-      VALUES (@id, @tenantId, @planId, 'active', @currentPeriodStart, @currentPeriodEnd, @createdAt, @updatedAt)
-    `).run({
-      id: subId,
-      tenantId: tenantId,
-      planId: plan.id,
-      currentPeriodStart: now,
-      currentPeriodEnd: periodEnd,
-      createdAt: now,
-      updatedAt: now
-    });
+    await db.execute(`
+      INSERT INTO subscriptions (id, "tenantId", "planId", status, "currentPeriodStart", "currentPeriodEnd", "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, 'active', $4, $5, $6, $7)
+    `, [subId, tenantId, plan.id, now, periodEnd, now, now]);
   });
 
-  // Run the atomic transaction
-  executeSignupTransaction();
-
-  // 4. Issue JWT with trusted tenant context
   const payload = {
     sub: userId,
     username: username,

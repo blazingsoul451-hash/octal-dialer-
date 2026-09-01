@@ -112,7 +112,7 @@ export async function query<T extends QueryResultRow = any>(
     console.error(`[PostgreSQL Query Error] (${duration}ms):`, {
       message: err.message,
       query: text.slice(0, 150),
-      params
+      paramCount: params ? params.length : 0
     });
     throw err;
   }

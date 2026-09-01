@@ -153,10 +153,10 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────
-function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  const user = validateToken(token);
+  const user = await validateToken(token);
   if (!user) {
     res.status(401).json({ error: 'Unauthorized. Please log in.' });
     return;
@@ -189,20 +189,24 @@ export const io = new SocketIOServer(httpServer, {
 });
 
 // ─── TASK 1: Socket.IO Authentication & Tenant Isolation Middleware ──────────
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   const authObj = socket.handshake.auth || {};
   const headers = socket.handshake.headers || {};
   const authHeader = authObj.token || headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
 
   if (token) {
-    const user = validateToken(token);
-    if (user) {
-      socket.data.user = user;
-      socket.data.tenantId = user.tenantId || user.id;
-      return next();
-    } else {
-      return next(new Error('Authentication failed: Invalid token'));
+    try {
+      const user = await validateToken(token);
+      if (user) {
+        socket.data.user = user;
+        socket.data.tenantId = user.tenantId || user.id;
+        return next();
+      } else {
+        return next(new Error('Authentication failed: Invalid token'));
+      }
+    } catch (err: any) {
+      return next(new Error('Authentication failed: ' + err.message));
     }
   }
 
@@ -349,19 +353,19 @@ app.get(['/info', '/api/info'], (req, res) => {
 // ─── Auth REST Endpoints (no requireAuth — public) ──────────────────────────
 
 // POST /auth/login & /api/auth/login
-app.post(['/auth/login', '/api/auth/login'], (req, res) => {
+app.post(['/auth/login', '/api/auth/login'], async (req, res) => {
   const username = (req.body?.username || req.body?.identifier || '').trim();
   const password = req.body?.password || '';
   if (!username || !password) {
     res.status(400).json({ error: 'Username and password required.' });
     return;
   }
-  const token = login(username, password);
+  const token = await login(username, password);
   if (!token) {
     res.status(401).json({ error: 'Invalid username or password, or account suspended.' });
     return;
   }
-  const user = validateToken(token);
+  const user = await validateToken(token);
   if (!user) {
     res.status(401).json({ error: 'Session validation failed.' });
     return;
@@ -379,14 +383,14 @@ app.post(['/auth/register', '/api/auth/register'], (_req, res) => {
 });
 
 // GET /auth/verify & GET /api/auth/verify — Verifies current JWT auth token
-app.get(['/auth/verify', '/api/auth/verify'], (req, res) => {
+app.get(['/auth/verify', '/api/auth/verify'], async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({ error: 'No token provided.' });
     return;
   }
   const token = authHeader.split(' ')[1];
-  const user = validateToken(token);
+  const user = await validateToken(token);
   if (!user) {
     res.status(401).json({ error: 'Token invalid or expired.' });
     return;
@@ -537,7 +541,7 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
       throw new Error('Could not retrieve verified email from Google.');
     }
 
-    const result = handleGoogleAuthWithIntent({
+    const result = await handleGoogleAuthWithIntent({
       email,
       name,
       googleId,
@@ -554,7 +558,7 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
 });
 
 // POST /auth/google/verify & /api/auth/google/verify — Google One-Tap / Pop-up verification with intent
-app.post(['/auth/google/verify', '/api/auth/google/verify'], (req, res) => {
+app.post(['/auth/google/verify', '/api/auth/google/verify'], async (req, res) => {
   const { credential, intent = 'signin' } = req.body as {
     credential?: string;
     intent?: 'signin' | 'signup';
@@ -592,7 +596,7 @@ app.post(['/auth/google/verify', '/api/auth/google/verify'], (req, res) => {
   }
 
   try {
-    const result = handleGoogleAuthWithIntent({
+    const result = await handleGoogleAuthWithIntent({
       email,
       name,
       googleId,
@@ -618,7 +622,7 @@ app.post(['/auth/google/verify', '/api/auth/google/verify'], (req, res) => {
 });
 
 // POST /auth/google — Google OAuth 2.0 Sign In & Sign Up (One-Tap & Direct)
-app.post(['/auth/google', '/api/auth/google'], (req, res) => {
+app.post(['/auth/google', '/api/auth/google'], async (req, res) => {
   const { credential, email, name, googleId, picture, intent = 'signin' } = req.body as {
     credential?: string;
     email?: string;
@@ -657,7 +661,7 @@ app.post(['/auth/google', '/api/auth/google'], (req, res) => {
   }
 
   try {
-    const result = handleGoogleAuthWithIntent({
+    const result = await handleGoogleAuthWithIntent({
       email: targetEmail,
       name: targetName,
       googleId: targetGoogleId,
@@ -683,7 +687,7 @@ app.post(['/auth/google', '/api/auth/google'], (req, res) => {
 });
 
 // GET /auth/permissions & /api/auth/permissions — Module permissions for authenticated user
-app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, (req, res) => {
+app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, async (req, res) => {
   const user = (req as any).user;
   if (!user) {
     res.status(401).json({ error: 'Unauthorized.' });
@@ -703,7 +707,7 @@ app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, (req, res) 
     return;
   }
 
-  const perms = getUserPermissions(user.id, user.tenantId);
+  const perms = await getUserPermissions(user.id, user.tenantId);
   res.json({
     success: true,
     permissions: perms,
@@ -729,22 +733,22 @@ app.post('/api/mobile/login', async (req, res) => {
 
     if (googleAuthData && (googleAuthData.email || googleAuthData.credential)) {
       const gIntent = googleAuthData.intent === 'signup' ? 'signup' : 'signin';
-      authResult = handleGoogleAuthWithIntent({
+      authResult = await handleGoogleAuthWithIntent({
         email: googleAuthData.email || '',
         name: googleAuthData.name || '',
         googleId: googleAuthData.googleId || googleAuthData.sub || '',
         picture: googleAuthData.picture || ''
       }, gIntent);
     } else if (username && password) {
-      const token = login(username, password);
+      const token = await login(username, password);
       if (token) {
-        const u = validateToken(token);
+        const u = await validateToken(token);
         if (u) authResult = { token, user: u };
       }
     } else if (email && password) {
-      const token = login(email, password);
+      const token = await login(email, password);
       if (token) {
-        const u = validateToken(token);
+        const u = await validateToken(token);
         if (u) authResult = { token, user: u };
       }
     }
@@ -808,22 +812,22 @@ app.get('/api/user/quota', requireAuth, (req, res) => {
 });
 
 // POST /auth/logout
-app.post('/auth/logout', (req, res) => {
+app.post('/auth/logout', async (req, res) => {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (token) logout(token);
+  if (token) await logout(token);
   res.json({ success: true });
 });
 
 // POST /auth/change-password  (requires auth)
-app.post('/auth/change-password', requireAuth, (req, res) => {
+app.post('/auth/change-password', requireAuth, async (req, res) => {
   const { newPassword } = req.body as { newPassword: string };
   if (!newPassword || newPassword.length < 6) {
     res.status(400).json({ error: 'Password must be at least 6 characters.' });
     return;
   }
   const user = (req as any).user;
-  changePassword(user.id, newPassword);
+  await changePassword(user.id, newPassword);
   res.json({ success: true });
 });
 
@@ -835,14 +839,14 @@ app.get('/auth/me', requireAuth, (req, res) => {
 // ─── Safety Controller REST Endpoints ───────────────────────────────────────
 
 // GET /api/suppression-list — list all DNC numbers
-app.get('/api/suppression-list', requireAuth, (req, res) => {
+app.get('/api/suppression-list', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId || 'tenant_default';
-  res.json(getSuppressionList(tenantId));
+  res.json(await getSuppressionList(tenantId));
 });
 
 // POST /api/suppression-list — add a number to DNC
-app.post('/api/suppression-list', requireAuth, (req, res) => {
+app.post('/api/suppression-list', requireAuth, async (req, res) => {
   const { phone, reason } = req.body as { phone: string; reason?: string };
   if (!phone || !phone.trim()) {
     res.status(400).json({ error: 'Phone number is required.' });
@@ -850,7 +854,7 @@ app.post('/api/suppression-list', requireAuth, (req, res) => {
   }
   const user = (req as any).user;
   const tenantId = user?.tenantId || 'tenant_default';
-  const added = addToSuppressionList(phone.trim(), reason || 'Manual DNC', 'dashboard', user.username, tenantId);
+  const added = await addToSuppressionList(phone.trim(), reason || 'Manual DNC', 'dashboard', user.username, tenantId);
   if (added) {
     res.json({ success: true, message: `${phone} added to suppression list.` });
   } else {
@@ -859,7 +863,7 @@ app.post('/api/suppression-list', requireAuth, (req, res) => {
 });
 
 // POST /api/suppression-list/import — bulk add DNC numbers
-app.post('/api/suppression-list/import', requireAuth, (req, res) => {
+app.post('/api/suppression-list/import', requireAuth, async (req, res) => {
   const { entries, reason } = req.body as { entries: { phone: string; reason?: string }[]; reason?: string };
   if (!Array.isArray(entries) || entries.length === 0) {
     res.status(400).json({ error: 'Array of entries with phone property is required.' });
@@ -867,7 +871,7 @@ app.post('/api/suppression-list/import', requireAuth, (req, res) => {
   }
   const user = (req as any).user;
   const tenantId = user?.tenantId || 'tenant_default';
-  const result = bulkAddToSuppressionList(
+  const result = await bulkAddToSuppressionList(
     entries.map(e => ({ phone: e.phone, reason: e.reason || reason || 'Bulk DNC Import' })),
     'dashboard_import',
     user.username,
@@ -877,10 +881,10 @@ app.post('/api/suppression-list/import', requireAuth, (req, res) => {
 });
 
 // DELETE /api/suppression-list/:id — remove from DNC
-app.delete('/api/suppression-list/:id', requireAuth, (req, res) => {
+app.delete('/api/suppression-list/:id', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId || 'tenant_default';
-  const success = removeFromSuppressionList(req.params.id, user.username, tenantId);
+  const success = await removeFromSuppressionList(req.params.id, user.username, tenantId);
   if (success) {
     res.json({ success: true });
   } else {
@@ -889,7 +893,7 @@ app.delete('/api/suppression-list/:id', requireAuth, (req, res) => {
 });
 
 // POST /api/emergency-stop — halts all active calls immediately
-app.post('/api/emergency-stop', requireAuth, (req, res) => {
+app.post('/api/emergency-stop', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   if (!tenantId) {
@@ -897,7 +901,7 @@ app.post('/api/emergency-stop', requireAuth, (req, res) => {
     return;
   }
   triggerEmergencyStop(tenantId);
-  writeAuditLog('EMERGENCY_STOP', 'tenant', tenantId, user.username, 'Emergency stop activated');
+  await writeAuditLog('EMERGENCY_STOP', 'tenant', tenantId, user.username, 'Emergency stop activated');
 
   // Send hangup only to this tenant's active sessions' phones
   for (const [, sess] of getSessions()) {
@@ -912,7 +916,7 @@ app.post('/api/emergency-stop', requireAuth, (req, res) => {
 });
 
 // POST /api/emergency-stop/clear — re-enable dialing after emergency stop
-app.post('/api/emergency-stop/clear', requireAuth, (req, res) => {
+app.post('/api/emergency-stop/clear', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   if (!tenantId) {
@@ -924,7 +928,7 @@ app.post('/api/emergency-stop/clear', requireAuth, (req, res) => {
     return;
   }
   clearEmergencyStop(tenantId);
-  writeAuditLog('EMERGENCY_STOP_CLEAR', 'tenant', tenantId, user.username, 'Emergency stop cleared');
+  await writeAuditLog('EMERGENCY_STOP_CLEAR', 'tenant', tenantId, user.username, 'Emergency stop cleared');
   io.to(`tenant_${tenantId}`).emit('campaign:emergency_cleared', { clearedBy: user.username });
   res.json({ success: true, message: 'Emergency stop cleared. Dialing re-enabled.' });
 });
@@ -938,17 +942,17 @@ app.get('/api/safety-status', requireAuth, (req, res) => {
 });
 
 // GET /api/commands — active in-flight commands
-app.get('/api/commands', requireAuth, (req, res) => {
-  res.json(getActiveCommands());
+app.get('/api/commands', requireAuth, async (req, res) => {
+  res.json(await getActiveCommands());
 });
 
 // GET /api/leads/locked — list all currently locked leads
-app.get('/api/leads/locked', requireAuth, (req, res) => {
-  res.json(getLockedLeads());
+app.get('/api/leads/locked', requireAuth, async (req, res) => {
+  res.json(await getLockedLeads());
 });
 
 // POST /api/devices/register — register or update a mobile device
-app.post('/api/devices/register', requireAuth, (req, res) => {
+app.post('/api/devices/register', requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
     const { id, name, btAddress, osType, ipAddress, platform, appVersion, deviceUid } = req.body;
@@ -956,7 +960,7 @@ app.post('/api/devices/register', requireAuth, (req, res) => {
       res.status(400).json({ error: 'Device name or device UID is required.' });
       return;
     }
-    const device = registerOrUpdateDevice({
+    const device = await registerOrUpdateDevice({
       id,
       name: name || 'Android Device',
       userId: user.id,
@@ -982,7 +986,7 @@ app.get('/api/devices', requireAuth, async (req, res) => {
     if (req.query.all === 'true' && (user.role === 'platform_admin' || user.role === 'admin')) {
       devices = await db.queryAll(`SELECT * FROM devices WHERE "tenantId" = $1 AND "isRevoked" = 0 ORDER BY "lastSeenAt" DESC`, [user.tenantId]) as DeviceRecord[];
     } else {
-      devices = getDevicesForUser(user.id, user.tenantId);
+      devices = await getDevicesForUser(user.id, user.tenantId);
     }
 
     const augmented = devices.map(d => {
@@ -1251,9 +1255,9 @@ app.get('/download/apk', (req, res) => {
 });
 
 // REST: Delete single lead (protected)
-app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, (req, res) => {
+app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, async (req, res) => {
   const tenantId = (req as any).user?.tenantId || 'tenant_default';
-  const success = deleteLead(req.params.id, tenantId);
+  const success = await deleteLead(req.params.id, tenantId);
   if (success) {
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     res.json({ success: true, message: `Lead ${req.params.id} deleted.` });
@@ -1263,25 +1267,25 @@ app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, (req, res) => {
 });
 
 // REST: Purge all fake/sample leads across queue (protected)
-app.post('/api/leads/purge-fake', requireAuth, (req, res) => {
+app.post('/api/leads/purge-fake', requireAuth, async (req, res) => {
   const tenantId = (req as any).user?.tenantId || 'tenant_default';
-  const count = clearFakeQueueLeads(tenantId);
+  const count = await clearFakeQueueLeads(tenantId);
   io.to(`tenant_${tenantId}`).emit('leads:updated');
   res.json({ success: true, count, message: `Removed ${count} fake/sample leads.` });
 });
 
 // REST: Clear all leads in a campaign (protected)
-app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, (req, res) => {
+app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async (req, res) => {
   const tenantId = (req as any).user?.tenantId || 'tenant_default';
-  const count = clearAllLeadsInCampaign(req.params.id, tenantId);
+  const count = await clearAllLeadsInCampaign(req.params.id, tenantId);
   io.to(`tenant_${tenantId}`).emit('leads:updated');
   res.json({ success: true, count, message: `Cleared ${count} leads in campaign ${req.params.id}.` });
 });
 
 // REST: Call logs history (protected — for dashboard)
-app.get(['/logs', '/api/logs'], requireAuth, (req, res) => {
+app.get(['/logs', '/api/logs'], requireAuth, async (req, res) => {
   const tenantId = (req as any).user?.tenantId || 'tenant_default';
-  res.json(getLogs(tenantId));
+  res.json(await getLogs(tenantId));
 });
 
 // POST /api/logs/update & /logs/update — Update call disposition (protected)
@@ -1302,7 +1306,7 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, async (req, res) => 
 
   const leadRow = await db.queryOne('SELECT "campaignId" FROM leads WHERE id = $1 AND "tenantId" = $2', [leadId, tenantId]) as any;
 
-  const updated = updateLogDisposition({
+  const updated = await updateLogDisposition({
     leadId,
     outcome,
     notes: notes || '',
@@ -1312,7 +1316,7 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, async (req, res) => 
   });
 
   if (updated) {
-    const nextLead = leadRow?.campaignId ? getNextPendingLead(leadRow.campaignId, tenantId, leadId) : null;
+    const nextLead = leadRow?.campaignId ? await getNextPendingLead(leadRow.campaignId, tenantId, leadId) : null;
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     res.json({
       success: true,
@@ -1326,14 +1330,14 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, async (req, res) => 
 });
 
 // GET /api/campaigns/:id/next-lead — Authoritative backend next lead query (protected)
-app.get('/api/campaigns/:id/next-lead', requireAuth, (req, res) => {
+app.get('/api/campaigns/:id/next-lead', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const nextLead = getNextPendingLead(req.params.id, tenantId);
+  const nextLead = await getNextPendingLead(req.params.id, tenantId);
   res.json({
     success: true,
     nextLeadId: nextLead ? nextLead.id : null,
@@ -1475,7 +1479,7 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
       return;
     }
 
-    const result = createCampaign(finalCampaignName, fileName, leads, tenantId);
+    const result = await createCampaign(finalCampaignName, fileName, leads, tenantId);
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     io.to(`tenant_${tenantId}`).emit('campaigns:updated');
     res.json({
@@ -1601,7 +1605,7 @@ app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
 });
 
 // POST /api/admin/users
-app.post('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
+app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
     const { username, password, email, role } = req.body;
@@ -1609,7 +1613,7 @@ app.post('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
       res.status(400).json({ error: 'Username and password required.' });
       return;
     }
-    const result = registerPublicUser({ 
+    const result = await registerPublicUser({ 
       username, 
       password, 
       email, 
@@ -1617,7 +1621,7 @@ app.post('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
       tenantId: caller.role === 'platform_admin' ? (req.body.tenantId || caller.tenantId) : caller.tenantId 
     });
     if (role && role !== 'user') {
-      updateUserRole(caller, result.user.id, role);
+      await updateUserRole(caller, result.user.id, role);
     }
     res.json({ success: true, user: result.user });
   } catch (err: any) {
@@ -1626,14 +1630,14 @@ app.post('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
 });
 
 // PUT /api/admin/users/:id/role
-app.put('/api/admin/users/:id/role', requireAuth, requireAdmin, (req, res) => {
+app.put('/api/admin/users/:id/role', requireAuth, requireAdmin, async (req, res) => {
   const { role } = req.body;
   if (!role) {
     res.status(400).json({ error: 'Role is required.' });
     return;
   }
   try {
-    const result = updateUserRole((req as any).user, req.params.id, role);
+    const result = await updateUserRole((req as any).user, req.params.id, role);
     if (result && result.success) {
       res.json({ success: true, message: `User role updated to ${role}.` });
     } else {
@@ -1863,7 +1867,7 @@ app.get('/download/apk', serveApkHandler);
 app.get('/api/download/apk', serveApkHandler);
 
 // REST: Manual leads import (protected)
-app.post('/api/leads/import', requireAuth, (req, res) => {
+app.post('/api/leads/import', requireAuth, async (req, res) => {
   try {
     const { campaignName, campaignId, fileName, leads } = req.body as {
       campaignName?: string;
@@ -1884,8 +1888,8 @@ app.post('/api/leads/import', requireAuth, (req, res) => {
     }
 
     const result = campaignId
-      ? appendLeadsToCampaign(campaignId, leads, tenantId)
-      : createCampaign(campaignName || 'Imported Campaign', fileName || 'Manual Import', leads, tenantId);
+      ? await appendLeadsToCampaign(campaignId, leads, tenantId)
+      : await createCampaign(campaignName || 'Imported Campaign', fileName || 'Manual Import', leads, tenantId);
 
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     io.to(`tenant_${tenantId}`).emit('campaigns:updated');
@@ -1906,7 +1910,7 @@ app.post('/api/leads/import', requireAuth, (req, res) => {
 });
 
 // REST: Manual leads import for mobile (protected)
-app.post('/api/leads/import/mobile', requireAuth, (req, res) => {
+app.post('/api/leads/import/mobile', requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
     const tenantId = user?.tenantId;
@@ -1930,8 +1934,8 @@ app.post('/api/leads/import/mobile', requireAuth, (req, res) => {
 
     // Tenant identity is strictly derived from authenticated user JWT
     const result = campaignId
-      ? appendLeadsToCampaign(campaignId, leads, tenantId)
-      : createCampaign(campaignName || 'Mobile Imported Campaign', fileName || 'Mobile Import', leads, tenantId);
+      ? await appendLeadsToCampaign(campaignId, leads, tenantId)
+      : await createCampaign(campaignName || 'Mobile Imported Campaign', fileName || 'Mobile Import', leads, tenantId);
 
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     io.to(`tenant_${tenantId}`).emit('campaigns:updated');
@@ -1952,14 +1956,14 @@ app.post('/api/leads/import/mobile', requireAuth, (req, res) => {
 });
 
 // REST: Export logs to CSV (protected)
-app.get('/api/logs/export', requireAuth, (req, res) => {
+app.get('/api/logs/export', requireAuth, async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId;
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
     }
-    const logs = getLogs(tenantId); // use SQLite directly — no loadDb() needed
+    const logs = await getLogs(tenantId);
 
     const header = ['Time', 'Lead Name', 'Phone', 'Campaign', 'Outcome', 'Duration (s)'];
     const rows = logs.map(l => [
@@ -1998,10 +2002,10 @@ interface ActivePhoneSocket {
 const authenticatedPhoneSockets = new Map<string, ActivePhoneSocket>();
 
 // Socket.IO Handshake Auth Middleware
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token || (socket.handshake.headers?.authorization ? socket.handshake.headers.authorization.replace('Bearer ', '') : undefined);
   if (token) {
-    const user = validateToken(token);
+    const user = await validateToken(token);
     if (user) {
       socket.data.user = user;
       socket.data.tenantId = user.tenantId;
@@ -2015,7 +2019,7 @@ io.on('connection', (socket) => {
   console.log(`[Socket] Connected: ${socket.id}`);
 
   // ─── AUTHENTICATED PHONE REGISTRATION ──────────────────────────────────────────
-  socket.on('phone:auth-register', (data: {
+  socket.on('phone:auth-register', async (data: {
     token: string;
     deviceId?: string;
     deviceUid?: string;
@@ -2031,7 +2035,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const user = validateToken(data.token);
+    const user = await validateToken(data.token);
     if (!user) {
       socket.emit('phone:auth-error', { error: 'Invalid or expired session token. Please log in again.' });
       return;
@@ -2039,7 +2043,7 @@ io.on('connection', (socket) => {
 
     let device: DeviceRecord;
     try {
-      device = registerOrUpdateDevice({
+      device = await registerOrUpdateDevice({
         id: data.deviceId,
         name: data.deviceName || 'Android Device',
         userId: user.id,
@@ -2108,7 +2112,7 @@ io.on('connection', (socket) => {
     const allSessions = getSessions();
     for (const s of allSessions.values()) {
       if ((s.userId === user.id || s.tenantId === user.tenantId) && s.laptopSocketId && s.status === 'WAITING') {
-        pairAuthenticatedDevice(
+        await pairAuthenticatedDevice(
           s.id,
           device.id,
           socket.id,
@@ -2154,7 +2158,7 @@ io.on('connection', (socket) => {
   });
 
   // ─── LAPTOP EXPLICIT CONNECT TO REGISTERED DEVICE ─────────────────────────────
-  socket.on('laptop:connect-device', ({ sessionId, deviceId }: { sessionId: string; deviceId: string }) => {
+  socket.on('laptop:connect-device', async ({ sessionId, deviceId }: { sessionId: string; deviceId: string }) => {
     const session = getSessionById(sessionId);
     if (!session) {
       socket.emit('device:error', { error: 'Session not found.' });
@@ -2170,7 +2174,7 @@ io.on('connection', (socket) => {
     const tenantId = socket.data.tenantId || session.tenantId;
     const user = socket.data.user;
 
-    const device = getDeviceById(deviceId, tenantId);
+    const device = await getDeviceById(deviceId, tenantId);
     if (!device) {
       socket.emit('device:error', { error: 'Device not found or not in your tenant.' });
       return;
@@ -2201,7 +2205,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const pairedSession = pairAuthenticatedDevice(
+    const pairedSession = await pairAuthenticatedDevice(
       sessionId,
       deviceId,
       phoneSocket.id,
@@ -2352,11 +2356,11 @@ io.on('connection', (socket) => {
     console.log(`[Phone Unlinked] Phone socket ${socket.id} disconnected from session ${sid}`);
   });
 
-  socket.on('laptop:register', (data?: { previousSessionId?: string; authToken?: string }) => {
+  socket.on('laptop:register', async (data?: { previousSessionId?: string; authToken?: string }) => {
     let tenantId = socket.data.tenantId;
     let userId = socket.data.user?.id;
     if (data?.authToken) {
-      const user = validateToken(data.authToken);
+      const user = await validateToken(data.authToken);
       if (user) {
         socket.data.user = user;
         socket.data.tenantId = user.tenantId;
@@ -2464,7 +2468,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('phone:join', (data: { 
+  socket.on('phone:join', async (data: { 
     token?: string; 
     sessionId?: string;
     authToken?: string;
@@ -2477,7 +2481,7 @@ io.on('connection', (socket) => {
     let targetTenantId = socket.data.tenantId;
 
     if (!targetTenantId && data.authToken) {
-      const u = validateToken(data.authToken);
+      const u = await validateToken(data.authToken);
       if (u) targetTenantId = u.tenantId;
     }
 
@@ -2492,7 +2496,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    let session = pairPhone(
+    let session = await pairPhone(
       tokenOrSessionId, 
       socket.id, 
       data.deviceName || 'Mobile Client', 
@@ -2503,12 +2507,12 @@ io.on('connection', (socket) => {
     );
 
     if (!session && tokenOrSessionId) {
-      const user = validateToken(tokenOrSessionId);
+      const user = await validateToken(tokenOrSessionId);
       if (user) {
         targetTenantId = user.tenantId;
         const tenantSessions = Array.from(getSessions().values()).filter((s: any) => s.tenantId === user.tenantId);
         const active = tenantSessions.length > 0 ? tenantSessions[0] : reclaimOrCreateSession('laptop_mobile_host', undefined, user.tenantId);
-        session = pairPhone(
+        session = await pairPhone(
           active.token,
           socket.id,
           data.deviceName || 'Mobile Client',
@@ -2573,8 +2577,8 @@ io.on('connection', (socket) => {
     console.log(`[Phone Status] Session ${sid} phoneStatus set to: ${data.phoneStatus}`);
   });
 
-  socket.on('phone:ping', () => {
-    updateHeartbeat(socket.id);
+  socket.on('phone:ping', async () => {
+    await updateHeartbeat(socket.id);
     socket.emit('phone:pong', { timestamp: new Date().toISOString() });
   });
 
@@ -2621,7 +2625,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('dial:lead', ({ sessionId, phone, name, leadId, campaignId, timeout }: {
+  socket.on('dial:lead', async ({ sessionId, phone, name, leadId, campaignId, timeout }: {
     sessionId: string;
     phone: string;
     name: string;
@@ -2672,7 +2676,7 @@ io.on('connection', (socket) => {
     }
 
     // 4. Route through Safety Controller & Atomic Lead Reservation (only AFTER authorization checks!)
-    const check = checkCallAllowed({ sessionId, phone, leadId, campaignId, tenantId });
+    const check = await checkCallAllowed({ sessionId, phone, leadId, campaignId, tenantId });
 
     if (!check.allowed) {
       console.warn(`[SafetyController] BLOCKED dial to ${phone} | Reason: ${check.reason} | ${check.message}`);
@@ -2693,7 +2697,7 @@ io.on('connection', (socket) => {
       socket.emit('dial:dispatched', { commandId: check.commandId, leadId, phone, name });
       console.log(`[SafetyController] ✅ DIAL SENT TO PHONE SOCKET ${session.phoneSocketId} | ${name} (${phone}) | Session: ${sessionId} | Cmd: ${check.commandId}`);
     } catch (err: any) {
-      if (leadId) releaseLeadLock(leadId, sessionId);
+      if (leadId) await releaseLeadLock(leadId, sessionId);
       socket.emit('error', { code: 'DISPATCH_ERROR', message: 'Failed to dispatch call to phone socket.' });
     }
   });
@@ -2786,7 +2790,7 @@ io.on('connection', (socket) => {
     console.log(`[Socket] Verified Phone ${socket.id} entered active call state in session ${session.id}`);
   });
 
-  socket.on('call:ended', ({ sessionId, leadId, phone, name, reason, duration, commandId }: {
+  socket.on('call:ended', async ({ sessionId, leadId, phone, name, reason, duration, commandId }: {
     sessionId: string;
     leadId?: string;
     phone?: string;
@@ -2832,14 +2836,14 @@ io.on('connection', (socket) => {
 
     setSessionStatus(session.id, 'PAIRED');
     if (commandId) {
-      expireCommand(commandId);
+      await expireCommand(commandId);
     }
     if (leadId) {
-      releaseLeadLock(leadId, session.id);
-      createLog(leadId, reason, duration, tenantId);
-      updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
+      await releaseLeadLock(leadId, session.id);
+      await createLog(leadId, reason, duration, tenantId);
+      await updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
     } else if (phone) {
-      createManualLog(phone, name || 'Manual Quick Dial', reason, duration, tenantId);
+      await createManualLog(phone, name || 'Manual Quick Dial', reason, duration, tenantId);
     }
 
     // Include leadId and commandId in call:finished broadcast so web knows exact completed lead
@@ -2848,7 +2852,7 @@ io.on('connection', (socket) => {
     console.log(`[Socket] Call finished in session ${session.id} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     // If it was an authenticated phone socket
     if (socket.data.isPhone && socket.data.deviceId) {
       const devId = socket.data.deviceId;
@@ -2856,7 +2860,7 @@ io.on('connection', (socket) => {
       // Guard: Only delete from active map if it still points to THIS socket ID (prevents stale disconnects from dropping new sockets!)
       if (authenticatedPhoneSockets.get(devId)?.socketId === socket.id) {
         authenticatedPhoneSockets.delete(devId);
-        updateDeviceStatus(devId, 'OFFLINE');
+        await updateDeviceStatus(devId, 'OFFLINE');
         const statusPayload = {
           deviceId: devId,
           status: 'OFFLINE',
@@ -2876,7 +2880,7 @@ io.on('connection', (socket) => {
     if (!session) return;
 
     // Release any lead locks reserved by this session
-    unlockLeadsForSession(session.id);
+    await unlockLeadsForSession(session.id);
 
     if (session.laptopSocketId === socket.id) {
       // Do NOT send session:ended to phone — laptop socket reclaims session instantly on reconnect!
@@ -2886,14 +2890,14 @@ io.on('connection', (socket) => {
       if (session.laptopSocketId) {
         io.to(session.laptopSocketId).emit('phone:disconnected');
       }
-      handlePhoneDisconnect(socket.id);
+      await handlePhoneDisconnect(socket.id);
       console.log(`[Socket Disconnect] Phone socket ${socket.id} disconnected from session ${session.id}`);
     }
   });
 });
 
 // Bootstrap default admin user if no users exist yet
-ensureDefaultAdmin();
+ensureDefaultAdmin().catch(err => console.error('[Bootstrap Admin Error]:', err));
 
 // ══════════════════════════════════════════════════════════════════════════════
 // AUTO-EMAILER MODULE ROUTES
