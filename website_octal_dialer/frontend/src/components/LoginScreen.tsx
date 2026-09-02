@@ -330,7 +330,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden bg-black select-none">
+    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden bg-slate-950 select-none">
       {/* Video Background */}
       <video
         autoPlay
@@ -338,18 +338,18 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         loop
         playsInline
         className="absolute inset-0 w-full h-full object-cover"
-        style={{ backgroundColor: '#000000' }}
+        style={{ backgroundColor: '#0f172a' }}
       >
         <source src="/merged-galaxy.webm" type="video/webm" />
         <source src="/merged-galaxy.mp4" type="video/mp4" />
       </video>
 
-      {/* Overlay for optimal contrast & focus */}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/80 via-black/90 to-black/80 backdrop-blur-[2px] pointer-events-none" />
+      {/* Overlay for optimal contrast & vibrant galaxy visibility */}
+      <div className="absolute inset-0 bg-gradient-to-b from-slate-950/40 via-slate-950/60 to-slate-950/40 backdrop-blur-[1px] pointer-events-none" />
 
       <div className="w-full max-w-md relative z-10 mx-auto">
         {/* Main Card */}
-        <div className="bg-[#09090b]/95 backdrop-blur-xl border border-[#18181b] rounded-3xl p-7 shadow-2xl shadow-black">
+        <div className="bg-slate-900/85 backdrop-blur-xl border border-slate-700/60 rounded-3xl p-7 shadow-2xl shadow-black/80">
           
           {/* Brand Header */}
           <div className="text-center mb-6">
@@ -568,7 +568,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
               {/* Divider */}
               <div className="relative flex items-center justify-center my-2">
                 <div className="border-t border-slate-800 w-full" />
-                <span className="bg-[#09090b] px-3 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider shrink-0">
+                <span className="bg-slate-900 px-3 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider shrink-0">
                   OR WITH CREDENTIALS
                 </span>
                 <div className="border-t border-slate-800 w-full" />
