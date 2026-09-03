@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
-import 'package:url_launcher/url_launcher.dart';
 import '../widgets/octal_logo.dart';
 
 class CallingScreen extends StatefulWidget {
@@ -59,12 +58,22 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     // Register native telephony call state listener to track real GSM hardware states
     _nativeChannel.setMethodCallHandler((call) async {
       if (call.method == 'onCallStateChanged') {
-        final state = call.arguments as String;
+        String state = 'UNKNOWN';
+        if (call.arguments is Map) {
+          state = (call.arguments['state'] ?? 'UNKNOWN').toString();
+        } else if (call.arguments is String) {
+          state = call.arguments as String;
+        }
         if (mounted) {
           _handleCallStateChange(state);
         }
       }
     });
+
+    // Start Foreground Service so Android 14 doesn't freeze app during call
+    _nativeChannel.invokeMethod('startForegroundService', {
+      'status': 'Calling ${widget.name.isNotEmpty ? widget.name : widget.phone}...'
+    }).catchError((_) {});
 
     // Listen for remote hangup command from web dashboard
     widget.socket.on('phone:hangup', (_) {
@@ -111,15 +120,36 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
 
   Future<void> _placeGsmCall() async {
     final cleanPhone = widget.phone.replaceAll(RegExp(r'[^\d+]'), '');
+    if (cleanPhone.isEmpty) {
+      _endCall('INVALID_PHONE');
+      return;
+    }
+
     try {
-      await _nativeChannel.invokeMethod('makeDirectCall', {'phone': cleanPhone});
-    } catch (e) {
-      final telUri = Uri.parse('tel:$cleanPhone');
-      try {
-        await launchUrl(telUri, mode: LaunchMode.externalApplication);
-      } catch (err) {
-        debugPrint('Could not launch native phone: $err');
+      final bool hasPermission = await _nativeChannel.invokeMethod('checkCallPermission') ?? false;
+      if (!hasPermission) {
+        final bool granted = await _nativeChannel.invokeMethod('requestCallPermission') ?? false;
+        if (!granted) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Phone call permission (CALL_PHONE) is required to place calls.'),
+                backgroundColor: Colors.redAccent,
+              ),
+            );
+          }
+          _endCall('CALL_PERMISSION_DENIED');
+          return;
+        }
       }
+
+      final success = await _nativeChannel.invokeMethod('makeDirectCall', {'phone': cleanPhone});
+      if (success != true) {
+        _endCall('CALL_INTENT_FAILED');
+      }
+    } catch (e) {
+      debugPrint('Direct GSM call failed: $e');
+      _endCall('CALL_FAILED');
     }
   }
 
@@ -135,6 +165,10 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     widget.socket.emit('call:picked-up', {
       'sessionId': widget.sessionId,
     });
+
+    _nativeChannel.invokeMethod('updateServiceStatus', {
+      'status': 'In Call with ${widget.name.isNotEmpty ? widget.name : widget.phone}'
+    }).catchError((_) {});
 
     _talkTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
@@ -166,6 +200,9 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     });
 
     try {
+      _nativeChannel.invokeMethod('updateServiceStatus', {
+        'status': 'Call ended. Phone Link active.'
+      });
       _nativeChannel.invokeMethod('bringToForeground');
     } catch (_) {}
 

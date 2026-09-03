@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 import '../services/phone_bridge_service.dart';
@@ -38,12 +39,16 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   int _answeredLeads = 0;
   int _remainingLeads = 5168;
 
+  static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
+  bool _callPermissionGranted = true;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _bridge.addListener(_onBridgeUpdate);
     _bridge.onBridgePaired = _handlePaired;
+    _checkAndRequestCallPermission();
     _bridge.initializeAuthenticated().then((_) {
       if (_bridge.authToken.isEmpty && mounted) {
         Navigator.pushReplacement(
@@ -65,8 +70,30 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
     }
   }
 
+  Future<void> _checkAndRequestCallPermission() async {
+    try {
+      final bool hasPermission = await _nativeChannel.invokeMethod('checkCallPermission') ?? false;
+      if (!hasPermission) {
+        final bool granted = await _nativeChannel.invokeMethod('requestCallPermission') ?? false;
+        if (mounted) {
+          setState(() {
+            _callPermissionGranted = granted;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _callPermissionGranted = true;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error checking call permission: $e');
+    }
+  }
+
   Future<void> _fetchRealCampaignAndLeads([String? targetCampId]) async {
-    final serverUrl = AppConfig.apiBaseUrl.isNotEmpty ? AppConfig.apiBaseUrl : 'http://127.0.0.1:3000';
+    final serverUrl = AppConfig.apiBaseUrl.isNotEmpty ? AppConfig.apiBaseUrl : 'http://140.245.215.156';
     final token = _bridge.authToken;
     if (token.isEmpty) return;
 
@@ -312,6 +339,38 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
 
           const SizedBox(height: 14),
 
+          if (!_callPermissionGranted)
+            Container(
+              margin: const EdgeInsets.only(bottom: 14),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 26),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'CALL_PHONE permission is required for automatic GSM calls.',
+                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.redAccent,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      minimumSize: Size.zero,
+                    ),
+                    onPressed: _checkAndRequestCallPermission,
+                    child: const Text('Grant', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+            ),
+
           // 1. Welcome Card from Reference Screen 2
           Container(
             padding: const EdgeInsets.all(16.0),
@@ -364,7 +423,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Connecting phone to server...')),
                     );
-                    await AppConfig.setBaseUrl('http://127.0.0.1:3000');
+                    await AppConfig.init();
                     await _bridge.initializeAuthenticated();
                     _bridge.reconnect();
                     _fetchRealCampaignAndLeads();
@@ -426,7 +485,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                   ),
                   ElevatedButton(
                     onPressed: () async {
-                      await AppConfig.setBaseUrl('http://127.0.0.1:3000');
+                      await AppConfig.init();
                       await _bridge.initializeAuthenticated();
                       _bridge.reconnect();
                       _fetchRealCampaignAndLeads();
@@ -1041,7 +1100,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
               controller: controller,
               style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
               decoration: InputDecoration(
-                hintText: 'http://192.168.1.35:3000',
+                hintText: 'http://140.245.215.156',
                 hintStyle: const TextStyle(color: OctalColors.textMuted, fontSize: 12),
                 filled: true,
                 fillColor: OctalColors.bgDark,
@@ -1055,14 +1114,14 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
               runSpacing: 6,
               children: [
                 ActionChip(
-                  label: const Text('192.168.1.35 (WiFi)', style: TextStyle(fontSize: 10, color: OctalColors.primaryGold)),
+                  label: const Text('Production Cloud (140.245.215.156)', style: TextStyle(fontSize: 10, color: OctalColors.primaryGold)),
                   backgroundColor: OctalColors.bgDark,
-                  onPressed: () => controller.text = 'http://192.168.1.35:3000',
+                  onPressed: () => controller.text = 'http://140.245.215.156',
                 ),
                 ActionChip(
-                  label: const Text('127.0.0.1 (USB)', style: TextStyle(fontSize: 10, color: OctalColors.textSecondary)),
+                  label: const Text('sslip.io Domain', style: TextStyle(fontSize: 10, color: OctalColors.textSecondary)),
                   backgroundColor: OctalColors.bgDark,
-                  onPressed: () => controller.text = 'http://127.0.0.1:3000',
+                  onPressed: () => controller.text = 'http://140.245.215.156.sslip.io',
                 ),
               ],
             ),

@@ -56,11 +56,6 @@ export interface CallLog {
   timestamp: string;
 }
 
-// Legacy types used only during migration
-interface LegacyCampaign { id: string; name: string; fileName: string; leadCount: number; createdAt: string; }
-interface LegacyLead     { id: string; campaignId: string; name: string; phone: string; status: string; outcome?: string; duration?: number; }
-interface LegacyLog      { id: string; leadId: string; leadName: string; leadPhone: string; campaignName: string; outcome: string; duration: number; timestamp: string; }
-
 // ─── Exported API (explicit tenantId required - fail closed) ─────────────
 
 export async function getNextPendingLead(campaignId: string, tenantId: string, afterLeadId?: string): Promise<Lead | null> {
@@ -397,35 +392,6 @@ export async function createManualLog(phone: string, name: string, outcome: stri
 }
 
 // ─── Legacy shim: loadDb / saveDb ─────────────────────────────────────────────
-export interface LegacyDb {
-  campaigns: Campaign[];
-  leads: Lead[];
-  logs: CallLog[];
-}
-
-export async function loadDb(tenantId: string): Promise<LegacyDb> {
-  if (!tenantId) return { campaigns: [], leads: [], logs: [] };
-  const campaigns = await getCampaigns(tenantId);
-  const leads = await db.queryAll<Lead>(`SELECT * FROM leads WHERE "tenantId" = $1`, [tenantId]);
-  const logs = await getLogs(tenantId);
-  return { campaigns, leads, logs };
-}
-
-export async function saveDb(data: LegacyDb): Promise<void> {
-  await db.withTransaction(async () => {
-    for (const lead of data.leads) {
-      await db.execute(`
-        UPDATE leads SET status = $1, outcome = $2, duration = $3 WHERE id = $4
-      `, [lead.status, lead.outcome ?? null, lead.duration ?? null, lead.id]);
-    }
-    for (const log of data.logs) {
-      await db.execute(`
-        UPDATE call_logs SET outcome = $1 WHERE "leadId" = $2
-      `, [log.outcome, log.leadId]);
-    }
-  });
-}
-
 // ─── Phone-number normalisation helper ───────────────────────────────────────
 export function normalizePhone(raw: string): string {
   if (!raw) return '';
@@ -914,10 +880,11 @@ export async function getDeviceById(id: string, tenantId?: string): Promise<Devi
 }
 
 export async function revokeDevice(id: string, userId: string, tenantId: string, isAdmin: boolean = false): Promise<boolean> {
-  let query = `UPDATE devices SET "isRevoked" = 1, status = 'OFFLINE', "updatedAt" = now() WHERE id = $1 AND "tenantId" = $2`;
-  const params: any[] = [id, tenantId];
+  const now = new Date().toISOString();
+  let query = `UPDATE devices SET "isRevoked" = 1, status = 'OFFLINE', "updatedAt" = $1 WHERE id = $2 AND "tenantId" = $3`;
+  const params: any[] = [now, id, tenantId];
   if (!isAdmin) {
-    query += ` AND "userId" = $3`;
+    query += ` AND "userId" = $4`;
     params.push(userId);
   }
   const result = await db.execute(query, params);

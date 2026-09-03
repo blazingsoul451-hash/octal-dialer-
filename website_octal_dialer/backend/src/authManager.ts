@@ -671,8 +671,9 @@ export async function registerPublicUser(params: { username: string; email?: str
 export async function ensureDefaultAdmin(): Promise<void> {
   const primaryOwner = await db.queryOne<any>(`SELECT * FROM users WHERE username = 'mohsin1' OR email = 'blazingsoul451@gmail.com'`);
   if (primaryOwner) {
-    await db.execute(`UPDATE users SET role = 'platform_admin' WHERE id = $1`, [primaryOwner.id]);
-    await db.execute(`UPDATE users SET role = 'user' WHERE role = 'platform_admin' AND id != $1`, [primaryOwner.id]);
+    if (primaryOwner.role !== 'platform_admin') {
+      await db.execute(`UPDATE users SET role = 'platform_admin' WHERE id = $1`, [primaryOwner.id]);
+    }
     return;
   }
 
@@ -680,12 +681,12 @@ export async function ensureDefaultAdmin(): Promise<void> {
   const count = countRow ? Number(countRow.c) : 0;
   if (count > 0) return;
 
-  const defaultPassword = 'octal' + Math.random().toString(36).substring(2, 8).toUpperCase();
+  const defaultPassword = 'octal' + crypto.randomBytes(6).toString('hex').toUpperCase();
   const { hash } = hashPassword(defaultPassword);
 
   await db.execute(`
     INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "createdAt", "updatedAt")
-    VALUES ($1, $2, 'admin@octaldialer.local', $3, 'user', 'tenant_default', 'local', $4, $5)
+    VALUES ($1, $2, 'admin@octaldialer.local', $3, 'platform_admin', 'tenant_default', 'local', $4, $5)
   `, ['user_admin_' + crypto.randomBytes(4).toString('hex'), 'admin', hash, new Date().toISOString(), new Date().toISOString()]);
 
   console.log('');

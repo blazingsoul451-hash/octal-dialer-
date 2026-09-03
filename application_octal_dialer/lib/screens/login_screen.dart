@@ -32,7 +32,8 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _loadSavedServer() async {
-    _serverController.text = 'http://192.168.1.35:3000';
+    final saved = await AppConfig.init();
+    _serverController.text = saved.isNotEmpty ? saved : 'http://140.245.215.156';
   }
 
   @override
@@ -57,12 +58,11 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorMessage = '';
     });
 
-    // Candidates to auto-try: 1) Active LAN IP, 2) User-entered URL, 3) USB Reverse Loopback
+    final entered = _serverController.text.trim();
     final List<String> candidateUrls = [
-      _serverController.text.trim().isNotEmpty ? _serverController.text.trim() : 'http://192.168.1.35:3000',
-      'http://192.168.1.35:3000',
-      'http://127.0.0.1:3000',
-      'https://rare-crews-bet.loca.lt',
+      if (entered.isNotEmpty) entered,
+      'http://140.245.215.156',
+      'http://140.245.215.156.sslip.io',
     ];
 
     dynamic loginData;
@@ -112,7 +112,7 @@ class _LoginScreenState extends State<LoginScreen> {
     if (loginData == null) {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Could not reach server. Ensure USB wire is connected.';
+          _errorMessage = 'Could not reach server. Please check your internet connection and server endpoint.';
           _isLoading = false;
         });
       }

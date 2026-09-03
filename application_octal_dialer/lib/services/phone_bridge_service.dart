@@ -119,7 +119,38 @@ class PhoneBridgeService extends ChangeNotifier {
     }
 
     await _gatherDeviceInfo();
+    _setupTelephonyChannel();
     _connectAuthenticatedSocket();
+  }
+
+  void _setupTelephonyChannel() {
+    _nativeChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onCallStateChanged') {
+        String state = 'UNKNOWN';
+        String phoneNumber = '';
+        if (call.arguments is Map) {
+          state = (call.arguments['state'] ?? 'UNKNOWN').toString();
+          phoneNumber = (call.arguments['phoneNumber'] ?? '').toString();
+        } else if (call.arguments is String) {
+          state = call.arguments as String;
+        }
+
+        debugPrint('[PhoneBridge] Native call state change: $state (incoming phone: $phoneNumber)');
+
+        if (state == 'RINGING') {
+          _socket?.emit('phone:incoming-call', {
+            'sessionId': _currentSessionId,
+            'deviceId': _deviceId,
+            'phone': phoneNumber,
+          });
+        } else if (state == 'IDLE') {
+          _socket?.emit('phone:call-idle', {
+            'sessionId': _currentSessionId,
+            'deviceId': _deviceId,
+          });
+        }
+      }
+    });
   }
 
   /// Manually force reconnect the authenticated socket
@@ -251,6 +282,20 @@ class PhoneBridgeService extends ChangeNotifier {
       }
     });
 
+    _socket!.on('phone:answer-call', (_) {
+      debugPrint('[PhoneBridge] Answering call via native TelecomManager');
+      _nativeChannel.invokeMethod('answerCall').catchError((e) {
+        debugPrint('[PhoneBridge] Native answerCall error: $e');
+      });
+    });
+
+    _socket!.on('phone:hangup-call', (_) {
+      debugPrint('[PhoneBridge] Ending call via native TelecomManager');
+      _nativeChannel.invokeMethod('endCall').catchError((e) {
+        debugPrint('[PhoneBridge] Native endCall error: $e');
+      });
+    });
+
     _socket!.on('phone:ping', (data) {
       final timestamp = data != null ? data['timestamp'] : null;
       _socket?.emit('phone:pong', {
@@ -287,6 +332,11 @@ class PhoneBridgeService extends ChangeNotifier {
     _sessionToken = map['token']?.toString();
 
     _setStatus(BridgeStatus.paired, '● Paired with $_currentLaptopName');
+
+    // Keep app alive and responsive during GSM calls
+    _nativeChannel.invokeMethod('startForegroundService', {
+      'status': 'Paired with $_currentLaptopName. Ready for calls.'
+    }).catchError((_) {});
 
     if (onBridgePaired != null) {
       onBridgePaired!(map);
@@ -326,16 +376,19 @@ class PhoneBridgeService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Request manual pairing to laptop session in authenticated mode
+  /// Request manual advertisement to laptop session in authenticated mode
   void requestPairWithActiveLaptop() {
-    if (_socket != null && _socket!.connected) {
-      _setStatus(BridgeStatus.connecting, 'Pairing with active laptop session...');
-      _socket!.emit('phone:join', {
-        'authToken': _authToken,
+    if (_socket != null && _socket!.connected && _authToken != null) {
+      _setStatus(BridgeStatus.connecting, 'Advertising device to active laptop session...');
+      _socket!.emit('phone:auth-register', {
+        'token': _authToken,
+        'deviceUid': _deviceUid,
         'deviceName': _deviceName,
-        'phoneBtAddress': _deviceBtAddress,
-        'phoneOsType': _deviceOs,
-        'phoneIpAddress': _deviceIp,
+        'btAddress': _deviceBtAddress,
+        'osType': _deviceOs,
+        'ipAddress': _deviceIp,
+        'platform': 'android',
+        'appVersion': '1.2.0',
       });
     }
   }

@@ -31,8 +31,6 @@ import {
   createLog,
   createManualLog,
   updateLeadStatus,
-  loadDb,
-  saveDb,
   normalizePhone,
   releaseLeadLock,
   unlockLeadsForSession,
@@ -116,37 +114,81 @@ import {
   getActiveCommands
 } from './safetyController';
 
-dotenv.config();
+const isProduction = process.env.NODE_ENV === 'production';
 
-const app = express();
+export const app = express();
 
-const ALLOWED_ORIGINS = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://localhost:5174',
-  'http://127.0.0.1:5174'
-];
+// Canonical configured origins
+const getCanonicalAllowedOrigins = (): string[] => {
+  const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
 
-const checkOrigin = (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-  if (!origin || 
-      ALLOWED_ORIGINS.indexOf(origin) !== -1 || 
-      origin.startsWith('http://localhost:') || 
-      origin.startsWith('http://127.0.0.1:') || 
-      origin.startsWith('http://192.168.') || 
-      origin.startsWith('http://172.') || 
-      origin.startsWith('http://10.') ||
-      origin.endsWith('.trycloudflare.com')) {
-    callback(null, true);
-  } else {
-    callback(null, true);
+  const serverUrl = process.env.SERVER_URL?.trim();
+  const publicUrl = process.env.PUBLIC_URL?.trim();
+
+  const origins = new Set<string>([
+    ...envOrigins,
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:5174',
+    'http://127.0.0.1:5174',
+    'http://140.245.215.156',
+    'http://140.245.215.156:5000',
+    'http://140.245.215.156.sslip.io'
+  ]);
+
+  if (serverUrl) origins.add(serverUrl.replace(/\/$/, ''));
+  if (publicUrl) origins.add(publicUrl.replace(/\/$/, ''));
+
+  return Array.from(origins);
+};
+
+export const isOriginAllowed = (origin: string | undefined): boolean => {
+  // Non-browser clients (native Flutter/Dart mobile app, curl, server-to-server) do not send Origin header
+  if (!origin) return true;
+
+  const allowedOrigins = getCanonicalAllowedOrigins();
+  if (allowedOrigins.includes(origin)) return true;
+
+  // In development / test, also permit localhost, 127.0.0.1, LAN development subnets, and test tunnels
+  if (!isProduction) {
+    try {
+      const parsed = new URL(origin);
+      const host = parsed.hostname;
+      if (
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        host.startsWith('192.168.') ||
+        host.startsWith('10.') ||
+        host.startsWith('172.') ||
+        host.endsWith('.sslip.io') ||
+        host.endsWith('.trycloudflare.com')
+      ) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
   }
+
+  return false;
 };
 
 app.use(cors({
-  origin: checkOrigin,
-  credentials: true
+  origin: (origin, callback) => {
+    if (isOriginAllowed(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS origin rejected: ${origin}`));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -177,7 +219,13 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
 export const httpServer = createServer(app);
 export const io = new SocketIOServer(httpServer, {
   cors: {
-    origin: checkOrigin,
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`Socket.IO CORS origin rejected: ${origin}`));
+      }
+    },
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -759,7 +807,11 @@ app.post('/api/mobile/login', async (req, res) => {
     }
 
     // Allocate or reclaim an active calling session scoped strictly to caller's tenantId
-    const tenantId = authResult.user.tenantId || 'tenant_default';
+    const tenantId = authResult.user.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
     const tenantSessions = (Array.from(getSessions().values()) as Session[]).filter(s => s.tenantId === tenantId);
     const activeSession = tenantSessions.length > 0 ? tenantSessions[0] : reclaimOrCreateSession('laptop_mobile_host', undefined, tenantId);
 
@@ -841,7 +893,11 @@ app.get('/auth/me', requireAuth, (req, res) => {
 // GET /api/suppression-list — list all DNC numbers
 app.get('/api/suppression-list', requireAuth, async (req, res) => {
   const user = (req as any).user;
-  const tenantId = user?.tenantId || 'tenant_default';
+  const tenantId = user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   res.json(await getSuppressionList(tenantId));
 });
 
@@ -853,7 +909,11 @@ app.post('/api/suppression-list', requireAuth, async (req, res) => {
     return;
   }
   const user = (req as any).user;
-  const tenantId = user?.tenantId || 'tenant_default';
+  const tenantId = user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const added = await addToSuppressionList(phone.trim(), reason || 'Manual DNC', 'dashboard', user.username, tenantId);
   if (added) {
     res.json({ success: true, message: `${phone} added to suppression list.` });
@@ -870,7 +930,11 @@ app.post('/api/suppression-list/import', requireAuth, async (req, res) => {
     return;
   }
   const user = (req as any).user;
-  const tenantId = user?.tenantId || 'tenant_default';
+  const tenantId = user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const result = await bulkAddToSuppressionList(
     entries.map(e => ({ phone: e.phone, reason: e.reason || reason || 'Bulk DNC Import' })),
     'dashboard_import',
@@ -883,7 +947,11 @@ app.post('/api/suppression-list/import', requireAuth, async (req, res) => {
 // DELETE /api/suppression-list/:id — remove from DNC
 app.delete('/api/suppression-list/:id', requireAuth, async (req, res) => {
   const user = (req as any).user;
-  const tenantId = user?.tenantId || 'tenant_default';
+  const tenantId = user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const success = await removeFromSuppressionList(req.params.id, user.username, tenantId);
   if (success) {
     res.json({ success: true });
@@ -1091,34 +1159,34 @@ app.get('/api/session/resolve', requireAuth, (req, res) => {
   });
 });
 
-// REST: Server Info (public — mobile app needs this without auth)
-app.get('/info', (req, res) => {
-  const publicUrl = getPublicBaseUrl(req);
-  res.json({
-    laptopName: os.hostname() || 'Laptop Console',
-    localIP: getLocalIP(),
-    port: PORT,
-    serverUrl: publicUrl,
-    apkUrl: `${publicUrl}/download/apk`
-  });
-});
-
 // REST: Campaigns (protected)
-app.get(['/campaigns', '/api/campaigns'], requireAuth, (req, res) => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
-  res.json(getCampaigns(tenantId));
+app.get(['/campaigns', '/api/campaigns'], requireAuth, async (req, res) => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  res.json(await getCampaigns(tenantId));
 });
 
 // REST: Get leads for a campaign (protected)
-app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, (req, res) => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
-  res.json(getLeads(req.params.id, tenantId));
+app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async (req, res) => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  res.json(await getLeads(req.params.id, tenantId));
 });
 
 // REST: Global Leads search & pagination (protected)
 app.get(['/leads', '/api/leads'], requireAuth, async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId || 'tenant_default';
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
     const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
     const offset = (page - 1) * limit;
@@ -1143,16 +1211,32 @@ app.get(['/leads', '/api/leads'], requireAuth, async (req, res) => {
       params.push(status);
     }
 
-    const countQuery = query.replace(/SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM');
-    const totalRow = await db.queryOne(countQuery, params) as { total: number } | undefined;
-    const total = totalRow ? parseInt(String(totalRow.total), 10) : 0;
-
     query += ` ORDER BY l."createdAt" DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
 
-    const rows = await db.queryAll(query, params) as any[];
+    const leads = await db.queryAll<any>(query, params);
 
-    const formattedLeads = rows.map(r => ({
+    // Count total for pagination
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM leads l
+      LEFT JOIN campaigns c ON l."campaignId" = c.id
+      WHERE l."tenantId" = $1 AND l.status != 'ARCHIVED'
+    `;
+    const countParams: any[] = [tenantId];
+    if (source) {
+      countQuery += ` AND (c.name LIKE $${countParams.length + 1} OR l."campaignId" = $${countParams.length + 2})`;
+      countParams.push(`%${source}%`, source);
+    }
+    if (status) {
+      countQuery += ` AND l.status = $${countParams.length + 1}`;
+      countParams.push(status);
+    }
+
+    const countRow = await db.queryOne<{ total: string | number }>(countQuery, countParams);
+    const total = countRow ? Number(countRow.total) : leads.length;
+
+    const formattedLeads = leads.map(r => ({
       id: r.id,
       source: r.campaignName || 'Lead Queue',
       businessName: r.name || 'Unknown Contact',
@@ -1183,7 +1267,11 @@ app.get(['/leads', '/api/leads'], requireAuth, async (req, res) => {
 // REST: Update lead status (protected)
 app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId || 'tenant_default';
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
     const { status } = req.body;
     if (status) {
       await db.execute(`UPDATE leads SET status = $1 WHERE id = $2 AND "tenantId" = $3`, [status, req.params.id, tenantId]);
@@ -1198,7 +1286,11 @@ app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, async (req, res) => {
 // REST: CRM Campaign Workspace telemetry & leads (protected)
 app.get('/api/crm/campaigns/:id/workspace', requireAuth, async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId || 'tenant_default';
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
     const campaignId = req.params.id;
 
     const leads = await db.queryAll(`SELECT * FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED' ORDER BY "createdAt" ASC, "id" ASC`, [campaignId, tenantId]) as any[];
@@ -1233,30 +1325,13 @@ app.get('/api/crm/campaigns/:id/workspace', requireAuth, async (req, res) => {
   }
 });
 
-// GET /download/apk — serve APK binary file to mobile clients
-app.get('/download/apk', (req, res) => {
-  const apkPaths = [
-    path.join(__dirname, '../../../application_octal_dialer/build/app/outputs/flutter-apk/app-release.apk'),
-    path.join(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-release.apk'),
-    path.join(__dirname, '../../../application_octal_dialer/build/app/outputs/apk/release/app-release.apk'),
-    path.join(__dirname, '../../application_octal_dialer/build/app/outputs/apk/release/app-release.apk'),
-    path.join(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-release.apk'),
-    path.join(__dirname, '../public/OctalDialer.apk'),
-    path.join(__dirname, '../data/OctalDialer.apk')
-  ];
-
-  for (const p of apkPaths) {
-    if (fs.existsSync(p)) {
-      return res.download(p, 'OctalDialer.apk');
-    }
-  }
-
-  res.status(404).send('APK build file not found on host.');
-});
-
 // REST: Delete single lead (protected)
 app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, async (req, res) => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const success = await deleteLead(req.params.id, tenantId);
   if (success) {
     io.to(`tenant_${tenantId}`).emit('leads:updated');
@@ -1268,7 +1343,11 @@ app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, async (req, res) => {
 
 // REST: Purge all fake/sample leads across queue (protected)
 app.post('/api/leads/purge-fake', requireAuth, async (req, res) => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const count = await clearFakeQueueLeads(tenantId);
   io.to(`tenant_${tenantId}`).emit('leads:updated');
   res.json({ success: true, count, message: `Removed ${count} fake/sample leads.` });
@@ -1276,7 +1355,11 @@ app.post('/api/leads/purge-fake', requireAuth, async (req, res) => {
 
 // REST: Clear all leads in a campaign (protected)
 app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async (req, res) => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   const count = await clearAllLeadsInCampaign(req.params.id, tenantId);
   io.to(`tenant_${tenantId}`).emit('leads:updated');
   res.json({ success: true, count, message: `Cleared ${count} leads in campaign ${req.params.id}.` });
@@ -1284,7 +1367,11 @@ app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, as
 
 // REST: Call logs history (protected — for dashboard)
 app.get(['/logs', '/api/logs'], requireAuth, async (req, res) => {
-  const tenantId = (req as any).user?.tenantId || 'tenant_default';
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
   res.json(await getLogs(tenantId));
 });
 
@@ -1406,7 +1493,11 @@ app.get('/api/scraper-files/download/:filename', requireAuth, (req, res) => {
 // REST: Import leads from scraped file (protected)
 app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId || 'tenant_default';
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
     const { filePath, campaignName } = req.body as { filePath: string; campaignName?: string };
     if (!filePath || !fs.existsSync(filePath)) {
       res.status(404).json({ error: 'File not found on system.' });
@@ -1521,7 +1612,11 @@ app.post('/api/scraper/run', requireAuth, async (req, res) => {
   }
 
   const parsedLimit = parseInt(String(maxLeads || '50'), 10) || 50;
-  const tenantId = user.tenantId || 'tenant_default';
+  const tenantId = user.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
 
   // Run asynchronously so the REST request responds immediately
   runGoogleMapsScraper({
@@ -2172,6 +2267,10 @@ io.on('connection', (socket) => {
     }
 
     const tenantId = socket.data.tenantId || session.tenantId;
+    if (!tenantId) {
+      socket.emit('device:error', { error: 'Unauthorized: missing tenant identity.' });
+      return;
+    }
     const user = socket.data.user;
 
     const device = await getDeviceById(deviceId, tenantId);
@@ -2214,7 +2313,7 @@ io.on('connection', (socket) => {
       phoneRecord.osType,
       phoneRecord.ipAddress,
       user ? user.id : 'unknown',
-      tenantId || 'tenant_default'
+      tenantId
     );
 
     if (!pairedSession) {
@@ -2583,7 +2682,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('campaign:select', (data: { campaignId: string; sessionId?: string }) => {
-    const tenantId = (socket as any).data?.tenantId || (socket as any).tenantId || 'tenant_default';
+    const tenantId = (socket as any).data?.tenantId || (socket as any).tenantId;
+    if (!tenantId) return;
     io.to(`tenant_${tenantId}`).emit('campaign:selected', { campaignId: data?.campaignId });
     if (data?.sessionId) {
       io.to(data.sessionId).emit('campaign:selected', { campaignId: data.campaignId });
@@ -2761,9 +2861,53 @@ io.on('connection', (socket) => {
     }
     if (session.phoneSocketId) {
       const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
-      if (phoneSocket) phoneSocket.emit('phone:hangup');
+      if (phoneSocket) {
+        phoneSocket.emit('phone:hangup');
+        phoneSocket.emit('phone:hangup-call');
+      }
     }
     console.log(`[Socket] Hangup command sent to phone in session ${sessionId}`);
+  });
+
+  socket.on('dial:answer', ({ sessionId }: { sessionId: string }) => {
+    const session = getSessionById(sessionId);
+    if (!session) return;
+    if (session.laptopSocketId !== socket.id) {
+      console.warn(`[Socket PhoneLink] Rejected answer from unauthorized socket ${socket.id} for session ${sessionId}`);
+      return;
+    }
+    if (session.phoneSocketId) {
+      const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
+      if (phoneSocket) {
+        phoneSocket.emit('phone:answer-call');
+        console.log(`[Socket PhoneLink] Answer command sent to phone in session ${sessionId}`);
+      }
+    }
+  });
+
+  socket.on('phone:incoming-call', ({ sessionId, deviceId, phone }: { sessionId?: string; deviceId?: string; phone?: string }) => {
+    const sid = sessionId || socket.data.sessionId;
+    const session = sid ? getSessionById(sid) : null;
+    if (session && session.phoneSocketId === socket.id) {
+      const payload = {
+        phone: phone || 'Unknown Caller',
+        deviceId: session.phoneDeviceId || deviceId,
+        deviceName: session.phoneDeviceName || 'Connected Phone',
+        timestamp: new Date().toISOString(),
+        direction: 'INCOMING'
+      };
+      io.to(session.id).emit('call:incoming', payload);
+      console.log(`[Socket PhoneLink] 📲 Incoming cellular call on phone ${session.phoneDeviceName} (${phone}) -> Notified laptop in session ${session.id}`);
+    }
+  });
+
+  socket.on('phone:call-idle', ({ sessionId, deviceId }: { sessionId?: string; deviceId?: string }) => {
+    const sid = sessionId || socket.data.sessionId;
+    const session = sid ? getSessionById(sid) : null;
+    if (session && session.phoneSocketId === socket.id) {
+      io.to(session.id).emit('call:incoming-dismissed');
+      console.log(`[Socket PhoneLink] Cellular call returned to IDLE on phone in session ${session.id}`);
+    }
   });
 
   // ─── STRICT CALL LIFECYCLE SOCKET HANDLERS ─────────────────────────────────
@@ -2895,9 +3039,6 @@ io.on('connection', (socket) => {
     }
   });
 });
-
-// Bootstrap default admin user if no users exist yet
-ensureDefaultAdmin().catch(err => console.error('[Bootstrap Admin Error]:', err));
 
 // ══════════════════════════════════════════════════════════════════════════════
 // AUTO-EMAILER MODULE ROUTES
@@ -3184,14 +3325,17 @@ if (fs.existsSync(frontendDistPath)) {
   });
 }
 
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Octal Backend] Server running on http://0.0.0.0:${PORT}`);
-  console.log(`[Local IP Address] Detected: http://${getLocalIP()}:${PORT}`);
-  console.log(`[Phone must use this URL] http://${getLocalIP()}:${PORT}`);
-  console.log(`[QR will auto-encode this URL in the pairing link]`);
+if (process.env.NODE_ENV !== 'test' && !process.env.SKIP_LISTEN) {
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Octal Backend] Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[Local IP Address] Detected: http://${getLocalIP()}:${PORT}`);
+    console.log(`[Phone must use this URL] http://${getLocalIP()}:${PORT}`);
+    console.log(`[QR will auto-encode this URL in the pairing link]`);
 
-  // Initialize Cloudflare Tunnel and APK Watcher
-  tunnelManager.attachSocketIO(io);
-  tunnelManager.init(PORT);
-  apkWatcher.init(io, db);
-});
+    // Initialize Cloudflare Tunnel, APK Watcher, and Default Admin
+    tunnelManager.attachSocketIO(io);
+    tunnelManager.init(PORT);
+    apkWatcher.init(io, db);
+    ensureDefaultAdmin().catch(err => console.error('[Bootstrap Admin Error]:', err));
+  });
+}

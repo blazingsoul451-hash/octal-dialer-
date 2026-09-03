@@ -9,8 +9,6 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@types/jsonwebtoken": "^9.0.10",
-    "@types/nodemailer": "^8.0.1",
     "better-sqlite3": "^13.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
@@ -26,7 +24,9 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.12.7",
+    "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.23.1",
     "pg-mem": "^3.0.14",
     "tsx": "^4.7.2",

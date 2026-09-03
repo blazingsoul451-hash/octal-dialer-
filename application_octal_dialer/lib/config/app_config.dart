@@ -2,8 +2,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// Single source of truth for the Octal Dialer Android application backend configuration.
 class AppConfig {
-  /// Default backend URL if none configured (Auto-detected LAN host)
-  static const String defaultBaseUrl = 'http://192.168.1.35:3000';
+  /// Default backend URL if none configured (Production Cloud Server)
+  static const String defaultBaseUrl = 'http://140.245.215.156';
 
   /// Key used in SharedPreferences
   static const String serverUrlKey = 'server_url';
@@ -20,7 +20,7 @@ class AppConfig {
     final prefs = await SharedPreferences.getInstance();
     final savedUrl = prefs.getString(serverUrlKey);
 
-    if (savedUrl != null && savedUrl.isNotEmpty && savedUrl != 'http://127.0.0.1:3000' && savedUrl != 'http://localhost:3000') {
+    if (savedUrl != null && savedUrl.isNotEmpty && savedUrl != 'http://127.0.0.1:3000' && savedUrl != 'http://localhost:3000' && savedUrl != 'http://192.168.1.35:3000') {
       final sanitized = sanitizeUrl(savedUrl);
       if (sanitized != null) {
         _currentBaseUrl = sanitized;

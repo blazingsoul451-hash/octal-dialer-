@@ -382,6 +382,38 @@ export default function App() {
       isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'
     }`}>
       
+      {/* 📲 Incoming Cellular Call Modal / Banner */}
+      {socketData.incomingCall && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-4 animate-bounce">
+          <div className="p-4 rounded-2xl border-2 border-emerald-500 bg-slate-950 text-white shadow-2xl shadow-emerald-500/30 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0">
+                <span className="text-xl">📞</span>
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-mono uppercase tracking-wider text-emerald-400 font-bold">Incoming Cellular Call</div>
+                <div className="text-base font-bold truncate text-white">{socketData.incomingCall.phone}</div>
+                <div className="text-xs text-slate-400 truncate">{socketData.incomingCall.deviceName}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => socketData.answerCall()}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/30 cursor-pointer flex items-center gap-1.5 transition-all"
+              >
+                <span>Answer</span>
+              </button>
+              <button
+                onClick={() => socketData.hangupCall()}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs shadow-lg shadow-red-600/30 cursor-pointer flex items-center gap-1.5 transition-all"
+              >
+                <span>Decline</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast Notification Banner (Bottom-Right, Non-Blocking) */}
       {toast && (
         <div className={`fixed bottom-6 right-6 z-50 p-3.5 px-4.5 border-2 rounded-2xl shadow-2xl flex items-center gap-3 transition-all ${

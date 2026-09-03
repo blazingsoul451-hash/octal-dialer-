@@ -18,6 +18,7 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
   const [lastBlockedReason, setLastBlockedReason] = useState<{ reason: string; message: string } | null>(null);
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [incomingCall, setIncomingCall] = useState<{ phone: string; deviceName: string; timestamp: string } | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
 
@@ -116,10 +117,20 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
 
     socket.on('call:started', () => {
       setCallState('ACTIVE');
+      setIncomingCall(null);
+    });
+
+    socket.on('call:incoming', (data: { phone: string; deviceName: string; timestamp: string }) => {
+      setIncomingCall(data);
+    });
+
+    socket.on('call:incoming-dismissed', () => {
+      setIncomingCall(null);
     });
 
     socket.on('call:finished', (data: { reason: string; duration: number; leadId?: string; commandId?: string }) => {
       setCallState('IDLE');
+      setIncomingCall(null);
       setLastCallFinished(data);
     });
 
@@ -210,16 +221,20 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
   const hangupCall = () => {
     if (socketRef.current && sessionId) {
       socketRef.current.emit('dial:hangup', { sessionId });
-      // Do NOT set IDLE here — wait for server's call:finished event
-      // This prevents the UI from showing 'IDLE' while the phone is still ringing/connected
+      setIncomingCall(null);
+    }
+  };
+
+  const answerCall = () => {
+    if (socketRef.current && sessionId) {
+      socketRef.current.emit('dial:answer', { sessionId });
+      setIncomingCall(null);
     }
   };
 
   const emergencyStop = () => {
     if (socketRef.current && sessionId) {
       socketRef.current.emit('campaign:emergency_stop', { sessionId });
-      // Do NOT set IDLE here — wait for call:finished from server
-      // The emergency_stopped event will still be received and can update UI accordingly
     }
   };
 
@@ -242,6 +257,7 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     phoneDeviceId,
     laptopBtAddress,
     callState,
+    incomingCall,
     lastCallFinished,
     lastBlockedReason,
     deviceError,
@@ -250,6 +266,7 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     connectDevice,
     disconnectDevice,
     dialLead,
+    answerCall,
     hangupCall,
     emergencyStop,
     clearEmergencyStop,

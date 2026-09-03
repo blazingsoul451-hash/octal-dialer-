@@ -1,15 +1,18 @@
 package com.octal.dialer.octal_dialer
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import android.view.WindowManager
 import android.telecom.TelecomManager
-import android.telephony.TelephonyManager
 import android.telephony.PhoneStateListener
-import android.content.Context
+import android.telephony.TelephonyCallback
+import android.telephony.TelephonyManager
+import android.view.WindowManager
+import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -25,6 +28,7 @@ class MainActivity: FlutterActivity() {
     private var methodChannel: MethodChannel? = null
     private var telephonyManager: TelephonyManager? = null
     private var phoneStateListener: PhoneStateListener? = null
+    private var modernTelephonyCallback: Any? = null // Holds TelephonyCallback on API 31+
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -36,9 +40,10 @@ class MainActivity: FlutterActivity() {
             when (call.method) {
                 "getDeviceInfo" -> {
                     val info = mapOf(
-                        "model" to android.os.Build.MODEL,
-                        "manufacturer" to android.os.Build.MANUFACTURER,
-                        "os" to "Android " + android.os.Build.VERSION.RELEASE
+                        "model" to Build.MODEL,
+                        "manufacturer" to Build.MANUFACTURER,
+                        "os" to "Android " + Build.VERSION.RELEASE,
+                        "sdkInt" to Build.VERSION.SDK_INT
                     )
                     result.success(info)
                 }
@@ -50,23 +55,51 @@ class MainActivity: FlutterActivity() {
                         result.error("INVALID_PHONE", "Phone number is empty", null)
                     }
                 }
+                "answerCall" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                            @Suppress("DEPRECATION")
+                            telecomManager.acceptRingingCall()
+                            result.success(true)
+                        } else {
+                            result.error("UNSUPPORTED", "Answering calls programmatically requires Android 8.0+", null)
+                        }
+                    } catch (e: SecurityException) {
+                        result.error("SECURITY_EXCEPTION", "Permission denied: ${e.message}", null)
+                    } catch (e: Exception) {
+                        result.error("ANSWER_ERROR", e.message, null)
+                    }
+                }
                 "endCall" -> {
                     try {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                             val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
                             @Suppress("DEPRECATION")
                             val ended = telecomManager.endCall()
                             result.success(ended)
                         } else {
-                            // Pre-Pie: no reliable programmatic hangup without system permissions
                             result.success(false)
                         }
                     } catch (e: SecurityException) {
-                        // Expected on Android 9+ if app is not the default dialer
                         result.success(false)
                     } catch (e: Exception) {
                         result.error("END_CALL_ERROR", e.message, null)
                     }
+                }
+                "startForegroundService" -> {
+                    val status = call.argument<String>("status") ?: "Phone Link active."
+                    OctalForegroundService.startService(this, status)
+                    result.success(true)
+                }
+                "updateServiceStatus" -> {
+                    val status = call.argument<String>("status") ?: "Connected"
+                    OctalForegroundService.updateStatus(this, status)
+                    result.success(true)
+                }
+                "stopForegroundService" -> {
+                    OctalForegroundService.stopService(this)
+                    result.success(true)
                 }
                 "keepScreenOn" -> {
                     val enable = call.argument<Boolean>("enable") ?: false
@@ -101,6 +134,16 @@ class MainActivity: FlutterActivity() {
                     if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
                         permissionsNeeded.add(Manifest.permission.READ_PHONE_STATE)
                     }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
+                            permissionsNeeded.add(Manifest.permission.ANSWER_PHONE_CALLS)
+                        }
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                            permissionsNeeded.add(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }
                     
                     if (permissionsNeeded.isNotEmpty()) {
                         pendingResult = result
@@ -115,63 +158,89 @@ class MainActivity: FlutterActivity() {
             }
         }
 
-        registerPhoneStateListener()
+        registerTelephonyListeners()
     }
 
-    private fun registerPhoneStateListener() {
+    private fun registerTelephonyListeners() {
         try {
             telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-            phoneStateListener = object : PhoneStateListener() {
-                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
-                    super.onCallStateChanged(state, phoneNumber)
-                    val stateString = when (state) {
-                        TelephonyManager.CALL_STATE_IDLE -> "IDLE"
-                        TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
-                        TelephonyManager.CALL_STATE_RINGING -> "RINGING"
-                        else -> "UNKNOWN"
-                    }
-                    runOnUiThread {
-                        methodChannel?.invokeMethod("onCallStateChanged", stateString)
-                    }
-                }
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Modern Android 12+ (API 31+) TelephonyCallback
+                registerModernTelephonyCallback()
+            } else {
+                // Legacy PhoneStateListener for older Android
+                registerLegacyPhoneStateListener()
             }
-            telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
         } catch (e: Exception) {
-            // Log or handle error silently
+            // Log or handle silently
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun registerModernTelephonyCallback() {
+        val callback = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+            override fun onCallStateChanged(state: Int) {
+                handleCallStateChange(state, null)
+            }
+        }
+        modernTelephonyCallback = callback
+        telephonyManager?.registerTelephonyCallback(mainExecutor, callback)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun registerLegacyPhoneStateListener() {
+        phoneStateListener = object : PhoneStateListener() {
+            override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                super.onCallStateChanged(state, phoneNumber)
+                handleCallStateChange(state, phoneNumber)
+            }
+        }
+        telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
+    }
+
+    private fun handleCallStateChange(state: Int, phoneNumber: String?) {
+        val stateString = when (state) {
+            TelephonyManager.CALL_STATE_IDLE -> "IDLE"
+            TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
+            TelephonyManager.CALL_STATE_RINGING -> "RINGING"
+            else -> "UNKNOWN"
+        }
+        val payload = mapOf(
+            "state" to stateString,
+            "phoneNumber" to (phoneNumber ?: "")
+        )
+        runOnUiThread {
+            methodChannel?.invokeMethod("onCallStateChanged", payload)
         }
     }
 
     private fun makeDirectCall(phone: String, result: MethodChannel.Result) {
         val cleanPhone = phone.replace(Regex("[^\\d+]"), "")
-        
+        if (cleanPhone.isEmpty()) {
+            result.error("INVALID_PHONE", "Phone number is empty after sanitization", null)
+            return
+        }
+
         val callGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
         val stateGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
 
-        if (callGranted && stateGranted) {
-            val intent = Intent(Intent.ACTION_CALL).apply {
-                data = Uri.parse("tel:$cleanPhone")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            try {
-                startActivity(intent)
-                result.success(true)
-            } catch (e: Exception) {
-                val dialIntent = Intent(Intent.ACTION_DIAL).apply {
-                    data = Uri.parse("tel:$cleanPhone")
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                startActivity(dialIntent)
-                result.success(false)
-            }
-        } else {
-            pendingCallPhone = cleanPhone
-            pendingResult = result
-            
-            val permissionsNeeded = mutableListOf<String>()
-            if (!callGranted) permissionsNeeded.add(Manifest.permission.CALL_PHONE)
-            if (!stateGranted) permissionsNeeded.add(Manifest.permission.READ_PHONE_STATE)
-            
-            ActivityCompat.requestPermissions(this, permissionsNeeded.toTypedArray(), PERMISSIONS_REQUEST_CODE)
+        if (!callGranted || !stateGranted) {
+            result.error("CALL_PERMISSION_REQUIRED", "CALL_PHONE and READ_PHONE_STATE permissions are required for direct GSM dialing", null)
+            return
+        }
+
+        val intent = Intent(Intent.ACTION_CALL).apply {
+            data = Uri.parse("tel:$cleanPhone")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        try {
+            startActivity(intent)
+            result.success(true)
+        } catch (e: SecurityException) {
+            result.error("SECURITY_EXCEPTION", "Permission denied by system: ${e.message}", null)
+        } catch (e: Exception) {
+            result.error("CALL_FAILED", "Direct call failed: ${e.message}", null)
         }
     }
 
@@ -179,43 +248,21 @@ class MainActivity: FlutterActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSIONS_REQUEST_CODE) {
             val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-            
-            if (allGranted) {
-                val phone = pendingCallPhone
-                if (phone != null) {
-                    val intent = Intent(Intent.ACTION_CALL).apply {
-                        data = Uri.parse("tel:$phone")
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    try {
-                        startActivity(intent)
-                        pendingResult?.success(true)
-                    } catch (e: Exception) {
-                        pendingResult?.error("CALL_ERROR", e.message, null)
-                    }
-                } else {
-                    pendingResult?.success(true)
-                }
-            } else {
-                val phone = pendingCallPhone
-                if (phone != null) {
-                    val dialIntent = Intent(Intent.ACTION_DIAL).apply {
-                        data = Uri.parse("tel:$phone")
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(dialIntent)
-                }
-                pendingResult?.success(false)
-            }
-            pendingCallPhone = null
+            pendingResult?.success(allGranted)
             pendingResult = null
+            pendingCallPhone = null
         }
     }
 
     override fun onDestroy() {
-        // Clean up listener to prevent leaks
         try {
-            telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (modernTelephonyCallback as? TelephonyCallback)?.let {
+                    telephonyManager?.unregisterTelephonyCallback(it)
+                }
+            } else {
+                telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
+            }
         } catch (e: Exception) {}
         super.onDestroy()
     }
