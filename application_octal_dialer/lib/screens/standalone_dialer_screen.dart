@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
@@ -159,15 +158,49 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
       }
     }
 
-    // Launch direct phone dialer via Android MethodChannel
+    // Launch direct phone dialer via Android MethodChannel with permission check
     try {
+      final bool hasPermission = await _nativeChannel.invokeMethod('checkCallPermission') ?? false;
+      if (!hasPermission) {
+        final bool granted = await _nativeChannel.invokeMethod('requestCallPermission') ?? false;
+        if (!granted) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Phone call permission (CALL_PHONE) is required to place calls.'),
+                backgroundColor: Colors.redAccent,
+              ),
+            );
+          }
+          if (leadId != null) {
+            final idx = _queue.indexWhere((l) => l.id == leadId);
+            if (idx != -1) {
+              setState(() {
+                _queue[idx].status = 'FAILED';
+              });
+            }
+          }
+          return;
+        }
+      }
       await _nativeChannel.invokeMethod('makeDirectCall', {'phone': cleanPhone});
     } catch (e) {
-      final telUri = Uri.parse('tel:$cleanPhone');
-      try {
-        await launchUrl(telUri, mode: LaunchMode.externalApplication);
-      } catch (err) {
-        debugPrint('Could not launch native phone: $err');
+      debugPrint('Direct GSM call failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Direct GSM call failed: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+      if (leadId != null) {
+        final idx = _queue.indexWhere((l) => l.id == leadId);
+        if (idx != -1) {
+          setState(() {
+            _queue[idx].status = 'FAILED';
+          });
+        }
       }
     }
   }
