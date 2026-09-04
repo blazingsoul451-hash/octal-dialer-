@@ -67,6 +67,18 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
     fetchKeys();
   }, [serverUrl, authToken]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowCreateModal(false);
+        setCreatedSecret(null);
+        setKeyToRevoke(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const handleGenerateKey = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newKeyName.trim()) return;
@@ -246,7 +258,10 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
 
       {/* ── Modal: Create Key ── */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setShowCreateModal(false); }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+        >
           <div className={`w-full max-w-md border rounded-2xl p-6 shadow-2xl space-y-4 ${
             isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>
@@ -301,7 +316,10 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
 
       {/* ── Modal: One-Time Secret Display ── */}
       {createdSecret && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setCreatedSecret(null); }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs"
+        >
           <div className={`w-full max-w-lg border rounded-2xl p-6 shadow-2xl space-y-4 border-amber-500/40 ${
             isLight ? 'bg-white text-slate-900' : 'bg-[#121215] text-white'
           }`}>
@@ -357,7 +375,10 @@ export const AdminAPIKeys: React.FC<AdminAPIKeysProps> = ({
 
       {/* ── Modal: Revoke Key Confirmation ── */}
       {keyToRevoke && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setKeyToRevoke(null); }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+        >
           <div className={`w-full max-w-sm border rounded-2xl p-6 shadow-2xl space-y-4 ${
             isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>

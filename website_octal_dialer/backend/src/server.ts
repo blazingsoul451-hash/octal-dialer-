@@ -73,7 +73,15 @@ import {
   handlePhoneDisconnect,
   updateHeartbeat,
   getSessions,
-  Session
+  Session,
+  CallSession,
+  CallState,
+  createCallSession,
+  getCallSession,
+  getCallSessionBySessionId,
+  getCallSessionByCommandId,
+  updateCallSessionState,
+  finalizeCallSession
 } from './sessionManager';
 
 import {
@@ -298,7 +306,7 @@ function getLocalIP(): string {
 
   for (const name of Object.keys(interfaces)) {
     const lowerName = name.toLowerCase();
-    
+
     // Ignore virtual / loopback / container network interfaces
     if (
       lowerName.includes('virtual') ||
@@ -324,7 +332,7 @@ function getLocalIP(): string {
         } else if (lowerName.includes('ethernet') || lowerName.includes('eth') || lowerName.includes('lan')) {
           priority = 80;
         }
-        
+
         // Boost typical home router subnets
         if (iface.address.startsWith('192.168.')) {
           priority += 20;
@@ -473,7 +481,7 @@ app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
   const { intent = 'signin' } = req.body || {};
   const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : (req.headers.origin || `http://${req.headers.host || 'localhost'}`);
   const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
-  
+
   const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
   const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || `localhost:${PORT}`;
   const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${proto}://${host}/auth/google/callback`;
@@ -495,7 +503,7 @@ app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
 app.get(['/auth/google', '/api/auth/google'], (req, res) => {
   const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : `http://${req.headers.host || 'localhost'}`;
   const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
-  
+
   const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
   const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || `localhost:${PORT}`;
   const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${proto}://${host}/auth/google/callback`;
@@ -660,7 +668,7 @@ app.post(['/auth/google/verify', '/api/auth/google/verify'], async (req, res) =>
       isNewUser: result.isNewUser
     });
   } catch (err: any) {
-    if (err.code === 'ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' || 
+    if (err.code === 'ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' ||
         err.code === 'ACCOUNT_EXISTS' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
       res.status(400).json({ code: err.code, error: err.message, email: err.email });
       return;
@@ -725,7 +733,7 @@ app.post(['/auth/google', '/api/auth/google'], async (req, res) => {
       isNewUser: result.isNewUser
     });
   } catch (err: any) {
-    if (err.code === 'ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' || 
+    if (err.code === 'ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' ||
         err.code === 'ACCOUNT_EXISTS' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
       res.status(400).json({ code: err.code, error: err.message, email: err.email });
       return;
@@ -820,7 +828,7 @@ app.post('/api/mobile/login', async (req, res) => {
       activeSession.token,
       'mobile_http_preauth',
       deviceName || 'Android Client',
-      phoneBtAddress || '48:D2:24:D3:5F:AA',
+      phoneBtAddress || null,
       phoneOsType || 'Android',
       phoneIpAddress || '127.0.0.1',
       activeSession.id
@@ -837,7 +845,7 @@ app.post('/api/mobile/login', async (req, res) => {
       sessionId: activeSession.id,
       pairingToken: activeSession.token,
       laptopName: activeSession.laptopName || 'Host Server',
-      laptopBtAddress: activeSession.laptopBtAddress || '00:11:22:33:44:55',
+      laptopBtAddress: activeSession.laptopBtAddress || '',
       serverUrl: getPublicBaseUrl(req),
       campaigns,
       leads
@@ -1435,7 +1443,7 @@ app.get('/api/campaigns/:id/next-lead', requireAuth, async (req, res) => {
 // REST: Scan sibling scraper folders (protected)
 app.get('/api/scraper-files', requireAuth, (req, res) => {
   const list: { name: string; path: string; sizeBytes: number; lastModified: string }[] = [];
-  
+
   // 1. Check generated output files from built-in scraper service
   const generatedFiles = listScraperOutputFiles();
   for (const gf of generatedFiles) {
@@ -1514,7 +1522,7 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(filePath);
       const worksheet = workbook.getWorksheet('Doctors') || workbook.worksheets[0];
-      
+
       if (!worksheet) {
         res.status(400).json({ error: 'Sheet is empty or invalid.' });
         return;
@@ -1540,7 +1548,7 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
         if (rowNumber === 1) return; // skip header
         const nameVal = row.getCell(nameColIndex).text.trim();
         const phoneVal = row.getCell(phoneColIndex).text.trim();
-        
+
         if (phoneVal && phoneVal !== 'N/A') {
           leads.push({
             name: nameVal || 'Unnamed Scraped Entry',
@@ -1708,12 +1716,12 @@ app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
       res.status(400).json({ error: 'Username and password required.' });
       return;
     }
-    const result = await registerPublicUser({ 
-      username, 
-      password, 
-      email, 
+    const result = await registerPublicUser({
+      username,
+      password,
+      email,
       requestedRole: role,
-      tenantId: caller.role === 'platform_admin' ? (req.body.tenantId || caller.tenantId) : caller.tenantId 
+      tenantId: caller.role === 'platform_admin' ? (req.body.tenantId || caller.tenantId) : caller.tenantId
     });
     if (role && role !== 'user') {
       await updateUserRole(caller, result.user.id, role);
@@ -1900,7 +1908,7 @@ app.get('/api/app-version', async (req, res) => {
 app.get('/join', (req, res) => {
   const { sessionId, token, serverUrl, laptop } = req.query;
   const deepLink = 'octaldialer://join?sessionId=' + String(sessionId || '') + '&token=' + String(token || '') + '&serverUrl=' + encodeURIComponent(String(serverUrl || '')) + '&laptop=' + encodeURIComponent(String(laptop || ''));
-  
+
   const html = '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Octal Dialer</title><script>setTimeout(function(){ window.location.href = "' + deepLink + '"; }, 300);</script></head><body style="background:#0f172a;color:#fff;text-align:center;padding:40px;"><div style="background:#1e293b;padding:32px;border-radius:20px;max-width:380px;margin:0 auto;"><h2 style="color:#f59e0b;">Octal Dialer Bridge</h2><p>Opening Octal Dialer App...</p><a href="' + deepLink + '" style="background:#f59e0b;color:#0f172a;font-weight:bold;padding:14px 28px;border-radius:14px;text-decoration:none;display:inline-block;">Open App Now</a></div></body></html>';
   res.send(html);
 });
@@ -1944,7 +1952,7 @@ const serveApkHandler = (_req: express.Request, res: express.Response): void => 
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     res.setHeader('Content-Length', freshest.size);
-    
+
     const fileStream = fs.createReadStream(freshest.path);
     fileStream.pipe(res);
     fileStream.on('error', (err) => {
@@ -2172,7 +2180,7 @@ io.on('connection', (socket) => {
       tenantId: user.tenantId,
       deviceName: device.name,
       osType: device.osType || 'Android',
-      btAddress: device.btAddress || '48:D2:24:D3:5F:AA',
+      btAddress: device.btAddress || '',
       ipAddress: device.ipAddress || '127.0.0.1',
       platform: device.platform || 'android',
       appVersion: device.appVersion || '1.2.0'
@@ -2212,7 +2220,7 @@ io.on('connection', (socket) => {
           device.id,
           socket.id,
           device.name,
-          device.btAddress || '48:D2:24:D3:5F:AA',
+          device.btAddress || '',
           device.osType || 'Android',
           device.ipAddress || '127.0.0.1',
           user.id,
@@ -2239,7 +2247,7 @@ io.on('connection', (socket) => {
 
         io.to(s.id).emit('phone:connected', {
           deviceName: device.name,
-          phoneBtAddress: device.btAddress || '48:D2:24:D3:5F:AA',
+          phoneBtAddress: device.btAddress || '',
           phoneOsType: device.osType || 'Android',
           phoneIpAddress: device.ipAddress || '127.0.0.1',
           phoneStatus: 'READY',
@@ -2485,7 +2493,7 @@ io.on('connection', (socket) => {
     console.log(`[Socket] Laptop registered: ${session.id} | Tenant: ${tenantId} | User: ${userId || 'anonymous'} | Status: ${session.status}`);
 
     const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
-    const cleanPairingUri = `octaldialer://join?sessionId=${session.id}&token=${session.token}&serverUrl=${encodeURIComponent(effectiveUrl)}&laptop=${encodeURIComponent(session.laptopName || 'Laptop')}&bt=${encodeURIComponent(session.laptopBtAddress || '00:11:22:33:44:55')}`;
+    const cleanPairingUri = `octaldialer://join?sessionId=${session.id}&token=${session.token}&serverUrl=${encodeURIComponent(effectiveUrl)}&laptop=${encodeURIComponent(session.laptopName || 'Laptop')}&bt=${encodeURIComponent(session.laptopBtAddress || '')}`;
 
     socket.emit('session:created', {
       sessionId: session.id,
@@ -2507,7 +2515,7 @@ io.on('connection', (socket) => {
     });
 
     if (session.phoneSocketId && session.phoneDeviceName) {
-      socket.emit('phone:connected', { 
+      socket.emit('phone:connected', {
         deviceName: session.phoneDeviceName,
         phoneBtAddress: session.phoneBtAddress,
         phoneOsType: session.phoneOsType,
@@ -2565,10 +2573,27 @@ io.on('connection', (socket) => {
         }
       }
     }
+
+    // If an active call is in flight for this session, sync state to reconnected laptop
+    const activeCall = getCallSessionBySessionId(session.id);
+    if (activeCall && activeCall.state !== 'ENDED') {
+      socket.emit('call:status-changed', {
+        callId: activeCall.callId,
+        state: activeCall.state,
+        leadId: activeCall.leadId,
+        phone: activeCall.phone,
+        name: activeCall.name,
+        timestamp: activeCall.activeAt || activeCall.startedAt || activeCall.createdAt
+      });
+      if (activeCall.state === 'ACTIVE') {
+        socket.emit('call:picked-up', { callId: activeCall.callId });
+      }
+      console.log(`[CallEngine] Synced active call ${activeCall.callId} (${activeCall.state}) to reconnected laptop socket ${socket.id}`);
+    }
   });
 
-  socket.on('phone:join', async (data: { 
-    token?: string; 
+  socket.on('phone:join', async (data: {
+    token?: string;
     sessionId?: string;
     authToken?: string;
     deviceName?: string;
@@ -2588,19 +2613,19 @@ io.on('connection', (socket) => {
     const existingSession = getSessionByToken(cleanKey) || (data.sessionId ? getSessionById(data.sessionId) : null) || getSessionById(cleanKey);
     if (existingSession && existingSession.phoneDeviceId != null) {
       console.warn(`[Socket Pairing Warning] Phone ${socket.id} attempted phone:join on authenticated session ${existingSession.id}`);
-      socket.emit('error', { 
-        code: 'ALREADY_AUTHENTICATED_SESSION', 
-        message: 'This session is paired with an authenticated device and cannot be joined via anonymous phone:join.' 
+      socket.emit('error', {
+        code: 'ALREADY_AUTHENTICATED_SESSION',
+        message: 'This session is paired with an authenticated device and cannot be joined via anonymous phone:join.'
       });
       return;
     }
 
     let session = await pairPhone(
-      tokenOrSessionId, 
-      socket.id, 
-      data.deviceName || 'Mobile Client', 
-      data.phoneBtAddress || '48:D2:24:D3:5F:AA', 
-      data.phoneOsType || 'Android', 
+      tokenOrSessionId,
+      socket.id,
+      data.deviceName || 'Mobile Client',
+      data.phoneBtAddress || '',
+      data.phoneOsType || 'Android',
       data.phoneIpAddress || '127.0.0.1',
       data.sessionId
     );
@@ -2615,7 +2640,7 @@ io.on('connection', (socket) => {
           active.token,
           socket.id,
           data.deviceName || 'Mobile Client',
-          data.phoneBtAddress || '48:D2:24:D3:5F:AA',
+          data.phoneBtAddress || '',
           data.phoneOsType || 'Android',
           data.phoneIpAddress || '127.0.0.1',
           active.id
@@ -2643,9 +2668,9 @@ io.on('connection', (socket) => {
 
     socket.emit('phone:paired', pairedPayload);
 
-    const connectedPayload = { 
+    const connectedPayload = {
       deviceName: data.deviceName || 'Android Phone',
-      phoneBtAddress: data.phoneBtAddress || '48:D2:24:D3:5F:AA',
+      phoneBtAddress: data.phoneBtAddress || '',
       phoneOsType: data.phoneOsType || 'Android',
       phoneIpAddress: data.phoneIpAddress || '127.0.0.1',
       phoneStatus: session.phoneStatus || 'READY'
@@ -2790,14 +2815,47 @@ io.on('connection', (socket) => {
     }
 
     setSessionStatus(sessionId, 'CALLING');
-    const dialPayload = { phone, name, leadId: leadId || '', timeout, commandId: check.commandId };
-    
+
+    // Create canonical CallSession scoped strictly to tenant, user, device, and session
+    const callSession = createCallSession({
+      sessionId,
+      tenantId,
+      userId: session.userId || socket.data.user?.id || 'system',
+      phoneDeviceId: session.phoneDeviceId || session.phoneDeviceName || 'dev_phone',
+      laptopSocketId: socket.id,
+      phoneSocketId: session.phoneSocketId,
+      leadId,
+      phone,
+      name,
+      direction: 'OUTBOUND',
+      commandId: check.commandId,
+      campaignId
+    });
+
+    const dialPayload = {
+      callId: callSession.callId,
+      phone,
+      name,
+      leadId: leadId || '',
+      timeout,
+      commandId: check.commandId
+    };
+
     try {
       phoneSocket.emit('phone:dial', dialPayload);
-      socket.emit('dial:dispatched', { commandId: check.commandId, leadId, phone, name });
-      console.log(`[SafetyController] ✅ DIAL SENT TO PHONE SOCKET ${session.phoneSocketId} | ${name} (${phone}) | Session: ${sessionId} | Cmd: ${check.commandId}`);
+      socket.emit('dial:dispatched', { callId: callSession.callId, commandId: check.commandId, leadId, phone, name });
+      io.to(session.id).emit('call:status-changed', {
+        callId: callSession.callId,
+        state: 'COMMAND_SENT',
+        leadId,
+        phone,
+        name,
+        timestamp: new Date().toISOString()
+      });
+      console.log(`[CallEngine] ✅ DIAL DISPATCHED | CallId: ${callSession.callId} | Phone Socket: ${session.phoneSocketId} | ${name} (${phone}) | Session: ${sessionId} | Cmd: ${check.commandId}`);
     } catch (err: any) {
       if (leadId) await releaseLeadLock(leadId, sessionId);
+      updateCallSessionState(callSession.callId, 'DIAL_FAILED', { endReason: 'SOCKET_DISPATCH_ERROR' });
       socket.emit('error', { code: 'DISPATCH_ERROR', message: 'Failed to dispatch call to phone socket.' });
     }
   });
@@ -2852,21 +2910,76 @@ io.on('connection', (socket) => {
     io.to(`tenant_${tenantId}`).emit('campaign:emergency_cleared', { clearedBy: 'dashboard-socket', campaignId });
   });
 
-  socket.on('dial:hangup', ({ sessionId }: { sessionId: string }) => {
+  socket.on('dial:hangup', ({ sessionId, callId }: { sessionId: string; callId?: string }) => {
     const session = getSessionById(sessionId);
     if (!session) return;
     if (session.laptopSocketId !== socket.id) {
-      console.warn(`[Socket] Rejected hangup from unauthorized socket ${socket.id} for session ${sessionId}`);
+      console.warn(`[Socket Security] Rejected hangup from unauthorized socket ${socket.id} for session ${sessionId}`);
       return;
     }
+
+    const cs = (callId ? getCallSession(callId) : null) || getCallSessionBySessionId(session.id);
+    if (cs) {
+      updateCallSessionState(cs.callId, 'ENDING');
+      io.to(session.id).emit('call:status-changed', { callId: cs.callId, state: 'ENDING' });
+    }
+
     if (session.phoneSocketId) {
       const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
       if (phoneSocket) {
         phoneSocket.emit('phone:hangup');
-        phoneSocket.emit('phone:hangup-call');
+        phoneSocket.emit('phone:hangup-call', { callId: cs?.callId });
       }
     }
-    console.log(`[Socket] Hangup command sent to phone in session ${sessionId}`);
+    console.log(`[CallEngine] Hangup command sent to phone in session ${sessionId} (Call: ${cs?.callId || 'active'})`);
+  });
+
+  socket.on('phone:dial-ack', async ({ commandId, callId, accepted, reason }: { commandId?: string; callId?: string; accepted: boolean; reason?: string }) => {
+    const cs = (callId ? getCallSession(callId) : null) || (commandId ? getCallSessionByCommandId(commandId) : null);
+    if (!cs) return;
+
+    if (cs.phoneSocketId !== socket.id) {
+      console.warn(`[CallSession Security] Rejected dial-ack from non-authoritative socket ${socket.id}`);
+      return;
+    }
+
+    if (accepted) {
+      updateCallSessionState(cs.callId, 'COMMAND_RECEIVED');
+      io.to(cs.sessionId).emit('call:status-changed', {
+        callId: cs.callId,
+        state: 'COMMAND_RECEIVED',
+        leadId: cs.leadId,
+        phone: cs.phone,
+        name: cs.name,
+        timestamp: new Date().toISOString()
+      });
+      console.log(`[CallEngine] 📱 Phone ACK received: COMMAND_RECEIVED for Call ${cs.callId} (${cs.phone})`);
+    } else {
+      console.warn(`[CallEngine] ❌ Phone REJECTED dial command for Call ${cs.callId} | Reason: ${reason}`);
+      updateCallSessionState(cs.callId, 'DIAL_FAILED', { endReason: reason || 'PHONE_REJECTED' });
+      setSessionStatus(cs.sessionId, 'PAIRED');
+      if (cs.leadId) {
+        await releaseLeadLock(cs.leadId, cs.sessionId);
+      }
+      io.to(cs.sessionId).emit('call:finished', { reason: reason || 'DIAL_FAILED', duration: 0, leadId: cs.leadId, commandId: cs.commandId });
+      io.to(cs.sessionId).emit('call:status-changed', { callId: cs.callId, state: 'DIAL_FAILED', reason });
+    }
+  });
+
+  socket.on('call:state-changed', ({ callId, commandId, state }: { callId?: string; commandId?: string; state: CallState }) => {
+    const cs = (callId ? getCallSession(callId) : null) || (commandId ? getCallSessionByCommandId(commandId) : null);
+    if (!cs || cs.phoneSocketId !== socket.id) return;
+
+    updateCallSessionState(cs.callId, state);
+    io.to(cs.sessionId).emit('call:status-changed', {
+      callId: cs.callId,
+      state,
+      leadId: cs.leadId,
+      phone: cs.phone,
+      name: cs.name,
+      timestamp: new Date().toISOString()
+    });
+    console.log(`[CallEngine] Native telephony state sync: Call ${cs.callId} -> ${state}`);
   });
 
   socket.on('dial:answer', ({ sessionId }: { sessionId: string }) => {
@@ -2889,7 +3002,21 @@ io.on('connection', (socket) => {
     const sid = sessionId || socket.data.sessionId;
     const session = sid ? getSessionById(sid) : null;
     if (session && session.phoneSocketId === socket.id) {
+      const cs = createCallSession({
+        sessionId: session.id,
+        tenantId: session.tenantId || 'default',
+        userId: session.userId || 'system',
+        phoneDeviceId: session.phoneDeviceId || deviceId || 'phone',
+        laptopSocketId: session.laptopSocketId || '',
+        phoneSocketId: socket.id,
+        phone: phone || 'Unknown Caller',
+        name: 'Incoming Call',
+        direction: 'INCOMING'
+      });
+      updateCallSessionState(cs.callId, 'RINGING');
+
       const payload = {
+        callId: cs.callId,
         phone: phone || 'Unknown Caller',
         deviceId: session.phoneDeviceId || deviceId,
         deviceName: session.phoneDeviceName || 'Connected Phone',
@@ -2897,6 +3024,7 @@ io.on('connection', (socket) => {
         direction: 'INCOMING'
       };
       io.to(session.id).emit('call:incoming', payload);
+      io.to(session.id).emit('call:status-changed', { callId: cs.callId, state: 'RINGING', phone: cs.phone, direction: 'INCOMING' });
       console.log(`[Socket PhoneLink] 📲 Incoming cellular call on phone ${session.phoneDeviceName} (${phone}) -> Notified laptop in session ${session.id}`);
     }
   });
@@ -2914,7 +3042,7 @@ io.on('connection', (socket) => {
   // Server-side idempotency guard to prevent duplicate terminal processing per call
   const processedCallEndings = new Set<string>();
 
-  socket.on('call:picked-up', ({ sessionId }: { sessionId: string }) => {
+  socket.on('call:picked-up', ({ sessionId, callId }: { sessionId?: string; callId?: string }) => {
     const session = getSessionById(sessionId || socket.data.sessionId || '');
     if (!session) return;
 
@@ -2929,13 +3057,27 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const cs = (callId ? getCallSession(callId) : null) || getCallSessionBySessionId(session.id);
+    if (cs) {
+      updateCallSessionState(cs.callId, 'ACTIVE');
+      io.to(session.id).emit('call:status-changed', {
+        callId: cs.callId,
+        state: 'ACTIVE',
+        leadId: cs.leadId,
+        phone: cs.phone,
+        name: cs.name,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     setSessionStatus(session.id, 'CALLING');
     socket.to(session.id).emit('call:started');
-    console.log(`[Socket] Verified Phone ${socket.id} entered active call state in session ${session.id}`);
+    console.log(`[CallEngine] Verified Phone ${socket.id} ACTIVE in session ${session.id} (Call: ${cs?.callId || 'active'})`);
   });
 
-  socket.on('call:ended', async ({ sessionId, leadId, phone, name, reason, duration, commandId }: {
+  socket.on('call:ended', async ({ sessionId, callId, leadId, phone, name, reason, duration, commandId }: {
     sessionId: string;
+    callId?: string;
     leadId?: string;
     phone?: string;
     name?: string;
@@ -2966,16 +3108,22 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const cs = (callId ? getCallSession(callId) : null) || (commandId ? getCallSessionByCommandId(commandId) : null) || getCallSessionBySessionId(session.id);
+    const targetCallId = cs?.callId || callId || `${session.id}_${leadId || phone || ''}_${commandId || ''}`;
+
     // Idempotency guard: Prevent processing duplicate call:ended for the exact same call
-    const termKey = `${session.id}_${leadId || phone || ''}_${commandId || ''}`;
-    if (processedCallEndings.has(termKey)) {
-      console.log(`[Socket Idempotency] Ignoring duplicate call:ended for key: ${termKey}`);
+    if (processedCallEndings.has(targetCallId)) {
+      console.log(`[CallEngine Idempotency] Ignoring duplicate call:ended for key: ${targetCallId}`);
       return;
     }
-    processedCallEndings.add(termKey);
+    processedCallEndings.add(targetCallId);
     if (processedCallEndings.size > 2000) {
       const first = processedCallEndings.values().next().value;
       if (first) processedCallEndings.delete(first);
+    }
+
+    if (cs) {
+      finalizeCallSession(cs.callId, reason, duration);
     }
 
     setSessionStatus(session.id, 'PAIRED');
@@ -2991,9 +3139,18 @@ io.on('connection', (socket) => {
     }
 
     // Include leadId and commandId in call:finished broadcast so web knows exact completed lead
-    socket.to(session.id).emit('call:finished', { reason, duration, leadId, commandId });
+    socket.to(session.id).emit('call:finished', { reason, duration, leadId, commandId, callId: cs?.callId });
+    io.to(session.id).emit('call:status-changed', {
+      callId: cs?.callId || targetCallId,
+      state: 'ENDED',
+      reason,
+      duration,
+      leadId,
+      commandId,
+      timestamp: new Date().toISOString()
+    });
     io.to(`tenant_${tenantId}`).emit('leads:updated');
-    console.log(`[Socket] Call finished in session ${session.id} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
+    console.log(`[CallEngine] Call finalized in session ${session.id} | CallId: ${cs?.callId || targetCallId} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
   });
 
   socket.on('disconnect', async () => {
@@ -3031,6 +3188,27 @@ io.on('connection', (socket) => {
       console.log(`[Socket Disconnect] Laptop socket ${socket.id} disconnected from session ${session.id} (reclaimable)`);
       handleLaptopDisconnect(socket.id);
     } else if (session.phoneSocketId === socket.id) {
+      const activeCs = getCallSessionBySessionId(session.id);
+      if (activeCs && activeCs.state !== 'ENDED') {
+        finalizeCallSession(activeCs.callId, 'PHONE_DISCONNECTED', 0);
+        if (activeCs.leadId) {
+          await releaseLeadLock(activeCs.leadId, session.id);
+        }
+        if (session.laptopSocketId) {
+          io.to(session.laptopSocketId).emit('call:finished', {
+            reason: 'PHONE_DISCONNECTED',
+            duration: 0,
+            leadId: activeCs.leadId,
+            commandId: activeCs.commandId,
+            callId: activeCs.callId
+          });
+          io.to(session.laptopSocketId).emit('call:status-changed', {
+            callId: activeCs.callId,
+            state: 'ENDED',
+            reason: 'PHONE_DISCONNECTED'
+          });
+        }
+      }
       if (session.laptopSocketId) {
         io.to(session.laptopSocketId).emit('phone:disconnected');
       }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, MessageSquare } from 'lucide-react';
+import { ShieldCheck, MessageSquare, X } from 'lucide-react';
 
 export interface DispositionResult {
   success: boolean;
@@ -48,6 +48,17 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
     }
   }, [isOpen, initialOutcome]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const handleSave = async () => {
@@ -75,13 +86,32 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 text-left backdrop-blur-md bg-black/80 select-none">
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !saving) {
+          onClose();
+        }
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 text-left backdrop-blur-md bg-black/80 select-none"
+    >
       <div className={`border p-6 rounded-2xl max-w-sm w-full space-y-4 shadow-2xl transition-colors ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
-        <div className="flex items-center gap-2 text-amber-500 font-display font-bold">
-          <ShieldCheck className="w-5 h-5" />
-          <span>Save Call Disposition</span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-amber-500 font-display font-bold">
+            <ShieldCheck className="w-5 h-5" />
+            <span>Save Call Disposition</span>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className={`p-1 rounded-lg border transition cursor-pointer ${
+              isLight ? 'border-slate-200 hover:bg-slate-100 text-slate-500' : 'border-[#27272a] hover:bg-[#18181b] text-zinc-400 hover:text-white'
+            }`}
+            title="Close (Esc)"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
         <div className="space-y-1">
           <p className="text-xs text-zinc-400 font-mono">Log final calling outcome for lead:</p>
@@ -126,7 +156,8 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
         <div className="flex gap-2 pt-2 font-mono">
           <button
             onClick={onClose}
-            className={`flex-1 py-2 text-xs rounded-xl border transition cursor-pointer ${
+            disabled={saving}
+            className={`flex-1 py-2 text-xs rounded-xl border transition cursor-pointer disabled:opacity-50 ${
               isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700' : 'bg-[#18181b] border-[#27272a] text-zinc-400 hover:text-white'
             }`}
           >
@@ -135,7 +166,7 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex-1 py-2 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs uppercase tracking-wider rounded-xl transition cursor-pointer shadow-sm"
+            className="flex-1 py-2 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs uppercase tracking-wider rounded-xl transition cursor-pointer shadow-sm disabled:opacity-50 flex items-center justify-center gap-1.5"
           >
             {saving ? 'Saving...' : 'Save Log'}
           </button>
@@ -144,4 +175,3 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
     </div>
   );
 };
-

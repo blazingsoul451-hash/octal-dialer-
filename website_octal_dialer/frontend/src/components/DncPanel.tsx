@@ -52,6 +52,16 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
     fetchDncList();
   }, [serverUrl, authToken]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowBulkModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const handleAddSingle = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPhone.trim()) return;
@@ -312,7 +322,10 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
 
       {/* Bulk Import Modal */}
       {showBulkModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setShowBulkModal(false); }}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
+        >
           <div className={`w-full max-w-lg p-6 rounded-2xl border shadow-2xl ${
             isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
           }`}>

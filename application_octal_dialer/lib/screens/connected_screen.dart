@@ -42,7 +42,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   int _selectedTabIndex = 0;
   final List<String> _logs = [];
   Timer? _pingTimer;
-  
+
   late String _deviceBtAddress;
   late String _deviceIp;
   late String _deviceName;
@@ -58,7 +58,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
 
     // Initial placeholder values before the async call completes
     _deviceName = 'Android Device';
-    _deviceBtAddress = '48:D2:24:D3:5F:AA';
+    _deviceBtAddress = '';
     _deviceOs = 'Android';
     _deviceIp = '127.0.0.1';
 
@@ -107,7 +107,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
 
   Future<void> _initDeviceCredentials() async {
     _deviceOs = Platform.isAndroid ? 'Android' : Platform.isIOS ? 'iOS' : 'Windows';
-    
+
     String modelName = 'Android Device';
     if (Platform.isAndroid) {
       try {
@@ -130,12 +130,12 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     } else if (Platform.isIOS) {
       modelName = 'iPhone';
     }
-    
+
     _deviceName = modelName;
-    
+
     final ip = await _getLocalIpAddress();
     _deviceIp = ip;
-    
+
     final host = _deviceName;
     int hash = 0;
     for (int i = 0; i < host.length; i++) {
@@ -288,16 +288,23 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       final String name = data['name'] ?? 'Unknown Lead';
       final String leadId = data['leadId'] ?? '';
       final String? commandId = data['commandId'];
+      final String? callId = data['callId'];
       final int timeout = data['timeout'] ?? 30;
 
       _addLog('[Bridge] LAPTOP REQUEST CALL -> $name ($phone)');
-      
-      // Guard: prevent pushing duplicate CallingScreen if already in a call
+
+      // Guard: If already in a call, reject explicitly with dial-ack so backend/laptop doesn't hang!
       if (_isInCall) {
-        _addLog('[Bridge] Ignoring duplicate phone:dial — already in call');
+        _addLog('[Bridge] Busy: currently in active call — rejecting dial command');
+        _socket?.emit('phone:dial-ack', {
+          'commandId': commandId,
+          'callId': callId,
+          'accepted': false,
+          'reason': 'BUSY_IN_CALL',
+        });
         return;
       }
-      
+
       if (mounted) {
         _isInCall = true;
         Navigator.push(
@@ -308,9 +315,13 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
               name: name,
               leadId: leadId,
               commandId: commandId,
+              callId: callId,
               timeout: timeout,
               socket: _socket!,
               sessionId: widget.sessionId,
+              onCallEnded: () {
+                _isInCall = false;
+              },
             ),
           ),
         ).then((_) {
@@ -358,7 +369,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
 
     _socket?.disconnect();
     _socket?.dispose();
-    
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('connection_uri');
     final authToken = prefs.getString('auth_token');
@@ -637,7 +648,7 @@ class _OtaUpdateDialogState extends State<_OtaUpdateDialog> {
       }
 
       sink = file.openWrite(mode: isPartial ? FileMode.append : FileMode.write);
-      
+
       await response.stream.forEach((chunk) {
         received += chunk.length;
         if (mounted) {
@@ -677,7 +688,7 @@ class _OtaUpdateDialogState extends State<_OtaUpdateDialog> {
   }
 
   String _formatMb(int bytes) {
-    return (bytes / (1024 * 1024)).toStringAsFixed(1) + ' MB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   @override

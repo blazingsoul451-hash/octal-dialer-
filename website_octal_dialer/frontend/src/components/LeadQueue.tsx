@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, SkipForward, AlertTriangle, ShieldCheck, PhoneCall, ListRestart, Trash2, Clock, FastForward, Pause } from 'lucide-react';
+import { Play, Square, SkipForward, AlertTriangle, ShieldCheck, PhoneCall, ListRestart, Trash2, Clock, FastForward, Pause, Radio, Headphones } from 'lucide-react';
 import type { Campaign, Lead } from '../types';
 import type { DispositionResult } from './DispositionModal';
 
@@ -22,6 +22,8 @@ interface LeadQueueProps {
   phoneDeviceName?: string | null;
   lastDispositionSaved?: DispositionResult | null;
   sessionId?: string | null;
+  granularCallState?: string;
+  callSessionData?: any;
 }
 
 const formatTimer = (seconds: number): string => {
@@ -49,12 +51,14 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   phoneDeviceName,
   lastDispositionSaved,
   sessionId,
+  granularCallState,
+  callSessionData,
 }) => {
   const [selectedCampId, setSelectedCampId] = useState<string>('');
   const [leads, setLeads] = useState<Lead[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
-  
+
   const processedCallRef = useRef<string | null>(null); // Track last processed call to prevent duplicate processing
 
   // Windowed pagination state for instant DOM rendering with 1,000+ leads
@@ -284,8 +288,8 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   useEffect(() => {
     if (!lastCallFinished) return;
 
-    const targetLead = lastCallFinished.leadId 
-      ? leads.find(l => l.id === lastCallFinished.leadId) 
+    const targetLead = lastCallFinished.leadId
+      ? leads.find(l => l.id === lastCallFinished.leadId)
       : leads[currentIndex];
 
     if (!targetLead) return;
@@ -328,8 +332,8 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     ]);
 
     // Mark lead completed locally first
-    setLeads(prev => prev.map((l) => 
-      l.id === targetLead.id 
+    setLeads(prev => prev.map((l) =>
+      l.id === targetLead.id
         ? { ...l, status: 'COMPLETED', outcome: initialOutcome, duration }
         : l
     ));
@@ -337,27 +341,32 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     if (requiresDisposition) {
       // Open disposition modal for agent to record authoritative human outcome
       triggerDisposition(targetLead.id, targetLead.name, initialOutcome);
-      setLogs(prev => [...prev, `[Dialer] Call ended — awaiting agent disposition to determine outcome...`]);
-    } else {
-      // For unpicked, cancelled, busy, or failed calls, advance to authoritative next lead
-      if (isAutoDialing && selectedCampId) {
-        fetch(`${serverUrl}/api/campaigns/${selectedCampId}/next-lead`, {
-          headers: { 'Authorization': `Bearer ${authToken}` }
+      setLogs(prev => [
+        ...prev,
+        isAutoDialing
+          ? `[Auto Dialer] Call ended — auto-advancing queue in ${interCallDelay}s (or submit disposition)...`
+          : `[Dialer] Call ended — awaiting agent disposition to determine outcome...`
+      ]);
+    }
+
+    // Auto-Dialer pipeline progression: Never freeze the queue waiting for optional manual modal submission
+    if (isAutoDialing && selectedCampId) {
+      fetch(`${serverUrl}/api/campaigns/${selectedCampId}/next-lead`, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.nextLead) {
+            const next = data.nextLead;
+            const nextIdx = leads.findIndex(l => l.id === next.id);
+            if (nextIdx !== -1) setCurrentIndex(nextIdx);
+            scheduleNextDial(next);
+          } else {
+            setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — no more pending leads.`]);
+            setIsAutoDialing(false);
+          }
         })
-          .then(r => r.json())
-          .then(data => {
-            if (data.nextLead) {
-              const next = data.nextLead;
-              const nextIdx = leads.findIndex(l => l.id === next.id);
-              if (nextIdx !== -1) setCurrentIndex(nextIdx);
-              scheduleNextDial(next);
-            } else {
-              setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — no more pending leads.`]);
-              setIsAutoDialing(false);
-            }
-          })
-          .catch(err => console.error('Error fetching next lead:', err));
-      }
+        .catch(err => console.error('Error fetching next lead:', err));
     }
   }, [lastCallFinished]);
 
@@ -371,7 +380,10 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       if (idx !== -1) setCurrentIndex(idx);
 
       if (isAutoDialing && phoneConnected && selectedCampId) {
-        scheduleNextDial(next);
+        // If countdown timer is not already active for this lead, schedule it
+        if (nextLeadToDialRef.current?.id !== next.id || !countdownTimerRef.current) {
+          scheduleNextDial(next);
+        }
       }
     } else if (lastDispositionSaved.nextLeadId) {
       const next = leads.find(l => l.id === lastDispositionSaved.nextLeadId);
@@ -379,7 +391,9 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         const idx = leads.findIndex(l => l.id === next.id);
         if (idx !== -1) setCurrentIndex(idx);
         if (isAutoDialing && phoneConnected && selectedCampId) {
-          scheduleNextDial(next);
+          if (nextLeadToDialRef.current?.id !== next.id || !countdownTimerRef.current) {
+            scheduleNextDial(next);
+          }
         }
       }
     } else {
@@ -441,6 +455,10 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const handleStartAutoDial = () => {
     if (!phoneConnected) {
       setLogs(prev => [...prev, '[Error] No paired phone. Connect phone first.']);
+      return;
+    }
+    if (callState !== 'IDLE') {
+      setLogs(prev => [...prev, '[Auto Dialer] Phone line busy in active call. Please wait for call to finish.']);
       return;
     }
     const nextPendingIdx = leads.findIndex(l => l.status === 'PENDING');
@@ -512,7 +530,21 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const remainingCount = leads.filter(l => l.status === 'PENDING').length;
 
   const getStatusBadge = () => {
-    if (callState === 'CALLING') return { label: `◉ Connecting Handset & Ringing... (${autoDialTimeout}s limit)`, color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 animate-pulse font-bold' };
+    if (callState === 'CALLING') {
+      if (granularCallState === 'COMMAND_SENT') {
+        return { label: `◉ Dispatching Command to Phone...`, color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 animate-pulse font-bold' };
+      }
+      if (granularCallState === 'COMMAND_RECEIVED') {
+        return { label: `◉ Handset Accepted — Triggering GSM...`, color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 animate-pulse font-bold' };
+      }
+      if (granularCallState === 'DIALING') {
+        return { label: `◉ Dialing GSM via SIM... (${autoDialTimeout}s limit)`, color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 animate-pulse font-bold' };
+      }
+      if (granularCallState === 'RINGING') {
+        return { label: `◉ Cellular Ringing... (${autoDialTimeout}s limit)`, color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 animate-pulse font-bold' };
+      }
+      return { label: `◉ Connecting Handset & Ringing... (${autoDialTimeout}s limit)`, color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 animate-pulse font-bold' };
+    }
     if (callState === 'ACTIVE') return { label: `● CONNECTED — ${formatTimer(callDuration)}`, color: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/40 emerald-glow font-bold' };
     if (phoneConnected && isAutoDialing) return { label: '● Auto-Dialing Campaign ON', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30 font-bold animate-pulse' };
     if (phoneConnected) return { label: '● Ready to dial', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30 font-bold' };
@@ -523,7 +555,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
   return (
     <div className="space-y-6 text-left select-none">
-      
+
       {/* Top Title & Subtitle */}
       <div className={`p-6 border rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors ${
         isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b] shadow-2xl'
@@ -643,13 +675,13 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               ) : (
                 <button
                   onClick={handleStartAutoDial}
-                  disabled={!phoneConnected}
+                  disabled={!phoneConnected || callState !== 'IDLE'}
                   className={`px-5 py-2.5 font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-sm flex items-center gap-2 ${
-                    !phoneConnected
+                    !phoneConnected || callState !== 'IDLE'
                       ? (isLight ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-[#18181b] border border-[#27272a] text-zinc-600 cursor-not-allowed')
                       : 'bg-emerald-500 hover:bg-emerald-400 text-black font-bold'
                   }`}
-                  title={phoneConnected ? "Start Auto-Dialer Pilot" : "Connect Phone to Start Campaign"}
+                  title={!phoneConnected ? "Connect Phone to Start Campaign" : callState !== 'IDLE' ? "Phone is busy with an active call" : "Start Auto-Dial Campaign"}
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
                   <span>Start Auto-Dial Campaign</span>
@@ -692,7 +724,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
       {/* DUAL WORKSPACE: LEAD QUEUE LIST & CENTERPIECE CALL CARD */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        
+
         {/* LEFT COLUMN: Queue Lead List */}
         <div className={`lg:col-span-5 border rounded-2xl p-5 shadow-2xl flex flex-col h-[600px] transition-colors ${
           isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
@@ -751,8 +783,8 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                     }}
                     className={`w-full p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer group ${
                       idx === currentIndex
-                        ? isLight 
-                          ? 'bg-amber-500/20 border-amber-500 text-slate-950 font-black border-l-4' 
+                        ? isLight
+                          ? 'bg-amber-500/20 border-amber-500 text-slate-950 font-black border-l-4'
                           : 'bg-[#18181b] border-amber-500 text-white font-bold border-l-4 border-l-amber-500 shadow-sm'
                         : isLight
                           ? 'bg-slate-50 border-slate-200 hover:border-slate-300 text-slate-900 font-bold'
@@ -888,12 +920,12 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               </div>
             </div>
           )}
-          
+
           {/* Main Caller Card */}
           <div className={`border rounded-2xl p-6 shadow-2xl flex flex-col justify-between h-[360px] relative overflow-hidden transition-colors ${
             isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
           }`}>
-            
+
             {/* Header Status Bar */}
             <div className={`flex justify-between items-center pb-4 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
               <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-zinc-400">
@@ -924,13 +956,24 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
                 {/* Call Duration Ticker */}
                 {callState === 'ACTIVE' && (
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-400 block font-bold">
                       CONNECTED DURATION
                     </span>
                     <span className="text-4xl font-mono font-black text-emerald-400 tracking-widest">
                       {formatTimer(callDuration)}
                     </span>
+                    <div className="flex flex-wrap items-center justify-center gap-2 pt-1 text-[10px] font-mono text-zinc-400">
+                      <span className="flex items-center gap-1 text-emerald-400">
+                        <Radio className="w-3 h-3" />
+                        <span>GSM Radio Active</span>
+                      </span>
+                      <span>•</span>
+                      <span className="flex items-center gap-1 text-amber-400" title="Voice audio uses handset mic/speaker. For laptop headset routing, connect phone via Windows Phone Link (Bluetooth HFP).">
+                        <Headphones className="w-3 h-3" />
+                        <span>Audio: Handset Mic/Speaker</span>
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1009,7 +1052,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                   PHONE CONNECTION LOGS
                 </span>
               </div>
-              
+
               {phoneConnected && (
                 <div className="text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 self-start sm:self-auto">
                   DEVICE: {phoneDeviceName || 'Connected'} | LATENCY: {latencyMs !== null ? `${latencyMs}ms` : 'measuring...'}

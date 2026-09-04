@@ -28,6 +28,16 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showRecoveryGuide, setShowRecoveryGuide] = useState(false);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowConfirmModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const handleCreateBackup = async () => {
     setShowConfirmModal(false);
     setCreating(true);
@@ -259,7 +269,10 @@ export const AdminDatabaseBackups: React.FC<AdminDatabaseBackupsProps> = ({
 
       {/* ── Modal: Create Backup Confirmation ── */}
       {showConfirmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setShowConfirmModal(false); }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+        >
           <div className={`w-full max-w-md border rounded-2xl p-6 shadow-2xl space-y-4 ${
             isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>

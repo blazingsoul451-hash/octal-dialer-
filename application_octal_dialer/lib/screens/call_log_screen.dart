@@ -151,7 +151,7 @@ class _CallLogScreenState extends State<CallLogScreen> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.history_toggle_off, color: OctalColors.textMuted, size: 48),
+                              const Icon(Icons.history_toggle_off, color: OctalColors.textMuted, size: 48),
                               const SizedBox(height: 12),
                               Text(
                                 'No ${_selectedFilter.toLowerCase()} records found',
@@ -212,8 +212,8 @@ class _CallLogScreenState extends State<CallLogScreen> {
     final isNoAnswer = item.reason == 'NO_ANSWER' || item.reason == 'BUSY';
     final initial = item.name.isNotEmpty ? item.name[0].toUpperCase() : 'A';
 
-    final Color statusColor = isAnswered 
-        ? OctalColors.success 
+    final Color statusColor = isAnswered
+        ? OctalColors.success
         : (isNoAnswer ? OctalColors.warning : OctalColors.error);
 
     return Container(

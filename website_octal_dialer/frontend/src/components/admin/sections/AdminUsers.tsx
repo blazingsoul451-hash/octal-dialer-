@@ -100,6 +100,18 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     fetchUsers();
   }, [serverUrl, authToken]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowCreateModal(false);
+        setEditingUser(null);
+        setUserToDelete(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername.trim() || !newPassword) {
@@ -549,7 +561,10 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
       {/* ── Modal: Create User ── */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setShowCreateModal(false); }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+        >
           <div className={`w-full max-w-lg border rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto ${
             isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>
@@ -671,7 +686,10 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
       {/* ── Modal: Edit User & Module Permissions ── */}
       {editingUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setEditingUser(null); }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs"
+        >
           <div className={`w-full max-w-xl border rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto ${
             isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>
@@ -816,7 +834,10 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
       {/* ── Modal: Delete User Confirmation ── */}
       {userToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setUserToDelete(null); }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+        >
           <div className={`w-full max-w-sm border rounded-2xl p-6 shadow-2xl space-y-4 ${
             isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>

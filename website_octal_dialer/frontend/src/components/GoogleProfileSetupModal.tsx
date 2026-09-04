@@ -16,8 +16,8 @@ export function GoogleProfileSetupModal({
   userEmail,
   onComplete
 }: GoogleProfileSetupModalProps) {
-  const suggestedUsername = currentUsername.includes('_') 
-    ? currentUsername.split('_')[0] 
+  const suggestedUsername = currentUsername.includes('_')
+    ? currentUsername.split('_')[0]
     : currentUsername;
 
   const [username, setUsername] = useState(suggestedUsername);
@@ -26,6 +26,16 @@ export function GoogleProfileSetupModal({
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !loading) {
+        handleSkip();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [loading, authToken, currentUsername]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,7 +126,7 @@ export function GoogleProfileSetupModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
       <div className="bg-slate-900 border border-slate-700/80 rounded-3xl p-7 max-w-md w-full shadow-2xl shadow-black/90 relative">
-        
+
         {/* Header */}
         <div className="text-center mb-6">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 mb-3 shadow-inner">
@@ -132,7 +142,7 @@ export function GoogleProfileSetupModal({
 
         {/* Form */}
         <form onSubmit={handleSave} className="space-y-4">
-          
+
           {/* Username Field */}
           <div>
             <label className="block text-[10px] font-mono text-slate-400 mb-1 uppercase tracking-wider font-bold">

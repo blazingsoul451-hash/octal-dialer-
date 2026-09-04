@@ -47,12 +47,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
     try {
       final parsed = Uri.parse(uri);
-      
+
       String? sessionId = parsed.queryParameters['sessionId'];
       String? token = parsed.queryParameters['token'];
       String? rawServerUrl = parsed.queryParameters['serverUrl'];
       String laptopName = parsed.queryParameters['laptop'] ?? 'Laptop Host';
-      String laptopBtAddress = parsed.queryParameters['bt'] ?? '00:11:22:33:44:55';
+      String laptopBtAddress = parsed.queryParameters['bt'] ?? '';
 
       String effectiveServerUrl;
       if (rawServerUrl != null && rawServerUrl.isNotEmpty) {
@@ -274,7 +274,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
                         style: const TextStyle(color: Colors.white, fontSize: 12),
                         decoration: InputDecoration(
                           hintText: 'octaldialer://join?sessionId=...',
-                          hintStyle: TextStyle(color: OctalColors.textMuted, fontSize: 11),
+                          hintStyle: const TextStyle(color: OctalColors.textMuted, fontSize: 11),
                           prefixIcon: const Icon(Icons.link, color: OctalColors.primaryGold, size: 18),
                           filled: true,
                           fillColor: OctalColors.surfaceElevated,

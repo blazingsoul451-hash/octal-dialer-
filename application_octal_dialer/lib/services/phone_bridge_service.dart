@@ -70,7 +70,7 @@ class PhoneBridgeService extends ChangeNotifier {
   String _deviceOs = 'Android';
   String get deviceOs => _deviceOs;
 
-  String _deviceBtAddress = '48:D2:24:D3:5F:AA';
+  String _deviceBtAddress = '';
   String get deviceBtAddress => _deviceBtAddress;
 
   String _deviceIp = '127.0.0.1';
@@ -328,7 +328,7 @@ class PhoneBridgeService extends ChangeNotifier {
     final map = Map<String, dynamic>.from(data);
     _currentSessionId = map['sessionId']?.toString();
     _currentLaptopName = map['laptopName']?.toString() ?? 'Laptop Dashboard';
-    _currentLaptopBtAddress = map['laptopBtAddress']?.toString() ?? '00:1A:7D:DA:71:11';
+    _currentLaptopBtAddress = map['laptopBtAddress']?.toString() ?? '';
     _sessionToken = map['token']?.toString();
 
     _setStatus(BridgeStatus.paired, '● Paired with $_currentLaptopName');
@@ -378,7 +378,7 @@ class PhoneBridgeService extends ChangeNotifier {
 
   /// Request manual advertisement to laptop session in authenticated mode
   void requestPairWithActiveLaptop() {
-    if (_socket != null && _socket!.connected && _authToken != null) {
+    if (_socket != null && _socket!.connected && _authToken.isNotEmpty) {
       _setStatus(BridgeStatus.connecting, 'Advertising device to active laptop session...');
       _socket!.emit('phone:auth-register', {
         'token': _authToken,

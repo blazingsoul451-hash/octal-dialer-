@@ -26,7 +26,7 @@ export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight 
       if (!res.ok) throw new Error('Failed to load call log history.');
       const data = await res.json();
       // sort logs by timestamp descending
-      data.sort((a: CallLogType, b: CallLogType) => 
+      data.sort((a: CallLogType, b: CallLogType) =>
         new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
       );
       setLogs(data);
@@ -56,7 +56,7 @@ export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight 
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
     } catch (err: any) {
-      alert('Failed to export CSV: ' + err.message);
+      setError('Failed to export CSV: ' + err.message);
     } finally {
       setExporting(false);
     }

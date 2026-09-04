@@ -41,6 +41,16 @@ export const AdminOperations: React.FC<AdminOperationsProps> = ({
     fetchEmergencyStatus();
   }, [serverUrl, authToken]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowConfirmModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const handlePause = async () => {
     setLoadingEmergency(true);
     try {
@@ -198,7 +208,10 @@ export const AdminOperations: React.FC<AdminOperationsProps> = ({
 
           {/* Confirmation Modal */}
           {showConfirmModal && (
-            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div
+              onClick={(e) => { if (e.target === e.currentTarget) setShowConfirmModal(false); }}
+              className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            >
               <div className={`border rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl ${
                 isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#18181b] border-red-500/50 text-white'
               }`}>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Smartphone, CheckCircle, ShieldAlert, Cpu, Laptop, RefreshCw, Copy, Check, Download, QrCode, Power, Trash2, AlertCircle, Wifi, WifiOff } from 'lucide-react';
+import { Smartphone, CheckCircle, ShieldAlert, Cpu, Laptop, RefreshCw, Copy, Check, Download, QrCode, Power, Trash2, AlertCircle, Wifi, WifiOff, Radio, Headphones } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
 interface DeviceItem {
@@ -91,8 +91,8 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
 
   const safeServerUrl = dynamicTunnelUrl || (qrPayload && qrPayload.serverUrl && qrPayload.serverUrl.startsWith('http'))
     ? (dynamicTunnelUrl || qrPayload.serverUrl)
-    : (serverUrl && serverUrl.startsWith('http') 
-      ? serverUrl 
+    : (serverUrl && serverUrl.startsWith('http')
+      ? serverUrl
       : `${apiProtocol}//${currentHost}:5000`);
 
   const directApkUrl = `${safeServerUrl}/download/apk`;
@@ -105,7 +105,7 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
 
   const effectiveSessionId = sessionId || 'sess_offline';
   const effectiveToken = token || '8888';
-  const universalJoinUrl = `${safeServerUrl}/join?sessionId=${effectiveSessionId}&token=${effectiveToken}&serverUrl=${encodeURIComponent(safeServerUrl)}&laptop=${encodeURIComponent(laptopName)}&bt=${encodeURIComponent(laptopBtAddress || '00:1A:7D:DA:71:11')}`;
+  const universalJoinUrl = `${safeServerUrl}/join?sessionId=${effectiveSessionId}&token=${effectiveToken}&serverUrl=${encodeURIComponent(safeServerUrl)}&laptop=${encodeURIComponent(laptopName)}&bt=${encodeURIComponent(laptopBtAddress || '')}`;
   const activeQrValue = qrMode === 'download' ? directApkUrl : universalJoinUrl;
 
   const fetchDevices = useCallback(async () => {
@@ -233,8 +233,8 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
             <span>Cloudflare Tunnel: {safeServerUrl.includes('trycloudflare.com') ? 'CONNECTED' : 'LOCAL'}</span>
           </div>
           <div className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full border shrink-0 ${
-            isConnected 
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+            isConnected
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
               : 'bg-red-500/10 border-red-500/30 text-red-400'
           }`}>
             <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
@@ -266,6 +266,17 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
               <p className="text-xs text-zinc-300 mt-0.5">
                 Device: <strong className="text-white font-mono">{phoneDeviceName || 'Android Handset'}</strong> • Network IP: <span className="font-mono text-zinc-400">{phoneIpAddress || '127.0.0.1'}</span>
               </p>
+              <div className="flex flex-wrap items-center gap-3 mt-2 pt-2 border-t border-emerald-500/20 text-[11px] font-mono">
+                <span className="flex items-center gap-1.5 text-emerald-400">
+                  <Radio className="w-3.5 h-3.5" />
+                  <span>GSM Transport: Physical SIM Radio (Direct Calling)</span>
+                </span>
+                <span className="text-zinc-500">•</span>
+                <span className="flex items-center gap-1.5 text-amber-400" title="Cellular voice calls use physical phone mic/speaker. For laptop headset audio, pair phone to Windows via Windows Phone Link (Bluetooth HFP).">
+                  <Headphones className="w-3.5 h-3.5" />
+                  <span>Audio: CALL_AUDIO_ROUTE_UNAVAILABLE (Handset Mic/Speaker Active)</span>
+                </span>
+              </div>
             </div>
           </div>
           <button
@@ -496,8 +507,8 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                 <button
                   onClick={() => setQrMode('download')}
                   className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer ${
-                    qrMode === 'download' 
-                      ? 'bg-amber-500 text-black font-black shadow-sm' 
+                    qrMode === 'download'
+                      ? 'bg-amber-500 text-black font-black shadow-sm'
                       : isLight ? 'text-slate-700 hover:text-slate-950' : 'text-zinc-400 hover:text-white'
                   }`}
                 >
@@ -506,8 +517,8 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                 <button
                   onClick={() => setQrMode('pair')}
                   className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer ${
-                    qrMode === 'pair' 
-                      ? 'bg-amber-500 text-black font-black shadow-sm' 
+                    qrMode === 'pair'
+                      ? 'bg-amber-500 text-black font-black shadow-sm'
                       : isLight ? 'text-slate-700 hover:text-slate-950' : 'text-zinc-400 hover:text-white'
                   }`}
                 >

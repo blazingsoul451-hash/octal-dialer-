@@ -87,10 +87,21 @@ export default function App() {
   const isNavExpanded = isNavPinned || isNavHovered;
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Automatically close mobile menu when tab changes
+  // Automatically close mobile menu when tab changes or Escape pressed
   useEffect(() => {
     setIsMobileMenuOpen(false);
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!isMobileMenuOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsMobileMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isMobileMenuOpen]);
 
   const [openAccordion, setOpenAccordion] = useState<Record<string, boolean>>({
     octalDialer: true,
@@ -381,7 +392,7 @@ export default function App() {
     <div className={`min-h-screen w-full max-w-full overflow-x-hidden flex flex-col font-sans transition-colors ${
       isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'
     }`}>
-      
+
       {/* 📲 Incoming Cellular Call Modal / Banner */}
       {socketData.incomingCall && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-4 animate-bounce">
@@ -449,8 +460,8 @@ export default function App() {
       <header className={`fixed top-0 right-0 left-0 z-40 transition-all duration-300 ${
         isNavExpanded ? 'md:left-64' : 'md:left-16'
       } ${
-        isLight 
-          ? 'bg-[#f8fafc] text-slate-900' 
+        isLight
+          ? 'bg-[#f8fafc] text-slate-900'
           : 'bg-black text-white'
       }`}>
         <div className={`mr-4 ml-4 md:ml-0.5 my-2 px-5 h-14 rounded-2xl border flex items-center justify-between gap-4 transition-all duration-300 ${
@@ -458,13 +469,13 @@ export default function App() {
             ? 'bg-white border-slate-200 shadow-md shadow-slate-200/50 text-slate-900'
             : 'bg-[#09090b] border-[#18181b] shadow-xl text-white'
         }`}>
-          
+
           {/* Left: Brand Identity & Menu Toggle */}
           <div className="flex items-center gap-4 select-none">
             <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setActiveTab('dashboard')}>
-              
+
               {/* Desktop Menu Icon Button */}
-              <button 
+              <button
                 onClick={(e) => { e.stopPropagation(); setIsNavPinned(!isNavPinned); }}
                 title={isNavPinned ? "Unpin Navigation Sidebar" : "Pin Navigation Sidebar Open"}
                 className={`hidden md:block p-1.5 rounded-lg transition-all cursor-pointer ${
@@ -477,7 +488,7 @@ export default function App() {
               </button>
 
               {/* Mobile Menu Icon Button */}
-              <button 
+              <button
                 onClick={(e) => { e.stopPropagation(); setIsMobileMenuOpen(!isMobileMenuOpen); }}
                 title="Toggle Mobile Drawer"
                 className={`block md:hidden p-1.5 rounded-lg transition-all cursor-pointer ${
@@ -509,7 +520,7 @@ export default function App() {
 
           {/* Right: Octal Accounts Style Action Bar */}
           <div className="flex items-center gap-3 select-none">
-            
+
             {/* Phone Status Pill */}
             <button
               onClick={() => setActiveTab('pair')}
@@ -541,8 +552,8 @@ export default function App() {
               onClick={() => setActiveTab('upload')}
               title="Upload Lead Sheet"
               className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
-                isLight 
-                  ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200' 
+                isLight
+                  ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
                   : 'bg-slate-900 border-slate-800 text-white hover:bg-slate-800'
               }`}
             >
@@ -619,22 +630,22 @@ export default function App() {
 
       {/* Main Container Layout */}
       <div className="w-full min-h-screen flex flex-col pt-20">
-        
+
         {/* Backdrop overlay for mobile drawer */}
         {isMobileMenuOpen && (
-          <div 
+          <div
             className="fixed inset-0 z-45 bg-black/60 backdrop-blur-sm md:hidden"
             onClick={() => setIsMobileMenuOpen(false)}
           />
         )}
 
         {/* Octal Accounts Style Fixed Left Icon Rail (Starts from Upper Edge top-0) */}
-        <nav 
+        <nav
           onMouseEnter={() => setIsNavHovered(true)}
           onMouseLeave={() => setIsNavHovered(false)}
           className={`fixed top-0 bottom-0 z-50 transition-all duration-300 ease-in-out border-r shadow-2xl flex flex-col justify-between select-none ${
-            isNavExpanded 
-              ? 'w-64 p-4 left-0' 
+            isNavExpanded
+              ? 'w-64 p-4 left-0'
               : 'w-16 p-2.5 items-center -left-16 md:left-0'
           } ${
             isMobileMenuOpen ? 'left-0 w-64 p-4' : ''
@@ -644,7 +655,7 @@ export default function App() {
         >
           {/* Main Top Actions & Navigation */}
           <div className="w-full flex-1 min-h-0 flex flex-col pt-1">
-            
+
             {/* Core Fixed Workspaces */}
             <div className="space-y-1.5 w-full shrink-0 pb-2 border-b border-slate-200 dark:border-slate-800/80">
               {/* Dashboard Link */}
@@ -786,7 +797,7 @@ export default function App() {
             {/* Accordion Categorized Navigation (Sliding with hidden slider) */}
             {isNavExpanded ? (
               <div className="space-y-3 text-left overflow-y-auto flex-1 min-h-0 pr-1 pt-2 no-scrollbar">
-                
+
                 {/* OCTAL Dialer Group */}
                 {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.octalDialer) && (
                 <div className="space-y-1">
@@ -1378,6 +1389,8 @@ export default function App() {
               phoneDeviceName={socketData.phoneDeviceName}
               lastDispositionSaved={lastDispositionSaved}
               sessionId={socketData.sessionId}
+              granularCallState={socketData.granularCallState}
+              callSessionData={socketData.callSessionData}
             />
           </div>
 

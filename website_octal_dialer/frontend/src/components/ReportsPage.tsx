@@ -87,7 +87,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
     } catch (err: any) {
-      alert('Failed to export CSV: ' + err.message);
+      setError('Failed to export CSV: ' + err.message);
     } finally {
       setExporting(false);
     }
@@ -475,7 +475,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
 
       {/* ── Visual Charts Row ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
+
         {/* Chart 1: Daily Call Volume (2 cols) */}
         <div className={`lg:col-span-2 border rounded-2xl p-6 shadow-2xl transition-colors flex flex-col justify-between ${
           isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'

@@ -88,6 +88,16 @@ export const AdminAuditLogs: React.FC<AdminAuditLogsProps> = ({
     fetchAuditLogs();
   }, [serverUrl, authToken, page, actionFilter]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelectedLog(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setPage(1);
@@ -317,7 +327,10 @@ export const AdminAuditLogs: React.FC<AdminAuditLogsProps> = ({
 
       {/* ── Modal: Event Details Drawer ── */}
       {selectedLog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setSelectedLog(null); }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+        >
           <div className={`w-full max-w-lg border rounded-2xl p-6 shadow-2xl space-y-4 ${
             isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#121215] border-[#18181b] text-white'
           }`}>

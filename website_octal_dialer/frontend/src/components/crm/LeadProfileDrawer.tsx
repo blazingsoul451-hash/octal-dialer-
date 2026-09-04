@@ -104,6 +104,17 @@ export const LeadProfileDrawer: React.FC<LeadProfileDrawerProps> = ({
     }
   }, [isOpen, leadId]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   const handleAddNote = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newNote.trim() || !leadId) return;
@@ -168,7 +179,10 @@ export const LeadProfileDrawer: React.FC<LeadProfileDrawerProps> = ({
   const phone = data?.lead.phone || '—';
 
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden bg-black/80 backdrop-blur-md flex justify-end transition-opacity select-none">
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      className="fixed inset-0 z-50 overflow-hidden bg-black/80 backdrop-blur-md flex justify-end transition-opacity select-none"
+    >
       <div className={`w-full max-w-xl h-full shadow-2xl flex flex-col border-l transition-transform transform duration-300 ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>

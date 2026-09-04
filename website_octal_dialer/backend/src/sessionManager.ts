@@ -140,7 +140,7 @@ export async function pairPhone(
   tokenOrSessionId: string,
   phoneSocketId: string,
   phoneDeviceName: string,
-  phoneBtAddress: string,
+  phoneBtAddress: string | null | undefined,
   phoneOsType: string,
   phoneIpAddress: string,
   sessionIdHint?: string
@@ -178,7 +178,7 @@ export async function pairPhone(
 
   session.phoneSocketId = phoneSocketId;
   session.phoneDeviceName = phoneDeviceName || 'Android Device';
-  session.phoneBtAddress = phoneBtAddress || '48:D2:24:D3:5F:AA';
+  session.phoneBtAddress = phoneBtAddress || null;
   session.phoneOsType = phoneOsType || 'Android';
   session.phoneIpAddress = phoneIpAddress || '127.0.0.1';
   session.status = 'PAIRED';
@@ -256,7 +256,7 @@ export async function pairAuthenticatedDevice(
 
   session.phoneSocketId = phoneSocketId;
   session.phoneDeviceName = phoneDeviceName || 'Android Device';
-  session.phoneBtAddress = phoneBtAddress || '48:D2:24:D3:5F:AA';
+  session.phoneBtAddress = phoneBtAddress || null;
   session.phoneOsType = phoneOsType || 'Android';
   session.phoneIpAddress = phoneIpAddress || '127.0.0.1';
   session.phoneDeviceId = deviceId;
@@ -267,8 +267,8 @@ export async function pairAuthenticatedDevice(
   try {
     const now = new Date().toISOString();
     await db.execute(`
-      UPDATE devices 
-      SET status = 'PAIRED', "lastSeenAt" = $1, "updatedAt" = $1 
+      UPDATE devices
+      SET status = 'PAIRED', "lastSeenAt" = $1, "updatedAt" = $1
       WHERE id = $2 AND "tenantId" = $3
     `, [now, deviceId, tenantId]);
   } catch (err) {
@@ -321,10 +321,10 @@ export function setPhoneStatus(sessionId: string, phoneStatus: string): void {
 export function handleLaptopDisconnect(socketId: string): void {
   const session = getSessionBySocketId(socketId);
   if (!session) return;
-  
+
   session.laptopSocketId = null;
   session.updatedAt = new Date();
-  
+
   if (!session.phoneSocketId) {
     sessions.delete(session.id);
   }
@@ -362,4 +362,140 @@ export async function handlePhoneDisconnect(socketId: string): Promise<Session |
   session.lastHeartbeat = null;
   session.updatedAt = new Date();
   return session;
+}
+
+// ─── CANONICAL CALL SESSION ENGINE ───────────────────────────────────────────
+export type CallState =
+  | 'IDLE'
+  | 'COMMAND_SENT'
+  | 'COMMAND_RECEIVED'
+  | 'DIALING'
+  | 'RINGING'
+  | 'ACTIVE'
+  | 'ENDING'
+  | 'ENDED'
+  | 'DIAL_FAILED'
+  | 'PERMISSION_FAILED'
+  | 'REJECTED'
+  | 'BUSY'
+  | 'NO_ANSWER'
+  | 'LOCAL_HANGUP'
+  | 'REMOTE_HANGUP'
+  | 'NETWORK_FAILURE'
+  | 'PHONE_DISCONNECTED'
+  | 'SOCKET_DISCONNECTED'
+  | 'TIMEOUT'
+  | 'RECOVERY_REQUIRED';
+
+export interface CallSession {
+  callId: string;
+  sessionId: string;
+  tenantId: string;
+  userId: string;
+  phoneDeviceId: string;
+  laptopSocketId: string;
+  phoneSocketId: string;
+  leadId?: string;
+  phone: string;
+  name: string;
+  direction: 'OUTBOUND' | 'INCOMING';
+  state: CallState;
+  commandId?: string;
+  campaignId?: string;
+  createdAt: string;
+  startedAt?: string;
+  activeAt?: string;
+  endedAt?: string;
+  endReason?: string;
+  duration: number;
+}
+
+const activeCallSessions = new Map<string, CallSession>();
+
+export function createCallSession(params: {
+  sessionId: string;
+  tenantId: string;
+  userId: string;
+  phoneDeviceId: string;
+  laptopSocketId: string;
+  phoneSocketId: string;
+  leadId?: string;
+  phone: string;
+  name: string;
+  direction: 'OUTBOUND' | 'INCOMING';
+  commandId?: string;
+  campaignId?: string;
+}): CallSession {
+  const callId = 'call_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
+  const now = new Date().toISOString();
+  const cs: CallSession = {
+    callId,
+    sessionId: params.sessionId,
+    tenantId: params.tenantId,
+    userId: params.userId,
+    phoneDeviceId: params.phoneDeviceId,
+    laptopSocketId: params.laptopSocketId,
+    phoneSocketId: params.phoneSocketId,
+    leadId: params.leadId,
+    phone: params.phone,
+    name: params.name,
+    direction: params.direction,
+    state: 'COMMAND_SENT',
+    commandId: params.commandId,
+    campaignId: params.campaignId,
+    createdAt: now,
+    startedAt: now,
+    duration: 0
+  };
+  activeCallSessions.set(callId, cs);
+  return cs;
+}
+
+export function getCallSession(callId: string): CallSession | undefined {
+  return activeCallSessions.get(callId);
+}
+
+export function getCallSessionBySessionId(sessionId: string): CallSession | undefined {
+  for (const cs of activeCallSessions.values()) {
+    if (cs.sessionId === sessionId && cs.state !== 'ENDED') {
+      return cs;
+    }
+  }
+  return undefined;
+}
+
+export function getCallSessionByCommandId(commandId: string): CallSession | undefined {
+  for (const cs of activeCallSessions.values()) {
+    if (cs.commandId === commandId && cs.state !== 'ENDED') {
+      return cs;
+    }
+  }
+  return undefined;
+}
+
+export function updateCallSessionState(callId: string, state: CallState, extra?: Partial<CallSession>): CallSession | undefined {
+  const cs = activeCallSessions.get(callId);
+  if (!cs) return undefined;
+  cs.state = state;
+  if (state === 'ACTIVE' && !cs.activeAt) {
+    cs.activeAt = new Date().toISOString();
+  }
+  if (extra) {
+    Object.assign(cs, extra);
+  }
+  return cs;
+}
+
+export function finalizeCallSession(callId: string, reason: string, duration: number): CallSession | undefined {
+  const cs = activeCallSessions.get(callId);
+  if (!cs) return undefined;
+  cs.state = 'ENDED';
+  cs.endedAt = new Date().toISOString();
+  cs.endReason = reason;
+  cs.duration = duration;
+  // Retain in memory for 10 minutes then prune
+  setTimeout(() => {
+    activeCallSessions.delete(callId);
+  }, 10 * 60 * 1000);
+  return cs;
 }

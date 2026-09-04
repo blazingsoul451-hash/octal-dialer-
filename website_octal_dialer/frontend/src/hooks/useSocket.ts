@@ -14,6 +14,18 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
   const [phoneDeviceId, setPhoneDeviceId] = useState<string | null>(null);
   const [laptopBtAddress, setLaptopBtAddress] = useState<string | null>(null);
   const [callState, setCallState] = useState<'IDLE' | 'CALLING' | 'ACTIVE'>('IDLE');
+  const [granularCallState, setGranularCallState] = useState<string>('IDLE');
+  const [callSessionData, setCallSessionData] = useState<{
+    callId?: string;
+    state?: string;
+    phone?: string;
+    name?: string;
+    leadId?: string;
+    commandId?: string;
+    reason?: string;
+    duration?: number;
+    timestamp?: string;
+  } | null>(null);
   const [lastCallFinished, setLastCallFinished] = useState<{ reason: string; duration: number } | null>(null);
   const [lastBlockedReason, setLastBlockedReason] = useState<{ reason: string; message: string } | null>(null);
   const [deviceError, setDeviceError] = useState<string | null>(null);
@@ -79,8 +91,8 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       setQrPayload(data.qrPayload);
     });
 
-    socket.on('phone:connected', (data: { 
-      deviceName: string; 
+    socket.on('phone:connected', (data: {
+      deviceName: string;
       phoneBtAddress: string;
       phoneOsType: string;
       phoneIpAddress: string;
@@ -102,22 +114,50 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       setPhoneIpAddress(null);
       setPhoneDeviceId(null);
       setCallState('IDLE');
+      setGranularCallState('IDLE');
+      setCallSessionData(null);
     });
 
     socket.on('device:error', (data: { error: string }) => {
       setDeviceError(data.error);
       setCallState('IDLE');
+      setGranularCallState('IDLE');
       setTimeout(() => setDeviceError(null), 6000);
     });
 
     socket.on('error', (err: any) => {
       setCallState('IDLE');
+      setGranularCallState('IDLE');
       console.warn('[Socket Error]:', err);
     });
 
     socket.on('call:started', () => {
       setCallState('ACTIVE');
+      setGranularCallState('ACTIVE');
       setIncomingCall(null);
+    });
+
+    socket.on('call:status-changed', (data: {
+      callId?: string;
+      state: string;
+      phone?: string;
+      name?: string;
+      leadId?: string;
+      commandId?: string;
+      reason?: string;
+      duration?: number;
+      timestamp?: string;
+    }) => {
+      setGranularCallState(data.state);
+      setCallSessionData(data);
+      if (['COMMAND_SENT', 'COMMAND_RECEIVED', 'DIALING', 'RINGING'].includes(data.state)) {
+        setCallState('CALLING');
+      } else if (data.state === 'ACTIVE') {
+        setCallState('ACTIVE');
+        setIncomingCall(null);
+      } else if (['ENDED', 'DIAL_FAILED', 'BUSY', 'NO_ANSWER', 'LOCAL_HANGUP', 'REMOTE_HANGUP', 'IDLE'].includes(data.state)) {
+        setCallState('IDLE');
+      }
     });
 
     socket.on('call:incoming', (data: { phone: string; deviceName: string; timestamp: string }) => {
@@ -130,18 +170,21 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
 
     socket.on('call:finished', (data: { reason: string; duration: number; leadId?: string; commandId?: string }) => {
       setCallState('IDLE');
+      setGranularCallState('ENDED');
       setIncomingCall(null);
       setLastCallFinished(data);
     });
 
     socket.on('dial:blocked', (data: { reason: string; message: string }) => {
       setCallState('IDLE');
+      setGranularCallState('IDLE');
       setLastBlockedReason(data);
       console.warn('[SafetyController] Call blocked:', data.reason, data.message);
     });
 
     socket.on('campaign:emergency_stopped', () => {
       setCallState('IDLE');
+      setGranularCallState('IDLE');
     });
 
     socket.on('client:pong', (data: { timestamp: number }) => {
@@ -161,6 +204,8 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       setPhoneIpAddress(null);
       setPhoneDeviceId(null);
       setCallState('IDLE');
+      setGranularCallState('IDLE');
+      setCallSessionData(null);
       localStorage.removeItem('octal_session_id');
     });
 
@@ -213,6 +258,7 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
   ) => {
     if (socketRef.current && sessionId) {
       setCallState('CALLING');
+      setGranularCallState('COMMAND_SENT');
       setLastBlockedReason(null);
       socketRef.current.emit('dial:lead', { sessionId, phone, name, timeout, leadId, campaignId });
     }
@@ -257,6 +303,8 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     phoneDeviceId,
     laptopBtAddress,
     callState,
+    granularCallState,
+    callSessionData,
     incomingCall,
     lastCallFinished,
     lastBlockedReason,

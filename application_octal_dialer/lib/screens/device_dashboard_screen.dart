@@ -26,7 +26,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   // Settings state
   int _ringTimeoutSeconds = 35;
   int _nextCallDelaySeconds = 3;
-  String _autoDialMode = 'Full Auto';
+  final String _autoDialMode = 'Full Auto';
   bool _callRecording = false;
   bool _vibrateOnAnswer = true;
 
@@ -223,7 +223,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
     final String sessionId = data['sessionId']?.toString() ?? '';
     final String token = data['token']?.toString() ?? '';
     final String laptopName = data['laptopName']?.toString() ?? 'Laptop Host';
-    final String laptopBtAddress = data['laptopBtAddress']?.toString() ?? '00:1A:7D:DA:71:11';
+    final String laptopBtAddress = data['laptopBtAddress']?.toString() ?? '';
     final String serverUrl = data['serverUrl']?.toString() ?? _bridge.serverUrl;
 
     if (sessionId.isNotEmpty) {
@@ -647,8 +647,8 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                       ),
                       child: Center(
                         child: Text(
-                          _localQueue.isNotEmpty && _localQueue.first.name.isNotEmpty 
-                              ? _localQueue.first.name[0].toUpperCase() 
+                          _localQueue.isNotEmpty && _localQueue.first.name.isNotEmpty
+                              ? _localQueue.first.name[0].toUpperCase()
                               : '•',
                           style: const TextStyle(
                             fontFamily: 'Ubuntu',

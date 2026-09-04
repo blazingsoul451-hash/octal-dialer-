@@ -59,10 +59,10 @@ class StandaloneDialerScreen extends StatefulWidget {
 class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with WidgetsBindingObserver {
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
-  
+
   late List<LeadItem> _queue;
   String _selectedFilter = 'Pending'; // 'Pending', 'Calling', 'Completed', 'Failed'
-  
+
   bool _isAutoDialing = false;
   final int _delayBetweenCallsSeconds = 3; // Configurable Next-Call Delay
   Timer? _autoDialTimer;
@@ -79,7 +79,7 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _queue = widget.queue ?? [];
-    
+
     _nativeChannel.setMethodCallHandler((call) async {
       if (call.method == 'onCallStateChanged') {
         final state = call.arguments as String;
@@ -135,10 +135,10 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
       _callStartTime = DateTime.now();
     } else if (state == 'IDLE' && _callActive) {
       _callActive = false;
-      final duration = _callStartTime != null 
-          ? DateTime.now().difference(_callStartTime!).inSeconds 
+      final duration = _callStartTime != null
+          ? DateTime.now().difference(_callStartTime!).inSeconds
           : 0;
-      
+
       if (_activeCallLeadId != null) {
         _showDispositionDialog(_activeCallLeadId!, duration);
       }
@@ -323,7 +323,7 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
                                 ),
                               ),
                               const SizedBox(height: 4),
-                              Text(
+                              const Text(
                                 'Call Duration',
                                 style: TextStyle(fontSize: 10, color: OctalColors.textMuted),
                               ),
@@ -386,10 +386,10 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
                       style: const TextStyle(color: Colors.white, fontSize: 13),
                       decoration: InputDecoration(
                         hintText: 'Enter lead notes or follow-up instructions...',
-                        hintStyle: TextStyle(color: OctalColors.textMuted, fontSize: 12),
+                        hintStyle: const TextStyle(color: OctalColors.textMuted, fontSize: 12),
                         filled: true,
                         fillColor: OctalColors.surfaceCard,
-                        counterStyle: TextStyle(color: OctalColors.textMuted, fontSize: 11),
+                        counterStyle: const TextStyle(color: OctalColors.textMuted, fontSize: 11),
                         contentPadding: const EdgeInsets.all(14),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(14),
@@ -786,7 +786,7 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(Icons.people_outline, color: OctalColors.textMuted, size: 48),
+                          const Icon(Icons.people_outline, color: OctalColors.textMuted, size: 48),
                           const SizedBox(height: 12),
                           Text(
                             'No ${_selectedFilter.toLowerCase()} leads in queue',
@@ -820,8 +820,8 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
                             color: OctalColors.surfaceCard,
                             borderRadius: BorderRadius.circular(18),
                             border: Border.all(
-                              color: lead.status == 'CALLING' 
-                                  ? OctalColors.primaryGold 
+                              color: lead.status == 'CALLING'
+                                  ? OctalColors.primaryGold
                                   : OctalColors.border,
                               width: lead.status == 'CALLING' ? 1.5 : 1.0,
                             ),
@@ -833,8 +833,8 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
                                 width: 34,
                                 height: 34,
                                 decoration: BoxDecoration(
-                                  color: lead.status == 'CALLING' 
-                                      ? OctalColors.primaryGold 
+                                  color: lead.status == 'CALLING'
+                                      ? OctalColors.primaryGold
                                       : OctalColors.surfaceElevated,
                                   borderRadius: BorderRadius.circular(10),
                                 ),

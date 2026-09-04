@@ -179,10 +179,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     int noAnswer = 0;
 
     for (var lead in activeLeads) {
-      if (lead.status == 'PENDING') pending++;
-      else if (lead.status == 'COMPLETED') completed++;
-      else if (lead.status == 'CALLING') calling++;
-      else if (lead.status == 'NO_ANSWER') noAnswer++;
+      if (lead.status == 'PENDING') {
+        pending++;
+      } else if (lead.status == 'COMPLETED') {
+        completed++;
+      } else if (lead.status == 'CALLING') {
+        calling++;
+      } else if (lead.status == 'NO_ANSWER') {
+        noAnswer++;
+      }
     }
 
     int total = activeLeads.length;
@@ -311,7 +316,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         child: CircularProgressIndicator(strokeWidth: 2, color: _amber),
                       ),
                     )
-                  : ListView(
+                  : _campaignError != null && _campaigns.isEmpty
+                      ? Center(
+                          child: Text(
+                            _campaignError!,
+                            style: const TextStyle(fontSize: 11, color: Colors.redAccent),
+                          ),
+                        )
+                      : ListView(
                       scrollDirection: Axis.horizontal,
                       children: [
                         // Option for local CSV active queue
@@ -390,7 +402,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
 
             const SizedBox(height: 16),
-            
+
             // Stats Row
             Row(
               children: [
@@ -401,9 +413,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 _buildStatCard('COMPLETED', completed.toString(), _emerald, Icons.check_circle_rounded),
               ],
             ),
-            
+
             const SizedBox(height: 16),
-            
+
             // Pie Chart or Details
             Container(
               padding: const EdgeInsets.all(20),
@@ -574,7 +586,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   ],
                                 ),
                               ),
-                            
+
                             // Load/Resume Button
                             if (_selectedCampaignId != null && hasData) ...[
                               const SizedBox(height: 14),
@@ -663,7 +675,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           statusColor = Colors.redAccent;
                           statusIcon = Icons.cancel;
                         }
-                        
+
                         return Container(
                           padding: const EdgeInsets.symmetric(vertical: 8),
                           decoration: BoxDecoration(

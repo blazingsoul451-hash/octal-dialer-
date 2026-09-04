@@ -10,9 +10,11 @@ class CallingScreen extends StatefulWidget {
   final String name;
   final String leadId;
   final String? commandId;
+  final String? callId;
   final int timeout;
   final io.Socket socket;
   final String sessionId;
+  final VoidCallback? onCallEnded;
 
   const CallingScreen({
     super.key,
@@ -20,9 +22,11 @@ class CallingScreen extends StatefulWidget {
     required this.name,
     required this.leadId,
     this.commandId,
+    this.callId,
     required this.timeout,
     required this.socket,
     required this.sessionId,
+    this.onCallEnded,
   });
 
   @override
@@ -54,7 +58,14 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     )..repeat(reverse: true);
-    
+
+    // 1. Send explicit command acknowledgement to backend
+    widget.socket.emit('phone:dial-ack', {
+      'commandId': widget.commandId,
+      'callId': widget.callId,
+      'accepted': true,
+    });
+
     // Register native telephony call state listener to track real GSM hardware states
     _nativeChannel.setMethodCallHandler((call) async {
       if (call.method == 'onCallStateChanged') {
@@ -75,21 +86,29 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       'status': 'Calling ${widget.name.isNotEmpty ? widget.name : widget.phone}...'
     }).catchError((_) {});
 
-    // Listen for remote hangup command from web dashboard
-    widget.socket.on('phone:hangup', (_) {
-      debugPrint('CallingScreen: Received remote hangup command');
-      _nativeChannel.invokeMethod('endCall').catchError((e) {
-        debugPrint('CallingScreen: Native endCall ignored: $e');
-      });
-      _endCall('CANCELLED');
-    });
+    // Listen for remote hangup commands from web dashboard
+    widget.socket.on('phone:hangup', (_) => _handleRemoteHangup());
+    widget.socket.on('phone:hangup-call', (_) => _handleRemoteHangup());
 
     _placeGsmCall();
+  }
+
+  void _handleRemoteHangup() {
+    debugPrint('CallingScreen: Received remote hangup command');
+    _nativeChannel.invokeMethod('endCall').catchError((e) {
+      debugPrint('CallingScreen: Native endCall ignored: $e');
+    });
+    _endCall('CANCELLED');
   }
 
   void _handleCallStateChange(String state) {
     debugPrint("CallingScreen: Native GSM state -> $state");
     if (state == 'OFFHOOK') {
+      widget.socket.emit('call:state-changed', {
+        'callId': widget.callId,
+        'commandId': widget.commandId,
+        'state': 'ACTIVE',
+      });
       if (_phase != CallPhase.connected && !_callEnded) {
         _handleOffhook();
       }
@@ -146,6 +165,12 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       final success = await _nativeChannel.invokeMethod('makeDirectCall', {'phone': cleanPhone});
       if (success != true) {
         _endCall('CALL_INTENT_FAILED');
+      } else {
+        widget.socket.emit('call:state-changed', {
+          'callId': widget.callId,
+          'commandId': widget.commandId,
+          'state': 'DIALING',
+        });
       }
     } catch (e) {
       debugPrint('Direct GSM call failed: $e');
@@ -189,8 +214,13 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _ringingTimer?.cancel();
     _talkTimer?.cancel();
 
+    try {
+      widget.onCallEnded?.call();
+    } catch (_) {}
+
     widget.socket.emit('call:ended', {
       'sessionId': widget.sessionId,
+      'callId': widget.callId,
       'leadId': widget.leadId,
       'phone': widget.phone,
       'name': widget.name,
@@ -217,6 +247,8 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _ringingTimer?.cancel();
     _talkTimer?.cancel();
     widget.socket.off('phone:hangup');
+    widget.socket.off('phone:hangup-call');
+    _nativeChannel.setMethodCallHandler(null);
     super.dispose();
   }
 
@@ -328,13 +360,13 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     decoration: BoxDecoration(
-                      color: isConnected 
-                          ? OctalColors.success.withOpacity(0.15) 
+                      color: isConnected
+                          ? OctalColors.success.withOpacity(0.15)
                           : OctalColors.primaryGold.withOpacity(0.15),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                        color: isConnected 
-                            ? OctalColors.success.withOpacity(0.4) 
+                        color: isConnected
+                            ? OctalColors.success.withOpacity(0.4)
                             : OctalColors.primaryGold.withOpacity(0.4),
                       ),
                     ),
