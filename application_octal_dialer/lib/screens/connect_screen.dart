@@ -3,12 +3,14 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../config/app_config.dart';
+import '../services/phone_bridge_service.dart';
 import '../widgets/octal_logo.dart';
 import 'connected_screen.dart';
 import 'login_screen.dart';
 
 class ConnectScreen extends StatefulWidget {
-  const ConnectScreen({super.key});
+  final bool startWithScanner;
+  const ConnectScreen({super.key, this.startWithScanner = false});
 
   @override
   State<ConnectScreen> createState() => _ConnectScreenState();
@@ -18,12 +20,23 @@ class _ConnectScreenState extends State<ConnectScreen> {
   final TextEditingController _uriController = TextEditingController();
   String _errorMessage = '';
   bool _isLoading = false;
-  bool _showScanner = false;
+  late bool _showScanner;
 
   @override
   void initState() {
     super.initState();
-    _checkSavedConnection();
+    _showScanner = widget.startWithScanner;
+    PhoneBridgeService.ensureAllPermissions();
+    if (widget.startWithScanner) {
+      _clearStaleConnection();
+    } else {
+      _checkSavedConnection();
+    }
+  }
+
+  Future<void> _clearStaleConnection() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('connection_uri');
   }
 
   Future<void> _checkSavedConnection() async {
@@ -98,10 +111,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
       setState(() {
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
-      if (autoConnect) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('connection_uri');
-      }
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('connection_uri');
     } finally {
       if (mounted) {
         setState(() {

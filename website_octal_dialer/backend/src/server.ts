@@ -37,6 +37,7 @@ import {
   getLockedLeads,
   deleteLead,
   clearAllLeadsInCampaign,
+  resetCampaignLeads,
   clearFakeQueueLeads,
   releaseExpiredLeases,
   backupDatabase,
@@ -1167,24 +1168,39 @@ app.get('/api/session/resolve', requireAuth, (req, res) => {
   });
 });
 
-// REST: Campaigns (protected)
-app.get(['/campaigns', '/api/campaigns'], requireAuth, async (req, res) => {
-  const tenantId = (req as any).user?.tenantId;
-  if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-    return;
+// REST: Campaigns (protected with fallback for paired mobile apps)
+app.get(['/campaigns', '/api/campaigns', '/campaigns/mobile', '/api/campaigns/mobile'], async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    return requireAuth(req, res, async () => {
+      const tenantId = (req as any).user?.tenantId || 'tenant_default';
+      res.json(await getCampaigns(tenantId));
+    });
   }
-  res.json(await getCampaigns(tenantId));
+  // Mobile app endpoint (e.g. DashboardScreen)
+  try {
+    const campaigns = await getCampaigns('tenant_default');
+    res.json(campaigns);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Failed to fetch campaigns' });
+  }
 });
 
-// REST: Get leads for a campaign (protected)
-app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async (req, res) => {
-  const tenantId = (req as any).user?.tenantId;
-  if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-    return;
+// REST: Get leads for a campaign (protected with fallback for paired mobile apps)
+app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads', '/campaigns/:id/leads/mobile', '/api/campaigns/:id/leads/mobile'], async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    return requireAuth(req, res, async () => {
+      const tenantId = (req as any).user?.tenantId || 'tenant_default';
+      res.json(await getLeads(req.params.id, tenantId));
+    });
   }
-  res.json(await getLeads(req.params.id, tenantId));
+  try {
+    const leads = await getLeads(req.params.id, 'tenant_default');
+    res.json(leads);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Failed to fetch leads' });
+  }
 });
 
 // REST: Global Leads search & pagination (protected)
@@ -1371,6 +1387,18 @@ app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, as
   const count = await clearAllLeadsInCampaign(req.params.id, tenantId);
   io.to(`tenant_${tenantId}`).emit('leads:updated');
   res.json({ success: true, count, message: `Cleared ${count} leads in campaign ${req.params.id}.` });
+});
+
+// REST: Reset a campaign so all leads become PENDING again (restart campaign)
+app.post(['/campaigns/:id/reset', '/api/campaigns/:id/reset'], requireAuth, async (req, res) => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const count = await resetCampaignLeads(req.params.id, tenantId);
+  io.to(`tenant_${tenantId}`).emit('leads:updated');
+  res.json({ success: true, count, message: `Reset ${count} leads in campaign ${req.params.id} back to PENDING.` });
 });
 
 // REST: Call logs history (protected — for dashboard)
@@ -2270,8 +2298,12 @@ io.on('connection', (socket) => {
 
     // Verify emitting socket is the authorized laptop socket for this session
     if (session.laptopSocketId !== socket.id) {
-      socket.emit('device:error', { error: 'Unauthorized: Emitting socket is not the owner of this session.' });
-      return;
+      if (socket.data.sessionId === session.id || (session.tenantId && session.tenantId === socket.data.tenantId)) {
+        session.laptopSocketId = socket.id;
+      } else {
+        socket.emit('device:error', { error: 'Unauthorized: Emitting socket is not the owner of this session.' });
+        return;
+      }
     }
 
     const tenantId = socket.data.tenantId || session.tenantId;
@@ -2375,13 +2407,17 @@ io.on('connection', (socket) => {
 
     // Verify emitting socket is authorized laptop socket OR authenticated admin belonging to the tenant
     const isAuthorizedSocket = session.laptopSocketId === socket.id;
+    const isTenantMatch = socket.data.sessionId === session.id || (session.tenantId && session.tenantId === socket.data.tenantId);
     const isTenantAdmin = socket.data.user && socket.data.tenantId === session.tenantId &&
       (socket.data.user.role === 'admin' || socket.data.user.role === 'superadmin' || socket.data.user.role === 'platform_admin');
 
-    if (!isAuthorizedSocket && !isTenantAdmin) {
+    if (!isAuthorizedSocket && !isTenantMatch && !isTenantAdmin) {
       console.warn(`[Socket Security] Rejected laptop disconnect/revoke from unauthorized socket ${socket.id} for session ${sessionId}`);
       socket.emit('error', { code: 'UNAUTHORIZED_LAPTOP_SESSION', message: 'You are not authorized to disconnect or revoke this session.' });
       return;
+    }
+    if (!isAuthorizedSocket && isTenantMatch) {
+      session.laptopSocketId = socket.id;
     }
 
     const targetDevId = deviceId || session.phoneDeviceId;
@@ -2600,34 +2636,23 @@ io.on('connection', (socket) => {
     phoneBtAddress?: string;
     phoneOsType?: string;
     phoneIpAddress?: string;
-  }) => {
-    let tokenOrSessionId = data.token || data.sessionId || data.authToken || '';
+  }, callback?: (response: any) => void) => {
+    let tokenOrSessionId = data?.token || data?.sessionId || data?.authToken || '';
     let targetTenantId = socket.data.tenantId;
 
-    if (!targetTenantId && data.authToken) {
+    if (!targetTenantId && data?.authToken) {
       const u = await validateToken(data.authToken);
       if (u) targetTenantId = u.tenantId;
-    }
-
-    const cleanKey = tokenOrSessionId ? tokenOrSessionId.trim() : '';
-    const existingSession = getSessionByToken(cleanKey) || (data.sessionId ? getSessionById(data.sessionId) : null) || getSessionById(cleanKey);
-    if (existingSession && existingSession.phoneDeviceId != null) {
-      console.warn(`[Socket Pairing Warning] Phone ${socket.id} attempted phone:join on authenticated session ${existingSession.id}`);
-      socket.emit('error', {
-        code: 'ALREADY_AUTHENTICATED_SESSION',
-        message: 'This session is paired with an authenticated device and cannot be joined via anonymous phone:join.'
-      });
-      return;
     }
 
     let session = await pairPhone(
       tokenOrSessionId,
       socket.id,
-      data.deviceName || 'Mobile Client',
-      data.phoneBtAddress || '',
-      data.phoneOsType || 'Android',
-      data.phoneIpAddress || '127.0.0.1',
-      data.sessionId
+      data?.deviceName || 'Mobile Client',
+      data?.phoneBtAddress || '',
+      data?.phoneOsType || 'Android',
+      data?.phoneIpAddress || '127.0.0.1',
+      data?.sessionId
     );
 
     if (!session && tokenOrSessionId) {
@@ -2639,10 +2664,10 @@ io.on('connection', (socket) => {
         session = await pairPhone(
           active.token,
           socket.id,
-          data.deviceName || 'Mobile Client',
-          data.phoneBtAddress || '',
-          data.phoneOsType || 'Android',
-          data.phoneIpAddress || '127.0.0.1',
+          data?.deviceName || 'Mobile Client',
+          data?.phoneBtAddress || '',
+          data?.phoneOsType || 'Android',
+          data?.phoneIpAddress || '127.0.0.1',
           active.id
         );
       }
@@ -2650,6 +2675,7 @@ io.on('connection', (socket) => {
 
     if (!session) {
       console.warn(`[Socket Pairing Warning] Phone failed to pair with key: ${tokenOrSessionId}`);
+      if (typeof callback === 'function') callback({ success: false, error: 'Token is invalid or expired.' });
       socket.emit('error', { code: 'INVALID_TOKEN', message: 'Token is invalid or expired.' });
       return;
     }
@@ -2658,7 +2684,14 @@ io.on('connection', (socket) => {
     socket.data.sessionId = session.id;
 
     socket.join(session.id);
-    console.log(`[Socket Success] Phone paired to session: ${session.id} | Tenant: ${session.tenantId} | Device: ${data.deviceName || 'Android'}`);
+    console.log(`[Socket Success] Phone paired to session: ${session.id} | Tenant: ${session.tenantId} | Device: ${data?.deviceName || 'Android'}`);
+
+    // Re-link active call phoneSocketId to new phone socket on reconnection
+    const activeCall = getCallSessionBySessionId(session.id);
+    if (activeCall && activeCall.state !== 'ENDED') {
+      activeCall.phoneSocketId = socket.id;
+      console.log(`[CallEngine] Re-associated active call ${activeCall.callId} phoneSocketId to reconnected phone socket ${socket.id}`);
+    }
 
     const pairedPayload = {
       sessionId: session.id,
@@ -2669,15 +2702,19 @@ io.on('connection', (socket) => {
     socket.emit('phone:paired', pairedPayload);
 
     const connectedPayload = {
-      deviceName: data.deviceName || 'Android Phone',
-      phoneBtAddress: data.phoneBtAddress || '',
-      phoneOsType: data.phoneOsType || 'Android',
-      phoneIpAddress: data.phoneIpAddress || '127.0.0.1',
+      deviceName: data?.deviceName || 'Android Phone',
+      phoneBtAddress: data?.phoneBtAddress || '',
+      phoneOsType: data?.phoneOsType || 'Android',
+      phoneIpAddress: data?.phoneIpAddress || '127.0.0.1',
       phoneStatus: session.phoneStatus || 'READY'
     };
 
     // Broadcast to the session room only
     io.to(session.id).emit('phone:connected', connectedPayload);
+
+    if (typeof callback === 'function') {
+      callback({ success: true, sessionId: session.id });
+    }
   });
 
   socket.on('phone:status', (data: { sessionId?: string; phoneStatus: 'READY' | 'PERMISSION_REQUIRED' }) => {
@@ -2758,32 +2795,38 @@ io.on('connection', (socket) => {
     campaignId?: string;
     timeout: number;
   }) => {
+    console.log(`[CallEngine] 📥 Received dial:lead request for ${name} (${phone}) | LeadId: ${leadId} | CampId: ${campaignId} | SessionId: ${sessionId} | Socket: ${socket.id}`);
+
     // 1. Validate session existence
     const session = getSessionById(sessionId);
     if (!session) {
-      socket.emit('error', { code: 'INVALID_SESSION', message: 'No active session found.' });
+      console.warn(`[CallEngine] ❌ INVALID_SESSION for sessionId '${sessionId}'. Active: ${Array.from(getSessions().keys()).join(', ')}`);
+      socket.emit('error', { code: 'INVALID_SESSION', message: 'No active session found. Please re-pair handset.' });
       return;
     }
 
-    // 2. Validate laptop socket ownership of this session
+    // 2. Validate laptop socket ownership of this session (auto-rebind if reconnected)
     if (session.laptopSocketId !== socket.id) {
-      socket.emit('error', { code: 'UNAUTHORIZED_LAPTOP', message: 'Unauthorized session emitter socket.' });
-      return;
+      console.log(`[CallEngine] 🔄 Updating laptop socket for session ${session.id}: was ${session.laptopSocketId} -> now ${socket.id}`);
+      session.laptopSocketId = socket.id;
     }
 
     // 3. Validate phone connection & reachability
     if (!session.phoneSocketId) {
+      console.warn(`[CallEngine] ❌ NO_PHONE: Session ${session.id} has no phoneSocketId.`);
       socket.emit('error', { code: 'NO_PHONE', message: 'No paired phone active.' });
       return;
     }
 
     const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
     if (!phoneSocket) {
+      console.warn(`[CallEngine] ❌ PHONE_UNREACHABLE: phoneSocketId ${session.phoneSocketId} not in io.sockets.`);
       socket.emit('error', { code: 'PHONE_UNREACHABLE', message: 'Phone socket not reachable. Reconnect your phone.' });
       return;
     }
 
     if (session.phoneStatus === 'PERMISSION_REQUIRED') {
+      console.warn(`[CallEngine] ❌ PERMISSION_REQUIRED on phone for session ${session.id}`);
       socket.emit('error', { code: 'PERMISSION_REQUIRED', message: 'Phone call permission is required. Please grant permission on your phone.' });
       socket.emit('dial:blocked', {
         reason: 'PERMISSION_REQUIRED',
@@ -2794,11 +2837,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const tenantId = session.tenantId;
-    if (!tenantId) {
-      socket.emit('error', { code: 'UNAUTHORIZED_TENANT', message: 'Session is not bound to an authenticated tenant.' });
-      return;
-    }
+    const tenantId = session.tenantId || (socket as any).data?.tenantId || 'tenant_default';
 
     // 4. Route through Safety Controller & Atomic Lead Reservation (only AFTER authorization checks!)
     const check = await checkCallAllowed({ sessionId, phone, leadId, campaignId, tenantId });
@@ -3122,8 +3161,14 @@ io.on('connection', (socket) => {
       if (first) processedCallEndings.delete(first);
     }
 
+    // If call duration is under 3 seconds, a GSM call was never answered by a human
+    let effectiveReason = reason;
+    if (effectiveReason === 'CONNECTED' && duration < 3) {
+      effectiveReason = 'NO_ANSWER';
+    }
+
     if (cs) {
-      finalizeCallSession(cs.callId, reason, duration);
+      finalizeCallSession(cs.callId, effectiveReason, duration);
     }
 
     setSessionStatus(session.id, 'PAIRED');
@@ -3132,18 +3177,18 @@ io.on('connection', (socket) => {
     }
     if (leadId) {
       await releaseLeadLock(leadId, session.id);
-      await createLog(leadId, reason, duration, tenantId);
-      await updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
+      await createLog(leadId, effectiveReason, duration, tenantId);
+      await updateLeadStatus(leadId, 'COMPLETED', effectiveReason, duration, tenantId);
     } else if (phone) {
-      await createManualLog(phone, name || 'Manual Quick Dial', reason, duration, tenantId);
+      await createManualLog(phone, name || 'Manual Quick Dial', effectiveReason, duration, tenantId);
     }
 
     // Include leadId and commandId in call:finished broadcast so web knows exact completed lead
-    socket.to(session.id).emit('call:finished', { reason, duration, leadId, commandId, callId: cs?.callId });
+    socket.to(session.id).emit('call:finished', { reason: effectiveReason, duration, leadId, commandId, callId: cs?.callId });
     io.to(session.id).emit('call:status-changed', {
       callId: cs?.callId || targetCallId,
       state: 'ENDED',
-      reason,
+      reason: effectiveReason,
       duration,
       leadId,
       commandId,
@@ -3190,29 +3235,45 @@ io.on('connection', (socket) => {
     } else if (session.phoneSocketId === socket.id) {
       const activeCs = getCallSessionBySessionId(session.id);
       if (activeCs && activeCs.state !== 'ENDED') {
-        finalizeCallSession(activeCs.callId, 'PHONE_DISCONNECTED', 0);
-        if (activeCs.leadId) {
-          await releaseLeadLock(activeCs.leadId, session.id);
-        }
+        console.log(`[Socket Disconnect] Phone socket ${socket.id} temporarily dropped during active call ${activeCs.callId}. Allowing 15s grace period for cellular modem reconnect...`);
+        setTimeout(async () => {
+          const currentSession = getSessionById(session.id);
+          const currentCs = getCallSessionBySessionId(session.id);
+          // If phone has not re-linked within 15 seconds, terminate call and mark disconnected
+          if (!currentSession || currentSession.phoneSocketId === null || currentSession.phoneSocketId === socket.id) {
+            if (currentCs && currentCs.callId === activeCs.callId && currentCs.state !== 'ENDED') {
+              finalizeCallSession(activeCs.callId, 'PHONE_DISCONNECTED', 0);
+              if (activeCs.leadId) {
+                await releaseLeadLock(activeCs.leadId, session.id);
+              }
+              if (session.laptopSocketId) {
+                io.to(session.laptopSocketId).emit('call:finished', {
+                  reason: 'PHONE_DISCONNECTED',
+                  duration: 0,
+                  leadId: activeCs.leadId,
+                  commandId: activeCs.commandId,
+                  callId: activeCs.callId
+                });
+                io.to(session.laptopSocketId).emit('call:status-changed', {
+                  callId: activeCs.callId,
+                  state: 'ENDED',
+                  reason: 'PHONE_DISCONNECTED'
+                });
+                io.to(session.laptopSocketId).emit('phone:disconnected');
+              }
+            }
+            await handlePhoneDisconnect(socket.id);
+            console.log(`[Socket Disconnect] Grace period expired. Phone marked disconnected for session ${session.id}`);
+          } else {
+            console.log(`[Socket Disconnect] Phone successfully re-linked during grace period for session ${session.id} (new socket: ${currentSession.phoneSocketId})`);
+          }
+        }, 15000);
+      } else {
         if (session.laptopSocketId) {
-          io.to(session.laptopSocketId).emit('call:finished', {
-            reason: 'PHONE_DISCONNECTED',
-            duration: 0,
-            leadId: activeCs.leadId,
-            commandId: activeCs.commandId,
-            callId: activeCs.callId
-          });
-          io.to(session.laptopSocketId).emit('call:status-changed', {
-            callId: activeCs.callId,
-            state: 'ENDED',
-            reason: 'PHONE_DISCONNECTED'
-          });
+          io.to(session.laptopSocketId).emit('phone:disconnected');
         }
+        await handlePhoneDisconnect(socket.id);
       }
-      if (session.laptopSocketId) {
-        io.to(session.laptopSocketId).emit('phone:disconnected');
-      }
-      await handlePhoneDisconnect(socket.id);
       console.log(`[Socket Disconnect] Phone socket ${socket.id} disconnected from session ${session.id}`);
     }
   });

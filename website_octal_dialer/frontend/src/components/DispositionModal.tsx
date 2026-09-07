@@ -18,6 +18,8 @@ interface DispositionModalProps {
   isOpen: boolean;
   leadId: string;
   leadName: string;
+  leadPhone?: string;
+  campaignName?: string;
   initialOutcome?: string;
   onClose: () => void;
   serverUrl: string;
@@ -30,6 +32,8 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
   isOpen,
   leadId,
   leadName,
+  leadPhone,
+  campaignName,
   initialOutcome = 'ANSWERED',
   onClose,
   serverUrl,
@@ -113,9 +117,32 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="space-y-1">
-          <p className="text-xs text-zinc-400 font-mono">Log final calling outcome for lead:</p>
-          <p className={`text-sm font-bold uppercase ${isLight ? 'text-slate-900' : 'text-white'}`}>{leadName}</p>
+        <div className="space-y-2 p-3.5 rounded-2xl bg-amber-500/5 border border-amber-500/20">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-zinc-400 font-mono uppercase tracking-wider">
+              Lead Calling Summary
+            </span>
+            {campaignName && (
+              <span className="text-[10px] font-mono text-amber-500/90 bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20 truncate max-w-[170px]" title={campaignName}>
+                📁 {campaignName}
+              </span>
+            )}
+          </div>
+          
+          <div className="space-y-1">
+            {leadPhone ? (
+              <div className="text-base font-mono font-black text-amber-400 tracking-widest flex items-center gap-2">
+                <span>📞</span>
+                <span>{leadPhone}</span>
+              </div>
+            ) : null}
+            {leadName && (
+              <div className="text-[11px] font-mono text-zinc-400 flex items-center gap-1.5 pt-0.5">
+                <span className="uppercase tracking-wider text-zinc-500 font-bold">Contact:</span>
+                <span className={`font-semibold ${isLight ? 'text-slate-800' : 'text-zinc-200'}`}>{leadName}</span>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="space-y-3">

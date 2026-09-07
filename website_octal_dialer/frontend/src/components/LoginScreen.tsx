@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Lock, User, Eye, EyeOff, Shield, LogIn, Mail, ArrowRight, KeyRound, CheckCircle2, AlertCircle, ArrowLeft, ShieldCheck, Sparkles } from 'lucide-react';
+import { Lock, User, Eye, EyeOff, Shield, LogIn, Mail, ArrowRight, KeyRound, CheckCircle2, AlertCircle, ArrowLeft, ShieldCheck, Sparkles, Smartphone, Download } from 'lucide-react';
 
 interface LoginScreenProps {
   serverUrl: string;
@@ -330,26 +330,29 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden bg-slate-950 select-none">
-      {/* Video Background */}
+    <div className="min-h-[100dvh] w-full flex flex-col items-center justify-center px-3.5 py-6 sm:p-6 relative overflow-x-hidden overflow-y-auto bg-slate-950 select-none">
+      {/* Mobile Lightweight Galaxy Ambient Glow (0% CPU/GPU overhead - 120fps fluid) */}
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_15%,rgba(245,158,11,0.08),transparent_50%),radial-gradient(circle_at_80%_80%,rgba(59,130,246,0.05),transparent_40%)] pointer-events-none md:hidden" />
+
+      {/* Desktop High-End Video Background (Hidden on mobile phones to prevent gesture micro-stutter) */}
       <video
         autoPlay
         muted
         loop
         playsInline
-        className="absolute inset-0 w-full h-full object-cover"
+        className="hidden md:block absolute inset-0 w-full h-full object-cover opacity-60 pointer-events-none"
         style={{ backgroundColor: '#0f172a' }}
       >
         <source src="/merged-galaxy.webm" type="video/webm" />
         <source src="/merged-galaxy.mp4" type="video/mp4" />
       </video>
 
-      {/* Overlay for optimal contrast & vibrant galaxy visibility */}
-      <div className="absolute inset-0 bg-gradient-to-b from-slate-950/40 via-slate-950/60 to-slate-950/40 backdrop-blur-[1px] pointer-events-none" />
+      {/* Desktop Overlay */}
+      <div className="hidden md:block absolute inset-0 bg-gradient-to-b from-slate-950/60 via-slate-950/80 to-slate-950/70 backdrop-blur-[1px] pointer-events-none" />
 
-      <div className="w-full max-w-md relative z-10 mx-auto">
+      <div className="w-full max-w-md relative z-10 mx-auto my-auto">
         {/* Main Card */}
-        <div className="bg-slate-900/85 backdrop-blur-xl border border-slate-700/60 rounded-3xl p-7 shadow-2xl shadow-black/80">
+        <div className="bg-slate-900/95 sm:bg-slate-900/85 sm:backdrop-blur-xl border border-slate-700/60 rounded-2xl sm:rounded-3xl p-5 sm:p-7 shadow-2xl shadow-black/80">
           
           {/* Brand Header */}
           <div className="text-center mb-6">
@@ -590,7 +593,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                       placeholder="admin or user@domain.com"
                       autoComplete="username"
                       required
-                      className="w-full bg-slate-950 border border-slate-700/80 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 transition-all"
+                      className="w-full bg-slate-950 border border-slate-700/80 rounded-xl pl-9 pr-3 py-2.5 text-base sm:text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 transition-all"
                     />
                   </div>
                 </div>
@@ -617,7 +620,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                       placeholder="••••••••"
                       autoComplete="current-password"
                       required
-                      className="w-full bg-slate-950 border border-slate-700/80 rounded-xl pl-9 pr-10 py-2.5 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 transition-all"
+                      className="w-full bg-slate-950 border border-slate-700/80 rounded-xl pl-9 pr-10 py-2.5 text-base sm:text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 transition-all"
                     />
                     <button
                       type="button"
@@ -720,6 +723,44 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
             </form>
           )}
 
+        </div>
+
+        {/* 📲 Hassle-Free Android App Download Card with 3-Step Phone Installation */}
+        <div className="mt-3.5 p-4 rounded-2xl bg-slate-900/95 sm:bg-slate-900/90 border border-slate-800 sm:backdrop-blur-md shadow-xl space-y-3">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center gap-3 text-left w-full sm:w-auto">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0 shadow-sm">
+                <Smartphone className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-white tracking-wide">Octal Dialer for Android</h4>
+                <p className="text-[11px] text-slate-400">Direct GSM Calling & Cloud Phone Link (32 MB)</p>
+              </div>
+            </div>
+            <a
+              href="/download/apk"
+              download="OctalDialer.apk"
+              className="w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-95 text-slate-950 font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-amber-500/10 transition-all cursor-pointer shrink-0"
+            >
+              <Download className="w-4 h-4 stroke-[2.5]" />
+              <span>Download APK</span>
+            </a>
+          </div>
+
+          <div className="pt-2 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-[10px] text-slate-300 text-center font-mono">
+            <div className="bg-slate-950/60 rounded-lg p-2 border border-slate-800">
+              <span className="text-amber-400 font-bold block text-[11px]">1. Download</span>
+              Tap button above
+            </div>
+            <div className="bg-slate-950/60 rounded-lg p-2 border border-slate-800">
+              <span className="text-amber-400 font-bold block text-[11px]">2. Open File</span>
+              From notifications
+            </div>
+            <div className="bg-slate-950/60 rounded-lg p-2 border border-slate-800">
+              <span className="text-amber-400 font-bold block text-[11px]">3. Install</span>
+              Tap Install & launch
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../widgets/octal_logo.dart';
+import '../services/phone_bridge_service.dart';
 
 class CallingScreen extends StatefulWidget {
   final String phone;
@@ -113,7 +114,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         _handleOffhook();
       }
     } else if (state == 'IDLE') {
-      if (_phase == CallPhase.connected) {
+      if (_phase == CallPhase.connected && _talkDuration >= 3) {
         _endCall('CONNECTED');
       } else {
         _endCall('NO_ANSWER');
@@ -218,6 +219,8 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       widget.onCallEnded?.call();
     } catch (_) {}
 
+    final effectiveReason = (reason == 'CONNECTED' && _talkDuration < 3) ? 'NO_ANSWER' : reason;
+
     widget.socket.emit('call:ended', {
       'sessionId': widget.sessionId,
       'callId': widget.callId,
@@ -225,7 +228,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       'phone': widget.phone,
       'name': widget.name,
       'commandId': widget.commandId,
-      'reason': reason,
+      'reason': effectiveReason,
       'duration': _talkDuration,
     });
 
@@ -248,7 +251,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _talkTimer?.cancel();
     widget.socket.off('phone:hangup');
     widget.socket.off('phone:hangup-call');
-    _nativeChannel.setMethodCallHandler(null);
+    PhoneBridgeService.instance.setupTelephonyChannel();
     super.dispose();
   }
 
@@ -257,22 +260,32 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     final initial = widget.name.isNotEmpty ? widget.name[0].toUpperCase() : 'A';
     final isConnected = _phase == CallPhase.connected;
 
-    return Scaffold(
-      backgroundColor: OctalColors.bgDark,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              // Top Bar
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white, size: 28),
-                    onPressed: () => Navigator.pop(context),
-                  ),
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (bool didPop) {
+        if (didPop) return;
+        _nativeChannel.invokeMethod('endCall').catchError((_) {});
+        _endCall(isConnected ? 'CONNECTED' : 'CANCELLED');
+      },
+      child: Scaffold(
+        backgroundColor: OctalColors.bgDark,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // Top Bar
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white, size: 28),
+                      onPressed: () {
+                        _nativeChannel.invokeMethod('endCall').catchError((_) {});
+                        _endCall(isConnected ? 'CONNECTED' : 'CANCELLED');
+                      },
+                    ),
                   Text(
                     isConnected ? 'Active Call' : 'Connecting Call',
                     style: const TextStyle(
@@ -494,7 +507,8 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
           ),
         ),
       ),
-    );
+    ),
+  );
   }
 
   Widget _buildControlItem({

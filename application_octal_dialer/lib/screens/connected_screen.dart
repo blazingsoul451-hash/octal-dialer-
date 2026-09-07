@@ -62,6 +62,8 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     _deviceOs = 'Android';
     _deviceIp = '127.0.0.1';
 
+    PhoneBridgeService.ensureAllPermissions();
+
     _initDeviceCredentials().then((_) {
       _initSocket();
     });
@@ -71,6 +73,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pingTimer?.cancel();
+    _detachSocketListeners();
     if (widget.mode == PairingMode.qr) {
       _socket?.disconnect();
       _socket?.dispose();
@@ -187,7 +190,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     _addLog('[System] Target: ${widget.serverUrl}');
 
     _socket = io.io(widget.serverUrl, io.OptionBuilder()
-      .setTransports(['websocket'])
+      .setTransports(['websocket', 'polling'])
       .setExtraHeaders({'bypass-tunnel-reminder': 'true'})
       .enableReconnection()
       .setReconnectionAttempts(10)
@@ -207,9 +210,13 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
         'phoneOsType': _deviceOs,
         'phoneIpAddress': _deviceIp,
       }, ack: (response) {
-        if (response == null || (response is Map && response['success'] != true)) {
-          _addLog('[Error] Token authentication failed');
-          _disconnect();
+        if (response != null && response is Map) {
+          if (response['success'] == true) {
+            _addLog('[Bridge] Handshake acknowledged by server');
+          } else if (response['success'] == false) {
+            _addLog('[Error] Handshake rejected: ${response['error'] ?? 'Auth failed'}');
+            _disconnect();
+          }
         }
       });
     });
@@ -217,8 +224,22 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     _attachSocketListeners();
   }
 
+  void _detachSocketListeners() {
+    if (_socket == null) return;
+    _socket!.off('phone:paired');
+    _socket!.off('phone:pong');
+    _socket!.off('phone:ping');
+    _socket!.off('app:update_available');
+    _socket!.off('app:up_to_date');
+    _socket!.off('phone:kicked');
+    _socket!.off('bridge:unpaired');
+    _socket!.off('session:ended');
+    _socket!.off('phone:dial');
+  }
+
   void _attachSocketListeners() {
     if (_socket == null) return;
+    _detachSocketListeners();
 
     _socket!.onDisconnect((_) {
       if (mounted) {

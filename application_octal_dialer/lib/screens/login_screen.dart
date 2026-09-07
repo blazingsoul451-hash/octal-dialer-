@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
+import '../services/phone_bridge_service.dart';
 import '../widgets/octal_logo.dart';
 import 'device_dashboard_screen.dart';
 import 'connect_screen.dart';
@@ -28,6 +29,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
+    PhoneBridgeService.ensureAllPermissions();
     _loadSavedServer();
   }
 
@@ -62,7 +64,6 @@ class _LoginScreenState extends State<LoginScreen> {
     final List<String> candidateUrls = [
       if (entered.isNotEmpty) entered,
       'http://140.245.215.156',
-      'http://140.245.215.156.sslip.io',
     ];
 
     dynamic loginData;
@@ -303,6 +304,81 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 18),
                     ],
 
+                    // 📷 PROMINENT 1-TAP QR CODE SCANNER BUTTON
+                    Container(
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [OctalColors.primaryGold, Color(0xFFD97706)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(18),
+                        boxShadow: [
+                          BoxShadow(
+                            color: OctalColors.primaryGold.withOpacity(0.35),
+                            blurRadius: 18,
+                            offset: const Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const ConnectScreen(startWithScanner: true)),
+                            );
+                          },
+                          borderRadius: BorderRadius.circular(18),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 16, horizontal: 20),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.qr_code_scanner, color: OctalColors.bgDark, size: 24),
+                                SizedBox(width: 12),
+                                Text(
+                                  'Scan QR Code from Laptop',
+                                  style: TextStyle(
+                                    fontFamily: 'Ubuntu',
+                                    color: OctalColors.bgDark,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 24),
+
+                    Row(
+                      children: [
+                        const Expanded(child: Divider(color: OctalColors.border)),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          child: Text(
+                            'OR SIGN IN WITH CREDENTIALS',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.0,
+                              color: OctalColors.textSecondary.withOpacity(0.9),
+                            ),
+                          ),
+                        ),
+                        const Expanded(child: Divider(color: OctalColors.border)),
+                      ],
+                    ),
+
+                    const SizedBox(height: 18),
+
                     Container(
                       padding: const EdgeInsets.all(20),
                       decoration: BoxDecoration(
@@ -468,68 +544,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
 
-                    const SizedBox(height: 20),
-
-                    Row(
-                      children: [
-                        const Expanded(child: Divider(color: OctalColors.border)),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
-                          child: Text(
-                            'or continue with',
-                            style: TextStyle(fontSize: 11, color: OctalColors.textSecondary.withOpacity(0.8)),
-                          ),
-                        ),
-                        const Expanded(child: Divider(color: OctalColors.border)),
-                      ],
-                    ),
-
                     const SizedBox(height: 16),
-
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Please log in with your Octal tenant username & password.')),
-                        );
-                      },
-                      icon: Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: const Text(
-                          'G',
-                          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 13),
-                        ),
-                      ),
-                      label: const Text(
-                        'Google',
-                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        side: const BorderSide(color: OctalColors.border, width: 1.5),
-                        backgroundColor: OctalColors.surfaceCard,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      ),
-                    ),
-
-                    const SizedBox(height: 18),
-
-                    TextButton.icon(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const ConnectScreen()),
-                        );
-                      },
-                      icon: const Icon(Icons.qr_code_scanner, color: OctalColors.primaryGold, size: 18),
-                      label: const Text(
-                        'Pair with Laptop via QR Code',
-                        style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold),
-                      ),
-                    ),
 
                     const SizedBox(height: 12),
 

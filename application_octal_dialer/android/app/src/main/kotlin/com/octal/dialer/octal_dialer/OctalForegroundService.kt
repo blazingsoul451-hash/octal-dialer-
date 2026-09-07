@@ -78,12 +78,7 @@ class OctalForegroundService : Service() {
                 val status = intent?.getStringExtra(EXTRA_STATUS) ?: "Connected to laptop console. Ready for calls."
                 val notification = buildNotification(status)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        // Android 14+ requires explicit foregroundServiceType matching manifest
-                        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-                    } else {
-                        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
-                    }
+                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
                 } else {
                     startForeground(NOTIFICATION_ID, notification)
                 }

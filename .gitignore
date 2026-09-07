@@ -31,6 +31,14 @@ supabase_credentials
 
 # Archives & Review Bundles
 *.zip
+*.tar.gz
 FOR_GPT_REVIEW/
 website_octal_dialer/backend/data/scraper_output/
+IMPORTANT_SECRETS/
+.agents/
+*.sql
+*.png
+*.xlsx
+PONYTAIL_REFACTOR_REVIEW_FOR_GPT.md
+AGENTS.md
 
