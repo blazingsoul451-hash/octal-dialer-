@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL"/>
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
@@ -57,7 +57,7 @@
         </provider>
         <service
             android:name=".OctalForegroundService"
-            android:foregroundServiceType="phoneCall"
+            android:foregroundServiceType="phoneCall|connectedDevice"
             android:exported="false" />
     </application>
     <!-- Required to query activities that can process text, see:

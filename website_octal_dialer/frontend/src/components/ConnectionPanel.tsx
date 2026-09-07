@@ -63,26 +63,50 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   serverUrl,
   isLight
 }) => {
-  const [activeTab, setActiveTab] = useState<'devices' | 'qr'>('qr');
+  const [activeTab, setActiveTab] = useState<'devices' | 'qr'>('devices');
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [deviceActionLoading, setDeviceActionLoading] = useState<string | null>(null);
+  const [qrMode, setQrMode] = useState<'download' | 'pair'>('download');
   const [copied, setCopied] = useState(false);
+  const [showApkQr, setShowApkQr] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [dynamicTunnelUrl, setDynamicTunnelUrl] = useState<string | null>(null);
 
-  const safeServerUrl = serverUrl || (typeof window !== 'undefined' ? window.location.origin : '');
-  const laptopName = qrPayload?.laptopName || 'Laptop';
-  const directApkUrl = `${safeServerUrl}/OctalDialer.apk`;
+  const laptopName = window.location.hostname || 'Localhost';
+  const currentHost = window.location.hostname;
+  const apiProtocol = window.location.protocol;
+
+  // Real-time Cloudflare Quick Tunnel updates over WebSocket
+  useEffect(() => {
+    if (!socket) return;
+    const handler = (data: { serverUrl?: string | null }) => {
+      if (data?.serverUrl) {
+        setDynamicTunnelUrl(data.serverUrl);
+      }
+    };
+    socket.on('tunnel:updated', handler);
+    return () => { socket.off('tunnel:updated', handler); };
+  }, [socket]);
+
+  const safeServerUrl = dynamicTunnelUrl || (qrPayload && qrPayload.serverUrl && qrPayload.serverUrl.startsWith('http'))
+    ? (dynamicTunnelUrl || qrPayload.serverUrl)
+    : (serverUrl && serverUrl.startsWith('http')
+      ? serverUrl
+      : `${apiProtocol}//${currentHost}:5000`);
+
+  const directApkUrl = `${safeServerUrl}/download/apk`;
+
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(directApkUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 3000);
+  };
 
   const effectiveSessionId = sessionId || 'sess_offline';
   const effectiveToken = token || '8888';
   const universalJoinUrl = `${safeServerUrl}/join?sessionId=${effectiveSessionId}&token=${effectiveToken}&serverUrl=${encodeURIComponent(safeServerUrl)}&laptop=${encodeURIComponent(laptopName)}&bt=${encodeURIComponent(laptopBtAddress || '')}`;
-
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(universalJoinUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 3000);
-  };
+  const activeQrValue = qrMode === 'download' ? directApkUrl : universalJoinUrl;
 
   const fetchDevices = useCallback(async () => {
     if (!authToken) return;
@@ -276,17 +300,6 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
       {/* Mode Navigation Tabs */}
       <div className={`flex items-center gap-2 border-b pb-2 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
         <button
-          onClick={() => setActiveTab('qr')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
-            activeTab === 'qr'
-              ? isLight ? 'bg-slate-100 text-amber-600 border border-slate-300 font-black' : 'bg-[#18181b] text-amber-400 border border-[#27272a]'
-              : isLight ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' : 'text-zinc-400 hover:text-white hover:bg-[#121215]'
-          }`}
-        >
-          <QrCode className="w-3.5 h-3.5" />
-          <span>Instant QR Code Pairing</span>
-        </button>
-        <button
           onClick={() => setActiveTab('devices')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
             activeTab === 'devices'
@@ -295,12 +308,23 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
           }`}
         >
           <Smartphone className="w-3.5 h-3.5" />
-          <span>Registered Account Devices</span>
+          <span>Registered Devices</span>
           {devices.length > 0 && (
             <span className="px-2 py-0.2 rounded-full text-[10px] font-mono bg-amber-500/20 text-amber-600 dark:text-amber-300 font-bold">
               {devices.length}
             </span>
           )}
+        </button>
+        <button
+          onClick={() => setActiveTab('qr')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
+            activeTab === 'qr'
+              ? isLight ? 'bg-slate-100 text-amber-600 border border-slate-300 font-black' : 'bg-[#18181b] text-amber-400 border border-[#27272a]'
+              : isLight ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' : 'text-zinc-400 hover:text-white hover:bg-[#121215]'
+          }`}
+        >
+          <QrCode className="w-3.5 h-3.5" />
+          <span>Alternative / Recovery Pairing (QR)</span>
         </button>
       </div>
 
@@ -342,22 +366,24 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                   Open the Octal Dialer Android application on your phone, log in with your Octal account, and it will instantly appear here ready to connect.
                 </p>
               </div>
-              <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 sm:gap-3 pt-2 w-full max-w-sm mx-auto">
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
                 <button
                   onClick={() => setActiveTab('qr')}
-                  className={`w-full sm:w-auto px-4 py-2.5 rounded-xl border text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer ${
+                  className={`px-4 py-2 rounded-xl border text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
                     isLight ? 'border-slate-300 bg-white hover:bg-slate-50 text-amber-600' : 'border-[#27272a] bg-[#18181b] hover:bg-[#27272a] text-amber-400'
                   }`}
                 >
-                  <QrCode className="w-4 h-4" />
+                  <QrCode className="w-3.5 h-3.5" />
                   <span>Use QR Code Pairing</span>
                 </button>
                 <a
                   href={directApkUrl}
                   download="OctalDialer.apk"
-                  className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs transition flex items-center justify-center gap-2 cursor-pointer shadow-md active:scale-95"
+                  className={`px-4 py-2 rounded-xl border text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
+                    isLight ? 'border-slate-300 bg-white hover:bg-slate-50 text-slate-800 shadow-sm' : 'border-[#27272a] bg-[#18181b] hover:bg-[#27272a] text-white'
+                  }`}
                 >
-                  <Download className="w-4 h-4 stroke-[2.5]" />
+                  <Download className="w-3.5 h-3.5" />
                   <span>Download Android APK</span>
                 </a>
               </div>
@@ -471,27 +497,47 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
       {activeTab === 'qr' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
-            {/* Left QR Section - Dedicated Phone Pairing QR */}
+            {/* Left QR Section */}
             <div className={`lg:col-span-5 flex flex-col items-center justify-center p-6 border rounded-2xl space-y-4 ${
               isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'
             }`}>
-              <div className="p-4 bg-white rounded-2xl shadow-xl border-4 border-amber-500/40">
+              <div className={`flex p-1 rounded-xl w-full max-w-[240px] border ${
+                isLight ? 'bg-slate-200 border-slate-300' : 'bg-[#18181b] border-[#27272a]'
+              }`}>
+                <button
+                  onClick={() => setQrMode('download')}
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer ${
+                    qrMode === 'download'
+                      ? 'bg-amber-500 text-black font-black shadow-sm'
+                      : isLight ? 'text-slate-700 hover:text-slate-950' : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  1. Get APK
+                </button>
+                <button
+                  onClick={() => setQrMode('pair')}
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer ${
+                    qrMode === 'pair'
+                      ? 'bg-amber-500 text-black font-black shadow-sm'
+                      : isLight ? 'text-slate-700 hover:text-slate-950' : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  2. Pair App
+                </button>
+              </div>
+
+              <div className="p-4 bg-white rounded-2xl shadow-xl border-4 border-slate-300 dark:border-[#27272a]">
                 <QRCodeSVG
-                  value={universalJoinUrl}
-                  size={200}
+                  value={activeQrValue}
+                  size={190}
                   level="M"
                   includeMargin={false}
                 />
               </div>
 
-              <div className="text-center space-y-1">
-                <span className="text-xs font-mono font-black text-amber-500 tracking-wider block">
-                  SCAN WITH PHONE APP CAMERA
-                </span>
-                <p className={`text-[11px] ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>
-                  Pairs your phone SIM to this workspace instantly
-                </p>
-              </div>
+              <span className="text-[11px] font-mono font-bold text-amber-500 tracking-wider">
+                {qrMode === 'download' ? 'SCAN TO DOWNLOAD APK' : 'SCAN FROM APP CAMERA'}
+              </span>
             </div>
 
             {/* Right Instructions Section */}
@@ -504,9 +550,9 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                   <span>Instant QR Pairing Instructions</span>
                 </h3>
                 <ol className={`text-xs space-y-2 list-decimal list-inside leading-relaxed ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
-                  <li>Open the Octal Dialer app on your Android phone.</li>
-                  <li>Tap the gold <strong>Scan QR Code from Laptop</strong> button.</li>
-                  <li>Point the camera at this QR code to pair and start dialing.</li>
+                  <li>Install and open the Octal Dialer Android APK on your device.</li>
+                  <li>Tap the <strong>SCAN QR</strong> button on the connect screen.</li>
+                  <li>Scan the pairing QR code displayed here to pair instantly.</li>
                 </ol>
               </div>
 
@@ -524,7 +570,7 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                   }`}
                 >
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copied ? 'Copied Pairing Link' : 'Copy Pairing Link'}</span>
+                  <span>{copied ? 'Copied APK Link' : 'Copy APK Link'}</span>
                 </button>
               </div>
             </div>

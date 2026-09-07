@@ -14,14 +14,8 @@ interface LeadQueueProps {
   clearEmergencyStop: () => void;
   callState: 'IDLE' | 'CALLING' | 'ACTIVE';
   lastCallFinished: { reason: string; duration: number; leadId?: string; commandId?: string } | null;
-  lastBlockedReason?: { message: string } | null;
-  triggerDisposition: (
-    leadId: string,
-    leadName: string,
-    initialOutcome?: string,
-    leadPhone?: string,
-    campaignName?: string
-  ) => void;
+  lastBlockedReason: { reason: string; message: string } | null;
+  triggerDisposition: (leadId: string, leadName: string, initialOutcome?: string) => void;
   isLight?: boolean;
   socket?: any;
   latencyMs?: number | null;
@@ -178,36 +172,21 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     }
   };
 
-  const handleUnloadQueue = () => {
-    if (isAutoDialing) {
-      setIsAutoDialing(false);
-    }
-    if (countdownTimerRef.current) {
-      clearInterval(countdownTimerRef.current);
-      countdownTimerRef.current = null;
-    }
-    setCountdownSeconds(null);
-    setLeads([]);
-    setSelectedCampId('');
-    setCurrentIndex(0);
-    setLogs(prev => [...prev, '[Queue] Unloaded queue from screen. All campaign leads remain intact in database.']);
-  };
-
-  const handleRestartCampaign = async () => {
+  const handleClearAllLeads = async () => {
     if (!selectedCampId) return;
-    if (!window.confirm('Restart this campaign? All leads will be marked as PENDING and dialer will start from lead #1.')) return;
+    if (!window.confirm('Are you sure you want to delete ALL leads in this queue?')) return;
     try {
-      const res = await fetch(`${serverUrl}/api/campaigns/${selectedCampId}/reset`, {
-        method: 'POST',
+      const res = await fetch(`${serverUrl}/campaigns/${selectedCampId}/leads`, {
+        method: 'DELETE',
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
       if (res.ok) {
-        setLogs(prev => [...prev, '[Campaign] Campaign reset successfully. Reloading queue...']);
-        await fetchLeads(selectedCampId);
+        setLeads([]);
         setCurrentIndex(0);
+        setLogs(prev => [...prev, `[Queue] Cleared all leads in campaign.`]);
       }
     } catch (err) {
-      console.error('Error resetting campaign:', err);
+      console.error('Error clearing campaign leads:', err);
     }
   };
 
@@ -323,7 +302,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     const duration = lastCallFinished.duration || 0;
 
     // Authoritative outcome classification:
-    // (Duration under 3s indicates a dropped/unconnected attempt, NEVER a completed conversation)
+    // (Duration MUST NOT be the authoritative proof that a human answered)
     let initialOutcome = 'ANSWERED';
     let requiresDisposition = false;
 
@@ -336,24 +315,13 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     } else if (rawReason === 'NO_ANSWER') {
       initialOutcome = 'NO_ANSWER';
       requiresDisposition = false;
-    } else if (
-      rawReason === 'FAILED' ||
-      rawReason === 'NETWORK_ERROR' ||
-      rawReason === 'PHONE_DISCONNECTED' ||
-      rawReason.includes('DISCONNECT') ||
-      rawReason.includes('FAIL') ||
-      rawReason.includes('DENIED') ||
-      rawReason.includes('ERROR') ||
-      rawReason.includes('INVALID') ||
-      duration < 3
-    ) {
-      initialOutcome = (duration === 0 && rawReason !== 'FAILED' && !rawReason.includes('FAIL') && !rawReason.includes('ERROR'))
-        ? 'NO_ANSWER'
-        : 'FAILED';
+    } else if (rawReason === 'FAILED' || rawReason === 'NETWORK_ERROR') {
+      initialOutcome = 'FAILED';
       requiresDisposition = false;
     } else {
-      // Call channel was connected and held (OFFHOOK -> IDLE with talk duration >= 3s).
-      // Agent disposition is the authoritative record of lead interest/outcome.
+      // Call channel was connected (OFFHOOK -> IDLE).
+      // Because Android GSM radio telemetry cannot differentiate between a human answering
+      // vs carrier IVR / balance error, the agent disposition is the authoritative truth.
       initialOutcome = 'ANSWERED';
       requiresDisposition = true;
     }
@@ -372,14 +340,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
     if (requiresDisposition) {
       // Open disposition modal for agent to record authoritative human outcome
-      const currentCamp = campaigns.find(c => c.id === (targetLead.campaignId || selectedCampId));
-      triggerDisposition(
-        targetLead.id,
-        targetLead.name,
-        initialOutcome,
-        targetLead.phone,
-        currentCamp?.fileName || currentCamp?.name
-      );
+      triggerDisposition(targetLead.id, targetLead.name, initialOutcome);
       setLogs(prev => [
         ...prev,
         isAutoDialing
@@ -446,10 +407,9 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   // Handle Safety Controller block feedback
   useEffect(() => {
     if (lastBlockedReason) {
-      setIsAutoDialing(false);
       setLogs(prev => [
         ...prev,
-        `[Dialer Warning] ⛔ ${lastBlockedReason.message}`
+        `[SafetyController] ⛔ BLOCKED: ${lastBlockedReason.message}`
       ]);
     }
   }, [lastBlockedReason]);
@@ -469,22 +429,6 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     socket.on('campaign:emergency_stopped', handler);
     return () => { socket.off('campaign:emergency_stopped', handler); };
   }, [socket]);
-
-  // Auto-pause auto-dialing if paired phone goes offline
-  useEffect(() => {
-    if (!phoneConnected && isAutoDialing) {
-      setIsAutoDialing(false);
-      if (countdownTimerRef.current) {
-        clearInterval(countdownTimerRef.current);
-        countdownTimerRef.current = null;
-      }
-      setCountdownSeconds(null);
-      setLogs(prev => [
-        ...prev,
-        '[Auto Dialer] ⏸ Campaign auto-dial paused: Paired phone went offline. Reconnect handset and click "Resume Campaign".'
-      ]);
-    }
-  }, [phoneConnected, isAutoDialing]);
 
   const activeLead = leads[currentIndex] || null;
 
@@ -584,8 +528,6 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const callsMadeCount = leads.filter(l => l.status !== 'PENDING').length;
   const connectedCount = leads.filter(l => l.status === 'COMPLETED').length;
   const remainingCount = leads.filter(l => l.status === 'PENDING').length;
-  const isCampaignPartiallyDone = connectedCount > 0 && remainingCount > 0;
-  const isCampaignAllCompleted = leads.length > 0 && remainingCount === 0;
 
   const getStatusBadge = () => {
     if (callState === 'CALLING') {
@@ -604,24 +546,8 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       return { label: `◉ Connecting Handset & Ringing... (${autoDialTimeout}s limit)`, color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 animate-pulse font-bold' };
     }
     if (callState === 'ACTIVE') return { label: `● CONNECTED — ${formatTimer(callDuration)}`, color: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/40 emerald-glow font-bold' };
-    if (phoneConnected && isAutoDialing) {
-      if (countdownSeconds !== null) {
-        return { label: `⏱ Next Lead in ${countdownSeconds}s...`, color: 'bg-amber-500/15 text-amber-500 border-amber-500/30 font-bold animate-pulse' };
-      }
-      return { label: '● Auto-Dialing Campaign ON', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30 font-bold animate-pulse' };
-    }
-    if (phoneConnected) {
-      if (isCampaignPartiallyDone) {
-        return { label: `⏸ Campaign Paused — Ready to Resume (${remainingCount} left)`, color: 'bg-amber-500/15 text-amber-400 border-amber-500/30 font-bold' };
-      }
-      if (isCampaignAllCompleted) {
-        return { label: `✓ Campaign Completed (${connectedCount} leads)`, color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30 font-bold' };
-      }
-      return { label: '● Ready to dial', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30 font-bold' };
-    }
-    if (isCampaignPartiallyDone) {
-      return { label: `⏸ Campaign Halted (Phone Offline)`, color: 'bg-red-500/10 text-red-400 border-red-500/30 font-bold' };
-    }
+    if (phoneConnected && isAutoDialing) return { label: '● Auto-Dialing Campaign ON', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30 font-bold animate-pulse' };
+    if (phoneConnected) return { label: '● Ready to dial', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30 font-bold' };
     return { label: '● Phone Offline', color: isLight ? 'bg-slate-100 text-slate-700 border-slate-300 font-bold' : 'bg-slate-900 text-slate-400 border-slate-800' };
   };
 
@@ -729,9 +655,9 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               </select>
             </div>
 
-            {/* Start / Resume / Pause Campaign Button */}
+            {/* Start / Stop Campaign Button */}
             {selectedCampId && (
-              isAutoDialing && phoneConnected ? (
+              isAutoDialing ? (
                 <button
                   onClick={() => {
                     setIsAutoDialing(false);
@@ -740,22 +666,11 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                       countdownTimerRef.current = null;
                     }
                     setCountdownSeconds(null);
-                    setLogs(prev => [...prev, '[Auto Dialer] ⏸ Campaign manually paused by user.']);
                   }}
                   className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-sm flex items-center gap-2"
-                  title="Pause the auto-dialing campaign"
                 >
                   <Square className="w-3.5 h-3.5 fill-current" />
                   <span>Pause Campaign</span>
-                </button>
-              ) : isCampaignAllCompleted ? (
-                <button
-                  onClick={handleRestartCampaign}
-                  className="px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-amber-400 border border-amber-500/30 font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-sm flex items-center gap-2"
-                  title="All leads completed! Click to restart this campaign from lead #1"
-                >
-                  <ListRestart className="w-3.5 h-3.5" />
-                  <span>Restart Campaign (All Done)</span>
                 </button>
               ) : (
                 <button
@@ -764,37 +679,17 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                   className={`px-5 py-2.5 font-black text-xs font-mono uppercase tracking-wider rounded-xl transition cursor-pointer shadow-sm flex items-center gap-2 ${
                     !phoneConnected || callState !== 'IDLE'
                       ? (isLight ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-[#18181b] border border-[#27272a] text-zinc-600 cursor-not-allowed')
-                      : 'bg-emerald-500 hover:bg-emerald-400 text-black font-bold shadow-md shadow-emerald-500/10'
+                      : 'bg-emerald-500 hover:bg-emerald-400 text-black font-bold'
                   }`}
-                  title={
-                    !phoneConnected
-                      ? `Connect Phone to ${isCampaignPartiallyDone ? 'Resume' : 'Start'} Campaign`
-                      : callState !== 'IDLE'
-                      ? "Phone is busy with an active call"
-                      : isCampaignPartiallyDone
-                      ? `Resume Auto-Dialing next lead (${remainingCount} pending)`
-                      : "Start Auto-Dial Campaign"
-                  }
+                  title={!phoneConnected ? "Connect Phone to Start Campaign" : callState !== 'IDLE' ? "Phone is busy with an active call" : "Start Auto-Dial Campaign"}
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>{isCampaignPartiallyDone ? `Resume Campaign (${remainingCount} Left)` : 'Start Auto-Dial Campaign'}</span>
+                  <span>Start Auto-Dial Campaign</span>
                 </button>
               )
             )}
           </div>
         </div>
-
-        {/* Disconnect Alert for in-flight campaigns */}
-        {selectedCampId && !phoneConnected && isCampaignPartiallyDone && (
-          <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between text-amber-400 text-xs shadow-sm">
-            <div className="flex items-center gap-2.5 font-mono">
-              <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 animate-pulse" />
-              <span>
-                <strong>Campaign Paused:</strong> Handset went offline with <strong>{remainingCount}</strong> leads left. Reconnect your phone in the Octal App, then click <strong>Resume Campaign</strong>.
-              </span>
-            </div>
-          </div>
-        )}
 
         {/* Real Campaign Statistics Grid */}
         {selectedCampId && (
@@ -847,23 +742,14 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                 Clear Fake Leads
               </button>
               {leads.length > 0 && (
-                <>
-                  <button
-                    onClick={handleRestartCampaign}
-                    className="text-[9px] font-mono font-bold text-amber-500 hover:text-amber-400 hover:underline cursor-pointer flex items-center gap-1 ml-1"
-                    title="Restart campaign from beginning (resets all leads to PENDING)"
-                  >
-                    <ListRestart className="w-3 h-3" />
-                    <span>Restart Campaign</span>
-                  </button>
-                  <button
-                    onClick={handleUnloadQueue}
-                    className="text-[9px] font-mono font-bold text-zinc-400 hover:text-zinc-200 hover:underline cursor-pointer flex items-center gap-1 ml-1"
-                    title="Close / unload queue from view to change campaign without deleting leads"
-                  >
-                    <span>Unload Queue</span>
-                  </button>
-                </>
+                <button
+                  onClick={handleClearAllLeads}
+                  className="text-[9px] font-mono font-bold text-red-500 hover:text-red-400 hover:underline cursor-pointer flex items-center gap-0.5"
+                  title="Delete all leads in current campaign"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Clear All</span>
+                </button>
               )}
             </div>
             <span className="text-[10px] font-mono font-bold text-zinc-400">
@@ -1062,17 +948,6 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                 </div>
 
                 <div className="space-y-1">
-                  {(() => {
-                    const camp = campaigns.find(c => c.id === (activeLead.campaignId || selectedCampId));
-                    const campLabel = camp?.fileName || camp?.name;
-                    return campLabel ? (
-                      <div className="flex justify-center pb-1">
-                        <span className="text-[10px] font-mono text-zinc-400 bg-zinc-800/80 px-2 py-0.5 rounded-md border border-zinc-700/50 truncate max-w-[220px]">
-                          📁 {campLabel}
-                        </span>
-                      </div>
-                    ) : null;
-                  })()}
                   <h2 className={`text-2xl font-black font-display uppercase tracking-wider ${
                     isLight ? 'text-slate-900' : 'text-white'
                   }`}>{activeLead.name}</h2>

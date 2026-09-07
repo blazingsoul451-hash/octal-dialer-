@@ -128,8 +128,6 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     socket.on('error', (err: any) => {
       setCallState('IDLE');
       setGranularCallState('IDLE');
-      const msg = typeof err === 'string' ? err : err?.message || err?.code || 'Socket error';
-      setLastBlockedReason({ reason: err?.code || 'SOCKET_ERROR', message: msg });
       console.warn('[Socket Error]:', err);
     });
 
@@ -258,15 +256,11 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     leadId?: string,
     campaignId?: string
   ) => {
-    const activeSessionId = sessionId || localStorage.getItem('octal_session_id');
-    console.log('[DialLead] Triggered:', { phone, name, timeout, leadId, campaignId, activeSessionId, hasSocket: !!socketRef.current });
-    if (socketRef.current && activeSessionId) {
+    if (socketRef.current && sessionId) {
       setCallState('CALLING');
       setGranularCallState('COMMAND_SENT');
       setLastBlockedReason(null);
-      socketRef.current.emit('dial:lead', { sessionId: activeSessionId, phone, name, timeout, leadId, campaignId });
-    } else {
-      console.warn('[DialLead] Failed to emit dial:lead: socket or sessionId missing', { hasSocket: !!socketRef.current, activeSessionId });
+      socketRef.current.emit('dial:lead', { sessionId, phone, name, timeout, leadId, campaignId });
     }
   };
 

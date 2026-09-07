@@ -7,8 +7,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
 import android.telecom.TelecomManager
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
@@ -148,52 +146,10 @@ class MainActivity: FlutterActivity() {
                     }
                     
                     if (permissionsNeeded.isNotEmpty()) {
-                        if (pendingResult != null) {
-                            result.success(false)
-                            return@setMethodCallHandler
-                        }
                         pendingResult = result
                         ActivityCompat.requestPermissions(this, permissionsNeeded.toTypedArray(), PERMISSIONS_REQUEST_CODE)
                     } else {
                         result.success(true)
-                    }
-                }
-                "isBatteryOptimizationIgnored" -> {
-                    try {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                            result.success(powerManager.isIgnoringBatteryOptimizations(packageName))
-                        } else {
-                            result.success(true)
-                        }
-                    } catch (e: Exception) {
-                        result.success(false)
-                    }
-                }
-                "requestBatteryOptimization" -> {
-                    try {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                    data = Uri.parse("package:$packageName")
-                                }
-                                startActivity(intent)
-                                result.success(true)
-                            } else {
-                                result.success(true)
-                            }
-                        } else {
-                            result.success(true)
-                        }
-                    } catch (e: Exception) {
-                        try {
-                            val fallbackIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                            startActivity(fallbackIntent)
-                            result.success(true)
-                        } catch (ex: Exception) {
-                            result.error("BATTERY_OPT_ERROR", ex.message, null)
-                        }
                     }
                 }
                 else -> {
@@ -278,7 +234,6 @@ class MainActivity: FlutterActivity() {
             data = Uri.parse("tel:$cleanPhone")
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
-        
         try {
             startActivity(intent)
             result.success(true)
@@ -292,9 +247,8 @@ class MainActivity: FlutterActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSIONS_REQUEST_CODE) {
-            val callGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
-            val stateGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
-            pendingResult?.success(callGranted && stateGranted)
+            val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            pendingResult?.success(allGranted)
             pendingResult = null
             pendingCallPhone = null
         }

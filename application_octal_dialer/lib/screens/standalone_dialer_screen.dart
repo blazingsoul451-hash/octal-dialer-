@@ -81,12 +81,7 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
 
     _nativeChannel.setMethodCallHandler((call) async {
       if (call.method == 'onCallStateChanged') {
-        String state = 'UNKNOWN';
-        if (call.arguments is Map) {
-          state = (call.arguments['state'] ?? 'UNKNOWN').toString();
-        } else if (call.arguments is String) {
-          state = call.arguments as String;
-        }
+        final state = call.arguments as String;
         if (mounted) {
           _handleNativeCallStateChange(state);
         }
@@ -130,7 +125,6 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
     _autoDialTimer?.cancel();
     _phoneController.dispose();
     _nameController.dispose();
-    PhoneBridgeService.instance.setupTelephonyChannel();
     super.dispose();
   }
 

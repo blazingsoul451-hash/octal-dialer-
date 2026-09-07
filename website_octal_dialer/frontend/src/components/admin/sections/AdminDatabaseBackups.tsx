@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Database, Shield, CheckCircle2, AlertCircle, RefreshCw, HardDrive, Lock, FileCheck, ArrowDownToLine, Info, ChevronDown, ChevronRight
 } from 'lucide-react';

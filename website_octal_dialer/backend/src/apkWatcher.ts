@@ -25,22 +25,16 @@ export class ApkWatcher {
   constructor() {
     this.watchDirs = [
       path.resolve(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk'),
-      path.resolve(__dirname, '../../mobile/build/app/outputs/flutter-apk')
+      path.resolve(__dirname, '../../mobile/build/app/outputs/flutter-apk'),
+      path.resolve(__dirname, '../data'),
+      path.resolve(__dirname, '../../frontend/public')
     ];
 
     this.targetDestinations = [
       path.resolve(__dirname, '../data/OctalDialer.apk'),
-      path.resolve(__dirname, '../../frontend/public/OctalDialer.apk')
+      path.resolve(__dirname, '../../frontend/public/OctalDialer.apk'),
+      path.resolve(process.env.USERPROFILE || 'C:/Users/ice', 'Desktop/OctalDialer.apk')
     ];
-
-    if (process.platform === 'win32' && process.env.USERPROFILE) {
-      this.targetDestinations.push(path.resolve(process.env.USERPROFILE, 'Desktop/OctalDialer.apk'));
-    } else if (process.platform === 'linux') {
-      const nginxApk = '/var/www/octal-frontend/OctalDialer.apk';
-      if (fs.existsSync(path.dirname(nginxApk))) {
-        this.targetDestinations.push(nginxApk);
-      }
-    }
   }
 
   public static getInstance(): ApkWatcher {
@@ -67,14 +61,12 @@ export class ApkWatcher {
 
     try {
       const candidates = [
-        path.resolve(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-release.apk'),
         path.resolve(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-debug.apk'),
-        path.resolve(__dirname, '../data/OctalDialer.apk')
+        path.resolve(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-release.apk'),
+        path.resolve(__dirname, '../data/OctalDialer.apk'),
+        path.resolve(__dirname, '../../frontend/public/OctalDialer.apk'),
+        path.resolve(process.env.USERPROFILE || 'C:/Users/ice', 'Desktop/OctalDialer.apk')
       ];
-
-      if (process.platform === 'win32' && process.env.USERPROFILE) {
-        candidates.push(path.resolve(process.env.USERPROFILE, 'Desktop/OctalDialer.apk'));
-      }
 
       const validFiles = candidates
         .filter(p => {
@@ -135,24 +127,23 @@ export class ApkWatcher {
         }
       }
 
-      // Record in PostgreSQL OTA table safely
+      // Record in PostgreSQL OTA table
       if (this.db) {
         try {
-          const existing = await this.db.queryOne('SELECT id FROM ota_versions WHERE version = $1', [this.currentVersion]);
-          if (existing) {
-            await this.db.execute(`
-              UPDATE ota_versions 
-              SET "apkHash" = $1, "uploadedAt" = now(), "buildNumber" = $2 
-              WHERE version = $3
-            `, [sha256, this.currentBuildNumber, this.currentVersion]);
-          } else {
-            await this.db.execute(`
-              INSERT INTO ota_versions (id, version, "buildNumber", "apkHash", signature, "releaseNotes", "isActive")
-              VALUES ($1, $2, $3, $4, 'OCTAL_KEY_SIG_V1', 'Automatic production build sync.', 1)
-            `, [`ota_v${this.currentVersion}`, this.currentVersion, this.currentBuildNumber, sha256]);
-          }
+          await this.db.execute(`
+            INSERT INTO ota_versions (id, version, "buildNumber", "apkHash", signature, "releaseNotes", "isActive")
+            VALUES ($1, $2, $3, $4, 'OCTAL_KEY_SIG_V1', 'Automatic production build sync.', 1)
+            ON CONFLICT (version) DO UPDATE SET
+              "apkHash" = excluded."apkHash",
+              "uploadedAt" = now()
+          `, [
+            `ota_v${this.currentVersion}`,
+            this.currentVersion,
+            this.currentBuildNumber,
+            sha256
+          ]);
         } catch (dbErr) {
-          // Non-fatal logging
+          console.warn('[APK Watcher] OTA database update notice:', dbErr);
         }
       }
 

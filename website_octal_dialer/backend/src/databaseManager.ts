@@ -300,21 +300,6 @@ export async function clearAllLeadsInCampaign(campaignId: string, tenantId: stri
   return info.rowCount;
 }
 
-export async function resetCampaignLeads(campaignId: string, tenantId: string): Promise<number> {
-  if (!tenantId || !campaignId) return 0;
-  const info = await db.execute(`
-    UPDATE leads 
-    SET status = 'PENDING', outcome = NULL, duration = 0 
-    WHERE "campaignId" = $1 AND "tenantId" = $2
-  `, [campaignId, tenantId]);
-  await db.execute(`
-    UPDATE campaigns 
-    SET "leadCount" = (SELECT COUNT(*) FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED') 
-    WHERE id = $1 AND "tenantId" = $2
-  `, [campaignId, tenantId]);
-  return info.rowCount;
-}
-
 export async function clearFakeQueueLeads(tenantId: string): Promise<number> {
   if (!tenantId) return 0;
   const info = await db.execute(`

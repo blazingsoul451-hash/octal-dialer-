@@ -52,7 +52,7 @@ class AppConfig {
     if (trimmed.isEmpty) return null;
 
     final lower = trimmed.toLowerCase();
-    if (lower.contains('api.trycloudflare.com') || lower.contains('.trycloudflare.com') || lower.contains('.loca.lt') || lower.contains('ngrok') || lower.contains('.sslip.io')) {
+    if (lower.contains('api.trycloudflare.com') || lower.contains('.trycloudflare.com') || lower.contains('.loca.lt') || lower.contains('ngrok')) {
       return defaultBaseUrl;
     }
 

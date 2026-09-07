@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 import '../services/phone_bridge_service.dart';
@@ -38,6 +39,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   int _answeredLeads = 0;
   int _remainingLeads = 5168;
 
+  static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
   bool _callPermissionGranted = true;
 
   @override
@@ -70,12 +72,20 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
 
   Future<void> _checkAndRequestCallPermission() async {
     try {
-      await PhoneBridgeService.ensureAllPermissions();
-      if (mounted) {
-        final bool hasPermission = await PhoneBridgeService.checkCallPermission();
-        setState(() {
-          _callPermissionGranted = hasPermission;
-        });
+      final bool hasPermission = await _nativeChannel.invokeMethod('checkCallPermission') ?? false;
+      if (!hasPermission) {
+        final bool granted = await _nativeChannel.invokeMethod('requestCallPermission') ?? false;
+        if (mounted) {
+          setState(() {
+            _callPermissionGranted = granted;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _callPermissionGranted = true;
+          });
+        }
       }
     } catch (e) {
       debugPrint('Error checking call permission: $e');
@@ -201,13 +211,6 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
       if (_bridge.socket != null && !_bridge.socket!.connected) {
         _bridge.socket!.connect();
       }
-      PhoneBridgeService.checkCallPermission().then((hasPerm) {
-        if (mounted && hasPerm != _callPermissionGranted) {
-          setState(() {
-            _callPermissionGranted = hasPerm;
-          });
-        }
-      });
     }
   }
 
@@ -1114,6 +1117,11 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                   label: const Text('Production Cloud (140.245.215.156)', style: TextStyle(fontSize: 10, color: OctalColors.primaryGold)),
                   backgroundColor: OctalColors.bgDark,
                   onPressed: () => controller.text = 'http://140.245.215.156',
+                ),
+                ActionChip(
+                  label: const Text('sslip.io Domain', style: TextStyle(fontSize: 10, color: OctalColors.textSecondary)),
+                  backgroundColor: OctalColors.bgDark,
+                  onPressed: () => controller.text = 'http://140.245.215.156.sslip.io',
                 ),
               ],
             ),

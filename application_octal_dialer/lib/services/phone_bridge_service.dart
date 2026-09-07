@@ -101,44 +101,6 @@ class PhoneBridgeService extends ChangeNotifier {
   bool get isConnected => _socket != null && _socket!.connected;
   bool get isPaired => _status == BridgeStatus.paired || _currentSessionId != null;
 
-  static bool _isRequestingPermissions = false;
-
-  /// Automatically prompt user for phone/telephony and battery optimization exemptions.
-  static Future<bool> ensureAllPermissions({bool requestBattery = true}) async {
-    if (_isRequestingPermissions) return false;
-    _isRequestingPermissions = true;
-    try {
-      if (!Platform.isAndroid) return true;
-      final bool hasCallPerm = await _nativeChannel.invokeMethod('checkCallPermission') ?? false;
-      if (!hasCallPerm) {
-        await _nativeChannel.invokeMethod('requestCallPermission');
-      }
-      if (requestBattery) {
-        final bool isBatteryIgnored = await _nativeChannel.invokeMethod('isBatteryOptimizationIgnored') ?? false;
-        if (!isBatteryIgnored) {
-          await _nativeChannel.invokeMethod('requestBatteryOptimization');
-        }
-      }
-      return true;
-    } catch (e) {
-      debugPrint('[PhoneBridge] ensureAllPermissions error: $e');
-      return false;
-    } finally {
-      _isRequestingPermissions = false;
-    }
-  }
-
-  /// Check if CALL_PHONE and READ_PHONE_STATE are granted
-  static Future<bool> checkCallPermission() async {
-    try {
-      if (!Platform.isAndroid) return true;
-      return await _nativeChannel.invokeMethod('checkCallPermission') ?? false;
-    } catch (e) {
-      debugPrint('[PhoneBridge] checkCallPermission error: $e');
-      return false;
-    }
-  }
-
   /// Initialize and authenticate the single persistent phone bridge socket
   Future<void> initializeAuthenticated() async {
     final prefs = await SharedPreferences.getInstance();
@@ -157,12 +119,11 @@ class PhoneBridgeService extends ChangeNotifier {
     }
 
     await _gatherDeviceInfo();
-    setupTelephonyChannel();
-    await ensureAllPermissions();
+    _setupTelephonyChannel();
     _connectAuthenticatedSocket();
   }
 
-  void setupTelephonyChannel() {
+  void _setupTelephonyChannel() {
     _nativeChannel.setMethodCallHandler((call) async {
       if (call.method == 'onCallStateChanged') {
         String state = 'UNKNOWN';

@@ -4,7 +4,6 @@ import 'screens/login_screen.dart';
 import 'screens/device_dashboard_screen.dart';
 import 'screens/connect_screen.dart';
 import 'config/app_config.dart';
-import 'services/phone_bridge_service.dart';
 import 'widgets/octal_logo.dart';
 
 void main() async {
@@ -31,7 +30,6 @@ class _OctalDialerAppState extends State<OctalDialerApp> {
   @override
   void initState() {
     super.initState();
-    PhoneBridgeService.ensureAllPermissions();
     _checkInitialRoute();
   }
 

@@ -3,7 +3,7 @@ import {
   PhoneCall, QrCode, Database, Upload, History,
   Bluetooth, PlaySquare, Sun, Moon, LogOut, ShieldOff, ShieldAlert, LayoutDashboard, Menu, Mail,
   Play, Filter, Layers, Eye, Settings, Download, FileInput, Users, FileText,
-  Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp, Smartphone
+  Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp
 } from 'lucide-react';
 import { useSocket } from './hooks/useSocket';
 import { DashboardOverview } from './components/DashboardOverview';
@@ -13,7 +13,7 @@ import { ScraperFilesPanel } from './components/ScraperFilesPanel';
 import { ImportPanel } from './components/ImportPanel';
 import { LeadQueue } from './components/LeadQueue';
 import { CallLog } from './components/CallLog';
-import { DispositionModal, type DispositionResult } from './components/DispositionModal';
+import { DispositionModal } from './components/DispositionModal';
 import { LoginScreen } from './components/LoginScreen';
 import { DncPanel } from './components/DncPanel';
 import { AutoEmailer } from './components/AutoEmailer';
@@ -318,8 +318,6 @@ export default function App() {
   const [dispOpen, setDispOpen] = useState(false);
   const [dispLeadId, setDispLeadId] = useState('');
   const [dispLeadName, setDispLeadName] = useState('');
-  const [dispLeadPhone, setDispLeadPhone] = useState('');
-  const [dispCampaignName, setDispCampaignName] = useState('');
   const [dispInitialOutcome, setDispInitialOutcome] = useState<string>('ANSWERED');
   const [lastDispositionSaved, setLastDispositionSaved] = useState<DispositionResult | null>(null);
 
@@ -358,17 +356,9 @@ export default function App() {
     setActiveTab('dialer'); // auto redirect to dialer
   };
 
-  const triggerDisposition = (
-    leadId: string,
-    leadName: string,
-    initialOutcome: string = 'ANSWERED',
-    leadPhone?: string,
-    campaignName?: string
-  ) => {
+  const triggerDisposition = (leadId: string, leadName: string, initialOutcome: string = 'ANSWERED') => {
     setDispLeadId(leadId);
     setDispLeadName(leadName);
-    setDispLeadPhone(leadPhone || '');
-    setDispCampaignName(campaignName || '');
     setDispInitialOutcome(initialOutcome);
     setDispOpen(true);
   };
@@ -474,15 +464,15 @@ export default function App() {
           ? 'bg-[#f8fafc] text-slate-900'
           : 'bg-black text-white'
       }`}>
-        <div className={`mx-2 sm:mx-4 md:ml-0.5 my-1.5 sm:my-2 px-3 sm:px-5 h-14 rounded-2xl border flex items-center justify-between gap-2 sm:gap-4 transition-all duration-300 ${
+        <div className={`mr-4 ml-4 md:ml-0.5 my-2 px-5 h-14 rounded-2xl border flex items-center justify-between gap-4 transition-all duration-300 ${
           isLight
             ? 'bg-white border-slate-200 shadow-md shadow-slate-200/50 text-slate-900'
             : 'bg-[#09090b] border-[#18181b] shadow-xl text-white'
         }`}>
 
           {/* Left: Brand Identity & Menu Toggle */}
-          <div className="flex items-center gap-2 sm:gap-4 select-none min-w-0">
-            <div className="flex items-center gap-2 sm:gap-3 cursor-pointer group shrink-0" onClick={() => setActiveTab('dashboard')}>
+          <div className="flex items-center gap-4 select-none">
+            <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setActiveTab('dashboard')}>
 
               {/* Desktop Menu Icon Button */}
               <button
@@ -511,7 +501,7 @@ export default function App() {
               </button>
 
               {/* Octal Dialer Premium Gradient Logo Typography */}
-              <div className="flex items-center gap-1 font-display tracking-tight text-base sm:text-xl font-black select-none">
+              <div className="flex items-center gap-1.5 font-display tracking-tight text-xl font-black select-none">
                 <span className={isLight ? 'text-slate-900' : 'text-white'}>
                   OCTAL
                 </span>
@@ -529,7 +519,7 @@ export default function App() {
           </div>
 
           {/* Right: Octal Accounts Style Action Bar */}
-          <div className="flex items-center gap-1.5 sm:gap-3 select-none shrink-0">
+          <div className="flex items-center gap-3 select-none">
 
             {/* Phone Status Pill */}
             <button
@@ -549,23 +539,8 @@ export default function App() {
               <span>{socketData.phoneConnected ? `Phone Connected` : 'Phone Offline'}</span>
             </button>
 
-            {/* Direct Download Android App Button (Desktop) */}
-            <a
-              href="/download/apk"
-              download="OctalDialer.apk"
-              title="Download Android Phone Link App (APK)"
-              className={`hidden md:flex items-center gap-1.5 px-3 py-1 rounded-full border transition-all cursor-pointer font-bold text-[11px] shadow-sm ${
-                isLight
-                  ? 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100'
-                  : 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20 hover:text-white'
-              }`}
-            >
-              <Download className="w-3.5 h-3.5 text-amber-400" />
-              <span>Download App</span>
-            </a>
-
-            {/* User Dropdown Pill (mohsin octal style) - Hidden on mobile phones to save space */}
-            <div className={`hidden sm:flex items-center gap-2 px-3.5 py-1.5 rounded-full border text-xs font-bold ${
+            {/* User Dropdown Pill (mohsin octal style) */}
+            <div className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full border text-xs font-bold ${
               isLight ? 'bg-slate-100 border-slate-300 text-slate-900 shadow-sm' : 'bg-slate-900 border-slate-800 text-slate-200'
             }`}>
               <span className="capitalize">{authUser || 'mohsin octal'}</span>
@@ -576,7 +551,7 @@ export default function App() {
             <button
               onClick={() => setActiveTab('upload')}
               title="Upload Lead Sheet"
-              className={`hidden sm:flex w-8 h-8 rounded-full items-center justify-center border transition-all cursor-pointer shadow-sm ${
+              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
                 isLight
                   ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
                   : 'bg-slate-900 border-slate-800 text-white hover:bg-slate-800'
@@ -589,7 +564,7 @@ export default function App() {
             <button
               onClick={() => setActiveTab('dialer')}
               title="Voice Search / Assistant"
-              className={`hidden sm:flex w-8 h-8 rounded-full items-center justify-center border text-xs transition-all cursor-pointer shadow-sm ${
+              className={`w-8 h-8 rounded-full flex items-center justify-center border text-xs transition-all cursor-pointer shadow-sm ${
                 isLight
                   ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
                   : 'bg-slate-900 border-slate-800 text-white hover:bg-slate-800'
@@ -601,36 +576,39 @@ export default function App() {
             {/* ⚙️ Settings / Theme Toggle Circle */}
             <button
               onClick={toggleTheme}
-              className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm shrink-0 ${
+              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
                 isLight
                   ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200 font-bold'
                   : 'bg-slate-900 border-slate-800 text-amber-400 hover:text-white'
               }`}
               title={isLight ? 'Switch to Dark Mode' : 'Switch to Bright Mode'}
             >
-              {isLight ? <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-800" /> : <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400" />}
+              {isLight ? <Moon className="w-4 h-4 text-slate-800" /> : <Sun className="w-4 h-4 text-amber-400" />}
             </button>
 
             {/* 👤 User Profile Avatar Circle with green online status dot */}
-            <div className="relative cursor-pointer shrink-0" title={`Logged in as ${authUser}`}>
-              <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full font-bold text-xs flex items-center justify-center border ${
+            <div className="relative cursor-pointer" title={`Logged in as ${authUser}`}>
+              <div className={`w-8 h-8 rounded-full font-bold text-xs flex items-center justify-center border ${
                 isLight ? 'bg-slate-100 text-slate-900 border-slate-300' : 'bg-slate-900 text-amber-400 border-slate-800'
               }`}>
                 👤
               </div>
-              <span className="absolute bottom-0 right-0 w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-[#00A651] border-2 border-white dark:border-slate-800" />
+              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00A651] border-2 border-white dark:border-slate-800" />
             </div>
 
-            {/* Direct High-Visibility Download Mobile App Button on ALL devices */}
+            {/* Download APK Link for Mobile */}
             <a
               href="/download/apk"
-              download="OctalDialer.apk"
-              title="Download Android Dialer APK (32 MB)"
-              className="px-2.5 sm:px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-95 text-slate-950 shrink-0 font-display"
+              title="Download Android Dialer APK"
+              className={`p-1.5 rounded-lg transition-all flex items-center justify-center cursor-pointer ${
+                isLight
+                  ? 'text-emerald-700 hover:text-emerald-950 hover:bg-emerald-50'
+                  : 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/30'
+              }`}
             >
-              <Download className="w-3.5 h-3.5 stroke-[2.5]" />
-              <span className="hidden sm:inline">Get App</span>
-              <span className="sm:hidden">App</span>
+              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                <path d="M17.5 12.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5m-11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5m10.3-4.72l1.9-3.29a.498.498 0 00-.18-.68.498.498 0 00-.68.18l-1.92 3.32C14.73 6.47 13.41 6 12 6s-2.73.47-3.92 1.31L6.16 3.99a.498.498 0 00-.68-.18.498.498 0 00-.18.68l1.9 3.29C4.54 9.17 3 11.9 3 15h18c0-3.1-1.54-5.83-4.2-7.22z"/>
+              </svg>
             </a>
 
             {/* Logout */}
@@ -638,7 +616,7 @@ export default function App() {
               id="btn-logout"
               onClick={handleLogout}
               title="Sign out"
-              className={`p-1.5 rounded-lg transition-all cursor-pointer shrink-0 ${
+              className={`p-1.5 rounded-lg transition-all cursor-pointer ${
                 isLight
                   ? 'text-slate-700 hover:text-red-700 hover:bg-red-50'
                   : 'text-slate-400 hover:text-red-400 hover:bg-red-950/30'
@@ -677,30 +655,6 @@ export default function App() {
         >
           {/* Main Top Actions & Navigation */}
           <div className="w-full flex-1 min-h-0 flex flex-col pt-1">
-
-            {/* 📲 Quick Mobile App Download Card (Shown when expanded or on mobile) */}
-            {isNavExpanded && (
-              <div className="mb-2.5 p-2.5 rounded-xl bg-gradient-to-r from-amber-500/15 via-amber-500/10 to-transparent border border-amber-500/30 flex items-center justify-between gap-2 shadow-sm shrink-0">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-7 h-7 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 shadow-sm">
-                    <Smartphone className="w-4 h-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-bold text-white truncate">Octal Dialer APK</div>
-                    <div className="text-[9px] text-zinc-400 font-mono">v1.2.0 • 32 MB</div>
-                  </div>
-                </div>
-                <a
-                  href="/download/apk"
-                  download="OctalDialer.apk"
-                  title="Download Android APK"
-                  className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] flex items-center gap-1 shadow-sm shrink-0 font-display"
-                >
-                  <Download className="w-3 h-3 stroke-[2.5]" />
-                  <span>APK</span>
-                </a>
-              </div>
-            )}
 
             {/* Core Fixed Workspaces */}
             <div className="space-y-1.5 w-full shrink-0 pb-2 border-b border-slate-200 dark:border-slate-800/80">
@@ -1400,6 +1354,8 @@ export default function App() {
                 isLight={isLight}
                 serverUrl={lanServerUrl}
                 authToken={authToken || ''}
+                onSelectCampaign={() => {}}
+                onNavigateTab={(tab) => setActiveTab(tab)}
               />
             ) : (
               <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
@@ -1573,8 +1529,6 @@ export default function App() {
         isOpen={dispOpen}
         leadId={dispLeadId}
         leadName={dispLeadName}
-        leadPhone={dispLeadPhone}
-        campaignName={dispCampaignName}
         initialOutcome={dispInitialOutcome}
         onClose={() => setDispOpen(false)}
         serverUrl={SERVER_URL}
