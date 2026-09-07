@@ -302,8 +302,14 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     const duration = lastCallFinished.duration || 0;
 
     // Authoritative outcome classification:
-    // (Duration MUST NOT be the authoritative proof that a human answered)
-    let initialOutcome = 'ANSWERED';
+    // Explicit outcome rule:
+    // - CANCELLED: user hung up or skipped -> CANCELLED (no disposition modal)
+    // - BUSY: line busy / network rejected -> BUSY (no disposition modal)
+    // - NO_ANSWER: timeout, unreached, dropped -> NO_ANSWER (no disposition modal)
+    // - FAILED / NETWORK_ERROR / PHONE_DISCONNECTED: call failure -> FAILED (no disposition modal)
+    // - CONNECTED / ANSWERED: confirmed conversation -> ANSWERED (open disposition modal)
+    // Explicit CONNECTED outcome from phone is authoritative regardless of duration.
+    let initialOutcome = 'NO_ANSWER';
     let requiresDisposition = false;
 
     if (rawReason === 'CANCELLED') {
@@ -315,15 +321,19 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     } else if (rawReason === 'NO_ANSWER') {
       initialOutcome = 'NO_ANSWER';
       requiresDisposition = false;
-    } else if (rawReason === 'FAILED' || rawReason === 'NETWORK_ERROR') {
+    } else if (
+      rawReason === 'FAILED' ||
+      rawReason === 'NETWORK_ERROR' ||
+      rawReason === 'PHONE_DISCONNECTED'
+    ) {
       initialOutcome = 'FAILED';
       requiresDisposition = false;
-    } else {
-      // Call channel was connected (OFFHOOK -> IDLE).
-      // Because Android GSM radio telemetry cannot differentiate between a human answering
-      // vs carrier IVR / balance error, the agent disposition is the authoritative truth.
+    } else if (rawReason === 'CONNECTED' || rawReason === 'ANSWERED') {
       initialOutcome = 'ANSWERED';
       requiresDisposition = true;
+    } else {
+      initialOutcome = 'NO_ANSWER';
+      requiresDisposition = false;
     }
 
     setLogs(prev => [

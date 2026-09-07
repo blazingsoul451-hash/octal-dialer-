@@ -36,8 +36,10 @@ class CallingScreen extends StatefulWidget {
 enum CallPhase { ringing, connected, ended }
 
 class _CallingScreenState extends State<CallingScreen> with SingleTickerProviderStateMixin {
+  // ignore: prefer_final_fields
   String _callStatus = '00:00';
   int _secondsLeft = 30;
+  // ignore: prefer_final_fields
   int _talkDuration = 0;
   Timer? _ringingTimer;
   Timer? _talkTimer;
@@ -104,15 +106,18 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   void _handleCallStateChange(String state) {
     debugPrint("CallingScreen: Native GSM state -> $state");
     if (state == 'OFFHOOK') {
+      // Physical limitation: Android enters CALL_STATE_OFFHOOK as soon as dialing starts on the GSM radio.
+      // OFFHOOK does NOT indicate a remote human answered.
+      // Remain in non-confirmed RINGING state. DO NOT emit call:picked-up.
       widget.socket.emit('call:state-changed', {
         'callId': widget.callId,
         'commandId': widget.commandId,
-        'state': 'ACTIVE',
+        'state': 'RINGING',
       });
-      if (_phase != CallPhase.connected && !_callEnded) {
-        _handleOffhook();
-      }
     } else if (state == 'IDLE') {
+      // Cellular radio returned to IDLE.
+      // If the call was explicitly confirmed as answered, emit CONNECTED.
+      // Otherwise emit NO_ANSWER (prevents false ANSWERED disposition popups).
       if (_phase == CallPhase.connected) {
         _endCall('CONNECTED');
       } else {
@@ -128,6 +133,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
           _secondsLeft--;
           if (_secondsLeft <= 0) {
             timer.cancel();
+            _nativeChannel.invokeMethod('endCall').catchError((_) {});
             _endCall('NO_ANSWER');
           }
         });
@@ -176,35 +182,6 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       debugPrint('Direct GSM call failed: $e');
       _endCall('CALL_FAILED');
     }
-  }
-
-  void _handleOffhook() {
-    _ringingTimer?.cancel();
-    if (mounted) {
-      setState(() {
-        _phase = CallPhase.connected;
-        _callStatus = '00:00';
-      });
-    }
-
-    widget.socket.emit('call:picked-up', {
-      'sessionId': widget.sessionId,
-    });
-
-    _nativeChannel.invokeMethod('updateServiceStatus', {
-      'status': 'In Call with ${widget.name.isNotEmpty ? widget.name : widget.phone}'
-    }).catchError((_) {});
-
-    _talkTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) {
-        setState(() {
-          _talkDuration++;
-          final minutes = (_talkDuration ~/ 60).toString().padLeft(2, '0');
-          final seconds = (_talkDuration % 60).toString().padLeft(2, '0');
-          _callStatus = '$minutes:$seconds';
-        });
-      }
-    });
   }
 
   void _endCall(String reason) {
