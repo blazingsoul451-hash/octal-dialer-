@@ -31,6 +31,23 @@ class MainActivity: FlutterActivity() {
     private val TAG = "OctalCall"
     private val PREFS_NAME = "OctalDialerPrefs"
     private val PREF_KEY_PREFERRED_SIM = "octal_preferred_sim"
+    private val PREF_KEY_SUB_ID = "octal_sim_sub_id"
+    private val PREF_KEY_SLOT_INDEX = "octal_sim_slot_index"
+    private val PREF_KEY_CARD_ID = "octal_sim_card_id"
+    private val PREF_KEY_HANDLE_ID = "octal_sim_handle_id"
+    private val PREF_KEY_DISPLAY_NAME = "octal_sim_display_name"
+    private val PREF_KEY_CARRIER_NAME = "octal_sim_carrier_name"
+    private val PREF_KEY_CONFIGURED = "octal_sim_configured"
+
+    data class SimDescriptor(
+        val subscriptionId: Int,
+        val simSlotIndex: Int, // 0 for SIM 1, 1 for SIM 2
+        val cardId: Int,
+        val handleId: String?,
+        val displayName: String,
+        val carrierName: String,
+        val isSystemDefault: Boolean
+    )
 
     private var pendingResult: MethodChannel.Result? = null
     private var methodChannel: MethodChannel? = null
@@ -76,11 +93,24 @@ class MainActivity: FlutterActivity() {
                     getSimInfo(result)
                 }
                 "setPreferredSim" -> {
-                    val mode = call.argument<String>("mode") ?: "SYSTEM_DEFAULT"
-                    val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                    prefs.edit().putString(PREF_KEY_PREFERRED_SIM, mode).apply()
-                    Log.d(TAG, "[OctalCall] SIM_PREFERENCE saved: $mode")
-                    result.success(true)
+                    val subId = call.argument<Int>("subscriptionId")
+                    val slot = call.argument<Int>("simSlotIndex")
+                    val mode = call.argument<String>("mode")
+                    val (descriptors, _, _) = getActiveSimsWithReconciliation()
+                    val target = descriptors.find {
+                        (subId != null && it.subscriptionId == subId) ||
+                        (slot != null && it.simSlotIndex == slot)
+                    } ?: descriptors.find {
+                        mode != null && it.simSlotIndex.toString() == mode
+                    }
+
+                    if (target != null) {
+                        saveSimPreferenceInternal(target)
+                        result.success(true)
+                    } else {
+                        Log.w(TAG, "[OctalCall] setPreferredSim: target SIM not found (subId=$subId, slot=$slot, mode=$mode)")
+                        result.success(false)
+                    }
                 }
                 "makeDirectCall" -> {
                     val phone = call.argument<String>("phone")
@@ -210,91 +240,135 @@ class MainActivity: FlutterActivity() {
     // ==========================================
     // SIM MANAGEMENT
     // ==========================================
+    private fun saveSimPreferenceInternal(sim: SimDescriptor) {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putInt(PREF_KEY_SUB_ID, sim.subscriptionId)
+            .putInt(PREF_KEY_SLOT_INDEX, sim.simSlotIndex)
+            .putInt(PREF_KEY_CARD_ID, sim.cardId)
+            .putString(PREF_KEY_HANDLE_ID, sim.handleId ?: "")
+            .putString(PREF_KEY_CARRIER_NAME, sim.carrierName)
+            .putString(PREF_KEY_DISPLAY_NAME, sim.displayName)
+            .putBoolean(PREF_KEY_CONFIGURED, true)
+            .putString(PREF_KEY_PREFERRED_SIM, sim.simSlotIndex.toString())
+            .apply()
+        Log.d(TAG, "[OctalCall] SIM_PREFERENCE saved: slot=${sim.simSlotIndex} subId=${sim.subscriptionId} carrier=${sim.carrierName}")
+    }
+
+    private fun getActiveSimsWithReconciliation(): Triple<List<SimDescriptor>, SimDescriptor?, Boolean> {
+        val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+        val telecomManager = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+
+        val hasReadPhoneState = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        val activeList: List<SubscriptionInfo> = if (hasReadPhoneState && subManager != null) {
+            subManager.activeSubscriptionInfoList ?: emptyList()
+        } else emptyList()
+
+        val callAccounts = telecomManager?.getCallCapablePhoneAccounts() ?: emptyList()
+        val defaultVoiceSubId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            SubscriptionManager.getDefaultVoiceSubscriptionId()
+        } else {
+            SubscriptionManager.INVALID_SUBSCRIPTION_ID
+        }
+        val defaultHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
+
+        val descriptors = activeList.map { info ->
+            val subId = info.subscriptionId
+            val slot = info.simSlotIndex
+            val cardId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) info.cardId else -1
+
+            val matchedHandle = callAccounts.find { handle ->
+                handle.id == subId.toString() || handle.id.contains(subId.toString())
+            } ?: if (defaultHandle != null && (defaultHandle.id == subId.toString() || defaultHandle.id.contains(subId.toString()))) defaultHandle else null
+
+            val isSysDefault = (defaultVoiceSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID && defaultVoiceSubId == subId) ||
+                    (defaultHandle != null && matchedHandle != null && defaultHandle == matchedHandle) ||
+                    (defaultHandle != null && (defaultHandle.id == subId.toString() || defaultHandle.id.contains(subId.toString())))
+
+            SimDescriptor(
+                subscriptionId = subId,
+                simSlotIndex = slot,
+                cardId = cardId,
+                handleId = matchedHandle?.id,
+                displayName = info.displayName?.toString() ?: "SIM ${slot + 1}",
+                carrierName = info.carrierName?.toString() ?: "",
+                isSystemDefault = isSysDefault
+            )
+        }
+
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val isConfigured = prefs.getBoolean(PREF_KEY_CONFIGURED, false)
+        val savedSubId = prefs.getInt(PREF_KEY_SUB_ID, -1)
+        val savedCardId = prefs.getInt(PREF_KEY_CARD_ID, -1)
+        val savedSlot = prefs.getInt(PREF_KEY_SLOT_INDEX, -1)
+        val savedHandleId = prefs.getString(PREF_KEY_HANDLE_ID, null)
+
+        var effectiveSim: SimDescriptor? = null
+
+        if (isConfigured && descriptors.isNotEmpty()) {
+            effectiveSim = descriptors.find { it.subscriptionId == savedSubId }
+                ?: (if (savedCardId != -1) descriptors.find { it.cardId == savedCardId } else null)
+                ?: (if (!savedHandleId.isNullOrEmpty()) descriptors.find { it.handleId == savedHandleId } else null)
+                ?: descriptors.find { it.simSlotIndex == savedSlot }
+        }
+
+        var needsUserSelection = false
+
+        if (effectiveSim != null) {
+            saveSimPreferenceInternal(effectiveSim)
+        } else {
+            val systemDefaultSim = descriptors.find { it.isSystemDefault }
+            if (systemDefaultSim != null) {
+                Log.d(TAG, "[OctalCall] Reconcile: adopted Android default outgoing SIM slot=${systemDefaultSim.simSlotIndex} (subId=${systemDefaultSim.subscriptionId})")
+                saveSimPreferenceInternal(systemDefaultSim)
+                effectiveSim = systemDefaultSim
+                needsUserSelection = false
+            } else if (descriptors.size == 1) {
+                val singleSim = descriptors[0]
+                Log.d(TAG, "[OctalCall] Reconcile: single SIM detected, adopting slot=${singleSim.simSlotIndex}")
+                saveSimPreferenceInternal(singleSim)
+                effectiveSim = singleSim
+                needsUserSelection = false
+            } else if (descriptors.size > 1) {
+                Log.d(TAG, "[OctalCall] Reconcile: Dual SIM with no system default -> prompt user once")
+                needsUserSelection = true
+            }
+        }
+
+        return Triple(descriptors, effectiveSim, needsUserSelection)
+    }
+
     private fun getSimInfo(result: MethodChannel.Result) {
         try {
-            val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
-            val telecomManager = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+            val (descriptors, effectiveSim, needsSelection) = getActiveSimsWithReconciliation()
 
-            val hasReadPhoneState = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
-            val activeList: List<SubscriptionInfo> = if (hasReadPhoneState && subManager != null) {
-                subManager.activeSubscriptionInfoList ?: emptyList()
-            } else emptyList()
-
-            val defaultHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
-            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val preferredSim = prefs.getString(PREF_KEY_PREFERRED_SIM, "SYSTEM_DEFAULT") ?: "SYSTEM_DEFAULT"
-
-            var defaultSlot: Int? = null
-            val sims = activeList.map { info ->
-                val slot = info.simSlotIndex
-                val subId = info.subscriptionId
-                val isDefault = defaultHandle != null && (
-                    defaultHandle.id == subId.toString() ||
-                    defaultHandle.id.contains(subId.toString())
-                )
-                if (isDefault) {
-                    defaultSlot = slot
-                }
+            val sims = descriptors.map { desc ->
                 mapOf(
-                    "slot" to slot,
-                    "subscriptionId" to subId,
-                    "displayName" to (info.displayName?.toString() ?: "SIM ${slot + 1}"),
-                    "carrierName" to (info.carrierName?.toString() ?: ""),
-                    "isDefault" to isDefault
+                    "slot" to desc.simSlotIndex,
+                    "subscriptionId" to desc.subscriptionId,
+                    "cardId" to desc.cardId,
+                    "displayName" to desc.displayName,
+                    "carrierName" to desc.carrierName,
+                    "isDefault" to desc.isSystemDefault,
+                    "isSelected" to (effectiveSim != null && effectiveSim.subscriptionId == desc.subscriptionId)
                 )
             }
 
             val response = mapOf(
                 "sims" to sims,
-                "defaultSimSlot" to defaultSlot,
-                "preferredSim" to preferredSim
+                "selectedSimSlot" to effectiveSim?.simSlotIndex,
+                "selectedSubscriptionId" to effectiveSim?.subscriptionId,
+                "selectedCarrierName" to effectiveSim?.carrierName,
+                "selectedDisplayName" to effectiveSim?.displayName,
+                "needsUserSelection" to needsSelection,
+                "activeCount" to descriptors.size
             )
-            Log.d(TAG, "[OctalCall] getSimInfo: count=${sims.size} defaultSlot=$defaultSlot preferred=$preferredSim")
+            Log.d(TAG, "[OctalCall] getSimInfo: count=${sims.size} selectedSlot=${effectiveSim?.simSlotIndex} needsSelection=$needsSelection")
             result.success(response)
         } catch (e: Exception) {
             Log.e(TAG, "[OctalCall] getSimInfo error: ${e.message}")
             result.error("SIM_INFO_ERROR", e.message, null)
         }
-    }
-
-    private fun resolvePhoneAccountHandle(): Pair<PhoneAccountHandle?, Pair<Int?, Int?>> {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val preferred = prefs.getString(PREF_KEY_PREFERRED_SIM, "SYSTEM_DEFAULT") ?: "SYSTEM_DEFAULT"
-        val telecomManager = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
-        val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
-
-        if (preferred == "SYSTEM_DEFAULT" || subManager == null || telecomManager == null) {
-            Log.d(TAG, "[OctalCall] SIM_RESOLUTION: Using Android system default outgoing account")
-            return Pair(null, Pair(null, null))
-        }
-
-        val targetSlot = preferred.toIntOrNull()
-        if (targetSlot == null) {
-            return Pair(null, Pair(null, null))
-        }
-
-        val hasReadPhoneState = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
-        if (!hasReadPhoneState) {
-            return Pair(null, Pair(null, null))
-        }
-
-        val activeSubs = subManager.activeSubscriptionInfoList ?: emptyList()
-        val targetSub = activeSubs.find { it.simSlotIndex == targetSlot }
-        if (targetSub == null) {
-            Log.w(TAG, "[OctalCall] SIM_RESOLUTION: Preferred SIM slot $targetSlot is not active, falling back to system default")
-            return Pair(null, Pair(null, null))
-        }
-
-        val callAccounts = telecomManager.getCallCapablePhoneAccounts() ?: emptyList()
-        for (handle in callAccounts) {
-            if (handle.id == targetSub.subscriptionId.toString() || handle.id.contains(targetSub.subscriptionId.toString())) {
-                Log.d(TAG, "[OctalCall] SIM_RESOLUTION: Matched PhoneAccountHandle ${handle.id} for slot $targetSlot (subId=${targetSub.subscriptionId})")
-                return Pair(handle, Pair(targetSlot, targetSub.subscriptionId))
-            }
-        }
-
-        Log.w(TAG, "[OctalCall] SIM_RESOLUTION: No exact PhoneAccountHandle match for subId=${targetSub.subscriptionId}, falling back to system default")
-        return Pair(null, Pair(targetSlot, targetSub.subscriptionId))
     }
 
     // ==========================================
@@ -316,7 +390,30 @@ class MainActivity: FlutterActivity() {
             return
         }
 
-        val (explicitHandle, slotAndSub) = resolvePhoneAccountHandle()
+        val (descriptors, effectiveSim, _) = getActiveSimsWithReconciliation()
+        val telecomManager = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+        val callAccounts = telecomManager?.getCallCapablePhoneAccounts() ?: emptyList()
+
+        var matchedHandle: PhoneAccountHandle? = null
+        var targetSlot: Int? = null
+        var targetSubId: Int? = null
+
+        if (effectiveSim != null) {
+            targetSlot = effectiveSim.simSlotIndex
+            targetSubId = effectiveSim.subscriptionId
+
+            matchedHandle = callAccounts.find {
+                it.id == targetSubId.toString() || it.id.contains(targetSubId.toString())
+            }
+            if (matchedHandle == null && effectiveSim.isSystemDefault) {
+                matchedHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
+            }
+        }
+
+        if (matchedHandle == null) {
+            matchedHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
+        }
+
         val callId = requestedCallId ?: "call_${System.currentTimeMillis()}"
 
         val session = ActiveCallSession(
@@ -324,8 +421,8 @@ class MainActivity: FlutterActivity() {
             phoneNumber = cleanPhone.filter { it.isDigit() },
             rawPhone = phone,
             startedAt = System.currentTimeMillis(),
-            simSlot = slotAndSub.first,
-            subscriptionId = slotAndSub.second
+            simSlot = targetSlot,
+            subscriptionId = targetSubId
         )
 
         synchronized(callLock) {
@@ -335,13 +432,25 @@ class MainActivity: FlutterActivity() {
         val intent = Intent(Intent.ACTION_CALL).apply {
             data = Uri.parse("tel:$cleanPhone")
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            if (explicitHandle != null) {
-                putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, explicitHandle)
+            if (matchedHandle != null) {
+                putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, matchedHandle)
+                putExtra("android.telecom.extra.PHONE_ACCOUNT_HANDLE", matchedHandle)
+            }
+            if (targetSlot != null) {
+                putExtra("com.android.phone.extra.slot", targetSlot)
+                putExtra("simSlot", targetSlot)
+                putExtra("slot", targetSlot)
+            }
+            if (targetSubId != null) {
+                putExtra("com.android.phone.extra.Subscription", targetSubId)
+                putExtra("subscription", targetSubId)
+                putExtra("subscription_id", targetSubId)
+                putExtra("phone_subscription", targetSubId)
             }
         }
 
         try {
-            Log.d(TAG, "[OctalCall] CALL_START callId=$callId phone=$cleanPhone handle=${explicitHandle?.id ?: "SYSTEM_DEFAULT"}")
+            Log.d(TAG, "[OctalCall] CALL_START callId=$callId phone=$cleanPhone slot=$targetSlot subId=$targetSubId handle=${matchedHandle?.id ?: "SYSTEM_DEFAULT"}")
             startActivity(intent)
             result.success(true)
         } catch (e: SecurityException) {

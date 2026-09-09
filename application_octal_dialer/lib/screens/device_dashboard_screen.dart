@@ -60,6 +60,13 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
       }
     });
 
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _bridge.checkAndReconcileSim();
+      if (_bridge.needsUserSimSelection && mounted) {
+        _showSimSelectionSheet();
+      }
+    });
+
     if (_bridge.socket != null) {
       _bridge.socket!.on('leads:updated', (_) {
         if (mounted) _fetchRealCampaignAndLeads(_selectedCampaignId);
@@ -904,6 +911,8 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                 const SizedBox(height: 10),
                 _buildStatusRow(Icons.sim_card_outlined, 'GSM Service', 'Ready', OctalColors.success),
                 const SizedBox(height: 10),
+                _buildSimStatusRow(),
+                const SizedBox(height: 10),
                 _buildStatusRow(Icons.battery_charging_full, 'Battery Level', '78%', OctalColors.primaryGold),
                 const SizedBox(height: 10),
                 _buildStatusRow(Icons.signal_cellular_alt, 'Signal Strength', 'Good', OctalColors.success),
@@ -1034,6 +1043,132 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
         const Spacer(),
         Text(value, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color)),
       ],
+    );
+  }
+
+  Widget _buildSimStatusRow() {
+    final slot = _bridge.selectedSimSlot;
+    final carrier = _bridge.selectedCarrierName;
+    final slotLabel = slot != null ? 'SIM ${slot + 1}' : 'Auto';
+    final fullLabel = carrier != null && carrier.isNotEmpty ? '$slotLabel ($carrier)' : slotLabel;
+    final hasMultipleSims = _bridge.sims.length > 1;
+
+    return InkWell(
+      onTap: hasMultipleSims ? _showSimSelectionSheet : null,
+      borderRadius: BorderRadius.circular(8),
+      child: Row(
+        children: [
+          const Icon(Icons.sim_card, size: 16, color: OctalColors.primaryGold),
+          const SizedBox(width: 10),
+          const Text('Calling SIM', style: TextStyle(fontSize: 12, color: OctalColors.textSecondary)),
+          const Spacer(),
+          Text(
+            fullLabel,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: OctalColors.primaryGold),
+          ),
+          if (hasMultipleSims) ...[
+            const SizedBox(width: 4),
+            const Icon(Icons.chevron_right, size: 14, color: OctalColors.primaryGold),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _showSimSelectionSheet() {
+    final sims = _bridge.sims;
+    if (sims.isEmpty) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: OctalColors.bgDark,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.sim_card, color: OctalColors.primaryGold, size: 24),
+                    SizedBox(width: 10),
+                    Text(
+                      'Select Calling SIM',
+                      style: TextStyle(
+                        fontFamily: 'Ubuntu',
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Choose which SIM Octal should use for calls. You will not have to select this every call.',
+                  style: TextStyle(fontSize: 13, color: OctalColors.textSecondary),
+                ),
+                const SizedBox(height: 20),
+                ...sims.map((sim) {
+                  final slot = (sim['slot'] as int? ?? 0);
+                  final slotNumber = slot + 1;
+                  final carrier = sim['carrierName']?.toString() ?? '';
+                  final displayName = sim['displayName']?.toString() ?? 'SIM $slotNumber';
+                  final isSelected = _bridge.selectedSimSlot == slot;
+
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: OctalColors.surfaceCard,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: isSelected ? OctalColors.primaryGold : OctalColors.border,
+                        width: isSelected ? 2 : 1,
+                      ),
+                    ),
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: isSelected ? OctalColors.primaryGold.withOpacity(0.2) : OctalColors.bgDark,
+                        child: Text(
+                          '$slotNumber',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: isSelected ? OctalColors.primaryGold : Colors.white,
+                          ),
+                        ),
+                      ),
+                      title: Text(
+                        'SIM $slotNumber${carrier.isNotEmpty ? " • $carrier" : ""}',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      subtitle: Text(
+                        displayName,
+                        style: const TextStyle(fontSize: 12, color: OctalColors.textSecondary),
+                      ),
+                      trailing: isSelected
+                          ? const Icon(Icons.check_circle, color: OctalColors.primaryGold)
+                          : null,
+                      onTap: () async {
+                        Navigator.pop(ctx);
+                        await _bridge.setPreferredSim(
+                          subscriptionId: sim['subscriptionId'] as int?,
+                          simSlotIndex: slot,
+                        );
+                        if (mounted) setState(() {});
+                      },
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 

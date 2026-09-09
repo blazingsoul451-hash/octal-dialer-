@@ -101,6 +101,58 @@ class PhoneBridgeService extends ChangeNotifier {
   bool get isConnected => _socket != null && _socket!.connected;
   bool get isPaired => _status == BridgeStatus.paired || _currentSessionId != null;
 
+  // SIM management state
+  List<Map<String, dynamic>> _sims = [];
+  int? _selectedSimSlot;
+  int? _selectedSubscriptionId;
+  String? _selectedCarrierName;
+  String? _selectedDisplayName;
+  bool _needsUserSimSelection = false;
+
+  List<Map<String, dynamic>> get sims => _sims;
+  int? get selectedSimSlot => _selectedSimSlot;
+  int? get selectedSubscriptionId => _selectedSubscriptionId;
+  String? get selectedCarrierName => _selectedCarrierName;
+  String? get selectedDisplayName => _selectedDisplayName;
+  bool get needsUserSimSelection => _needsUserSimSelection;
+
+  Future<void> checkAndReconcileSim() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final res = await _nativeChannel.invokeMethod('getSimInfo');
+      if (res is Map) {
+        final map = Map<String, dynamic>.from(res);
+        if (map['sims'] is List) {
+          _sims = (map['sims'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        }
+        _selectedSimSlot = map['selectedSimSlot'] as int?;
+        _selectedSubscriptionId = map['selectedSubscriptionId'] as int?;
+        _selectedCarrierName = map['selectedCarrierName']?.toString();
+        _selectedDisplayName = map['selectedDisplayName']?.toString();
+        _needsUserSimSelection = map['needsUserSelection'] == true;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('[PhoneBridge] checkAndReconcileSim error: $e');
+    }
+  }
+
+  Future<bool> setPreferredSim({int? subscriptionId, int? simSlotIndex}) async {
+    try {
+      final success = await _nativeChannel.invokeMethod('setPreferredSim', {
+        'subscriptionId': subscriptionId,
+        'simSlotIndex': simSlotIndex,
+      });
+      if (success == true) {
+        await checkAndReconcileSim();
+        return true;
+      }
+    } catch (e) {
+      debugPrint('[PhoneBridge] setPreferredSim error: $e');
+    }
+    return false;
+  }
+
   /// Initialize and authenticate the single persistent phone bridge socket
   Future<void> initializeAuthenticated() async {
     final prefs = await SharedPreferences.getInstance();
@@ -119,6 +171,7 @@ class PhoneBridgeService extends ChangeNotifier {
     }
 
     await _gatherDeviceInfo();
+    await checkAndReconcileSim();
     _setupTelephonyChannel();
     _connectAuthenticatedSocket();
   }
