@@ -318,6 +318,9 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     } else if (rawReason === 'BUSY') {
       initialOutcome = 'BUSY';
       requiresDisposition = false;
+    } else if (rawReason === 'REJECTED') {
+      initialOutcome = 'REJECTED';
+      requiresDisposition = false;
     } else if (rawReason === 'NO_ANSWER') {
       initialOutcome = 'NO_ANSWER';
       requiresDisposition = false;
@@ -332,7 +335,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       initialOutcome = 'ANSWERED';
       requiresDisposition = true;
     } else {
-      initialOutcome = 'NO_ANSWER';
+      initialOutcome = 'UNKNOWN';
       requiresDisposition = false;
     }
 
@@ -353,14 +356,12 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       triggerDisposition(targetLead.id, targetLead.name, initialOutcome);
       setLogs(prev => [
         ...prev,
-        isAutoDialing
-          ? `[Auto Dialer] Call ended — auto-advancing queue in ${interCallDelay}s (or submit disposition)...`
-          : `[Dialer] Call ended — awaiting agent disposition to determine outcome...`
+        `[Dialer] Call answered (${duration}s) — awaiting agent disposition to advance...`
       ]);
     }
 
-    // Auto-Dialer pipeline progression: Never freeze the queue waiting for optional manual modal submission
-    if (isAutoDialing && selectedCampId) {
+    // Auto-Dialer pipeline progression: Auto-advance queue if call was not answered
+    if (!requiresDisposition && isAutoDialing && selectedCampId) {
       fetch(`${serverUrl}/api/campaigns/${selectedCampId}/next-lead`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       })

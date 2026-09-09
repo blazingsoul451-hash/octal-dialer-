@@ -39,8 +39,6 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   // ignore: prefer_final_fields
   String _callStatus = '00:00';
   int _secondsLeft = 30;
-  // ignore: prefer_final_fields
-  int _talkDuration = 0;
   Timer? _ringingTimer;
   Timer? _talkTimer;
   CallPhase _phase = CallPhase.ringing;
@@ -80,6 +78,18 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         if (mounted) {
           _handleCallStateChange(state);
         }
+      } else if (call.method == 'onCallEnded') {
+        if (call.arguments is Map) {
+          final data = Map<String, dynamic>.from(call.arguments as Map);
+          final String reason = data['reason']?.toString() ?? 'NO_ANSWER';
+          final int duration = data['duration'] is int
+              ? data['duration'] as int
+              : int.tryParse(data['duration']?.toString() ?? '0') ?? 0;
+          final bool answered = data['answered'] == true;
+          if (mounted) {
+            _endCall(reason: reason, duration: duration, answered: answered);
+          }
+        }
       }
     });
 
@@ -100,7 +110,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _nativeChannel.invokeMethod('endCall').catchError((e) {
       debugPrint('CallingScreen: Native endCall ignored: $e');
     });
-    _endCall('CANCELLED');
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (mounted && !_callEnded) {
+        _endCall(reason: 'CANCELLED', duration: 0, answered: false);
+      }
+    });
   }
 
   void _handleCallStateChange(String state) {
@@ -115,14 +129,13 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         'state': 'RINGING',
       });
     } else if (state == 'IDLE') {
-      // Cellular radio returned to IDLE.
-      // If the call was explicitly confirmed as answered, emit CONNECTED.
-      // Otherwise emit NO_ANSWER (prevents false ANSWERED disposition popups).
-      if (_phase == CallPhase.connected) {
-        _endCall('CONNECTED');
-      } else {
-        _endCall('NO_ANSWER');
-      }
+      // Cellular radio returned to IDLE. Native layer correlates CallLog and emits onCallEnded.
+      // Bounded safety fallback in case native thread takes longer than expected:
+      Future.delayed(const Duration(milliseconds: 3500), () {
+        if (mounted && !_callEnded) {
+          _endCall(reason: 'NO_ANSWER', duration: 0, answered: false);
+        }
+      });
     }
   }
 
@@ -134,7 +147,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
           if (_secondsLeft <= 0) {
             timer.cancel();
             _nativeChannel.invokeMethod('endCall').catchError((_) {});
-            _endCall('NO_ANSWER');
+            Future.delayed(const Duration(milliseconds: 2000), () {
+              if (mounted && !_callEnded) {
+                _endCall(reason: 'NO_ANSWER', duration: 0, answered: false);
+              }
+            });
           }
         });
       }
@@ -146,7 +163,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   Future<void> _placeGsmCall() async {
     final cleanPhone = widget.phone.replaceAll(RegExp(r'[^\d+]'), '');
     if (cleanPhone.isEmpty) {
-      _endCall('INVALID_PHONE');
+      _endCall(reason: 'INVALID_PHONE');
       return;
     }
 
@@ -158,19 +175,22 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('Phone call permission (CALL_PHONE) is required to place calls.'),
+                content: Text('Phone call permissions (CALL_PHONE & READ_CALL_LOG) required.'),
                 backgroundColor: Colors.redAccent,
               ),
             );
           }
-          _endCall('CALL_PERMISSION_DENIED');
+          _endCall(reason: 'CALL_PERMISSION_DENIED');
           return;
         }
       }
 
-      final success = await _nativeChannel.invokeMethod('makeDirectCall', {'phone': cleanPhone});
+      final success = await _nativeChannel.invokeMethod('makeDirectCall', {
+        'phone': cleanPhone,
+        'callId': widget.callId,
+      });
       if (success != true) {
-        _endCall('CALL_INTENT_FAILED');
+        _endCall(reason: 'CALL_INTENT_FAILED');
       } else {
         widget.socket.emit('call:state-changed', {
           'callId': widget.callId,
@@ -180,11 +200,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       }
     } catch (e) {
       debugPrint('Direct GSM call failed: $e');
-      _endCall('CALL_FAILED');
+      _endCall(reason: 'CALL_FAILED');
     }
   }
 
-  void _endCall(String reason) {
+  void _endCall({required String reason, int duration = 0, bool answered = false}) {
     if (_callEnded) return; // Guard against duplicate terminal events
     _callEnded = true;
     _phase = CallPhase.ended;
@@ -203,7 +223,8 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       'name': widget.name,
       'commandId': widget.commandId,
       'reason': reason,
-      'duration': _talkDuration,
+      'duration': duration,
+      'answered': answered,
     });
 
     try {
@@ -444,7 +465,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                 child: ElevatedButton.icon(
                   onPressed: () {
                     _nativeChannel.invokeMethod('endCall').catchError((_) {});
-                    _endCall(isConnected ? 'CONNECTED' : 'CANCELLED');
+                    Future.delayed(const Duration(milliseconds: 1500), () {
+                      if (mounted && !_callEnded) {
+                        _endCall(reason: 'CANCELLED', duration: 0, answered: false);
+                      }
+                    });
                   },
                   icon: const Icon(Icons.call_end, color: OctalColors.bgDark, size: 22),
                   label: const Text(

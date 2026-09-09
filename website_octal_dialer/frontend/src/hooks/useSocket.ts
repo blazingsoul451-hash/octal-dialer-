@@ -63,7 +63,10 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     socket.on('connect', () => {
       setIsConnected(true);
       const prevSessionId = localStorage.getItem('octal_session_id');
-      socket.emit('laptop:register', { previousSessionId: prevSessionId || undefined });
+      socket.emit('laptop:register', {
+        previousSessionId: prevSessionId || undefined,
+        authToken: authToken || undefined
+      });
     });
 
     socket.on('disconnect', () => {

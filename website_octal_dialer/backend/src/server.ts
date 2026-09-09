@@ -61,6 +61,7 @@ import {
 
 import {
   reclaimOrCreateSession,
+  findActiveWaitingSessionForUser,
   getSessionById,
   getSessionByToken,
   pairPhone,
@@ -2211,41 +2212,43 @@ io.on('connection', (socket) => {
       io.to(`tenant_${user.tenantId}`).emit('device:status-changed', statusPayload);
     }
 
-    // Auto-pair with waiting laptop session for the same user / tenant
-    const allSessions = getSessions();
-    for (const s of allSessions.values()) {
-      if ((s.userId === user.id || s.tenantId === user.tenantId) && s.laptopSocketId && s.status === 'WAITING') {
-        await pairAuthenticatedDevice(
-          s.id,
-          device.id,
-          socket.id,
-          device.name,
-          device.btAddress || '',
-          device.osType || 'Android',
-          device.ipAddress || '127.0.0.1',
-          user.id,
-          user.tenantId
-        );
+    // Auto-pair with waiting laptop session for the same authenticated user & tenant
+    const waitingSession = findActiveWaitingSessionForUser(
+      user.id,
+      user.tenantId,
+      (laptopSocketId) => io.sockets.sockets.has(laptopSocketId),
+      device.id
+    );
 
-        socket.join(s.id);
-        socket.data.sessionId = s.id;
+    if (waitingSession) {
+      const pairedSession = await pairAuthenticatedDevice(
+        waitingSession.id,
+        device.id,
+        socket.id,
+        device.name,
+        device.btAddress || '',
+        device.osType || 'Android',
+        device.ipAddress || '127.0.0.1',
+        user.id,
+        user.tenantId
+      );
+
+      if (pairedSession) {
+        socket.join(waitingSession.id);
+        socket.data.sessionId = waitingSession.id;
 
         const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
+        // Emit bridge:paired EXACTLY ONCE to the phone socket
         socket.emit('bridge:paired', {
-          sessionId: s.id,
-          token: s.token,
-          laptopName: s.laptopName,
-          laptopBtAddress: s.laptopBtAddress,
+          sessionId: waitingSession.id,
+          token: waitingSession.token,
+          laptopName: waitingSession.laptopName,
+          laptopBtAddress: waitingSession.laptopBtAddress,
           serverUrl: effectiveUrl
         });
 
-        socket.emit('phone:paired', {
-          sessionId: s.id,
-          laptopName: s.laptopName,
-          laptopBtAddress: s.laptopBtAddress
-        });
-
-        io.to(s.id).emit('phone:connected', {
+        // Notify the laptop that phone is connected & ready
+        io.to(waitingSession.id).emit('phone:connected', {
           deviceName: device.name,
           phoneBtAddress: device.btAddress || '',
           phoneOsType: device.osType || 'Android',
@@ -2254,8 +2257,18 @@ io.on('connection', (socket) => {
           deviceId: device.id
         });
 
-        console.log(`[Auto Pair] Phone ${device.name} auto-paired to laptop session ${s.id} for user ${user.username}`);
-        break;
+        const pairedStatusPayload = {
+          deviceId: device.id,
+          status: 'PAIRED',
+          isSocketOnline: true,
+          sessionId: waitingSession.id,
+          lastSeenAt: new Date().toISOString()
+        };
+        if (user.tenantId) {
+          io.to(`tenant_${user.tenantId}`).emit('device:status-changed', pairedStatusPayload);
+        }
+
+        console.log(`[Auto Pair] Authenticated phone ${device.name} (${device.id}) automatically paired to laptop session ${waitingSession.id} for user ${user.username}`);
       }
     }
   });
@@ -2347,12 +2360,6 @@ io.on('connection', (socket) => {
       laptopName: session.laptopName,
       laptopBtAddress: session.laptopBtAddress,
       serverUrl: getPublicBaseUrl({ handshake: socket.handshake })
-    });
-
-    phoneSocket.emit('phone:paired', {
-      sessionId: session.id,
-      laptopName: session.laptopName,
-      laptopBtAddress: session.laptopBtAddress
     });
 
     console.log(`[Device Bridge Success] Laptop ${socket.id} paired with phone ${deviceId} in session ${sessionId}`);
@@ -2485,8 +2492,9 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const session = reclaimOrCreateSession(socket.id, data?.previousSessionId, tenantId);
-    if (userId && !session.userId) session.userId = userId;
+    const session = reclaimOrCreateSession(socket.id, data?.previousSessionId, tenantId, userId);
+    if (userId) session.userId = userId;
+    if (tenantId) session.tenantId = tenantId;
     socket.join(session.id);
     socket.join(`tenant_${tenantId}`);
     socket.data.sessionId = session.id;
@@ -2524,51 +2532,59 @@ io.on('connection', (socket) => {
         deviceId: session.phoneDeviceId
       });
     } else {
-      // Check if there is an active authenticated phone socket for this user/tenant
-      for (const p of authenticatedPhoneSockets.values()) {
-        if ((p.userId === userId || p.tenantId === tenantId) && session.status === 'WAITING') {
-          const phoneSocket = io.sockets.sockets.get(p.socketId);
-          if (phoneSocket) {
-            pairAuthenticatedDevice(
-              session.id,
-              p.deviceId,
-              p.socketId,
-              p.deviceName,
-              p.btAddress,
-              p.osType,
-              p.ipAddress,
-              userId || 'unknown',
-              tenantId
-            );
+      // Check if there is an active authenticated phone socket for this same user & tenant
+      if (userId && tenantId && session.status === 'WAITING') {
+        for (const p of authenticatedPhoneSockets.values()) {
+          if (p.userId === userId && p.tenantId === tenantId && session.status === 'WAITING') {
+            const phoneSocket = io.sockets.sockets.get(p.socketId);
+            if (phoneSocket) {
+              const pairedSession = await pairAuthenticatedDevice(
+                session.id,
+                p.deviceId,
+                p.socketId,
+                p.deviceName,
+                p.btAddress,
+                p.osType,
+                p.ipAddress,
+                userId,
+                tenantId
+              );
 
-            phoneSocket.join(session.id);
-            phoneSocket.data.sessionId = session.id;
+              if (pairedSession) {
+                phoneSocket.join(session.id);
+                phoneSocket.data.sessionId = session.id;
 
-            socket.emit('phone:connected', {
-              deviceName: p.deviceName,
-              phoneBtAddress: p.btAddress,
-              phoneOsType: p.osType,
-              phoneIpAddress: p.ipAddress,
-              phoneStatus: 'READY',
-              deviceId: p.deviceId
-            });
+                socket.emit('phone:connected', {
+                  deviceName: p.deviceName,
+                  phoneBtAddress: p.btAddress,
+                  phoneOsType: p.osType,
+                  phoneIpAddress: p.ipAddress,
+                  phoneStatus: 'READY',
+                  deviceId: p.deviceId
+                });
 
-            phoneSocket.emit('bridge:paired', {
-              sessionId: session.id,
-              token: session.token,
-              laptopName: session.laptopName,
-              laptopBtAddress: session.laptopBtAddress,
-              serverUrl: effectiveUrl
-            });
+                // Deliver bridge:paired EXACTLY ONCE to the phone socket
+                phoneSocket.emit('bridge:paired', {
+                  sessionId: session.id,
+                  token: session.token,
+                  laptopName: session.laptopName,
+                  laptopBtAddress: session.laptopBtAddress,
+                  serverUrl: effectiveUrl
+                });
 
-            phoneSocket.emit('phone:paired', {
-              sessionId: session.id,
-              laptopName: session.laptopName,
-              laptopBtAddress: session.laptopBtAddress
-            });
+                const pairedStatusPayload = {
+                  deviceId: p.deviceId,
+                  status: 'PAIRED',
+                  isSocketOnline: true,
+                  sessionId: session.id,
+                  lastSeenAt: new Date().toISOString()
+                };
+                io.to(`tenant_${tenantId}`).emit('device:status-changed', pairedStatusPayload);
 
-            console.log(`[Auto Pair] Laptop session ${session.id} auto-paired to phone ${p.deviceName} for user ${userId}`);
-            break;
+                console.log(`[Auto Pair] Laptop session ${session.id} automatically paired to authenticated phone ${p.deviceName} (${p.deviceId}) for user ${userId}`);
+                break;
+              }
+            }
           }
         }
       }
@@ -2601,6 +2617,16 @@ io.on('connection', (socket) => {
     phoneOsType?: string;
     phoneIpAddress?: string;
   }) => {
+    // Authenticated phones must NEVER use anonymous phone:join QR mode
+    if (socket.data.isPhone && socket.data.deviceId) {
+      console.warn(`[Socket Security] Authenticated phone ${socket.data.deviceId} attempted prohibited phone:join`);
+      socket.emit('error', {
+        code: 'AUTHENTICATED_DEVICE_QR_BLOCKED',
+        message: 'Authenticated devices cannot use QR phone:join. Use automatic account pairing.'
+      });
+      return;
+    }
+
     let tokenOrSessionId = data.token || data.sessionId || data.authToken || '';
     let targetTenantId = socket.data.tenantId;
 

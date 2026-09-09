@@ -111,9 +111,9 @@ export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId
     } else {
       s.laptopSocketId = laptopSocketId;
       if (tenantId) s.tenantId = tenantId;
-      if (userId && !s.userId) s.userId = userId;
+      if (userId) s.userId = userId;
       s.updatedAt = new Date();
-      console.log(`[Session] Laptop reclaimed session ${s.id} (tenant: ${s.tenantId || 'unassigned'})`);
+      console.log(`[Session] Laptop reclaimed session ${s.id} (tenant: ${s.tenantId || 'unassigned'}, user: ${s.userId || 'unassigned'})`);
       return s;
     }
   }
@@ -125,15 +125,66 @@ export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId
     );
     if (orphaned) {
       orphaned.laptopSocketId = laptopSocketId;
-      if (userId && !orphaned.userId) orphaned.userId = userId;
+      if (userId) orphaned.userId = userId;
       orphaned.updatedAt = new Date();
-      console.log(`[Session] Laptop reclaimed orphaned session ${orphaned.id} (tenant: ${orphaned.tenantId || 'unassigned'})`);
+      console.log(`[Session] Laptop reclaimed orphaned session ${orphaned.id} (tenant: ${orphaned.tenantId || 'unassigned'}, user: ${orphaned.userId || 'unassigned'})`);
       return orphaned;
     }
   }
 
   // 3. Create fresh session
   return createSession(laptopSocketId, tenantId, userId);
+}
+
+/**
+ * Deterministically find the active WAITING laptop session for an authenticated user.
+ * Selection rules:
+ * 1. Must match identical tenantId and userId (same account).
+ * 2. Must have an active laptop socket.
+ * 3. If isSocketAlive checker is provided, laptop socket must be confirmed alive.
+ * 4. Status must be 'WAITING' (or PAIRED with targetDeviceId if re-pairing).
+ * 5. If multiple exist, return the most recently updated session.
+ */
+export function findActiveWaitingSessionForUser(
+  userId: string,
+  tenantId: string,
+  isSocketAlive?: (socketId: string) => boolean,
+  targetDeviceId?: string
+): Session | undefined {
+  if (!userId || !tenantId) return undefined;
+
+  const candidates = Array.from(sessions.values()).filter(s => {
+    if (s.tenantId !== tenantId) return false;
+    if (s.userId !== userId) return false;
+    if (!s.laptopSocketId) return false;
+    if (isSocketAlive && !isSocketAlive(s.laptopSocketId)) return false;
+
+    // If session is targeted/bound to a DIFFERENT device, skip when targetDeviceId is specified
+    if (targetDeviceId && s.phoneDeviceId && s.phoneDeviceId !== targetDeviceId) {
+      return false;
+    }
+
+    // WAITING session is eligible
+    if (s.status === 'WAITING') return true;
+
+    // Or if it was already paired with this device (reconnect/re-pair)
+    if (s.status === 'PAIRED' && targetDeviceId && s.phoneDeviceId === targetDeviceId) return true;
+
+    return false;
+  });
+
+  if (candidates.length === 0) return undefined;
+
+  candidates.sort((a, b) => {
+    if (targetDeviceId) {
+      const aMatch = a.phoneDeviceId === targetDeviceId ? 1 : 0;
+      const bMatch = b.phoneDeviceId === targetDeviceId ? 1 : 0;
+      if (bMatch !== aMatch) return bMatch - aMatch;
+    }
+    return b.updatedAt.getTime() - a.updatedAt.getTime();
+  });
+
+  return candidates[0];
 }
 
 export async function pairPhone(
@@ -250,6 +301,10 @@ export async function pairAuthenticatedDevice(
     return null;
   }
 
+  if (!session.userId && userId) {
+    session.userId = userId;
+  }
+
   if (session.phoneSocketId && session.phoneSocketId !== phoneSocketId) {
     console.warn(`[Pairing] Replacing phone ${session.phoneSocketId} with ${phoneSocketId} in session ${session.id}`);
   }
@@ -285,7 +340,8 @@ export async function revokePhone(sessionId: string): Promise<string | null> {
   const prevDevId = session.phoneDeviceId || session.phoneBtAddress;
   if (prevDevId) {
     try {
-      await db.execute(`UPDATE devices SET status = 'ONLINE', "updatedAt" = now() WHERE id = $1`, [prevDevId]);
+      const nowIso = new Date().toISOString();
+      await db.execute(`UPDATE devices SET status = 'ONLINE', "updatedAt" = $1 WHERE id = $2`, [nowIso, prevDevId]);
     } catch {}
   }
 

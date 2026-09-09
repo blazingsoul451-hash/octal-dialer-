@@ -218,6 +218,8 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
     if (mounted) setState(() {});
   }
 
+  bool _isConnectedScreenOpen = false;
+
   void _handlePaired(Map<String, dynamic> data) {
     if (!mounted) return;
     final String sessionId = data['sessionId']?.toString() ?? '';
@@ -226,7 +228,8 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
     final String laptopBtAddress = data['laptopBtAddress']?.toString() ?? '';
     final String serverUrl = data['serverUrl']?.toString() ?? _bridge.serverUrl;
 
-    if (sessionId.isNotEmpty) {
+    if (sessionId.isNotEmpty && !_isConnectedScreenOpen) {
+      _isConnectedScreenOpen = true;
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -239,7 +242,10 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
             mode: PairingMode.authenticated,
           ),
         ),
-      );
+      ).then((_) {
+        _isConnectedScreenOpen = false;
+        if (mounted) setState(() {});
+      });
     }
   }
 
@@ -403,14 +409,23 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                       const SizedBox(height: 8),
                       Row(
                         children: [
-                          Icon(Icons.phone_android, size: 14, color: isOnline ? OctalColors.success : OctalColors.textMuted),
+                          Icon(
+                            _bridge.isPaired ? Icons.bluetooth_connected : (isOnline ? Icons.phone_android : Icons.cloud_off),
+                            size: 14,
+                            color: _bridge.isPaired ? OctalColors.success : (isOnline ? OctalColors.primaryGold : OctalColors.textMuted),
+                          ),
                           const SizedBox(width: 6),
-                          Text(
-                            isOnline ? 'Phone Connected' : 'Connecting...',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: isOnline ? OctalColors.success : OctalColors.textMuted,
+                          Expanded(
+                            child: Text(
+                              _bridge.isPaired
+                                  ? 'PAIRED / Connected to ${_bridge.currentLaptopName ?? "Laptop"}'
+                                  : (isOnline ? 'ONLINE / Ready to Connect' : 'Connecting...'),
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: _bridge.isPaired ? OctalColors.success : (isOnline ? OctalColors.primaryGold : OctalColors.textMuted),
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ],
@@ -420,22 +435,34 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                 ),
                 InkWell(
                   onTap: () async {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Connecting phone to server...')),
-                    );
-                    await AppConfig.init();
-                    await _bridge.initializeAuthenticated();
-                    _bridge.reconnect();
-                    _fetchRealCampaignAndLeads();
+                    if (_bridge.isPaired && _bridge.currentSessionId != null) {
+                      _handlePaired({
+                        'sessionId': _bridge.currentSessionId,
+                        'token': _bridge.sessionToken,
+                        'laptopName': _bridge.currentLaptopName,
+                        'laptopBtAddress': _bridge.currentLaptopBtAddress,
+                        'serverUrl': _bridge.serverUrl,
+                      });
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Reconnecting phone to server...')),
+                      );
+                      await AppConfig.init();
+                      await _bridge.initializeAuthenticated();
+                      _bridge.reconnect();
+                      _fetchRealCampaignAndLeads();
+                    }
                   },
                   borderRadius: BorderRadius.circular(12),
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     decoration: BoxDecoration(
-                      color: isOnline ? OctalColors.success.withOpacity(0.15) : OctalColors.primaryGold.withOpacity(0.2),
+                      color: _bridge.isPaired
+                          ? OctalColors.success.withOpacity(0.15)
+                          : (isOnline ? OctalColors.primaryGold.withOpacity(0.2) : OctalColors.surfaceCard),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: isOnline ? OctalColors.success.withOpacity(0.5) : OctalColors.primaryGold,
+                        color: _bridge.isPaired ? OctalColors.success.withOpacity(0.5) : OctalColors.primaryGold,
                         width: 1.5,
                       ),
                     ),
@@ -443,17 +470,17 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          isOnline ? Icons.check_circle : Icons.sync,
+                          _bridge.isPaired ? Icons.bluetooth_connected : (isOnline ? Icons.check_circle : Icons.sync),
                           size: 14,
-                          color: isOnline ? OctalColors.success : OctalColors.primaryGold,
+                          color: _bridge.isPaired ? OctalColors.success : OctalColors.primaryGold,
                         ),
                         const SizedBox(width: 5),
                         Text(
-                          isOnline ? 'Connected' : 'Connect Phone',
+                          _bridge.isPaired ? 'PAIRED' : (isOnline ? 'ONLINE' : 'Connecting'),
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w900,
-                            color: isOnline ? OctalColors.success : OctalColors.primaryGold,
+                            color: _bridge.isPaired ? OctalColors.success : OctalColors.primaryGold,
                           ),
                         ),
                       ],

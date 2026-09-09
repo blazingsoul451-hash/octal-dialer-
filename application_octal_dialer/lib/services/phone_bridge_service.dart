@@ -258,11 +258,6 @@ class PhoneBridgeService extends ChangeNotifier {
       _handlePairingData(data);
     });
 
-    _socket!.on('phone:paired', (data) {
-      debugPrint('[PhoneBridge] phone:paired received: $data');
-      _handlePairingData(data);
-    });
-
     _socket!.on('bridge:unpaired', (data) {
       final reason = data != null ? data['reason'] : 'Unpaired by dashboard';
       debugPrint('[PhoneBridge] bridge:unpaired: $reason');
@@ -326,7 +321,15 @@ class PhoneBridgeService extends ChangeNotifier {
   void _handlePairingData(dynamic data) {
     if (data == null) return;
     final map = Map<String, dynamic>.from(data);
-    _currentSessionId = map['sessionId']?.toString();
+    final newSessionId = map['sessionId']?.toString();
+
+    // Idempotency: if already paired with this identical session, do not re-emit duplicate state transition
+    if (_status == BridgeStatus.paired && _currentSessionId != null && _currentSessionId == newSessionId) {
+      debugPrint('[PhoneBridge] Already paired with session $newSessionId, skipping redundant transition');
+      return;
+    }
+
+    _currentSessionId = newSessionId;
     _currentLaptopName = map['laptopName']?.toString() ?? 'Laptop Dashboard';
     _currentLaptopBtAddress = map['laptopBtAddress']?.toString() ?? '';
     _sessionToken = map['token']?.toString();

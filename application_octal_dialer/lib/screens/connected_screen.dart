@@ -169,7 +169,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     if (widget.mode == PairingMode.authenticated) {
       _addLog('[System] Using Authenticated Phone Bridge socket...');
       _socket = PhoneBridgeService.instance.socket;
-      _isConnected = PhoneBridgeService.instance.isConnected;
+      _isConnected = PhoneBridgeService.instance.isPaired || PhoneBridgeService.instance.isConnected;
       if (_socket == null || !_socket!.connected) {
         _addLog('[Bridge] Warning: Authenticated socket not connected. Re-connecting...');
         PhoneBridgeService.instance.initializeAuthenticated();
@@ -233,7 +233,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       _addLog('[Socket] Connect error: $err');
     });
 
-    _socket!.on('phone:paired', (data) {
+    void onPairedHandler(dynamic data) {
       if (mounted) {
         setState(() {
           _isConnected = true;
@@ -242,7 +242,10 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       _addLog('[Bridge] Bluetooth Link Channel Active! Ready for calls.');
       _startHeartbeat();
       _checkOtaUpdate();
-    });
+    }
+
+    _socket!.on('bridge:paired', onPairedHandler);
+    _socket!.on('phone:paired', onPairedHandler);
 
     _socket!.on('phone:pong', (_) {
       // Heartbeat acknowledged by laptop server
