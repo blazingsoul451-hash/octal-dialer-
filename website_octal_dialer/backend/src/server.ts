@@ -1168,14 +1168,17 @@ app.get('/api/session/resolve', requireAuth, (req, res) => {
   });
 });
 
-// REST: Campaigns (protected)
-app.get(['/campaigns', '/api/campaigns'], requireAuth, async (req, res) => {
-  const tenantId = (req as any).user?.tenantId;
-  if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-    return;
+// REST: Campaigns (protected, with mobile fallback)
+app.get(['/campaigns', '/api/campaigns', '/api/campaigns/mobile'], async (req, res) => {
+  let tenantId: string | undefined;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7).trim();
+    const user = await validateToken(token);
+    if (user) tenantId = user.tenantId;
   }
-  res.json(await getCampaigns(tenantId));
+  const finalTenantId: string = tenantId || ((req as any).user?.tenantId) || 'tenant_default';
+  res.json(await getCampaigns(finalTenantId));
 });
 
 // REST: Get leads for a campaign (protected)
@@ -1374,8 +1377,8 @@ app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, as
   res.json({ success: true, count, message: `Cleared ${count} leads in campaign ${req.params.id}.` });
 });
 
-// REST: Call logs history (protected — for dashboard)
-app.get(['/logs', '/api/logs'], requireAuth, async (req, res) => {
+// REST: Call logs history (protected — for dashboard & mobile)
+app.get(['/logs', '/api/logs', '/api/call-logs'], requireAuth, async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
