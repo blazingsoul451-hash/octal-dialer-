@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.CallLog
+import android.telecom.CallAudioState
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
@@ -21,6 +22,8 @@ import android.view.WindowManager
 import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.octal.dialer.octal_dialer.telecom.OctalCallManager
+import com.octal.dialer.octal_dialer.telecom.OctalPhoneAccountManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -28,6 +31,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.octal.dialer/call"
     private val PERMISSIONS_REQUEST_CODE = 1001
+    private val DEFAULT_DIALER_REQUEST_CODE = 1002
     private val TAG = "OctalCall"
     private val PREFS_NAME = "OctalDialerPrefs"
     private val PREF_KEY_PREFERRED_SIM = "octal_preferred_sim"
@@ -50,6 +54,8 @@ class MainActivity: FlutterActivity() {
     )
 
     private var pendingResult: MethodChannel.Result? = null
+    private var pendingDefaultDialerResult: MethodChannel.Result? = null
+    private var telecomListener: OctalCallManager.CallEventListener? = null
     private var methodChannel: MethodChannel? = null
     private var telephonyManager: TelephonyManager? = null
     private var phoneStateListener: PhoneStateListener? = null
@@ -229,11 +235,119 @@ class MainActivity: FlutterActivity() {
                         result.success(true)
                     }
                 }
+                "isDefaultDialer" -> {
+                    result.success(OctalPhoneAccountManager.isDefaultDialer(this))
+                }
+                "requestDefaultDialer" -> {
+                    val intent = OctalPhoneAccountManager.createDefaultDialerIntent(this)
+                    if (intent != null) {
+                        pendingDefaultDialerResult = result
+                        startActivityForResult(intent, DEFAULT_DIALER_REQUEST_CODE)
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "getTelecomStatus" -> {
+                    val isDefault = OctalPhoneAccountManager.isDefaultDialer(this)
+                    val isEnabled = OctalPhoneAccountManager.isPhoneAccountEnabled(this)
+                    val activeCount = OctalCallManager.getActiveCallCount()
+                    val hasCall = OctalCallManager.hasActiveCall()
+                    result.success(mapOf(
+                        "isDefaultDialer" to isDefault,
+                        "isPhoneAccountEnabled" to isEnabled,
+                        "activeCallCount" to activeCount,
+                        "hasActiveCall" to hasCall
+                    ))
+                }
+                "telecomAnswer" -> {
+                    result.success(OctalCallManager.answer())
+                }
+                "telecomDisconnect" -> {
+                    result.success(OctalCallManager.disconnect())
+                }
+                "telecomSetMuted" -> {
+                    val muted = call.argument<Boolean>("muted") ?: false
+                    result.success(OctalCallManager.setMuted(muted))
+                }
+                "telecomSetSpeaker" -> {
+                    val speaker = call.argument<Boolean>("speaker") ?: false
+                    val route = if (speaker) CallAudioState.ROUTE_SPEAKER else CallAudioState.ROUTE_EARPIECE
+                    result.success(OctalCallManager.setAudioRoute(route))
+                }
+                "telecomSendDtmf" -> {
+                    val digit = call.argument<String>("digit")?.firstOrNull()
+                    if (digit != null) {
+                        val played = OctalCallManager.playDtmfTone(digit)
+                        if (played) {
+                            Thread {
+                                try {
+                                    Thread.sleep(150)
+                                    OctalCallManager.stopDtmfTone()
+                                } catch (_: Exception) {}
+                            }.start()
+                        }
+                        result.success(played)
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "getInCallDetails" -> {
+                    result.success(OctalCallManager.getActiveCallInfo())
+                }
                 else -> {
                     result.notImplemented()
                 }
             }
         }
+
+        // Register Telecom event bridge to forward hardware call lifecycle to Flutter
+        telecomListener = object : OctalCallManager.CallEventListener {
+            override fun onCallAdded(callId: String, phoneNumber: String, isIncoming: Boolean) {
+                runOnUiThread {
+                    methodChannel?.invokeMethod("onTelecomCallAdded", mapOf(
+                        "callId" to callId,
+                        "phoneNumber" to phoneNumber,
+                        "isIncoming" to isIncoming
+                    ))
+                }
+            }
+
+            override fun onCallRemoved(callId: String, phoneNumber: String, reason: String, duration: Int) {
+                runOnUiThread {
+                    methodChannel?.invokeMethod("onTelecomCallRemoved", mapOf(
+                        "callId" to callId,
+                        "phoneNumber" to phoneNumber,
+                        "reason" to reason,
+                        "duration" to duration
+                    ))
+                }
+            }
+
+            override fun onCallStateChanged(callId: String, phoneNumber: String, state: Int, stateString: String) {
+                runOnUiThread {
+                    methodChannel?.invokeMethod("onTelecomCallStateChanged", mapOf(
+                        "callId" to callId,
+                        "phoneNumber" to phoneNumber,
+                        "state" to stateString,
+                        "rawState" to state
+                    ))
+                }
+            }
+
+            override fun onAudioStateChanged(isMuted: Boolean, route: Int, routeString: String) {
+                runOnUiThread {
+                    methodChannel?.invokeMethod("onTelecomAudioStateChanged", mapOf(
+                        "isMuted" to isMuted,
+                        "route" to routeString,
+                        "rawRoute" to route
+                    ))
+                }
+            }
+        }
+        telecomListener?.let { OctalCallManager.addListener(it) }
+
+        // Attempt initial PhoneAccount registration
+        OctalPhoneAccountManager.registerPhoneAccount(this)
 
         registerTelephonyListeners()
     }
@@ -678,8 +792,19 @@ class MainActivity: FlutterActivity() {
         }
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == DEFAULT_DIALER_REQUEST_CODE) {
+            val isDefault = OctalPhoneAccountManager.isDefaultDialer(this)
+            Log.d(TAG, "[Telecom] Default dialer request completed. isDefault=$isDefault")
+            pendingDefaultDialerResult?.success(isDefault)
+            pendingDefaultDialerResult = null
+        }
+    }
+
     override fun onDestroy() {
         try {
+            telecomListener?.let { OctalCallManager.removeListener(it) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 (modernTelephonyCallback as? TelephonyCallback)?.let {
                     telephonyManager?.unregisterTelephonyCallback(it)
