@@ -31,6 +31,8 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [incomingCall, setIncomingCall] = useState<{ phone: string; deviceName: string; timestamp: string } | null>(null);
+  const [availableSims, setAvailableSims] = useState<any[]>([]);
+  const [selectedSimSlot, setSelectedSimSlot] = useState<number | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
 
@@ -100,6 +102,8 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       phoneOsType: string;
       phoneIpAddress: string;
       deviceId?: string;
+      sims?: any[];
+      selectedSimSlot?: number;
     }) => {
       setPhoneConnected(true);
       setPhoneDeviceName(data.deviceName);
@@ -107,6 +111,13 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       setPhoneOsType(data.phoneOsType);
       setPhoneIpAddress(data.phoneIpAddress);
       if (data.deviceId) setPhoneDeviceId(data.deviceId);
+      if (data.sims && Array.isArray(data.sims)) setAvailableSims(data.sims);
+      if (data.selectedSimSlot !== undefined) setSelectedSimSlot(data.selectedSimSlot);
+    });
+
+    socket.on('device:sim-info', (data: { sims?: any[]; selectedSimSlot?: number }) => {
+      if (data.sims && Array.isArray(data.sims)) setAvailableSims(data.sims);
+      if (data.selectedSimSlot !== undefined) setSelectedSimSlot(data.selectedSimSlot);
     });
 
     socket.on('phone:disconnected', () => {
@@ -116,6 +127,8 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       setPhoneOsType(null);
       setPhoneIpAddress(null);
       setPhoneDeviceId(null);
+      setAvailableSims([]);
+      setSelectedSimSlot(null);
       setCallState('IDLE');
       setGranularCallState('IDLE');
       setCallSessionData(null);
@@ -257,13 +270,24 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     name: string,
     timeout: number = 30,
     leadId?: string,
-    campaignId?: string
+    campaignId?: string,
+    options?: { forceRedial?: boolean; simSlot?: number | null }
   ) => {
     if (socketRef.current && sessionId) {
       setCallState('CALLING');
       setGranularCallState('COMMAND_SENT');
       setLastBlockedReason(null);
-      socketRef.current.emit('dial:lead', { sessionId, phone, name, timeout, leadId, campaignId });
+      const chosenSlot = options?.simSlot !== undefined ? options.simSlot : selectedSimSlot;
+      socketRef.current.emit('dial:lead', {
+        sessionId,
+        phone,
+        name,
+        timeout,
+        leadId,
+        campaignId,
+        forceRedial: options?.forceRedial,
+        simSlot: chosenSlot !== null ? chosenSlot : undefined
+      });
     }
   };
 
@@ -313,6 +337,9 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     lastBlockedReason,
     deviceError,
     latencyMs,
+    availableSims,
+    selectedSimSlot,
+    setSelectedSimSlot,
     revokePhone,
     connectDevice,
     disconnectDevice,

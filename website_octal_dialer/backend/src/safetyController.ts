@@ -19,7 +19,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { db, reserveLead, releaseLeadLock, normalizePhone } from './databaseManager';
+import { db, reserveLead, releaseLeadLock, normalizePhone, LEASE_TTL_MINUTES } from './databaseManager';
 import { getSessionById } from './sessionManager';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -129,6 +129,7 @@ export interface CallRequest {
   phone: string;
   campaignId?: string;
   tenantId?: string;
+  allowCompleted?: boolean; // when true, permits redialing completed leads
 }
 
 export async function checkCallAllowed(req: CallRequest): Promise<SafetyResult> {
@@ -198,7 +199,7 @@ export async function checkCallAllowed(req: CallRequest): Promise<SafetyResult> 
     if (lead.status === 'CALLING') {
       return { allowed: false, reason: 'LEAD_ALREADY_CALLING', message: 'This lead is already being called.' };
     }
-    if (lead.status === 'COMPLETED') {
+    if (lead.status === 'COMPLETED' && !req.allowCompleted) {
       return { allowed: false, reason: 'LEAD_COMPLETED', message: 'This lead has already been completed.' };
     }
 
@@ -219,7 +220,7 @@ export async function checkCallAllowed(req: CallRequest): Promise<SafetyResult> 
     }
 
     // ── Layer 3.6: Lead Reservation & Lock Check (Only AFTER all checks succeed) ──
-    const reserved = await reserveLead(req.leadId, req.sessionId, tenantId);
+    const reserved = await reserveLead(req.leadId, req.sessionId, tenantId, LEASE_TTL_MINUTES, req.allowCompleted);
     if (!reserved) {
       return {
         allowed: false,

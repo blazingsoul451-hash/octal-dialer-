@@ -21,6 +21,8 @@ export interface Session {
   lastHeartbeat: Date | null;
   tenantId?: string;
   userId?: string;
+  sims?: any[];
+  selectedSimSlot?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -458,6 +460,7 @@ export interface CallSession {
   state: CallState;
   commandId?: string;
   campaignId?: string;
+  simSlot?: number | null;
   createdAt: string;
   startedAt?: string;
   activeAt?: string;
@@ -481,6 +484,7 @@ export function createCallSession(params: {
   direction: 'OUTBOUND' | 'INCOMING';
   commandId?: string;
   campaignId?: string;
+  simSlot?: number | null;
 }): CallSession {
   const callId = 'call_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
   const now = new Date().toISOString();
@@ -499,6 +503,7 @@ export function createCallSession(params: {
     state: 'COMMAND_SENT',
     commandId: params.commandId,
     campaignId: params.campaignId,
+    simSlot: params.simSlot,
     createdAt: now,
     startedAt: now,
     duration: 0

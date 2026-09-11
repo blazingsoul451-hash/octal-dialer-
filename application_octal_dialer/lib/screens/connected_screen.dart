@@ -242,6 +242,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       _addLog('[Bridge] Bluetooth Link Channel Active! Ready for calls.');
       _startHeartbeat();
       _checkOtaUpdate();
+      _syncSimInfo();
     }
 
     _socket!.on('bridge:paired', onPairedHandler);
@@ -293,6 +294,9 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       final String? commandId = data['commandId'];
       final String? callId = data['callId'];
       final int timeout = data['timeout'] ?? 30;
+      final int? simSlot = data['simSlot'] is int
+          ? data['simSlot'] as int
+          : (data['simSlot'] != null ? int.tryParse(data['simSlot'].toString()) : null);
 
       _addLog('[Bridge] LAPTOP REQUEST CALL -> $name ($phone)');
 
@@ -319,6 +323,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
               leadId: leadId,
               commandId: commandId,
               callId: callId,
+              simSlot: simSlot,
               timeout: timeout,
               socket: _socket!,
               sessionId: widget.sessionId,
@@ -332,6 +337,23 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
         });
       }
     });
+  }
+
+  Future<void> _syncSimInfo() async {
+    try {
+      final res = await _nativeChannel.invokeMethod('getSimInfo');
+      if (res is Map && _socket != null) {
+        _socket!.emit('phone:sim-info', {
+          'sessionId': widget.sessionId,
+          'sims': res['sims'],
+          'selectedSimSlot': res['selectedSimSlot'],
+          'selectedCarrierName': res['selectedCarrierName'],
+        });
+        _addLog('[Bridge] Synced SIM profile to dashboard (${res['sims'] is List ? (res['sims'] as List).length : 0} SIMs)');
+      }
+    } catch (e) {
+      debugPrint('[ConnectedScreen] _syncSimInfo error: $e');
+    }
   }
 
   void _startHeartbeat() {

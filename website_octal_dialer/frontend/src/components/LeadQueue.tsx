@@ -8,7 +8,7 @@ interface LeadQueueProps {
   campaigns: Campaign[];
   serverUrl: string;
   authToken: string;
-  dialLead: (phone: string, name: string, timeout?: number, leadId?: string, campaignId?: string) => void;
+  dialLead: (phone: string, name: string, timeout?: number, leadId?: string, campaignId?: string, options?: { forceRedial?: boolean; simSlot?: number | null }) => void;
   hangupCall: () => void;
   emergencyStop: () => void;
   clearEmergencyStop: () => void;
@@ -24,6 +24,9 @@ interface LeadQueueProps {
   sessionId?: string | null;
   granularCallState?: string;
   callSessionData?: any;
+  availableSims?: any[];
+  selectedSimSlot?: number | null;
+  setSelectedSimSlot?: (slot: number | null) => void;
 }
 
 const formatTimer = (seconds: number): string => {
@@ -53,13 +56,21 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   sessionId,
   granularCallState,
   callSessionData,
+  availableSims = [],
+  selectedSimSlot = null,
+  setSelectedSimSlot,
 }) => {
   const [selectedCampId, setSelectedCampId] = useState<string>('');
   const [leads, setLeads] = useState<Lead[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
 
   const processedCallRef = useRef<string | null>(null); // Track last processed call to prevent duplicate processing
+  const currentCampaignIndexRef = useRef<number | null>(null);
+  const isAutoDialingRef = useRef<boolean>(false);
+  const leadsRef = useRef<Lead[]>([]);
+  const selectedCampIdRef = useRef<string>('');
 
   // Windowed pagination state for instant DOM rendering with 1,000+ leads
   const PAGE_SIZE = 50;
@@ -84,6 +95,18 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const [autoDialTimeout, setAutoDialTimeout] = useState(35); // seconds before auto-hangup if no answer
   const [isAutoDialing, setIsAutoDialing] = useState(false); // tracks if campaign auto-pilot is ON
 
+  useEffect(() => {
+    isAutoDialingRef.current = isAutoDialing;
+  }, [isAutoDialing]);
+
+  useEffect(() => {
+    leadsRef.current = leads;
+  }, [leads]);
+
+  useEffect(() => {
+    selectedCampIdRef.current = selectedCampId;
+  }, [selectedCampId]);
+
   // Inter-call delay configuration & cooldown countdown
   const [interCallDelay, setInterCallDelay] = useState<number>(() => {
     const saved = localStorage.getItem('octal_inter_call_delay');
@@ -95,7 +118,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
   // Helper to schedule the next dial using authoritative lead
   const scheduleNextDial = (nextLead: { id: string; name: string; phone: string; campaignId?: string }) => {
-    if (!phoneConnected || !selectedCampId) {
+    if (!phoneConnected || !selectedCampIdRef.current) {
       return;
     }
     nextLeadToDialRef.current = nextLead;
@@ -105,14 +128,10 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       countdownTimerRef.current = null;
     }
 
-    if (interCallDelay === 0) {
-      setCountdownSeconds(null);
-      setLogs(prev => [...prev, `[Auto Dialer] Instant dial next lead: ${nextLead.name} (${nextLead.phone})`]);
-      dialLead(nextLead.phone, nextLead.name, autoDialTimeout, nextLead.id, nextLead.campaignId || selectedCampId);
-      return;
-    }
+    // Minimum 2s safety cooldown to allow physical GSM radio to settle and avoid DEVICE_BUSY race conditions
+    const safeDelay = Math.max(interCallDelay, 2);
 
-    let remaining = interCallDelay;
+    let remaining = safeDelay;
     setCountdownSeconds(remaining);
     setLogs(prev => [...prev, `[Auto Dialer] Next call in ${remaining}s: ${nextLead.name} (${nextLead.phone})...`]);
 
@@ -123,7 +142,14 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         countdownTimerRef.current = null;
         setCountdownSeconds(null);
         setLogs(prev => [...prev, `[Auto Dialer] Dialing: ${nextLead.name} (${nextLead.phone})`]);
-        dialLead(nextLead.phone, nextLead.name, autoDialTimeout, nextLead.id, nextLead.campaignId || selectedCampId);
+        dialLead(
+          nextLead.phone,
+          nextLead.name,
+          autoDialTimeout,
+          nextLead.id,
+          nextLead.campaignId || selectedCampIdRef.current,
+          { forceRedial: true, simSlot: selectedSimSlot }
+        );
       } else {
         setCountdownSeconds(remaining);
       }
@@ -136,10 +162,17 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       countdownTimerRef.current = null;
     }
     setCountdownSeconds(null);
-    if (nextLeadToDialRef.current && phoneConnected && selectedCampId) {
+    if (nextLeadToDialRef.current && phoneConnected && selectedCampIdRef.current) {
       const lead = nextLeadToDialRef.current;
       setLogs(prev => [...prev, `[Auto Dialer] Instant dial triggered: ${lead.name} (${lead.phone})`]);
-      dialLead(lead.phone, lead.name, autoDialTimeout, lead.id, lead.campaignId || selectedCampId);
+      dialLead(
+        lead.phone,
+        lead.name,
+        autoDialTimeout,
+        lead.id,
+        lead.campaignId || selectedCampIdRef.current,
+        { forceRedial: true, simSlot: selectedSimSlot }
+      );
     }
   };
 
@@ -154,27 +187,52 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   };
 
   // Fetch leads of campaign
-  const fetchLeads = async (campId: string) => {
+  const fetchLeads = async (campId: string, isInitialLoad: boolean = false) => {
     try {
       const res = await fetch(`${serverUrl}/campaigns/${campId}/leads`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
       if (res.ok) {
-        const data = await res.json();
+        const data: Lead[] = await res.json();
         setLeads(data);
-        // Find the first pending lead index
-        const firstPending = data.findIndex((l: Lead) => l.status === 'PENDING');
-        setCurrentIndex(firstPending !== -1 ? firstPending : 0);
-        setLogs([`[System] Loaded ${data.length} leads. Ready to dial.`]);
+        if (isInitialLoad) {
+          const firstPending = data.findIndex((l: Lead) => l.status === 'PENDING');
+          const initialIdx = firstPending !== -1 ? firstPending : 0;
+          setCurrentIndex(initialIdx);
+          if (data[initialIdx]) setSelectedLeadId(data[initialIdx].id);
+          setLogs([`[System] Loaded ${data.length} leads. Ready to dial.`]);
+        } else {
+          if (selectedLeadId && !isAutoDialingRef.current) {
+            const foundIdx = data.findIndex(l => l.id === selectedLeadId);
+            if (foundIdx !== -1) setCurrentIndex(foundIdx);
+          }
+        }
       }
     } catch (err) {
       console.error('Error fetching leads:', err);
     }
   };
 
+  const handleResetStatuses = async () => {
+    if (!selectedCampId) return;
+    if (!window.confirm('Reset all lead statuses in this campaign back to PENDING? (This preserves lead names and phone numbers, resetting outcomes back to pending).')) return;
+    try {
+      const res = await fetch(`${serverUrl}/api/campaigns/${selectedCampId}/reset-status`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        setLogs(prev => [...prev, `[Queue] All lead statuses in campaign reset to PENDING.`]);
+        fetchLeads(selectedCampId, true);
+      }
+    } catch (err) {
+      console.error('Error resetting lead statuses:', err);
+    }
+  };
+
   const handleClearAllLeads = async () => {
     if (!selectedCampId) return;
-    if (!window.confirm('Are you sure you want to delete ALL leads in this queue?')) return;
+    if (!window.confirm('WARNING: Are you sure you want to PERMANENTLY DELETE ALL leads in this campaign? This action CANNOT be undone.')) return;
     try {
       const res = await fetch(`${serverUrl}/campaigns/${selectedCampId}/leads`, {
         method: 'DELETE',
@@ -183,6 +241,8 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       if (res.ok) {
         setLeads([]);
         setCurrentIndex(0);
+        setSelectedLeadId(null);
+        currentCampaignIndexRef.current = null;
         setLogs(prev => [...prev, `[Queue] Cleared all leads in campaign.`]);
       }
     } catch (err) {
@@ -199,6 +259,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       });
       if (res.ok) {
         setLeads(prev => prev.filter(l => l.id !== leadId));
+        if (selectedLeadId === leadId) setSelectedLeadId(null);
         setLogs(prev => [...prev, `[Queue] Lead deleted.`]);
       }
     } catch (err) {
@@ -213,7 +274,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
       if (res.ok && selectedCampId) {
-        fetchLeads(selectedCampId);
+        fetchLeads(selectedCampId, false);
       }
     } catch (err) {
       console.error('Error purging fake leads:', err);
@@ -222,13 +283,15 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
   useEffect(() => {
     if (selectedCampId) {
-      fetchLeads(selectedCampId);
+      fetchLeads(selectedCampId, true);
       if (socket) {
         socket.emit('campaign:select', { campaignId: selectedCampId, sessionId: sessionId || '' });
       }
     } else {
       setLeads([]);
       setCurrentIndex(0);
+      setSelectedLeadId(null);
+      currentCampaignIndexRef.current = null;
     }
   }, [selectedCampId]);
 
@@ -239,12 +302,12 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     }
   }, [campaigns]);
 
-  // Real-time: re-fetch leads when backend broadcasts leads:updated
+  // Real-time: re-fetch leads when backend broadcasts leads:updated without resetting index
   useEffect(() => {
     if (!socket) return;
     const handler = () => {
       if (selectedCampId) {
-        fetchLeads(selectedCampId);
+        fetchLeads(selectedCampId, false);
       }
     };
     socket.on('leads:updated', handler);
@@ -361,23 +424,21 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     }
 
     // Auto-Dialer pipeline progression: Auto-advance queue if call was not answered
-    if (!requiresDisposition && isAutoDialing && selectedCampId) {
-      fetch(`${serverUrl}/api/campaigns/${selectedCampId}/next-lead`, {
-        headers: { 'Authorization': `Bearer ${authToken}` }
-      })
-        .then(r => r.json())
-        .then(data => {
-          if (data.nextLead) {
-            const next = data.nextLead;
-            const nextIdx = leads.findIndex(l => l.id === next.id);
-            if (nextIdx !== -1) setCurrentIndex(nextIdx);
-            scheduleNextDial(next);
-          } else {
-            setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — no more pending leads.`]);
-            setIsAutoDialing(false);
-          }
-        })
-        .catch(err => console.error('Error fetching next lead:', err));
+    if (!requiresDisposition && isAutoDialingRef.current && selectedCampIdRef.current) {
+      const currIdx = currentCampaignIndexRef.current !== null ? currentCampaignIndexRef.current : currentIndex;
+      const nextIdx = currIdx + 1;
+      const currentLeads = leadsRef.current;
+      if (nextIdx < currentLeads.length) {
+        const next = currentLeads[nextIdx];
+        currentCampaignIndexRef.current = nextIdx;
+        setCurrentIndex(nextIdx);
+        setSelectedLeadId(next.id);
+        scheduleNextDial(next);
+      } else {
+        setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — reached end of lead list.`]);
+        setIsAutoDialing(false);
+        currentCampaignIndexRef.current = null;
+      }
     }
   }, [lastCallFinished]);
 
@@ -385,32 +446,20 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   useEffect(() => {
     if (!lastDispositionSaved) return;
 
-    if (lastDispositionSaved.nextLead) {
-      const next = lastDispositionSaved.nextLead;
-      const idx = leads.findIndex(l => l.id === next.id);
-      if (idx !== -1) setCurrentIndex(idx);
-
-      if (isAutoDialing && phoneConnected && selectedCampId) {
-        // If countdown timer is not already active for this lead, schedule it
-        if (nextLeadToDialRef.current?.id !== next.id || !countdownTimerRef.current) {
-          scheduleNextDial(next);
-        }
-      }
-    } else if (lastDispositionSaved.nextLeadId) {
-      const next = leads.find(l => l.id === lastDispositionSaved.nextLeadId);
-      if (next) {
-        const idx = leads.findIndex(l => l.id === next.id);
-        if (idx !== -1) setCurrentIndex(idx);
-        if (isAutoDialing && phoneConnected && selectedCampId) {
-          if (nextLeadToDialRef.current?.id !== next.id || !countdownTimerRef.current) {
-            scheduleNextDial(next);
-          }
-        }
-      }
-    } else {
-      if (isAutoDialing) {
-        setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — all pending leads processed.`]);
+    if (isAutoDialingRef.current && phoneConnected && selectedCampIdRef.current) {
+      const currIdx = currentCampaignIndexRef.current !== null ? currentCampaignIndexRef.current : currentIndex;
+      const nextIdx = currIdx + 1;
+      const currentLeads = leadsRef.current;
+      if (nextIdx < currentLeads.length) {
+        const next = currentLeads[nextIdx];
+        currentCampaignIndexRef.current = nextIdx;
+        setCurrentIndex(nextIdx);
+        setSelectedLeadId(next.id);
+        scheduleNextDial(next);
+      } else {
+        setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — reached end of lead list.`]);
         setIsAutoDialing(false);
+        currentCampaignIndexRef.current = null;
       }
     }
   }, [lastDispositionSaved]);
@@ -430,6 +479,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     if (!socket) return;
     const handler = () => {
       setIsAutoDialing(false);
+      currentCampaignIndexRef.current = null;
       if (countdownTimerRef.current) {
         clearInterval(countdownTimerRef.current);
         countdownTimerRef.current = null;
@@ -441,7 +491,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     return () => { socket.off('campaign:emergency_stopped', handler); };
   }, [socket]);
 
-  const activeLead = leads[currentIndex] || null;
+  const activeLead = (selectedLeadId ? leads.find(l => l.id === selectedLeadId) : null) || leads[currentIndex] || null;
 
   const handleDial = () => {
     if (!phoneConnected) {
@@ -458,11 +508,17 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       `[SafetyController] Checking call for: ${activeLead.name} (${activeLead.phone})...`
     ]);
 
-    // Correct arg order: dialLead(phone, name, timeout, leadId, campaignId)
-    dialLead(activeLead.phone, activeLead.name, autoDialTimeout, activeLead.id, activeLead.campaignId || selectedCampId);
+    dialLead(
+      activeLead.phone,
+      activeLead.name,
+      autoDialTimeout,
+      activeLead.id,
+      activeLead.campaignId || selectedCampId,
+      { forceRedial: true, simSlot: selectedSimSlot }
+    );
   };
 
-  // Start auto-dialing campaign — dials first pending lead and enables auto-advance
+  // Start auto-dialing campaign — dials selected lead first or first pending lead, and advances sequentially
   const handleStartAutoDial = () => {
     if (!phoneConnected) {
       setLogs(prev => [...prev, '[Error] No paired phone. Connect phone first.']);
@@ -472,16 +528,41 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       setLogs(prev => [...prev, '[Auto Dialer] Phone line busy in active call. Please wait for call to finish.']);
       return;
     }
-    const nextPendingIdx = leads.findIndex(l => l.status === 'PENDING');
-    if (nextPendingIdx === -1) {
-      setLogs(prev => [...prev, '[Auto Dialer] No pending leads to dial.']);
+    if (leads.length === 0) {
+      setLogs(prev => [...prev, '[Auto Dialer] No leads in this campaign.']);
       return;
     }
+
+    // CRITICAL BEHAVIOR RULE: MANUAL LEAD SELECTION OVERRIDES CALL HISTORY
+    let startIdx = -1;
+    if (selectedLeadId) {
+      startIdx = leads.findIndex(l => l.id === selectedLeadId);
+    }
+    if (startIdx === -1 && currentIndex >= 0 && currentIndex < leads.length) {
+      startIdx = currentIndex;
+    }
+    if (startIdx === -1) {
+      startIdx = leads.findIndex(l => l.status === 'PENDING');
+    }
+    if (startIdx === -1) {
+      startIdx = 0;
+    }
+
+    const targetLead = leads[startIdx];
+    currentCampaignIndexRef.current = startIdx;
+    setCurrentIndex(startIdx);
+    setSelectedLeadId(targetLead.id);
     setIsAutoDialing(true);
-    setCurrentIndex(nextPendingIdx);
-    const lead = leads[nextPendingIdx];
-    setLogs(prev => [...prev, `[Auto Dialer] 🚀 Campaign started! Dialing: ${lead.name} (${lead.phone})`]);
-    dialLead(lead.phone, lead.name, autoDialTimeout, lead.id, lead.campaignId || selectedCampId);
+
+    setLogs(prev => [...prev, `[Auto Dialer] 🚀 Campaign started! Dialing: ${targetLead.name} (${targetLead.phone})`]);
+    dialLead(
+      targetLead.phone,
+      targetLead.name,
+      autoDialTimeout,
+      targetLead.id,
+      targetLead.campaignId || selectedCampId,
+      { forceRedial: true, simSlot: selectedSimSlot }
+    );
   };
 
   const handleHangup = () => {
@@ -491,8 +572,10 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
   const handleNext = () => {
     if (currentIndex < leads.length - 1) {
-      setCurrentIndex(prev => prev + 1);
-      setLogs(prev => [...prev, `[Queue] Moved to next lead: ${leads[currentIndex + 1].name}`]);
+      const next = leads[currentIndex + 1];
+      setCurrentIndex(currentIndex + 1);
+      setSelectedLeadId(next.id);
+      setLogs(prev => [...prev, `[Queue] Moved to next lead: ${next.name}`]);
     } else {
       setLogs(prev => [...prev, '[Queue] Reached the end of the dialer list.']);
     }
@@ -500,8 +583,10 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
   const handlePrev = () => {
     if (currentIndex > 0) {
-      setCurrentIndex(prev => prev - 1);
-      setLogs(prev => [...prev, `[Queue] Moved to previous lead: ${leads[currentIndex - 1].name}`]);
+      const prevLead = leads[currentIndex - 1];
+      setCurrentIndex(currentIndex - 1);
+      setSelectedLeadId(prevLead.id);
+      setLogs(prev => [...prev, `[Queue] Moved to previous lead: ${prevLead.name}`]);
     }
   };
 
@@ -537,7 +622,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   // Compute REAL campaign metrics
   const totalLeadsCount = leads.length;
   const callsMadeCount = leads.filter(l => l.status !== 'PENDING').length;
-  const connectedCount = leads.filter(l => l.status === 'COMPLETED').length;
+  const connectedCount = leads.filter(l => l.outcome === 'ANSWERED' || l.outcome === 'CONNECTED').length;
   const remainingCount = leads.filter(l => l.status === 'PENDING').length;
 
   const getStatusBadge = () => {
@@ -666,6 +751,40 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               </select>
             </div>
 
+            {/* SIM Selector */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[10px] font-mono font-bold uppercase text-zinc-400">
+                SIM:
+              </span>
+              <select
+                value={selectedSimSlot !== null && selectedSimSlot !== undefined ? selectedSimSlot : 'default'}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (setSelectedSimSlot) {
+                    setSelectedSimSlot(val === 'default' ? null : Number(val));
+                  }
+                }}
+                className={`border focus:border-amber-500 rounded-xl px-2.5 py-2 text-xs font-mono font-bold focus:outline-none transition cursor-pointer ${
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-[#121215] border-[#27272a] text-white'
+                }`}
+                title="Select SIM card for outbound GSM dialing"
+              >
+                <option value="default">Default SIM</option>
+                {availableSims && availableSims.length > 0 ? (
+                  availableSims.map((sim, i) => (
+                    <option key={sim.slot ?? i} value={sim.slot ?? i}>
+                      SIM {(sim.slot ?? i) + 1} {sim.carrierName ? `(${sim.carrierName})` : ''}
+                    </option>
+                  ))
+                ) : (
+                  <>
+                    <option value={0}>SIM 1</option>
+                    <option value={1}>SIM 2</option>
+                  </>
+                )}
+              </select>
+            </div>
+
             {/* Start / Stop Campaign Button */}
             {selectedCampId && (
               isAutoDialing ? (
@@ -753,14 +872,26 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                 Clear Fake Leads
               </button>
               {leads.length > 0 && (
-                <button
-                  onClick={handleClearAllLeads}
-                  className="text-[9px] font-mono font-bold text-red-500 hover:text-red-400 hover:underline cursor-pointer flex items-center gap-0.5"
-                  title="Delete all leads in current campaign"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Clear All</span>
-                </button>
+                <>
+                  <button
+                    onClick={handleResetStatuses}
+                    disabled={callState !== 'IDLE' || isAutoDialing}
+                    className="text-[9px] font-mono font-bold text-amber-500 hover:text-amber-400 hover:underline cursor-pointer flex items-center gap-1 disabled:opacity-40"
+                    title="Reset all lead statuses back to PENDING without deleting them"
+                  >
+                    <ListRestart className="w-3.5 h-3.5" />
+                    <span>Reset Statuses</span>
+                  </button>
+                  <button
+                    onClick={handleClearAllLeads}
+                    disabled={callState !== 'IDLE' || isAutoDialing}
+                    className="text-[9px] font-mono font-bold text-red-500 hover:text-red-400 hover:underline cursor-pointer flex items-center gap-1 disabled:opacity-40"
+                    title="Permanently delete all leads in this campaign"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete All</span>
+                  </button>
+                </>
               )}
             </div>
             <span className="text-[10px] font-mono font-bold text-zinc-400">
@@ -783,20 +914,22 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
             ) : (
               paginatedLeads.map((lead, localIdx) => {
                 const idx = (currentPage - 1) * PAGE_SIZE + localIdx;
+                const isSelected = lead.id === selectedLeadId || idx === currentIndex;
                 return (
                   <div
                     key={lead.id}
                     onClick={() => {
                       if (callState === 'IDLE') {
                         setCurrentIndex(idx);
-                        setLogs(prev => [...prev, `[Queue] Selected lead: ${lead.name}`]);
+                        setSelectedLeadId(lead.id);
+                        setLogs(prev => [...prev, `[Queue] Selected lead: ${lead.name} (${lead.phone})`]);
                       }
                     }}
                     className={`w-full p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer group ${
-                      idx === currentIndex
+                      isSelected
                         ? isLight
                           ? 'bg-amber-500/20 border-amber-500 text-slate-950 font-black border-l-4'
-                          : 'bg-[#18181b] border-amber-500 text-white font-bold border-l-4 border-l-amber-500 shadow-sm'
+                          : 'bg-[#18181b] border-amber-500 text-white font-bold border-l-4 border-l-amber-500 shadow-sm ring-1 ring-amber-500/30'
                         : isLight
                           ? 'bg-slate-50 border-slate-200 hover:border-slate-300 text-slate-900 font-bold'
                           : 'bg-[#121215] border-[#27272a] hover:border-zinc-700 text-zinc-300'

@@ -14,6 +14,7 @@ class CallingScreen extends StatefulWidget {
   final int timeout;
   final io.Socket socket;
   final String sessionId;
+  final int? simSlot;
   final VoidCallback? onCallEnded;
 
   const CallingScreen({
@@ -23,6 +24,7 @@ class CallingScreen extends StatefulWidget {
     required this.leadId,
     this.commandId,
     this.callId,
+    this.simSlot,
     required this.timeout,
     required this.socket,
     required this.sessionId,
@@ -188,6 +190,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       final success = await _nativeChannel.invokeMethod('makeDirectCall', {
         'phone': cleanPhone,
         'callId': widget.callId,
+        'simSlot': widget.simSlot,
       });
       if (success != true) {
         _endCall(reason: 'CALL_INTENT_FAILED');

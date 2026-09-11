@@ -1391,6 +1391,9 @@ export default function App() {
               sessionId={socketData.sessionId}
               granularCallState={socketData.granularCallState}
               callSessionData={socketData.callSessionData}
+              availableSims={socketData.availableSims}
+              selectedSimSlot={socketData.selectedSimSlot}
+              setSelectedSimSlot={socketData.setSelectedSimSlot}
             />
           </div>
 

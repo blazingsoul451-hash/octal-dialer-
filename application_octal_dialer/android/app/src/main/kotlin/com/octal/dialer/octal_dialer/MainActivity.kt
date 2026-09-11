@@ -115,8 +115,9 @@ class MainActivity: FlutterActivity() {
                 "makeDirectCall" -> {
                     val phone = call.argument<String>("phone")
                     val callId = call.argument<String>("callId")
+                    val simSlot = call.argument<Int>("simSlot")
                     if (!phone.isNullOrEmpty()) {
-                        makeDirectCall(phone, callId, result)
+                        makeDirectCall(phone, callId, simSlot, result)
                     } else {
                         result.error("INVALID_PHONE", "Phone number is empty", null)
                     }
@@ -374,7 +375,7 @@ class MainActivity: FlutterActivity() {
     // ==========================================
     // CALL INITIATION
     // ==========================================
-    private fun makeDirectCall(phone: String, requestedCallId: String?, result: MethodChannel.Result) {
+    private fun makeDirectCall(phone: String, requestedCallId: String?, requestedSimSlot: Int?, result: MethodChannel.Result) {
         val cleanPhone = phone.replace(Regex("[^\\d+]"), "")
         if (cleanPhone.isEmpty()) {
             result.error("INVALID_PHONE", "Phone number is empty after sanitization", null)
@@ -398,14 +399,21 @@ class MainActivity: FlutterActivity() {
         var targetSlot: Int? = null
         var targetSubId: Int? = null
 
-        if (effectiveSim != null) {
-            targetSlot = effectiveSim.simSlotIndex
-            targetSubId = effectiveSim.subscriptionId
+        // Dynamic multi-SIM routing: If operator selected a specific SIM slot (0 or 1), prioritize it
+        val targetSim = if (requestedSimSlot != null && requestedSimSlot >= 0) {
+            descriptors.find { it.simSlotIndex == requestedSimSlot } ?: effectiveSim
+        } else {
+            effectiveSim
+        }
+
+        if (targetSim != null) {
+            targetSlot = targetSim.simSlotIndex
+            targetSubId = targetSim.subscriptionId
 
             matchedHandle = callAccounts.find {
                 it.id == targetSubId.toString() || it.id.contains(targetSubId.toString())
             }
-            if (matchedHandle == null && effectiveSim.isSystemDefault) {
+            if (matchedHandle == null && targetSim.isSystemDefault) {
                 matchedHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
             }
         }

@@ -285,6 +285,9 @@ class PhoneBridgeService extends ChangeNotifier {
         'ipAddress': _deviceIp,
         'platform': 'android',
         'appVersion': '1.2.0',
+        'sims': _sims,
+        'selectedSimSlot': _selectedSimSlot,
+        'selectedCarrierName': _selectedCarrierName,
       });
     });
 
@@ -297,6 +300,16 @@ class PhoneBridgeService extends ChangeNotifier {
       _setStatus(BridgeStatus.online, '● Device Online & Ready to Connect');
       _startHeartbeat();
       _checkOtaUpdate();
+
+      // Broadcast SIM capabilities to backend
+      if (_socket != null && _sims.isNotEmpty) {
+        _socket!.emit('phone:sim-info', {
+          'sessionId': _currentSessionId,
+          'sims': _sims,
+          'selectedSimSlot': _selectedSimSlot,
+          'selectedCarrierName': _selectedCarrierName,
+        });
+      }
     });
 
     _socket!.on('phone:auth-error', (data) {

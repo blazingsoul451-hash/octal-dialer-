@@ -49,6 +49,7 @@ import {
   getUserPermissions,
   updateLogDisposition,
   getNextPendingLead,
+  resetAllLeadStatusesInCampaign,
   ALL_BUSINESS_MODULES,
   registerOrUpdateDevice,
   getDevicesForUser,
@@ -1377,6 +1378,18 @@ app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, as
   res.json({ success: true, count, message: `Cleared ${count} leads in campaign ${req.params.id}.` });
 });
 
+// REST: Reset all lead statuses in a campaign to PENDING without deleting leads (protected)
+app.post(['/campaigns/:id/reset-status', '/api/campaigns/:id/reset-status'], requireAuth, async (req, res) => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const count = await resetAllLeadStatusesInCampaign(req.params.id, tenantId);
+  io.to(`tenant_${tenantId}`).emit('leads:updated');
+  res.json({ success: true, count, message: `Reset ${count} leads in campaign ${req.params.id} back to PENDING.` });
+});
+
 // REST: Call logs history (protected — for dashboard & mobile)
 app.get(['/logs', '/api/logs', '/api/call-logs'], requireAuth, async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
@@ -2136,6 +2149,8 @@ io.on('connection', (socket) => {
     ipAddress?: string;
     platform?: string;
     appVersion?: string;
+    sims?: any[];
+    selectedSimSlot?: number;
   }) => {
     if (!data || !data.token) {
       socket.emit('phone:auth-error', { error: 'Authentication token is required.' });
@@ -2250,6 +2265,9 @@ io.on('connection', (socket) => {
           serverUrl: effectiveUrl
         });
 
+        if (data.sims) waitingSession.sims = data.sims;
+        if (data.selectedSimSlot !== undefined) waitingSession.selectedSimSlot = data.selectedSimSlot;
+
         // Notify the laptop that phone is connected & ready
         io.to(waitingSession.id).emit('phone:connected', {
           deviceName: device.name,
@@ -2257,7 +2275,9 @@ io.on('connection', (socket) => {
           phoneOsType: device.osType || 'Android',
           phoneIpAddress: device.ipAddress || '127.0.0.1',
           phoneStatus: 'READY',
-          deviceId: device.id
+          deviceId: device.id,
+          sims: data.sims || waitingSession.sims,
+          selectedSimSlot: data.selectedSimSlot !== undefined ? data.selectedSimSlot : waitingSession.selectedSimSlot
         });
 
         const pairedStatusPayload = {
@@ -2730,6 +2750,32 @@ io.on('connection', (socket) => {
     console.log(`[Phone Status] Session ${sid} phoneStatus set to: ${data.phoneStatus}`);
   });
 
+  socket.on('phone:sim-info', (data: { sessionId?: string; sims?: any[]; selectedSimSlot?: number; selectedCarrierName?: string }) => {
+    const sid = socket.data.sessionId || data.sessionId;
+    if (!sid) return;
+
+    const session = getSessionById(sid);
+    if (!session) return;
+
+    if (session.phoneSocketId !== socket.id) {
+      console.warn(`[Socket Security] Rejected phone:sim-info from unauthorized socket ${socket.id} for session ${sid}`);
+      return;
+    }
+
+    session.sims = data.sims;
+    if (data.selectedSimSlot !== undefined) {
+      session.selectedSimSlot = data.selectedSimSlot;
+    }
+
+    io.to(sid).emit('device:sim-info', {
+      deviceId: session.phoneDeviceId,
+      sims: data.sims,
+      selectedSimSlot: data.selectedSimSlot,
+      selectedCarrierName: data.selectedCarrierName
+    });
+    console.log(`[SIM Info] Updated SIMs for session ${sid}: count=${data.sims?.length || 0} selectedSlot=${data.selectedSimSlot}`);
+  });
+
   socket.on('phone:ping', async () => {
     await updateHeartbeat(socket.id);
     socket.emit('phone:pong', { timestamp: new Date().toISOString() });
@@ -2779,13 +2825,15 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('dial:lead', async ({ sessionId, phone, name, leadId, campaignId, timeout }: {
+  socket.on('dial:lead', async ({ sessionId, phone, name, leadId, campaignId, timeout, forceRedial, simSlot }: {
     sessionId: string;
     phone: string;
     name: string;
     leadId?: string;
     campaignId?: string;
     timeout: number;
+    forceRedial?: boolean;
+    simSlot?: number;
   }) => {
     // 1. Validate session existence
     const session = getSessionById(sessionId);
@@ -2830,7 +2878,7 @@ io.on('connection', (socket) => {
     }
 
     // 4. Route through Safety Controller & Atomic Lead Reservation (only AFTER authorization checks!)
-    const check = await checkCallAllowed({ sessionId, phone, leadId, campaignId, tenantId });
+    const check = await checkCallAllowed({ sessionId, phone, leadId, campaignId, tenantId, allowCompleted: forceRedial === true });
 
     if (!check.allowed) {
       console.warn(`[SafetyController] BLOCKED dial to ${phone} | Reason: ${check.reason} | ${check.message}`);
@@ -2845,6 +2893,8 @@ io.on('connection', (socket) => {
 
     setSessionStatus(sessionId, 'CALLING');
 
+    const effectiveSimSlot = simSlot !== undefined ? simSlot : (session.selectedSimSlot !== undefined ? session.selectedSimSlot : undefined);
+
     // Create canonical CallSession scoped strictly to tenant, user, device, and session
     const callSession = createCallSession({
       sessionId,
@@ -2858,7 +2908,8 @@ io.on('connection', (socket) => {
       name,
       direction: 'OUTBOUND',
       commandId: check.commandId,
-      campaignId
+      campaignId,
+      simSlot: effectiveSimSlot
     });
 
     const dialPayload = {
@@ -2867,7 +2918,8 @@ io.on('connection', (socket) => {
       name,
       leadId: leadId || '',
       timeout,
-      commandId: check.commandId
+      commandId: check.commandId,
+      simSlot: effectiveSimSlot
     };
 
     try {

@@ -423,7 +423,7 @@ export function normalizePhone(raw: string): string {
 // ─── Lead Reservation & Locking API ──────────────────────────────────────────
 export const LEASE_TTL_MINUTES = 2;
 
-export async function reserveLead(leadId: string, sessionId: string, tenantId?: string, leaseMinutes: number = LEASE_TTL_MINUTES): Promise<boolean> {
+export async function reserveLead(leadId: string, sessionId: string, tenantId?: string, leaseMinutes: number = LEASE_TTL_MINUTES, allowCompleted: boolean = false): Promise<boolean> {
   const now = new Date();
   const cutoff = new Date(now.getTime() - leaseMinutes * 60 * 1000).toISOString();
   
@@ -433,9 +433,9 @@ export async function reserveLead(leadId: string, sessionId: string, tenantId?: 
       SET "lockedBy" = $1, "lockedAt" = $2, status = 'CALLING'
       WHERE id = $3 
         AND "tenantId" = $4
-        AND status != 'COMPLETED'
-        AND ("lockedBy" IS NULL OR "lockedBy" = $1 OR "lockedAt" < $5)
-    `, [sessionId, now.toISOString(), leadId, tenantId, cutoff]);
+        AND (status != 'COMPLETED' OR $5 = true)
+        AND ("lockedBy" IS NULL OR "lockedBy" = $1 OR "lockedAt" < $6)
+    `, [sessionId, now.toISOString(), leadId, tenantId, allowCompleted, cutoff]);
     return res.rowCount > 0;
   }
 
@@ -443,11 +443,21 @@ export async function reserveLead(leadId: string, sessionId: string, tenantId?: 
     UPDATE leads 
     SET "lockedBy" = $1, "lockedAt" = $2, status = 'CALLING'
     WHERE id = $3 
-      AND status != 'COMPLETED'
-      AND ("lockedBy" IS NULL OR "lockedBy" = $1 OR "lockedAt" < $4)
-  `, [sessionId, now.toISOString(), leadId, cutoff]);
+      AND (status != 'COMPLETED' OR $4 = true)
+      AND ("lockedBy" IS NULL OR "lockedBy" = $1 OR "lockedAt" < $5)
+  `, [sessionId, now.toISOString(), leadId, allowCompleted, cutoff]);
 
   return result.rowCount > 0;
+}
+
+export async function resetAllLeadStatusesInCampaign(campaignId: string, tenantId: string): Promise<number> {
+  if (!campaignId || !tenantId) return 0;
+  const result = await db.execute(`
+    UPDATE leads 
+    SET status = 'PENDING', outcome = NULL, duration = 0, "lockedBy" = NULL, "lockedAt" = NULL, "dispositionNotes" = NULL
+    WHERE "campaignId" = $1 AND "tenantId" = $2
+  `, [campaignId, tenantId]);
+  return result.rowCount;
 }
 
 export async function releaseLeadLock(leadId: string, sessionId?: string): Promise<void> {
