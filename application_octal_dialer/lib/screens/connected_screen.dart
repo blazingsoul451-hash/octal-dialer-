@@ -29,7 +29,7 @@ class ConnectedScreen extends StatefulWidget {
     required this.serverUrl,
     required this.laptopName,
     required this.laptopBtAddress,
-    this.mode = PairingMode.qr,
+    this.mode = PairingMode.authenticated,
   });
 
   @override
@@ -44,9 +44,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   Timer? _pingTimer;
 
   late String _deviceBtAddress;
-  late String _deviceIp;
   late String _deviceName;
-  late String _deviceOs;
   bool _isInCall = false;
 
   static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
@@ -59,8 +57,6 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     // Initial placeholder values before the async call completes
     _deviceName = 'Android Device';
     _deviceBtAddress = '';
-    _deviceOs = 'Android';
-    _deviceIp = '127.0.0.1';
 
     _initDeviceCredentials().then((_) {
       _initSocket();
@@ -71,10 +67,6 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pingTimer?.cancel();
-    if (widget.mode == PairingMode.qr) {
-      _socket?.disconnect();
-      _socket?.dispose();
-    }
     super.dispose();
   }
 
@@ -88,26 +80,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     }
   }
 
-  Future<String> _getLocalIpAddress() async {
-    try {
-      final interfaces = await NetworkInterface.list(
-        includeLoopback: false,
-        type: InternetAddressType.IPv4,
-      );
-      for (var interface in interfaces) {
-        for (var address in interface.addresses) {
-          if (!address.isLoopback) {
-            return address.address;
-          }
-        }
-      }
-    } catch (_) {}
-    return '127.0.0.1';
-  }
-
   Future<void> _initDeviceCredentials() async {
-    _deviceOs = Platform.isAndroid ? 'Android' : Platform.isIOS ? 'iOS' : 'Windows';
-
     String modelName = 'Android Device';
     if (Platform.isAndroid) {
       try {
@@ -132,9 +105,6 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     }
 
     _deviceName = modelName;
-
-    final ip = await _getLocalIpAddress();
-    _deviceIp = ip;
 
     final host = _deviceName;
     int hash = 0;
@@ -166,55 +136,18 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   }
 
   void _initSocket() {
-    if (widget.mode == PairingMode.authenticated) {
-      _addLog('[System] Using Authenticated Phone Bridge socket...');
+    _addLog('[System] Using Authenticated Phone Bridge socket...');
+    _socket = PhoneBridgeService.instance.socket;
+    _isConnected = PhoneBridgeService.instance.isPaired || PhoneBridgeService.instance.isConnected;
+    if (_socket == null || !_socket!.connected) {
+      _addLog('[Bridge] Warning: Authenticated socket not connected. Re-connecting...');
+      PhoneBridgeService.instance.initializeAuthenticated();
       _socket = PhoneBridgeService.instance.socket;
-      _isConnected = PhoneBridgeService.instance.isPaired || PhoneBridgeService.instance.isConnected;
-      if (_socket == null || !_socket!.connected) {
-        _addLog('[Bridge] Warning: Authenticated socket not connected. Re-connecting...');
-        PhoneBridgeService.instance.initializeAuthenticated();
-        _socket = PhoneBridgeService.instance.socket;
-      }
-      _attachSocketListeners();
-      _addLog('[Bridge] Bluetooth Link Channel Active! Ready for calls.');
-      _startHeartbeat();
-      _checkOtaUpdate();
-      return;
     }
-
-    // QR Mode: Create dedicated QR socket and emit phone:join
-    _addLog('[System] Initializing QR Socket.IO Bridge...');
-    _addLog('[System] Target: ${widget.serverUrl}');
-
-    _socket = io.io(widget.serverUrl, io.OptionBuilder()
-      .setTransports(['websocket'])
-      .setExtraHeaders({'bypass-tunnel-reminder': 'true'})
-      .enableReconnection()
-      .setReconnectionAttempts(10)
-      .setReconnectionDelay(2000)
-      .build()
-    );
-
-    _socket!.onConnect((_) {
-      _addLog('[Socket] Connected to backend ?');
-      _addLog('[Bridge] Handshaking via Bluetooth token...');
-
-      _socket!.emitWithAck('phone:join', {
-        'token': widget.token,
-        'sessionId': widget.sessionId,
-        'deviceName': _deviceName,
-        'phoneBtAddress': _deviceBtAddress,
-        'phoneOsType': _deviceOs,
-        'phoneIpAddress': _deviceIp,
-      }, ack: (response) {
-        if (response == null || (response is Map && response['success'] != true)) {
-          _addLog('[Error] Token authentication failed');
-          _disconnect();
-        }
-      });
-    });
-
     _attachSocketListeners();
+    _addLog('[Bridge] Bluetooth Link Channel Active! Ready for calls.');
+    _startHeartbeat();
+    _checkOtaUpdate();
   }
 
   void _attachSocketListeners() {
@@ -384,16 +317,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   }
 
   Future<void> _disconnect() async {
-    if (widget.mode == PairingMode.authenticated) {
-      PhoneBridgeService.instance.disconnectSession();
-      if (mounted) {
-        Navigator.pop(context);
-      }
-      return;
-    }
-
-    _socket?.disconnect();
-    _socket?.dispose();
+    PhoneBridgeService.instance.disconnectSession();
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('connection_uri');
