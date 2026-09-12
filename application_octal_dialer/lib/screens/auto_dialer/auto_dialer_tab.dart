@@ -79,7 +79,7 @@ class _AutoDialerTabState extends State<AutoDialerTab> {
       await prefs.setString('connection_uri', uri);
 
       if (mounted) {
-        Navigator.push(
+        await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => ConnectedScreen(
@@ -91,6 +91,12 @@ class _AutoDialerTabState extends State<AutoDialerTab> {
             ),
           ),
         );
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _isScanning = true;
+          });
+        }
       }
     } catch (e) {
       setState(() {

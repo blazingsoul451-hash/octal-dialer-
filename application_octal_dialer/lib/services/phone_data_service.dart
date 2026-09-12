@@ -48,24 +48,76 @@ class PhoneDataService {
     _recentCalls.removeWhere((c) => c.id == id);
   }
 
+  String? getContactNameForNumber(String number) {
+    if (number.isEmpty) return null;
+    final clean = number.replaceAll(RegExp(r'[^0-9]'), '');
+    if (clean.isEmpty) return null;
+
+    for (final c in _contacts) {
+      final contactClean = c.number.replaceAll(RegExp(r'[^0-9]'), '');
+      if (contactClean.isEmpty) continue;
+
+      if (clean == contactClean) {
+        if (c.name.isNotEmpty && c.name != c.number) return c.name;
+      }
+
+      final minLen = clean.length < contactClean.length ? clean.length : contactClean.length;
+      final matchLen = minLen >= 10 ? 10 : (minLen >= 7 ? 7 : minLen);
+      if (matchLen >= 7) {
+        final sub1 = clean.substring(clean.length - matchLen);
+        final sub2 = contactClean.substring(contactClean.length - matchLen);
+        if (sub1 == sub2) {
+          if (c.name.isNotEmpty && c.name != c.number) return c.name;
+        }
+      }
+    }
+    return null;
+  }
+
+  Future<bool> saveContact({required String name, required String number, String? email}) async {
+    try {
+      final bool? res = await _channel.invokeMethod<bool>('saveDeviceContact', {
+        'name': name,
+        'number': number,
+        'email': email,
+      });
+      if (res == true) {
+        await loadData();
+        return true;
+      }
+    } catch (e) {
+      debugPrint('[PhoneDataService] saveContact error: $e');
+    }
+    // Fallback: update in-memory contacts
+    final newContact = PhoneContact(
+      id: 'contact_${DateTime.now().millisecondsSinceEpoch}',
+      name: name,
+      number: number,
+      isFavorite: false,
+    );
+    _contacts.insert(0, newContact);
+    return true;
+  }
+
   Future<void> loadData() async {
-    await Future.wait([
-      fetchContacts(),
-      fetchCallLogs(),
-    ]);
+    await fetchContacts();
+    await fetchCallLogs();
     _initialized = true;
   }
 
   Future<List<PhoneContact>> fetchContacts() async {
     try {
       final List<dynamic>? raw = await _channel.invokeMethod<List<dynamic>>('getDeviceContacts');
-      if (raw != null && raw.isNotEmpty) {
+      if (raw != null) {
         _contacts = raw.map((item) {
           final m = Map<String, dynamic>.from(item as Map);
+          final rawName = m['name']?.toString().trim() ?? '';
+          final rawNumber = m['number']?.toString().trim() ?? '';
+          final displayName = rawName.isNotEmpty ? rawName : (rawNumber.isNotEmpty ? rawNumber : 'Unknown');
           return PhoneContact(
             id: m['id']?.toString() ?? '',
-            name: m['name']?.toString() ?? 'Unknown',
-            number: m['number']?.toString() ?? '',
+            name: displayName,
+            number: rawNumber,
             isFavorite: m['isFavorite'] == true,
           );
         }).toList();
@@ -75,17 +127,13 @@ class PhoneDataService {
       debugPrint('[PhoneDataService] fetchContacts native error: $e');
     }
 
-    // Default reference contacts if native list is empty
-    if (_contacts.isEmpty) {
-      _contacts = _generateSampleContacts();
-    }
     return _contacts;
   }
 
   Future<List<PhoneRecentCall>> fetchCallLogs() async {
     try {
       final List<dynamic>? raw = await _channel.invokeMethod<List<dynamic>>('getDeviceCallLogs');
-      if (raw != null && raw.isNotEmpty) {
+      if (raw != null) {
         _recentCalls = raw.map((item) {
           final m = Map<String, dynamic>.from(item as Map);
           final typeStr = m['type']?.toString() ?? 'INCOMING';
@@ -110,11 +158,19 @@ class PhoneDataService {
           final tsMillis = m['timestamp'] is int ? m['timestamp'] as int : DateTime.now().millisecondsSinceEpoch;
           final simId = m['simId']?.toString() ?? '';
           final simName = simId == '4' ? 'ZONG' : (simId == '3' ? 'Jazz' : 'ZONG');
+          final rawNum = m['number']?.toString().trim() ?? '';
+          final rawName = m['name']?.toString().trim() ?? '';
+
+          // Cross-reference with contacts by normalized number
+          final resolvedContactName = getContactNameForNumber(rawNum);
+          final effectiveName = (resolvedContactName != null && resolvedContactName.isNotEmpty)
+              ? resolvedContactName
+              : (rawName.isNotEmpty && rawName != 'Unknown' ? rawName : (rawNum.isNotEmpty ? rawNum : 'Unknown'));
 
           return PhoneRecentCall(
             id: m['id']?.toString() ?? '',
-            name: m['name']?.toString() ?? (m['number']?.toString() ?? 'Unknown'),
-            number: m['number']?.toString() ?? '',
+            name: effectiveName,
+            number: rawNum,
             direction: dir,
             timestamp: DateTime.fromMillisecondsSinceEpoch(tsMillis),
             durationSeconds: m['duration'] is int ? m['duration'] as int : 0,
@@ -127,10 +183,6 @@ class PhoneDataService {
       debugPrint('[PhoneDataService] fetchCallLogs native error: $e');
     }
 
-    // Default reference calls if native log is empty
-    if (_recentCalls.isEmpty) {
-      _recentCalls = _generateSampleCalls();
-    }
     return _recentCalls;
   }
 
@@ -179,163 +231,5 @@ class PhoneDataService {
       default:
         return _recentCalls;
     }
-  }
-
-  List<PhoneContact> _generateSampleContacts() {
-    return [
-      PhoneContact(
-        id: '1',
-        name: 'Abad Shah Da...',
-        number: '+92 300 1234567',
-        isFavorite: true,
-      ),
-      PhoneContact(
-        id: '2',
-        name: 'Abdul Rehman...',
-        number: '+92 301 2345678',
-        isFavorite: true,
-      ),
-      PhoneContact(
-        id: '3',
-        name: 'Drishfaq ishfaq',
-        number: '+92 302 3456789',
-        isFavorite: true,
-      ),
-      PhoneContact(
-        id: '4',
-        name: 'Fahad Ali New',
-        number: '+92 303 4567890',
-        isFavorite: true,
-      ),
-      PhoneContact(
-        id: '5',
-        name: 'Baba Faizi',
-        number: '0300 4717059',
-        isFavorite: true,
-      ),
-      PhoneContact(
-        id: '6',
-        name: 'Nadia Babar',
-        number: '032-343-21246',
-        isFavorite: false,
-      ),
-      PhoneContact(
-        id: '7',
-        name: '0327 8841614',
-        number: '0327 8841614',
-        isFavorite: false,
-      ),
-      PhoneContact(
-        id: '8',
-        name: 'Shalamar Fish',
-        number: '03224048133',
-        isFavorite: false,
-      ),
-      PhoneContact(
-        id: '9',
-        name: 'NADIA API',
-        number: '0312 9876543',
-        isFavorite: false,
-      ),
-      PhoneContact(
-        id: '10',
-        name: 'OJahanzaib Bhi',
-        number: '0314 7654321',
-        isFavorite: false,
-      ),
-      PhoneContact(
-        id: '11',
-        name: 'Talha Bhai Oa',
-        number: '0315 6543210',
-        isFavorite: false,
-      ),
-    ];
-  }
-
-  List<PhoneRecentCall> _generateSampleCalls() {
-    final now = DateTime.now();
-    return [
-      PhoneRecentCall(
-        id: 'c1',
-        name: 'NADIA API',
-        number: '0323 4321246',
-        direction: CallDirection.incoming,
-        timestamp: now.subtract(const Duration(minutes: 27)),
-        durationSeconds: 145,
-        simName: 'ZONG',
-      ),
-      PhoneRecentCall(
-        id: 'c2',
-        name: 'NADIA API',
-        number: '0323 4321246',
-        direction: CallDirection.outgoing,
-        timestamp: now.subtract(const Duration(minutes: 29)),
-        durationSeconds: 88,
-        simName: 'ZONG',
-      ),
-      PhoneRecentCall(
-        id: 'c3',
-        name: 'NADIA API',
-        number: '0323 4321246',
-        direction: CallDirection.incoming,
-        timestamp: now.subtract(const Duration(minutes: 41)),
-        durationSeconds: 210,
-        simName: 'ZONG',
-      ),
-      PhoneRecentCall(
-        id: 'c4',
-        name: 'NADIA API',
-        number: '0323 4321246',
-        direction: CallDirection.outgoing,
-        timestamp: now.subtract(const Duration(minutes: 41)),
-        durationSeconds: 65,
-        simName: 'ZONG',
-      ),
-      PhoneRecentCall(
-        id: 'c5',
-        name: '0312 9876543',
-        number: '0312 9876543',
-        direction: CallDirection.outgoing,
-        timestamp: now.subtract(const Duration(minutes: 55)),
-        durationSeconds: 0,
-        simName: 'ZONG',
-      ),
-      PhoneRecentCall(
-        id: 'c6',
-        name: 'NADIA API',
-        number: '0323 4321246',
-        direction: CallDirection.incoming,
-        timestamp: now.subtract(const Duration(hours: 2)),
-        durationSeconds: 180,
-        simName: 'ZONG',
-      ),
-      PhoneRecentCall(
-        id: 'c7',
-        name: 'Baba Faizi',
-        number: '0300 4717059',
-        direction: CallDirection.outgoing,
-        timestamp: now.subtract(const Duration(days: 1, hours: 3)),
-        durationSeconds: 88,
-        simName: 'ZONG',
-      ),
-      PhoneRecentCall(
-        id: 'c8',
-        name: 'OJahanzaib Bhi',
-        number: '0314 7654321',
-        direction: CallDirection.incoming,
-        timestamp: now.subtract(const Duration(days: 1, hours: 6)),
-        durationSeconds: 210,
-        simName: 'ZONG',
-      ),
-      PhoneRecentCall(
-        id: 'c9',
-        name: 'Talha Bhai Oa',
-        number: '0315 6543210',
-        direction: CallDirection.missed,
-        timestamp: now.subtract(const Duration(days: 1, hours: 8)),
-        durationSeconds: 0,
-        simName: 'ZONG',
-      ),
-    ];
   }
 }

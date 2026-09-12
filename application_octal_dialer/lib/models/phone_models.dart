@@ -20,12 +20,22 @@ class PhoneContact {
   }) : avatarColor = avatarColor ?? _generateAvatarColor(name);
 
   String get initials {
-    if (name.isEmpty) return '?';
-    final parts = name.trim().split(' ');
-    if (parts.length >= 2 && parts[1].isNotEmpty) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
+    if (name.isEmpty) return '#';
+    final hasLetter = RegExp(r'[a-zA-Z]').hasMatch(name);
+    if (!hasLetter) {
+      final clean = name.replaceAll(RegExp(r'[^0-9]'), '');
+      return clean.isNotEmpty ? clean.substring(0, mathMin(clean.length, 2)) : '#';
     }
-    return name.substring(0, mathMin(name.length, 2)).toUpperCase();
+    final parts = name.trim().split(RegExp(r'\s+'));
+    if (parts.length >= 2 && parts[0].isNotEmpty && parts[1].isNotEmpty) {
+      final f1 = parts[0].split('').firstWhere((c) => RegExp(r'[a-zA-Z]').hasMatch(c), orElse: () => '');
+      final f2 = parts[1].split('').firstWhere((c) => RegExp(r'[a-zA-Z]').hasMatch(c), orElse: () => '');
+      if (f1.isNotEmpty && f2.isNotEmpty) {
+        return (f1 + f2).toUpperCase();
+      }
+    }
+    final f1 = name.split('').firstWhere((c) => RegExp(r'[a-zA-Z]').hasMatch(c), orElse: () => '');
+    return f1.isNotEmpty ? f1.toUpperCase() : '#';
   }
 
   static int mathMin(int a, int b) => a < b ? a : b;

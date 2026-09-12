@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../widgets/octal_logo.dart';
 import '../../services/telecom_service.dart';
+import '../../services/phone_data_service.dart';
 import 'shared_in_call_screen.dart';
 
 class IncomingCallScreen extends StatefulWidget {
@@ -64,7 +65,28 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final displayName = widget.callerName.isNotEmpty ? widget.callerName : widget.phoneNumber;
+    final resolvedName = (widget.callerName.isNotEmpty && widget.callerName != widget.phoneNumber)
+        ? widget.callerName
+        : (PhoneDataService.instance.getContactNameForNumber(widget.phoneNumber) ?? widget.callerName);
+    final displayName = resolvedName.isNotEmpty ? resolvedName : widget.phoneNumber;
+
+    // Generate DP letter initials if displayName contains letters
+    final hasLetter = RegExp(r'[a-zA-Z]').hasMatch(displayName);
+    String initials = '';
+    if (hasLetter) {
+      final parts = displayName.trim().split(RegExp(r'\s+'));
+      if (parts.length >= 2 && parts[0].isNotEmpty && parts[1].isNotEmpty) {
+        final f1 = parts[0].split('').firstWhere((c) => RegExp(r'[a-zA-Z]').hasMatch(c), orElse: () => '');
+        final f2 = parts[1].split('').firstWhere((c) => RegExp(r'[a-zA-Z]').hasMatch(c), orElse: () => '');
+        if (f1.isNotEmpty && f2.isNotEmpty) {
+          initials = (f1 + f2).toUpperCase();
+        }
+      }
+      if (initials.isEmpty) {
+        final f1 = displayName.split('').firstWhere((c) => RegExp(r'[a-zA-Z]').hasMatch(c), orElse: () => '');
+        initials = f1.toUpperCase();
+      }
+    }
 
     return PopScope(
       canPop: false,
@@ -111,7 +133,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
               const SizedBox(height: 6),
 
               // Number
-              if (widget.callerName.isNotEmpty)
+              if (displayName != widget.phoneNumber && widget.phoneNumber.isNotEmpty)
                 Text(
                   widget.phoneNumber,
                   style: const TextStyle(fontSize: 14, color: OctalColors.textSecondary),
@@ -126,7 +148,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
 
               const Spacer(),
 
-              // Animated Pulsing Avatar
+              // Animated Pulsing Avatar DP
               Container(
                 width: 130,
                 height: 130,
@@ -142,8 +164,19 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                     ),
                   ],
                 ),
-                child: const Center(
-                  child: Icon(Icons.person, color: OctalColors.primaryGold, size: 70),
+                child: Center(
+                  child: initials.isNotEmpty
+                      ? Text(
+                          initials,
+                          style: const TextStyle(
+                            color: OctalColors.primaryGold,
+                            fontSize: 48,
+                            fontWeight: FontWeight.bold,
+                            fontFamily: 'Ubuntu',
+                            letterSpacing: 1.5,
+                          ),
+                        )
+                      : const Icon(Icons.person, color: OctalColors.primaryGold, size: 70),
                 ),
               ),
 

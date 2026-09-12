@@ -2639,34 +2639,18 @@ io.on('connection', (socket) => {
     phoneBtAddress?: string;
     phoneOsType?: string;
     phoneIpAddress?: string;
+    deviceId?: string;
   }) => {
-    // Authenticated phones must NEVER use anonymous phone:join QR mode
-    if (socket.data.isPhone && socket.data.deviceId) {
-      console.warn(`[Socket Security] Authenticated phone ${socket.data.deviceId} attempted prohibited phone:join`);
-      socket.emit('error', {
-        code: 'AUTHENTICATED_DEVICE_QR_BLOCKED',
-        message: 'Authenticated devices cannot use QR phone:join. Use automatic account pairing.'
-      });
-      return;
-    }
-
     let tokenOrSessionId = data.token || data.sessionId || data.authToken || '';
     let targetTenantId = socket.data.tenantId;
 
     if (!targetTenantId && data.authToken) {
       const u = await validateToken(data.authToken);
-      if (u) targetTenantId = u.tenantId;
-    }
-
-    const cleanKey = tokenOrSessionId ? tokenOrSessionId.trim() : '';
-    const existingSession = getSessionByToken(cleanKey) || (data.sessionId ? getSessionById(data.sessionId) : null) || getSessionById(cleanKey);
-    if (existingSession && existingSession.phoneDeviceId != null) {
-      console.warn(`[Socket Pairing Warning] Phone ${socket.id} attempted phone:join on authenticated session ${existingSession.id}`);
-      socket.emit('error', {
-        code: 'ALREADY_AUTHENTICATED_SESSION',
-        message: 'This session is paired with an authenticated device and cannot be joined via anonymous phone:join.'
-      });
-      return;
+      if (u) {
+        targetTenantId = u.tenantId;
+        socket.data.user = u;
+        socket.data.tenantId = u.tenantId;
+      }
     }
 
     let session = await pairPhone(
@@ -2703,30 +2687,52 @@ io.on('connection', (socket) => {
       return;
     }
 
+    socket.data.isPhone = true;
     socket.data.tenantId = session.tenantId;
     socket.data.sessionId = session.id;
+    if (data.deviceId || socket.data.deviceId) {
+      session.phoneDeviceId = data.deviceId || socket.data.deviceId;
+      socket.data.deviceId = session.phoneDeviceId;
+    }
 
     socket.join(session.id);
     console.log(`[Socket Success] Phone paired to session: ${session.id} | Tenant: ${session.tenantId} | Device: ${data.deviceName || 'Android'}`);
 
+    const effectiveUrl = getPublicBaseUrl({ handshake: socket.handshake });
     const pairedPayload = {
       sessionId: session.id,
+      token: session.token,
       laptopName: session.laptopName,
-      laptopBtAddress: session.laptopBtAddress
+      laptopBtAddress: session.laptopBtAddress,
+      serverUrl: effectiveUrl
     };
 
+    socket.emit('bridge:paired', pairedPayload);
     socket.emit('phone:paired', pairedPayload);
 
     const connectedPayload = {
-      deviceName: data.deviceName || 'Android Phone',
+      deviceName: data.deviceName || socket.data.deviceName || 'Android Phone',
       phoneBtAddress: data.phoneBtAddress || '',
       phoneOsType: data.phoneOsType || 'Android',
       phoneIpAddress: data.phoneIpAddress || '127.0.0.1',
-      phoneStatus: session.phoneStatus || 'READY'
+      phoneStatus: session.phoneStatus || 'READY',
+      deviceId: session.phoneDeviceId || socket.data.deviceId || null,
+      sims: session.sims,
+      selectedSimSlot: session.selectedSimSlot
     };
 
-    // Broadcast to the session room only
+    // Broadcast phone:connected to the session room so laptop UI updates immediately
     io.to(session.id).emit('phone:connected', connectedPayload);
+
+    if (session.tenantId) {
+      io.to(`tenant_${session.tenantId}`).emit('device:status-changed', {
+        deviceId: session.phoneDeviceId || socket.data.deviceId || null,
+        status: 'PAIRED',
+        isSocketOnline: true,
+        sessionId: session.id,
+        lastSeenAt: new Date().toISOString()
+      });
+    }
   });
 
   socket.on('phone:status', (data: { sessionId?: string; phoneStatus: 'READY' | 'PERMISSION_REQUIRED' }) => {

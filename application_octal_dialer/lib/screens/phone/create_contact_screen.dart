@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../widgets/octal_logo.dart';
-import '../../models/phone_models.dart';
 import '../../services/phone_data_service.dart';
 
 class CreateContactScreen extends StatefulWidget {
@@ -79,10 +78,11 @@ class _CreateContactScreenState extends State<CreateContactScreen> {
     super.dispose();
   }
 
-  void _handleSave() {
+  void _handleSave() async {
     final firstName = _firstNameController.text.trim();
     final surname = _surnameController.text.trim();
     final primaryPhone = _phoneControllers.isNotEmpty ? _phoneControllers.first.text.trim() : '';
+    final primaryEmail = _emailControllers.isNotEmpty ? _emailControllers.first.text.trim() : null;
 
     if (firstName.isEmpty && primaryPhone.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -94,27 +94,25 @@ class _CreateContactScreenState extends State<CreateContactScreen> {
     final fullName = [firstName, surname].where((s) => s.isNotEmpty).join(' ');
     final effectiveName = fullName.isNotEmpty ? fullName : primaryPhone;
 
-    final newContact = PhoneContact(
-      id: 'contact_${DateTime.now().millisecondsSinceEpoch}',
+    // Persist to native Android ContactsContract via PhoneDataService
+    await PhoneDataService.instance.saveContact(
       name: effectiveName,
       number: primaryPhone,
-      isFavorite: _isFavorite,
+      email: primaryEmail,
     );
-
-    // Save to PhoneDataService
-    PhoneDataService.instance.contacts.insert(0, newContact);
 
     HapticFeedback.mediumImpact();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Contact "$effectiveName" saved'),
-        backgroundColor: const Color(0xFF28231F),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-    );
-
-    Navigator.pop(context, newContact);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Contact "$effectiveName" saved'),
+          backgroundColor: const Color(0xFF28231F),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+      Navigator.pop(context, true);
+    }
   }
 
   // ─── ADD / REMOVE HELPERS ──────────────────────────────────────────────────

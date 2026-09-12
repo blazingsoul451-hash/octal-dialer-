@@ -7,8 +7,6 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import '../services/phone_bridge_service.dart';
-import 'connect_screen.dart';
-import 'device_dashboard_screen.dart';
 import 'calling_screen.dart';
 import 'standalone_dialer_screen.dart';
 import 'call_log_screen.dart';
@@ -43,6 +41,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   int _selectedTabIndex = 0;
   final List<String> _logs = [];
   Timer? _pingTimer;
+  Timer? _connectionTimeoutTimer;
 
   late String _deviceBtAddress;
   late String _deviceName;
@@ -67,6 +66,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _connectionTimeoutTimer?.cancel();
     _pingTimer?.cancel();
     super.dispose();
   }
@@ -137,16 +137,48 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   }
 
   void _initSocket() {
-    _addLog('[System] Using Authenticated Phone Bridge socket...');
+    _addLog('[System] Connecting to Octal Bridge socket...');
     _socket = PhoneBridgeService.instance.socket;
-    _isConnected = PhoneBridgeService.instance.isPaired || PhoneBridgeService.instance.isConnected;
     if (_socket == null || !_socket!.connected) {
-      _addLog('[Bridge] Warning: Authenticated socket not connected. Re-connecting...');
+      _addLog('[Bridge] Reconnecting phone bridge socket...');
       PhoneBridgeService.instance.initializeAuthenticated();
       _socket = PhoneBridgeService.instance.socket;
     }
+
     _attachSocketListeners();
-    _addLog('[Bridge] Bluetooth Link Channel Active! Ready for calls.');
+
+    void emitJoin() {
+      if (_socket != null && _socket!.connected) {
+        _addLog('[Bridge] Pairing with session ${widget.sessionId}...');
+        _socket!.emit('phone:join', {
+          'sessionId': widget.sessionId,
+          'token': widget.token,
+          'deviceName': _deviceName,
+          'deviceId': PhoneBridgeService.instance.deviceId,
+          'phoneOsType': Platform.isAndroid ? 'Android' : 'iOS',
+          'phoneBtAddress': _deviceBtAddress,
+          'authToken': PhoneBridgeService.instance.authToken,
+        });
+      }
+    }
+
+    if (_socket != null && _socket!.connected) {
+      emitJoin();
+    } else {
+      _socket?.onConnect((_) {
+        emitJoin();
+      });
+    }
+
+    // Guard: 8-second connection timeout -> automatically return to QR scanner if not connected
+    _connectionTimeoutTimer?.cancel();
+    _connectionTimeoutTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted && !_isConnected) {
+        _addLog('[Bridge] Connection timeout. Returning to QR scanner...');
+        _autoReturnToScanner(message: 'Connection timed out. Please scan QR code again.');
+      }
+    });
+
     _startHeartbeat();
     _checkOtaUpdate();
   }
@@ -161,6 +193,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
         });
       }
       _addLog('[Socket] Disconnected from server');
+      _autoReturnToScanner(message: 'Disconnected from laptop. Scan QR to reconnect.');
     });
 
     _socket!.onConnectError((err) {
@@ -168,12 +201,13 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     });
 
     void onPairedHandler(dynamic data) {
+      _connectionTimeoutTimer?.cancel();
       if (mounted) {
         setState(() {
           _isConnected = true;
         });
       }
-      _addLog('[Bridge] Bluetooth Link Channel Active! Ready for calls.');
+      _addLog('[Bridge] Octal Bridge Channel Active! Ready for calls.');
       _startHeartbeat();
       _checkOtaUpdate();
       _syncSimInfo();
@@ -208,17 +242,17 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
 
     _socket!.on('phone:kicked', (data) {
       _addLog('[Bridge] Revoked by host: ${data['reason'] ?? 'None'}');
-      _disconnect();
+      _autoReturnToScanner(message: 'Device revoked by laptop.');
     });
 
     _socket!.on('bridge:unpaired', (_) {
       _addLog('[Bridge] Unpaired by laptop dashboard.');
-      _disconnect();
+      _autoReturnToScanner(message: 'Unpaired by laptop. Scan QR to reconnect.');
     });
 
     _socket!.on('session:ended', (_) {
       _addLog('[Bridge] Session ended by laptop.');
-      _disconnect();
+      _autoReturnToScanner(message: 'Session ended. Scan QR to reconnect.');
     });
 
     _socket!.on('phone:dial', (data) {
@@ -317,26 +351,40 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     );
   }
 
+  void _autoReturnToScanner({String? message}) {
+    if (!mounted) return;
+    _connectionTimeoutTimer?.cancel();
+    _pingTimer?.cancel();
+
+    if (message != null && message.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message, style: const TextStyle(color: Colors.white, fontFamily: 'Ubuntu')),
+          backgroundColor: const Color(0xFF1E293B),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    } else {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const MainShellScreen(initialTabIndex: 2)),
+        (route) => false,
+      );
+    }
+  }
+
   Future<void> _disconnect() async {
+    _connectionTimeoutTimer?.cancel();
+    _pingTimer?.cancel();
     PhoneBridgeService.instance.disconnectSession();
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('connection_uri');
-    final authToken = prefs.getString('auth_token');
 
-    if (mounted) {
-      if (authToken != null && authToken.isNotEmpty) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const DeviceDashboardScreen()),
-        );
-      } else {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ConnectScreen()),
-        );
-      }
-    }
+    _autoReturnToScanner(message: 'Disconnected from laptop.');
   }
 
   // Lifted state for mobile queue
@@ -355,20 +403,13 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-          tooltip: 'Back to Phone',
-          onPressed: () {
-            Navigator.of(context).pushAndRemoveUntil(
-              MaterialPageRoute(builder: (_) => const MainShellScreen(initialTabIndex: 0)),
-              (route) => false,
-            );
-          },
+          tooltip: 'Back to Scanner',
+          onPressed: _disconnect,
         ),
         title: Text(
           _selectedTabIndex == 0
               ? 'Campaign Dashboard'
-              : (_selectedTabIndex == 1
-                  ? 'Auto Dialer'
-                  : (_selectedTabIndex == 2 ? 'Call Log' : 'Bluetooth Link')),
+              : (_selectedTabIndex == 1 ? 'Auto Dialer' : 'Call Log'),
           style: const TextStyle(fontFamily: 'Ubuntu', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
         ),
         actions: [
@@ -404,129 +445,13 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
             socket: _socket,
             serverUrl: widget.serverUrl,
           ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0F172A),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: const Color(0xFF1E293B)),
-                    ),
-                    child: Column(
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Row(
-                              children: [
-                                Icon(
-                                  _isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-                                  color: _isConnected ? const Color(0xFFFFB800) : Colors.redAccent,
-                                  size: 20,
-                                ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  _isConnected ? 'PAIRED & LINKED' : 'UNPAIRED',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: _isConnected ? const Color(0xFFFFB800) : Colors.redAccent,
-                                    letterSpacing: 1.0,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: _isConnected ? const Color(0xFFFFB800) : Colors.redAccent,
-                              ),
-                            )
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text('LAPTOP HOST', style: TextStyle(fontSize: 8, fontFamily: 'monospace', color: Color(0xFF64748B))),
-                                Text(widget.laptopName, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white)),
-                                Text(widget.laptopBtAddress, style: const TextStyle(fontSize: 10, fontFamily: 'monospace', color: Color(0xFFFFB800))),
-                              ],
-                            ),
-                            const Icon(Icons.swap_horiz, color: Color(0xFF64748B)),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                const Text('PAIRED MOBILE', style: TextStyle(fontSize: 8, fontFamily: 'monospace', color: Color(0xFF64748B))),
-                                Text(_deviceName, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white)),
-                                Text(_deviceBtAddress, style: const TextStyle(fontSize: 10, fontFamily: 'monospace', color: Color(0xFFFFB800))),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-
-                  const Text(
-                    'BRIDGE CHANNEL LOG MONITOR',
-                    style: TextStyle(fontSize: 9, fontFamily: 'monospace', fontWeight: FontWeight.bold, color: Color(0xFF94A3B8)),
-                  ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF020617),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: const Color(0xFF1E293B)),
-                      ),
-                      child: _logs.isEmpty
-                          ? const Center(child: Text('Initializing serial channel...', style: TextStyle(fontFamily: 'monospace', fontSize: 10, color: Color(0xFF64748B))))
-                          : ListView.builder(
-                              itemCount: _logs.length,
-                              itemBuilder: (context, index) {
-                                return Padding(
-                                  padding: const EdgeInsets.only(bottom: 4.0),
-                                  child: Text(
-                                    _logs[index],
-                                    style: const TextStyle(
-                                      fontFamily: 'monospace',
-                                      fontSize: 10,
-                                      color: Color(0xFFFFB800),
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedTabIndex + 1,
         onTap: (index) {
           if (index == 0) {
-            Navigator.of(context).pushAndRemoveUntil(
-              MaterialPageRoute(builder: (_) => const MainShellScreen(initialTabIndex: 0)),
-              (route) => false,
-            );
+            _disconnect();
           } else {
             setState(() {
               _selectedTabIndex = index - 1;
@@ -559,11 +484,6 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
             icon: Icon(Icons.history_outlined),
             activeIcon: Icon(Icons.history, color: Color(0xFFFFB800)),
             label: 'Call Log',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.bluetooth),
-            activeIcon: Icon(Icons.bluetooth_connected, color: Color(0xFFFFB800)),
-            label: 'BT Link',
           ),
         ],
       ),

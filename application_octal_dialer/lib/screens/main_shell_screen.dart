@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../widgets/octal_logo.dart';
 import '../services/telecom_service.dart';
+import '../services/phone_data_service.dart';
 import 'phone/phone_home_tab.dart';
 import 'phone/phone_keypad_view.dart';
 import 'auto_dialer/auto_dialer_tab.dart';
@@ -79,13 +80,14 @@ class _MainShellScreenState extends State<MainShellScreen> {
 
       if (event.type == 'added' && !_isCallScreenActive) {
         _isCallScreenActive = true;
+        final resolvedName = PhoneDataService.instance.getContactNameForNumber(event.phoneNumber) ?? '';
         if (event.isIncoming) {
           Navigator.push(
             context,
             MaterialPageRoute(
               builder: (_) => IncomingCallScreen(
                 phoneNumber: event.phoneNumber,
-                callerName: '',
+                callerName: resolvedName,
               ),
             ),
           ).then((_) {
@@ -97,7 +99,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
             MaterialPageRoute(
               builder: (_) => SharedInCallScreen(
                 phoneNumber: event.phoneNumber,
-                contactName: '',
+                contactName: resolvedName,
               ),
             ),
           ).then((_) {

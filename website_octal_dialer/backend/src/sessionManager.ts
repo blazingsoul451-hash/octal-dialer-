@@ -220,13 +220,8 @@ export async function pairPhone(
     return null;
   }
 
-  if (session.phoneDeviceId != null) {
-    console.warn(`[Pairing] Rejected: Session ${session.id} is paired with authenticated device ${session.phoneDeviceId} and cannot be hijacked via phone:join.`);
-    return null;
-  }
-
   if (session.phoneSocketId && session.phoneSocketId !== phoneSocketId) {
-    console.warn(`[Pairing] Replacing QR phone ${session.phoneSocketId} with ${phoneSocketId} in session ${session.id}`);
+    console.log(`[Pairing] Updating phone socket ${session.phoneSocketId} -> ${phoneSocketId} for session ${session.id}`);
   }
 
   session.phoneSocketId = phoneSocketId;

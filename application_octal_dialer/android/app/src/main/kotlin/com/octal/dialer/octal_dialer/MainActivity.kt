@@ -17,6 +17,7 @@ import android.telephony.PhoneStateListener
 import android.telephony.SubscriptionInfo
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyCallback
+import android.content.ContentProviderOperation
 import android.telephony.TelephonyManager
 import android.util.Log
 import android.view.WindowManager
@@ -33,6 +34,7 @@ class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.octal.dialer/call"
     private val PERMISSIONS_REQUEST_CODE = 1001
     private val DEFAULT_DIALER_REQUEST_CODE = 1002
+    private val CONTACTS_PERMISSIONS_REQUEST_CODE = 1003
     private val TAG = "OctalCall"
     private val PREFS_NAME = "OctalDialerPrefs"
     private val PREF_KEY_PREFERRED_SIM = "octal_preferred_sim"
@@ -56,6 +58,7 @@ class MainActivity: FlutterActivity() {
 
     private var pendingResult: MethodChannel.Result? = null
     private var pendingDefaultDialerResult: MethodChannel.Result? = null
+    private var pendingContactsResult: MethodChannel.Result? = null
     private var telecomListener: OctalCallManager.CallEventListener? = null
     private var methodChannel: MethodChannel? = null
     private var telephonyManager: TelephonyManager? = null
@@ -222,6 +225,9 @@ class MainActivity: FlutterActivity() {
                     if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
                         permissionsNeeded.add(Manifest.permission.READ_CONTACTS)
                     }
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                        permissionsNeeded.add(Manifest.permission.WRITE_CONTACTS)
+                    }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
                             permissionsNeeded.add(Manifest.permission.ANSWER_PHONE_CALLS)
@@ -239,6 +245,32 @@ class MainActivity: FlutterActivity() {
                     } else {
                         result.success(true)
                     }
+                }
+                "checkContactsPermission" -> {
+                    val readGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                    val writeGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                    result.success(readGranted && writeGranted)
+                }
+                "requestContactsPermission" -> {
+                    val perms = mutableListOf<String>()
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                        perms.add(Manifest.permission.READ_CONTACTS)
+                    }
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                        perms.add(Manifest.permission.WRITE_CONTACTS)
+                    }
+                    if (perms.isNotEmpty()) {
+                        pendingContactsResult = result
+                        ActivityCompat.requestPermissions(this, perms.toTypedArray(), CONTACTS_PERMISSIONS_REQUEST_CODE)
+                    } else {
+                        result.success(true)
+                    }
+                }
+                "saveDeviceContact" -> {
+                    val name = call.argument<String>("name") ?: ""
+                    val number = call.argument<String>("number") ?: ""
+                    val email = call.argument<String>("email")
+                    saveDeviceContact(name, number, email, result)
                 }
                 "isDefaultDialer" -> {
                     result.success(OctalPhoneAccountManager.isDefaultDialer(this))
@@ -914,6 +946,13 @@ class MainActivity: FlutterActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CONTACTS_PERMISSIONS_REQUEST_CODE) {
+            val readGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+            val writeGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED
+            pendingContactsResult?.success(readGranted && writeGranted)
+            pendingContactsResult = null
+            return
+        }
         if (requestCode == PERMISSIONS_REQUEST_CODE) {
             // Calling gate requires mandatory telephony permissions (CALL_PHONE & READ_PHONE_STATE).
             // Denial of optional permissions (READ_CONTACTS, READ_CALL_LOG) must not block calling.
@@ -950,7 +989,9 @@ class MainActivity: FlutterActivity() {
         }
         Thread {
             val contacts = mutableListOf<Map<String, Any?>>()
+            val seenNumbers = mutableSetOf<String>()
             try {
+                // 1. Query System Device Contacts (no arbitrary limit so all contacts sync)
                 val cursor = contentResolver.query(
                     ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                     arrayOf(
@@ -960,16 +1001,15 @@ class MainActivity: FlutterActivity() {
                         ContactsContract.CommonDataKinds.Phone.STARRED
                     ),
                     null, null,
-                    "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC LIMIT 300"
+                    "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC"
                 )
                 cursor?.use {
                     val idCol = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
                     val nameCol = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
                     val numCol = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
                     val starCol = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.STARRED)
-                    val seenNumbers = mutableSetOf<String>()
                     while (it.moveToNext()) {
-                        val name = if (nameCol >= 0) it.getString(nameCol) else "Contact"
+                        val name = if (nameCol >= 0) it.getString(nameCol) else null
                         val number = if (numCol >= 0) it.getString(numCol) else ""
                         val cleanNum = number.replace(Regex("[^0-9+]"), "")
                         if (cleanNum.isNotEmpty() && !seenNumbers.contains(cleanNum)) {
@@ -978,17 +1018,71 @@ class MainActivity: FlutterActivity() {
                             val id = if (idCol >= 0) it.getString(idCol) else ""
                             contacts.add(mapOf(
                                 "id" to id,
-                                "name" to (name ?: "Unknown"),
+                                "name" to (if (!name.isNullOrBlank()) name else number),
                                 "number" to number,
                                 "isFavorite" to isStarred
                             ))
                         }
                     }
                 }
+
+                // 2. Query SIM Contacts from content://icc/adn for active subscriptions
+                val simUris = mutableListOf<Uri>()
+                simUris.add(Uri.parse("content://icc/adn"))
+                try {
+                    val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+                        subManager?.activeSubscriptionInfoList?.forEach { subInfo ->
+                            simUris.add(Uri.parse("content://icc/adn/subId/${subInfo.subscriptionId}"))
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "SubscriptionManager SIM URI resolution warning: ${e.message}")
+                }
+
+                for (simUri in simUris) {
+                    try {
+                        val simCursor = contentResolver.query(simUri, null, null, null, null)
+                        simCursor?.use { sc ->
+                            val nameIndex = when {
+                                sc.getColumnIndex("name") >= 0 -> sc.getColumnIndex("name")
+                                sc.getColumnIndex("tag") >= 0 -> sc.getColumnIndex("tag")
+                                sc.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME) >= 0 -> sc.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                                else -> -1
+                            }
+                            val numIndex = when {
+                                sc.getColumnIndex("number") >= 0 -> sc.getColumnIndex("number")
+                                sc.getColumnIndex("data1") >= 0 -> sc.getColumnIndex("data1")
+                                sc.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER) >= 0 -> sc.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                                else -> -1
+                            }
+                            val idIndex = sc.getColumnIndex("_id")
+
+                            while (sc.moveToNext()) {
+                                val simName = if (nameIndex >= 0) sc.getString(nameIndex) else null
+                                val simNum = if (numIndex >= 0) sc.getString(numIndex) else ""
+                                val cleanNum = simNum.replace(Regex("[^0-9+]"), "")
+                                if (cleanNum.isNotEmpty() && !seenNumbers.contains(cleanNum)) {
+                                    seenNumbers.add(cleanNum)
+                                    val simId = if (idIndex >= 0) sc.getString(idIndex) else "sim_${contacts.size}"
+                                    contacts.add(mapOf(
+                                        "id" to simId,
+                                        "name" to (if (!simName.isNullOrBlank()) simName else simNum),
+                                        "number" to simNum,
+                                        "isFavorite" to false
+                                    ))
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.d(TAG, "SIM contact query skipped for $simUri: ${e.message}")
+                    }
+                }
+
                 runOnUiThread { result.success(contacts) }
             } catch (e: Exception) {
                 Log.e(TAG, "getDeviceContacts error: ${e.message}")
-                runOnUiThread { result.success(emptyList<Map<String, Any?>>()) }
+                runOnUiThread { result.success(contacts) }
             }
         }.start()
     }
@@ -1024,10 +1118,11 @@ class MainActivity: FlutterActivity() {
                     val durCol = it.getColumnIndex(CallLog.Calls.DURATION)
                     val simCol = it.getColumnIndex(CallLog.Calls.PHONE_ACCOUNT_ID)
 
-                    while (it.moveToNext() && logs.size < 100) {
+                    while (it.moveToNext() && logs.size < 200) {
                         val id = if (idCol >= 0) it.getString(idCol) else ""
-                        val name = if (nameCol >= 0) it.getString(nameCol) else null
+                        val rawName = if (nameCol >= 0) it.getString(nameCol) else null
                         val number = if (numCol >= 0) it.getString(numCol) else ""
+                        val name = if (!rawName.isNullOrBlank()) rawName else (if (number.isNotBlank()) number else "Unknown")
                         val type = if (typeCol >= 0) it.getInt(typeCol) else CallLog.Calls.INCOMING_TYPE
                         val date = if (dateCol >= 0) it.getLong(dateCol) else 0L
                         val duration = if (durCol >= 0) it.getInt(durCol) else 0
@@ -1044,7 +1139,7 @@ class MainActivity: FlutterActivity() {
 
                         logs.add(mapOf(
                             "id" to id,
-                            "name" to (name ?: number),
+                            "name" to name,
                             "number" to number,
                             "type" to typeString,
                             "timestamp" to date,
@@ -1057,6 +1152,61 @@ class MainActivity: FlutterActivity() {
             } catch (e: Exception) {
                 Log.e(TAG, "getDeviceCallLogs error: ${e.message}")
                 runOnUiThread { result.success(emptyList<Map<String, Any?>>()) }
+            }
+        }.start()
+    }
+
+    private fun saveDeviceContact(
+        displayName: String,
+        phoneNumber: String,
+        email: String?,
+        result: MethodChannel.Result
+    ) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            result.error("PERMISSION_DENIED", "WRITE_CONTACTS permission not granted", null)
+            return
+        }
+        Thread {
+            try {
+                val ops = ArrayList<ContentProviderOperation>()
+                val rawContactInsertIndex = ops.size
+
+                ops.add(ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
+                    .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
+                    .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
+                    .build())
+
+                if (displayName.isNotEmpty()) {
+                    ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactInsertIndex)
+                        .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
+                        .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, displayName)
+                        .build())
+                }
+
+                if (phoneNumber.isNotEmpty()) {
+                    ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactInsertIndex)
+                        .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, phoneNumber)
+                        .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE)
+                        .build())
+                }
+
+                if (!email.isNullOrEmpty()) {
+                    ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactInsertIndex)
+                        .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
+                        .withValue(ContactsContract.CommonDataKinds.Email.DATA, email)
+                        .withValue(ContactsContract.CommonDataKinds.Email.TYPE, ContactsContract.CommonDataKinds.Email.TYPE_HOME)
+                        .build())
+                }
+
+                contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+                runOnUiThread { result.success(true) }
+            } catch (e: Exception) {
+                Log.e(TAG, "saveDeviceContact error: ${e.message}")
+                runOnUiThread { result.error("SAVE_FAILED", e.message, null) }
             }
         }.start()
     }

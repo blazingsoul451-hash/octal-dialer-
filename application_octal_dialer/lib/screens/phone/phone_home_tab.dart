@@ -33,7 +33,20 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _checkPermissionsAndLoad();
+  }
+
+  Future<void> _checkPermissionsAndLoad() async {
+    try {
+      const channel = MethodChannel('com.octal.dialer/call');
+      final bool granted = await channel.invokeMethod<bool>('checkContactsPermission') ?? false;
+      if (!granted) {
+        await channel.invokeMethod('requestContactsPermission');
+      }
+    } catch (e) {
+      debugPrint('[PhoneHomeTab] permission check error: $e');
+    }
+    await _loadData();
   }
 
   Future<void> _loadData() async {
@@ -52,10 +65,14 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
     }
   }
 
-  void _openCreateContact() async {
+  void _openCreateContact([String? initialPhone]) async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const CreateContactScreen()),
+      MaterialPageRoute(
+        builder: (_) => CreateContactScreen(
+          initialPhoneNumber: initialPhone ?? '',
+        ),
+      ),
     );
     _loadData();
   }
@@ -132,6 +149,15 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
                               ),
                             ),
                           ),
+                          if (_dataService.getContactNameForNumber(number) == null)
+                            _buildContextMenuItem(
+                              icon: Icons.person_add_outlined,
+                              label: 'Add to contacts',
+                              onTap: () {
+                                Navigator.pop(dialogCtx);
+                                _openCreateContact(number);
+                              },
+                            ),
                           _buildContextMenuItem(
                             icon: Icons.copy_rounded,
                             label: 'Copy number',
@@ -760,7 +786,18 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
   }
 
   Widget _buildRecentCallRow(PhoneRecentCall call, {String? customTime}) {
-    final initial = call.name.isNotEmpty ? call.name[0].toUpperCase() : '?';
+    final contactName = _dataService.getContactNameForNumber(call.number);
+    final displayName = (contactName != null && contactName.isNotEmpty)
+        ? contactName
+        : (call.name.isNotEmpty && call.name != 'Unknown' ? call.name : (call.number.isNotEmpty ? call.number : 'Unknown'));
+
+    final hasLetter = RegExp(r'[a-zA-Z]').hasMatch(displayName);
+    String initial = '';
+    if (hasLetter) {
+      final firstLetter = displayName.split('').firstWhere((c) => RegExp(r'[a-zA-Z]').hasMatch(c), orElse: () => '');
+      initial = firstLetter.toUpperCase();
+    }
+
     Color avatarBg;
     if (initial == 'B') {
       avatarBg = const Color(0xFF8B2522);
@@ -770,8 +807,10 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
       avatarBg = const Color(0xFF8B2522);
     } else if (initial == 'N') {
       avatarBg = const Color(0xFF1E6B47);
-    } else {
+    } else if (initial.isNotEmpty) {
       avatarBg = OctalColors.surfaceElevated;
+    } else {
+      avatarBg = OctalColors.surfaceCard;
     }
 
     // Direction arrow and text
@@ -788,7 +827,7 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
       directionColor = OctalColors.textSecondary;
     }
 
-    final subtitleText = customTime != null ? 'Mobile • $customTime' : _formatCallTime(call.timestamp, call.number, call.name);
+    final subtitleText = customTime != null ? 'Mobile • $customTime' : _formatCallTime(call.timestamp, call.number, displayName);
 
     return InkWell(
       onTapDown: (details) => _lastTapPosition = details.globalPosition,
@@ -802,14 +841,20 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
             CircleAvatar(
               radius: 22,
               backgroundColor: avatarBg,
-              child: Text(
-                initial,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 17,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              child: initial.isNotEmpty
+                  ? Text(
+                      initial,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.person_outline,
+                      color: OctalColors.textSecondary,
+                      size: 20,
+                    ),
             ),
             const SizedBox(width: 14),
 
@@ -819,7 +864,7 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    call.name,
+                    displayName,
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 15,

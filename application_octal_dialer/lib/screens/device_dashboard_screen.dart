@@ -434,7 +434,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                       Row(
                         children: [
                           Icon(
-                            _bridge.isPaired ? Icons.bluetooth_connected : (isOnline ? Icons.phone_android : Icons.cloud_off),
+                            _bridge.isPaired ? Icons.link : (isOnline ? Icons.phone_android : Icons.cloud_off),
                             size: 14,
                             color: _bridge.isPaired ? OctalColors.primaryGold : (isOnline ? OctalColors.primaryGold : OctalColors.textMuted),
                           ),
@@ -494,7 +494,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          _bridge.isPaired ? Icons.bluetooth_connected : (isOnline ? Icons.check_circle : Icons.sync),
+                          _bridge.isPaired ? Icons.link : (isOnline ? Icons.check_circle : Icons.sync),
                           size: 14,
                           color: _bridge.isPaired ? OctalColors.primaryGold : OctalColors.primaryGold,
                         ),
