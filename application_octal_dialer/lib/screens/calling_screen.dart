@@ -100,32 +100,19 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
           duration: dur,
           answered: answered,
         );
-      }
-    });
-
-    // Register native telephony call state listener to track real GSM hardware states (legacy fallback)
-    _nativeChannel.setMethodCallHandler((call) async {
-      if (call.method == 'onCallStateChanged') {
-        String state = 'UNKNOWN';
-        if (call.arguments is Map) {
-          state = (call.arguments['state'] ?? 'UNKNOWN').toString();
-        } else if (call.arguments is String) {
-          state = call.arguments as String;
-        }
+      } else if (event.type == 'legacy_state') {
+        // Legacy telephony state from TelephonyManager (routed through TelecomService)
         if (mounted) {
-          _handleCallStateChange(state);
+          _handleCallStateChange(event.state);
         }
-      } else if (call.method == 'onCallEnded') {
-        if (call.arguments is Map) {
-          final data = Map<String, dynamic>.from(call.arguments as Map);
-          final String reason = data['reason']?.toString() ?? 'NO_ANSWER';
-          final int duration = data['duration'] is int
-              ? data['duration'] as int
-              : int.tryParse(data['duration']?.toString() ?? '0') ?? 0;
-          final bool answered = data['answered'] == true;
-          if (mounted) {
-            _endCall(reason: reason, duration: duration, answered: answered);
-          }
+      } else if (event.type == 'legacy_ended') {
+        // Legacy call ended event (routed through TelecomService)
+        if (mounted) {
+          _endCall(
+            reason: event.reason ?? 'NO_ANSWER',
+            duration: event.duration ?? 0,
+            answered: event.answered == true,
+          );
         }
       }
     });
@@ -240,20 +227,26 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       }
 
       // Phase 3: Primary Auto Dialer placement via TelecomService -> TelecomManager.placeCall()
+      // Requires Octal to hold ROLE_DIALER (Default Phone App).
+      final bool isDefault = await TelecomService.instance.isDefaultDialer();
       bool placed = false;
-      try {
-        placed = await TelecomService.instance.placeCall(
-          cleanPhone,
-          simSlot: widget.simSlot,
-          callId: widget.callId,
-        );
-      } catch (e) {
-        debugPrint('CallingScreen: TelecomService placeCall error: $e');
-        placed = false;
+      if (isDefault) {
+        try {
+          placed = await TelecomService.instance.placeCall(
+            cleanPhone,
+            simSlot: widget.simSlot,
+            callId: widget.callId,
+          );
+        } catch (e) {
+          debugPrint('CallingScreen: TelecomService placeCall error: $e');
+          placed = false;
+        }
+      } else {
+        debugPrint('CallingScreen: Octal is not Default Dialer. Bypassing Telecom placeCall to use makeDirectCall.');
       }
 
       if (!placed) {
-        debugPrint('CallingScreen: Telecom placeCall returned false, attempting legacy makeDirectCall fallback');
+        debugPrint('CallingScreen: Using direct native makeDirectCall (ACTION_CALL)');
         final success = await _nativeChannel.invokeMethod('makeDirectCall', {
           'phone': cleanPhone,
           'callId': widget.callId,
@@ -323,7 +316,8 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _telecomSub?.cancel();
     widget.socket.off('phone:hangup');
     widget.socket.off('phone:hangup-call');
-    _nativeChannel.setMethodCallHandler(null);
+    // Ensure TelecomService MethodChannel handler remains intact for in-call UI & incoming calls
+    TelecomService.instance.reinitialize();
     super.dispose();
   }
 

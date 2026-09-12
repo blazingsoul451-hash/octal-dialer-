@@ -31,7 +31,21 @@ class _MainShellScreenState extends State<MainShellScreen> {
   void initState() {
     super.initState();
     _currentIndex = widget.initialTabIndex;
+    TelecomService.instance.reinitialize();
+    _checkDefaultDialer();
     _listenToTelecomEvents();
+  }
+
+  Future<void> _checkDefaultDialer() async {
+    try {
+      final isDefault = await TelecomService.instance.isDefaultDialer();
+      if (!isDefault && mounted) {
+        // Automatically request Default Dialer role so Octal InCallService UI activates for calls
+        await TelecomService.instance.requestDefaultDialerRole();
+      }
+    } catch (e) {
+      debugPrint('[MainShellScreen] checkDefaultDialer error: $e');
+    }
   }
 
   @override

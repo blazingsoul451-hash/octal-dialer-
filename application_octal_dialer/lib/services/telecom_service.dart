@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 
 /// Represents a real-time event dispatched from Android Telecom / OctalInCallService.
 class TelecomCallEvent {
-  final String type; // 'added', 'removed', 'state_changed', 'audio_changed'
+  final String type; // 'added', 'removed', 'state_changed', 'audio_changed', 'legacy_state', 'legacy_ended'
   final String callId;
   final String phoneNumber;
   final String state;
@@ -13,6 +13,7 @@ class TelecomCallEvent {
   final int? duration;
   final bool? isMuted;
   final String? audioRoute;
+  final bool? answered;
 
   TelecomCallEvent({
     required this.type,
@@ -24,6 +25,7 @@ class TelecomCallEvent {
     this.duration,
     this.isMuted,
     this.audioRoute,
+    this.answered,
   });
 
   factory TelecomCallEvent.fromMap(String type, Map<dynamic, dynamic> map) {
@@ -37,6 +39,7 @@ class TelecomCallEvent {
       duration: map['duration'] is int ? map['duration'] as int : null,
       isMuted: map['isMuted'] as bool?,
       audioRoute: map['route']?.toString(),
+      answered: map['answered'] as bool?,
     );
   }
 }
@@ -77,11 +80,42 @@ class TelecomService {
           case 'onTelecomAudioStateChanged':
             _callEventController.add(TelecomCallEvent.fromMap('audio_changed', args));
             break;
+          // Legacy telephony events from MainActivity TelephonyManager listener
+          case 'onCallStateChanged':
+            final state = (args['state'] ?? 'UNKNOWN').toString();
+            _callEventController.add(TelecomCallEvent(
+              type: 'legacy_state',
+              callId: '',
+              phoneNumber: '',
+              state: state,
+            ));
+            break;
+          case 'onCallEnded':
+            final String reason = args['reason']?.toString() ?? 'NO_ANSWER';
+            final int duration = args['duration'] is int
+                ? args['duration'] as int
+                : int.tryParse(args['duration']?.toString() ?? '0') ?? 0;
+            final bool answered = args['answered'] == true;
+            _callEventController.add(TelecomCallEvent(
+              type: 'legacy_ended',
+              callId: args['callId']?.toString() ?? '',
+              phoneNumber: args['phoneNumber']?.toString() ?? '',
+              reason: reason,
+              duration: duration,
+              answered: answered,
+            ));
+            break;
         }
       } catch (e) {
         debugPrint('[TelecomService] Error handling native method call: $e');
       }
     });
+  }
+
+  /// Defensively re-registers the MethodChannel handler.
+  /// Call this if any code path may have replaced or nulled the handler.
+  void reinitialize() {
+    _initMethodCallHandler();
   }
 
   /// Checks if Octal is currently the system Default Dialer / Default Phone App.
@@ -139,14 +173,26 @@ class TelecomService {
 
   /// Direct outgoing GSM call placement via official Android TelecomManager.
   /// Binds to OctalInCallService when Octal is the Default Dialer.
+  /// Automatically falls back to makeDirectCall (ACTION_CALL) if not Default Dialer.
   Future<bool> placeCall(String phone, {int? simSlot, String? callId}) async {
     try {
-      final bool? res = await _channel.invokeMethod<bool>('telecomPlaceCall', {
+      final bool defaultDialer = await isDefaultDialer();
+      if (defaultDialer) {
+        final bool? res = await _channel.invokeMethod<bool>('telecomPlaceCall', {
+          'phone': phone,
+          'simSlot': simSlot,
+          'callId': callId,
+        });
+        if (res == true) return true;
+      }
+      // Fallback: makeDirectCall via Android Intent.ACTION_CALL
+      debugPrint('[TelecomService] Placing call via native makeDirectCall fallback (defaultDialer=$defaultDialer)');
+      final bool? directRes = await _channel.invokeMethod<bool>('makeDirectCall', {
         'phone': phone,
         'simSlot': simSlot,
         'callId': callId,
       });
-      return res ?? false;
+      return directRes ?? false;
     } catch (e) {
       debugPrint('[TelecomService] placeCall error: $e');
       return false;
