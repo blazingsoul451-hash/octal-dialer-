@@ -211,6 +211,17 @@ class PhoneBridgeService extends ChangeNotifier {
     await initializeAuthenticated();
   }
 
+  /// Connect or re-point the authenticated socket to a specific server URL
+  Future<void> connectTo(String url) async {
+    final sanitized = AppConfig.sanitizeUrl(url) ?? url;
+    _serverUrl = sanitized;
+    await AppConfig.setBaseUrl(sanitized);
+    if (_deviceName == 'Android Device') {
+      await _gatherDeviceInfo();
+    }
+    _connectAuthenticatedSocket();
+  }
+
   /// Gather hardware & network identifiers
   Future<void> _gatherDeviceInfo() async {
     _deviceOs = Platform.isAndroid ? 'Android' : (Platform.isIOS ? 'iOS' : 'Desktop');

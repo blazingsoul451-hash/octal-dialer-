@@ -48,7 +48,7 @@ class AppConfig {
 
   /// Sanitize URL
   static String? sanitizeUrl(String rawUrl) {
-    final trimmed = rawUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    String trimmed = rawUrl.trim().replaceAll(RegExp(r'/+$'), '');
     if (trimmed.isEmpty) return null;
 
     final lower = trimmed.toLowerCase();
@@ -56,7 +56,12 @@ class AppConfig {
       return defaultBaseUrl;
     }
 
-    if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+    // Strip internal port 5000 so app always connects via public port 80 / Nginx reverse proxy
+    if (trimmed.contains(':5000')) {
+      trimmed = trimmed.replaceAll(':5000', '');
+    }
+
+    if (!trimmed.toLowerCase().startsWith('http://') && !trimmed.toLowerCase().startsWith('https://')) {
       return 'http://$trimmed';
     }
 

@@ -89,11 +89,13 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
     return () => { socket.off('tunnel:updated', handler); };
   }, [socket]);
 
-  const safeServerUrl = dynamicTunnelUrl || (qrPayload && qrPayload.serverUrl && qrPayload.serverUrl.startsWith('http'))
+  const rawUrl = dynamicTunnelUrl || (qrPayload && qrPayload.serverUrl && qrPayload.serverUrl.startsWith('http'))
     ? (dynamicTunnelUrl || qrPayload.serverUrl)
     : (serverUrl && serverUrl.startsWith('http')
       ? serverUrl
-      : `${apiProtocol}//${currentHost}:5000`);
+      : `${apiProtocol}//${currentHost}${window.location.port ? ':' + window.location.port : ''}`);
+
+  const safeServerUrl = (rawUrl || '').replace(':5000', '');
 
   const directApkUrl = `${safeServerUrl}/download/apk`;
 

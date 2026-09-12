@@ -7,6 +7,7 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import '../services/phone_bridge_service.dart';
+import '../config/app_config.dart';
 import 'calling_screen.dart';
 import 'standalone_dialer_screen.dart';
 import 'call_log_screen.dart';
@@ -136,14 +137,16 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     }
   }
 
-  void _initSocket() {
-    _addLog('[System] Connecting to Octal Bridge socket...');
-    _socket = PhoneBridgeService.instance.socket;
-    if (_socket == null || !_socket!.connected) {
-      _addLog('[Bridge] Reconnecting phone bridge socket...');
-      PhoneBridgeService.instance.initializeAuthenticated();
-      _socket = PhoneBridgeService.instance.socket;
+  void _initSocket() async {
+    final effectiveUrl = AppConfig.sanitizeUrl(widget.serverUrl) ?? AppConfig.apiBaseUrl;
+    _addLog('[System] Connecting to Octal Bridge: $effectiveUrl');
+
+    if (PhoneBridgeService.instance.serverUrl != effectiveUrl ||
+        PhoneBridgeService.instance.socket == null ||
+        !PhoneBridgeService.instance.socket!.connected) {
+      await PhoneBridgeService.instance.connectTo(effectiveUrl);
     }
+    _socket = PhoneBridgeService.instance.socket;
 
     _attachSocketListeners();
 
@@ -170,9 +173,9 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       });
     }
 
-    // Guard: 8-second connection timeout -> automatically return to QR scanner if not connected
+    // Guard: 15-second connection timeout -> automatically return to QR scanner if not connected
     _connectionTimeoutTimer?.cancel();
-    _connectionTimeoutTimer = Timer(const Duration(seconds: 8), () {
+    _connectionTimeoutTimer = Timer(const Duration(seconds: 15), () {
       if (mounted && !_isConnected) {
         _addLog('[Bridge] Connection timeout. Returning to QR scanner...');
         _autoReturnToScanner(message: 'Connection timed out. Please scan QR code again.');

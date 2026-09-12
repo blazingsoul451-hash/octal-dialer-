@@ -389,6 +389,9 @@ function getPublicBaseUrl(context?: { headers?: any; handshake?: any }): string 
     if (proto === 'https' || hostname.endsWith('.trycloudflare.com') || hostname.endsWith('.loca.lt')) {
       return `https://${hostname}`;
     }
+    if (!host.includes(':') || hostname === '140.245.215.156') {
+      return `${proto}://${hostname}`;
+    }
     return `${proto}://${hostname}:${PORT}`;
   }
   return `${proto}://${getLocalIP()}:${PORT}`;
