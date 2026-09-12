@@ -9,6 +9,8 @@ import android.os.Build
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
+import android.telephony.SubscriptionInfo
+import android.telephony.SubscriptionManager
 import android.util.Log
 
 /**
@@ -135,5 +137,71 @@ object OctalPhoneAccountManager {
             Log.w(TAG, "[Telecom] Error obtaining system SIM accounts: ${e.message}")
             emptyList()
         }
+    }
+
+    /**
+     * Deterministically resolves the system PhoneAccountHandle for a target SIM.
+     * Priority order:
+     * 1. Exact PhoneAccountHandle.id match against subId.toString()
+     * 2. Exact PhoneAccountHandle.id match against info.iccId (if accessible)
+     * 3. Exact system default outgoing account if target is marked as default
+     * 4. Deductive dual-SIM reconciliation: if 2 SIMs and 2 accounts, and one account matches defaultHandle,
+     *    the non-default SIM maps to the remaining callAccount
+     * 5. Slot-index correlation (slot 0 -> account 0, slot 1 -> account 1)
+     * 6. Safe fallback to TelecomManager.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
+     *
+     * Substring / contains matching is STRICTLY PROHIBITED to prevent cross-SIM collisions.
+     */
+    fun resolvePhoneAccountHandle(
+        telecomManager: TelecomManager?,
+        callAccounts: List<PhoneAccountHandle>,
+        subId: Int?,
+        slotIndex: Int?,
+        isSystemDefault: Boolean = false,
+        activeList: List<SubscriptionInfo> = emptyList()
+    ): PhoneAccountHandle? {
+        if (callAccounts.isEmpty()) {
+            return telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
+        }
+
+        val defaultHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
+
+        // 1. Exact PhoneAccountHandle ID match against actual subscription ID
+        if (subId != null && subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+            val exactSubMatch = callAccounts.find { it.id == subId.toString() }
+            if (exactSubMatch != null) return exactSubMatch
+
+            // 2. Exact match against SIM ICCID (if accessible from SubscriptionInfo)
+            val subInfo = activeList.find { it.subscriptionId == subId }
+            @Suppress("DEPRECATION")
+            val iccId = try { subInfo?.iccId } catch (_: Exception) { null }
+            if (!iccId.isNullOrEmpty()) {
+                val exactIccMatch = callAccounts.find { it.id.equals(iccId, ignoreCase = true) }
+                if (exactIccMatch != null) return exactIccMatch
+            }
+        }
+
+        // 3. Exact system default account match if target is system default
+        if (isSystemDefault && defaultHandle != null && callAccounts.contains(defaultHandle)) {
+            return defaultHandle
+        }
+
+        // 4. Deductive dual-SIM reconciliation: if 2 accounts and 2 active subscriptions
+        if (callAccounts.size == 2 && activeList.size == 2 && defaultHandle != null && callAccounts.contains(defaultHandle)) {
+            if (isSystemDefault) {
+                return defaultHandle
+            } else {
+                val nonDefaultAccount = callAccounts.find { it != defaultHandle }
+                if (nonDefaultAccount != null) return nonDefaultAccount
+            }
+        }
+
+        // 5. Slot-index correlation: slot 0 -> callAccounts[0], slot 1 -> callAccounts[1]
+        if (slotIndex != null && slotIndex in 0 until callAccounts.size) {
+            return callAccounts[slotIndex]
+        }
+
+        // 6. Safe fallback to default outgoing account rather than guessing
+        return defaultHandle ?: callAccounts.firstOrNull()
     }
 }

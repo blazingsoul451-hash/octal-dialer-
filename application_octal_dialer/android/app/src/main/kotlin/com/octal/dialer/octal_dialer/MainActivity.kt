@@ -202,11 +202,11 @@ class MainActivity: FlutterActivity() {
                     }
                 }
                 "checkCallPermission" -> {
+                    // Mandatory permissions required to place and manage calls
                     val callGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
                     val stateGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
-                    val logGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED
-                    val contactsGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
-                    result.success(callGranted && stateGranted && logGranted && contactsGranted)
+                    // READ_CALL_LOG and READ_CONTACTS are optional features and must not gate calling
+                    result.success(callGranted && stateGranted)
                 }
                 "requestCallPermission" -> {
                     val permissionsNeeded = mutableListOf<String>()
@@ -421,13 +421,19 @@ class MainActivity: FlutterActivity() {
             val slot = info.simSlotIndex
             val cardId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) info.cardId else -1
 
-            val matchedHandle = callAccounts.find { handle ->
-                handle.id == subId.toString() || handle.id.contains(subId.toString())
-            } ?: if (defaultHandle != null && (defaultHandle.id == subId.toString() || defaultHandle.id.contains(subId.toString()))) defaultHandle else null
+            val isSysDefaultInitial = (defaultVoiceSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID && defaultVoiceSubId == subId) ||
+                    (defaultHandle != null && defaultHandle.id == subId.toString())
 
-            val isSysDefault = (defaultVoiceSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID && defaultVoiceSubId == subId) ||
-                    (defaultHandle != null && matchedHandle != null && defaultHandle == matchedHandle) ||
-                    (defaultHandle != null && (defaultHandle.id == subId.toString() || defaultHandle.id.contains(subId.toString())))
+            val matchedHandle = OctalPhoneAccountManager.resolvePhoneAccountHandle(
+                telecomManager = telecomManager,
+                callAccounts = callAccounts,
+                subId = subId,
+                slotIndex = slot,
+                isSystemDefault = isSysDefaultInitial,
+                activeList = activeList
+            )
+
+            val isSysDefault = isSysDefaultInitial || (defaultHandle != null && matchedHandle != null && defaultHandle == matchedHandle)
 
             SimDescriptor(
                 subscriptionId = subId,
@@ -527,16 +533,19 @@ class MainActivity: FlutterActivity() {
 
         val callGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
         val stateGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
-        val logGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED
 
-        if (!callGranted || !stateGranted || !logGranted) {
-            result.error("CALL_PERMISSION_REQUIRED", "CALL_PHONE, READ_PHONE_STATE, and READ_CALL_LOG permissions are required for direct GSM dialing", null)
+        if (!callGranted || !stateGranted) {
+            result.error("CALL_PERMISSION_REQUIRED", "CALL_PHONE and READ_PHONE_STATE permissions are required for dialing", null)
             return
         }
 
         val (descriptors, effectiveSim, _) = getActiveSimsWithReconciliation()
         val telecomManager = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
         val callAccounts = telecomManager?.getCallCapablePhoneAccounts() ?: emptyList()
+        val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+        val activeList: List<SubscriptionInfo> = if (stateGranted && subManager != null) {
+            subManager.activeSubscriptionInfoList ?: emptyList()
+        } else emptyList()
 
         var matchedHandle: PhoneAccountHandle? = null
         var targetSlot: Int? = null
@@ -553,15 +562,15 @@ class MainActivity: FlutterActivity() {
             targetSlot = targetSim.simSlotIndex
             targetSubId = targetSim.subscriptionId
 
-            matchedHandle = callAccounts.find {
-                it.id == targetSubId.toString() || it.id.contains(targetSubId.toString())
-            }
-            if (matchedHandle == null && targetSim.isSystemDefault) {
-                matchedHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
-            }
-        }
-
-        if (matchedHandle == null) {
+            matchedHandle = OctalPhoneAccountManager.resolvePhoneAccountHandle(
+                telecomManager = telecomManager,
+                callAccounts = callAccounts,
+                subId = targetSubId,
+                slotIndex = targetSlot,
+                isSystemDefault = targetSim.isSystemDefault,
+                activeList = activeList
+            )
+        } else {
             matchedHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
         }
 
@@ -645,21 +654,20 @@ class MainActivity: FlutterActivity() {
             } else effectiveSim
 
             val callAccounts = telecomManager.getCallCapablePhoneAccounts() ?: emptyList()
-            var matchedHandle: PhoneAccountHandle? = null
+            val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+            val hasReadPhoneState = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+            val activeList: List<SubscriptionInfo> = if (hasReadPhoneState && subManager != null) {
+                subManager.activeSubscriptionInfoList ?: emptyList()
+            } else emptyList()
 
-            if (targetSim != null) {
-                val targetSubId = targetSim.subscriptionId
-                matchedHandle = callAccounts.find {
-                    it.id == targetSubId.toString() || it.id.contains(targetSubId.toString())
-                }
-                if (matchedHandle == null && targetSim.isSystemDefault) {
-                    matchedHandle = telecomManager.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
-                }
-            }
-
-            if (matchedHandle == null) {
-                matchedHandle = telecomManager.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
-            }
+            val matchedHandle = OctalPhoneAccountManager.resolvePhoneAccountHandle(
+                telecomManager = telecomManager,
+                callAccounts = callAccounts,
+                subId = targetSim?.subscriptionId,
+                slotIndex = targetSim?.simSlotIndex,
+                isSystemDefault = targetSim?.isSystemDefault ?: false,
+                activeList = activeList
+            )
 
             val extras = Bundle().apply {
                 if (matchedHandle != null) {
@@ -901,8 +909,20 @@ class MainActivity: FlutterActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSIONS_REQUEST_CODE) {
-            val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-            pendingResult?.success(allGranted)
+            // Calling gate requires mandatory telephony permissions (CALL_PHONE & READ_PHONE_STATE).
+            // Denial of optional permissions (READ_CONTACTS, READ_CALL_LOG) must not block calling.
+            var callPhoneGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
+            var phoneStateGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+            for (i in permissions.indices) {
+                if (permissions[i] == Manifest.permission.CALL_PHONE && grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                    callPhoneGranted = true
+                }
+                if (permissions[i] == Manifest.permission.READ_PHONE_STATE && grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                    phoneStateGranted = true
+                }
+            }
+            val mandatoryGranted = callPhoneGranted && phoneStateGranted
+            pendingResult?.success(mandatoryGranted)
             pendingResult = null
         }
     }
