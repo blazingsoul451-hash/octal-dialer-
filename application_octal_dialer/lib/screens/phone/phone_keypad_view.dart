@@ -78,7 +78,7 @@ class _PhoneKeypadViewState extends State<PhoneKeypadView> {
     }
   }
 
-  void _handleCall([String? directNumber]) {
+  void _handleCall([String? directNumber]) async {
     final numToCall = (directNumber ?? _phoneNumber).trim();
     if (numToCall.isEmpty) return;
     HapticFeedback.mediumImpact();
@@ -86,6 +86,8 @@ class _PhoneKeypadViewState extends State<PhoneKeypadView> {
     if (widget.onCall != null) {
       widget.onCall!(numToCall, null);
     } else {
+      final bool prereqsPassed = await TelecomService.instance.ensureCallingPrerequisites();
+      if (!prereqsPassed) return;
       TelecomService.instance.placeCall(numToCall);
     }
   }

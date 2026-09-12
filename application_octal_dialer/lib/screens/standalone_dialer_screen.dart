@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 import '../services/phone_bridge_service.dart';
+import '../services/telecom_service.dart';
 import '../widgets/octal_logo.dart';
 
 class LeadItem {
@@ -158,32 +159,40 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
       }
     }
 
-    // Launch direct phone dialer via Android MethodChannel with permission check
+    // Launch direct phone dialer via official TelecomService with prerequisite check
     try {
-      final bool hasPermission = await _nativeChannel.invokeMethod('checkCallPermission') ?? false;
-      if (!hasPermission) {
-        final bool granted = await _nativeChannel.invokeMethod('requestCallPermission') ?? false;
-        if (!granted) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Phone call permission (CALL_PHONE) is required to place calls.'),
-                backgroundColor: Colors.redAccent,
-              ),
-            );
+      final bool prereqsPassed = await TelecomService.instance.ensureCallingPrerequisites();
+      if (!prereqsPassed) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Default Dialer role and phone permissions are required to place calls.'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+        }
+        if (leadId != null) {
+          final idx = _queue.indexWhere((l) => l.id == leadId);
+          if (idx != -1) {
+            setState(() {
+              _queue[idx].status = 'FAILED';
+            });
           }
-          if (leadId != null) {
-            final idx = _queue.indexWhere((l) => l.id == leadId);
-            if (idx != -1) {
-              setState(() {
-                _queue[idx].status = 'FAILED';
-              });
-            }
+        }
+        return;
+      }
+
+      final bool placed = await TelecomService.instance.placeCall(cleanPhone, callId: leadId);
+      if (!placed) {
+        if (leadId != null) {
+          final idx = _queue.indexWhere((l) => l.id == leadId);
+          if (idx != -1) {
+            setState(() {
+              _queue[idx].status = 'FAILED';
+            });
           }
-          return;
         }
       }
-      await _nativeChannel.invokeMethod('makeDirectCall', {'phone': cleanPhone});
     } catch (e) {
       debugPrint('Direct GSM call failed: $e');
       if (mounted) {
@@ -205,7 +214,7 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
     }
   }
 
-  void _startAutoDialing() {
+  Future<void> _startAutoDialing() async {
     if (_queue.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Lead queue is empty. Import or add leads to start dialing.')),
@@ -213,6 +222,51 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
       return;
     }
 
+    // 1. Check Phone pairing/authentication status if in connected mode
+    if (widget.sessionId != null && widget.socket == null && !PhoneBridgeService.instance.isPaired) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Phone is not paired or authenticated.'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    // 2 & 3. Prerequisite Gate: Default Dialer role + Required runtime permissions
+    final bool prereqsPassed = await TelecomService.instance.ensureCallingPrerequisites();
+    if (!prereqsPassed) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Cannot start campaign: Default Dialer role or permissions missing.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+      return;
+    }
+
+    // 4. Required phone/SIM state
+    try {
+      final simInfo = await _nativeChannel.invokeMethod<Map>('getSimInfo');
+      final activeCount = simInfo?['activeCount'] as int? ?? 0;
+      if (activeCount <= 0) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No active SIM card detected. Insert SIM to dial campaign.'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+        }
+        return;
+      }
+    } catch (e) {
+      debugPrint('[CampaignGate] SIM check error: $e');
+    }
+
+    // 5. All prerequisites pass -> start campaign dialing
     setState(() {
       _isAutoDialing = true;
     });

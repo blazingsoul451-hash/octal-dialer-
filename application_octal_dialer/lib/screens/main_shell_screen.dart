@@ -5,7 +5,6 @@ import '../widgets/octal_logo.dart';
 import '../services/telecom_service.dart';
 import '../services/phone_data_service.dart';
 import 'phone/phone_home_tab.dart';
-import 'phone/phone_keypad_view.dart';
 import 'auto_dialer/auto_dialer_tab.dart';
 import 'calling/incoming_call_screen.dart';
 import 'calling/shared_in_call_screen.dart';
@@ -30,8 +29,21 @@ class _MainShellScreenState extends State<MainShellScreen> {
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialTabIndex;
+    _currentIndex = widget.initialTabIndex.clamp(0, 1);
+    TelecomService.instance.reinitialize();
+    _checkDefaultDialer();
     _listenToTelecomEvents();
+  }
+
+  Future<void> _checkDefaultDialer() async {
+    try {
+      final isDefault = await TelecomService.instance.isDefaultDialer();
+      if (!isDefault && mounted) {
+        await TelecomService.instance.requestDefaultDialerRole();
+      }
+    } catch (e) {
+      debugPrint('[MainShellScreen] checkDefaultDialer error: $e');
+    }
   }
 
   @override
@@ -42,7 +54,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
 
   void _listenToTelecomEvents() {
     TelecomService.instance.getInCallDetails().then((details) {
-      if (details != null && mounted && !_isCallScreenActive) {
+      if (details != null && mounted && !_isCallScreenActive && !TelecomService.instance.isAutoDialerCallActive) {
         final isIncoming = details['isIncoming'] == true;
         final phone = details['phoneNumber']?.toString() ?? '';
         final name = details['displayName']?.toString() ?? '';
@@ -78,7 +90,8 @@ class _MainShellScreenState extends State<MainShellScreen> {
     _telecomSub = TelecomService.instance.callEvents.listen((event) {
       if (!mounted) return;
 
-      if (event.type == 'added' && !_isCallScreenActive) {
+      // Only show foreground InCallScreen if not already active and not handled by Auto Dialer CallingScreen
+      if (event.type == 'added' && !_isCallScreenActive && !TelecomService.instance.isAutoDialerCallActive) {
         _isCallScreenActive = true;
         final resolvedName = PhoneDataService.instance.getContactNameForNumber(event.phoneNumber) ?? '';
         if (event.isIncoming) {
@@ -115,7 +128,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
   void _switchToTab(int index) {
     HapticFeedback.selectionClick();
     setState(() {
-      _currentIndex = index;
+      _currentIndex = index.clamp(0, 1);
     });
   }
 
@@ -125,12 +138,9 @@ class _MainShellScreenState extends State<MainShellScreen> {
       backgroundColor: OctalColors.bgDark,
       body: IndexedStack(
         index: _currentIndex,
-        children: [
-          PhoneHomeTab(
-            onOpenKeypad: () => _switchToTab(1),
-          ),
-          const PhoneKeypadView(),
-          const AutoDialerTab(),
+        children: const [
+          PhoneHomeTab(),
+          AutoDialerTab(),
         ],
       ),
       bottomNavigationBar: _buildBottomNav(),
@@ -142,8 +152,8 @@ class _MainShellScreenState extends State<MainShellScreen> {
 
     return Container(
       padding: EdgeInsets.only(
-        left: 16,
-        right: 16,
+        left: 24,
+        right: 24,
         top: 6,
         bottom: bottomPadding > 0 ? bottomPadding + 4 : 10,
       ),
@@ -156,21 +166,15 @@ class _MainShellScreenState extends State<MainShellScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          // Tab 0: Home
+          // Tab 0: Phone
           _buildNavItem(
             index: 0,
-            icon: Icons.home_rounded,
-            label: 'Home',
+            icon: Icons.call_rounded,
+            label: 'Phone',
           ),
-          // Tab 1: Keypad
+          // Tab 1: Auto Dialer
           _buildNavItem(
             index: 1,
-            icon: Icons.dialpad_rounded,
-            label: 'Keypad',
-          ),
-          // Tab 2: Auto Dialer
-          _buildNavItem(
-            index: 2,
             icon: Icons.laptop_chromebook_rounded,
             label: 'Auto Dialer',
           ),
@@ -194,7 +198,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
         children: [
           AnimatedContainer(
             duration: const Duration(milliseconds: 180),
-            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 4),
             decoration: BoxDecoration(
               color: isSelected ? OctalColors.pillActive : Colors.transparent,
               borderRadius: BorderRadius.circular(18),

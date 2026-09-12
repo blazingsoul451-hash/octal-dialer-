@@ -71,6 +71,9 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       'accepted': true,
     });
 
+    // Mark Auto Dialer call active to prevent duplicate InCallScreen overlay
+    TelecomService.instance.isAutoDialerCallActive = true;
+
     // Register Telecom call event listener (primary source of truth for GSM calls)
     _telecomSub = TelecomService.instance.callEvents.listen((event) {
       if (!mounted || _callEnded) return;
@@ -100,32 +103,19 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
           duration: dur,
           answered: answered,
         );
-      }
-    });
-
-    // Register native telephony call state listener to track real GSM hardware states (legacy fallback)
-    _nativeChannel.setMethodCallHandler((call) async {
-      if (call.method == 'onCallStateChanged') {
-        String state = 'UNKNOWN';
-        if (call.arguments is Map) {
-          state = (call.arguments['state'] ?? 'UNKNOWN').toString();
-        } else if (call.arguments is String) {
-          state = call.arguments as String;
-        }
+      } else if (event.type == 'legacy_state') {
+        // Legacy telephony state from TelephonyManager (routed through TelecomService)
         if (mounted) {
-          _handleCallStateChange(state);
+          _handleCallStateChange(event.state);
         }
-      } else if (call.method == 'onCallEnded') {
-        if (call.arguments is Map) {
-          final data = Map<String, dynamic>.from(call.arguments as Map);
-          final String reason = data['reason']?.toString() ?? 'NO_ANSWER';
-          final int duration = data['duration'] is int
-              ? data['duration'] as int
-              : int.tryParse(data['duration']?.toString() ?? '0') ?? 0;
-          final bool answered = data['answered'] == true;
-          if (mounted) {
-            _endCall(reason: reason, duration: duration, answered: answered);
-          }
+      } else if (event.type == 'legacy_ended') {
+        // Legacy call ended event (routed through TelecomService)
+        if (mounted) {
+          _endCall(
+            reason: event.reason ?? 'NO_ANSWER',
+            duration: event.duration ?? 0,
+            answered: event.answered == true,
+          );
         }
       }
     });
@@ -222,47 +212,25 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     }
 
     try {
-      final bool hasPermission = await _nativeChannel.invokeMethod('checkCallPermission') ?? false;
-      if (!hasPermission) {
-        final bool granted = await _nativeChannel.invokeMethod('requestCallPermission') ?? false;
-        if (!granted) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Phone call permissions (CALL_PHONE & READ_CALL_LOG) required.'),
-                backgroundColor: Colors.redAccent,
-              ),
-            );
-          }
-          _endCall(reason: 'CALL_PERMISSION_DENIED');
-          return;
-        }
+      // 1. Centralized Prerequisite Gate: Default Dialer role + Mandatory Permissions
+      final bool prereqsPassed = await TelecomService.instance.ensureCallingPrerequisites();
+      if (!prereqsPassed) {
+        debugPrint('CallingScreen: Prerequisites not met (Default Dialer role or permissions denied).');
+        _endCall(reason: 'PREREQUISITES_DENIED');
+        return;
       }
 
-      // Phase 3: Primary Auto Dialer placement via TelecomService -> TelecomManager.placeCall()
-      bool placed = false;
-      try {
-        placed = await TelecomService.instance.placeCall(
-          cleanPhone,
-          simSlot: widget.simSlot,
-          callId: widget.callId,
-        );
-      } catch (e) {
-        debugPrint('CallingScreen: TelecomService placeCall error: $e');
-        placed = false;
-      }
+      // 2. Direct Telecom call placement via TelecomManager.placeCall()
+      final bool placed = await TelecomService.instance.placeCall(
+        cleanPhone,
+        simSlot: widget.simSlot,
+        callId: widget.callId,
+      );
 
       if (!placed) {
-        debugPrint('CallingScreen: Telecom placeCall returned false, attempting legacy makeDirectCall fallback');
-        final success = await _nativeChannel.invokeMethod('makeDirectCall', {
-          'phone': cleanPhone,
-          'callId': widget.callId,
-          'simSlot': widget.simSlot,
-        });
-        if (success != true) {
-          _endCall(reason: 'CALL_INTENT_FAILED');
-          return;
-        }
+        debugPrint('CallingScreen: Telecom placeCall returned false.');
+        _endCall(reason: 'CALL_PLACE_FAILED');
+        return;
       }
 
       widget.socket.emit('call:state-changed', {
@@ -323,7 +291,10 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _telecomSub?.cancel();
     widget.socket.off('phone:hangup');
     widget.socket.off('phone:hangup-call');
-    _nativeChannel.setMethodCallHandler(null);
+    // Clear auto dialer active flag so normal in-call UI operates
+    TelecomService.instance.isAutoDialerCallActive = false;
+    // Defensively ensure TelecomService handler is active
+    TelecomService.instance.reinitialize();
     super.dispose();
   }
 

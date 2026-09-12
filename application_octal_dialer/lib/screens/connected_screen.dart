@@ -10,7 +10,6 @@ import '../services/phone_bridge_service.dart';
 import '../config/app_config.dart';
 import 'calling_screen.dart';
 import 'standalone_dialer_screen.dart';
-import 'call_log_screen.dart';
 import 'dashboard_screen.dart';
 import 'main_shell_screen.dart';
 
@@ -410,9 +409,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
           onPressed: _disconnect,
         ),
         title: Text(
-          _selectedTabIndex == 0
-              ? 'Campaign Dashboard'
-              : (_selectedTabIndex == 1 ? 'Auto Dialer' : 'Call Log'),
+          _selectedTabIndex == 0 ? 'Campaign Dashboard' : 'Auto Dialer',
           style: const TextStyle(fontFamily: 'Ubuntu', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
         ),
         actions: [
@@ -443,10 +440,6 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
             queue: _mobileQueue,
             onQueueUpdated: _onQueueUpdated,
             sessionId: widget.sessionId,
-          ),
-          CallLogScreen(
-            socket: _socket,
-            serverUrl: widget.serverUrl,
           ),
         ],
       ),
@@ -482,11 +475,6 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
             icon: Icon(Icons.phone_in_talk_outlined),
             activeIcon: Icon(Icons.phone_in_talk, color: Color(0xFFFFB800)),
             label: 'Auto Dialer',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.history_outlined),
-            activeIcon: Icon(Icons.history, color: Color(0xFFFFB800)),
-            label: 'Call Log',
           ),
         ],
       ),

@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 
 /// Represents a real-time event dispatched from Android Telecom / OctalInCallService.
 class TelecomCallEvent {
-  final String type; // 'added', 'removed', 'state_changed', 'audio_changed'
+  final String type; // 'added', 'removed', 'state_changed', 'audio_changed', 'legacy_state', 'legacy_ended'
   final String callId;
   final String phoneNumber;
   final String state;
@@ -13,6 +13,7 @@ class TelecomCallEvent {
   final int? duration;
   final bool? isMuted;
   final String? audioRoute;
+  final bool? answered;
 
   TelecomCallEvent({
     required this.type,
@@ -24,6 +25,7 @@ class TelecomCallEvent {
     this.duration,
     this.isMuted,
     this.audioRoute,
+    this.answered,
   });
 
   factory TelecomCallEvent.fromMap(String type, Map<dynamic, dynamic> map) {
@@ -37,6 +39,7 @@ class TelecomCallEvent {
       duration: map['duration'] is int ? map['duration'] as int : null,
       isMuted: map['isMuted'] as bool?,
       audioRoute: map['route']?.toString(),
+      answered: map['answered'] as bool?,
     );
   }
 }
@@ -60,6 +63,10 @@ class TelecomService {
   /// Stream of genuine hardware Telecom call events (added, removed, state changes, audio routes).
   Stream<TelecomCallEvent> get callEvents => _callEventController.stream;
 
+  /// Flag indicating an active Auto Dialer call (managed by CallingScreen)
+  /// to prevent MainShellScreen from pushing a duplicate SharedInCallScreen.
+  bool isAutoDialerCallActive = false;
+
   void _initMethodCallHandler() {
     _channel.setMethodCallHandler((call) async {
       try {
@@ -77,11 +84,41 @@ class TelecomService {
           case 'onTelecomAudioStateChanged':
             _callEventController.add(TelecomCallEvent.fromMap('audio_changed', args));
             break;
+          // Legacy telephony events from MainActivity TelephonyManager listener
+          case 'onCallStateChanged':
+            final state = (args['state'] ?? 'UNKNOWN').toString();
+            _callEventController.add(TelecomCallEvent(
+              type: 'legacy_state',
+              callId: '',
+              phoneNumber: '',
+              state: state,
+            ));
+            break;
+          case 'onCallEnded':
+            final String reason = args['reason']?.toString() ?? 'NO_ANSWER';
+            final int duration = args['duration'] is int
+                ? args['duration'] as int
+                : int.tryParse(args['duration']?.toString() ?? '0') ?? 0;
+            final bool answered = args['answered'] == true;
+            _callEventController.add(TelecomCallEvent(
+              type: 'legacy_ended',
+              callId: args['callId']?.toString() ?? '',
+              phoneNumber: args['phoneNumber']?.toString() ?? '',
+              reason: reason,
+              duration: duration,
+              answered: answered,
+            ));
+            break;
         }
       } catch (e) {
         debugPrint('[TelecomService] Error handling native method call: $e');
       }
     });
+  }
+
+  /// Defensively re-registers the MethodChannel handler.
+  void reinitialize() {
+    _initMethodCallHandler();
   }
 
   /// Checks if Octal is currently the system Default Dialer / Default Phone App.
@@ -102,6 +139,46 @@ class TelecomService {
       return res ?? false;
     } catch (e) {
       debugPrint('[TelecomService] requestDefaultDialerRole error: $e');
+      return false;
+    }
+  }
+
+  /// Centralized prerequisite gate for both Normal Calling and Auto Dialer.
+  /// Enforces Default Dialer role and mandatory telephony permissions before placing calls.
+  /// If missing, prompts the user and verifies. If declined, returns false.
+  Future<bool> ensureCallingPrerequisites({
+    bool requestIfMissing = true,
+  }) async {
+    try {
+      // 1. Default Dialer check
+      bool defaultDialer = await isDefaultDialer();
+      if (!defaultDialer) {
+        if (!requestIfMissing) return false;
+        debugPrint('[PrerequisiteGate] Octal is not default dialer. Requesting ROLE_DIALER...');
+        await requestDefaultDialerRole();
+        defaultDialer = await isDefaultDialer();
+        if (!defaultDialer) {
+          debugPrint('[PrerequisiteGate] User declined Default Dialer role.');
+          return false;
+        }
+      }
+
+      // 2. Mandatory call permissions (CALL_PHONE & READ_PHONE_STATE)
+      bool hasPerm = await _channel.invokeMethod<bool>('checkCallPermission') ?? false;
+      if (!hasPerm) {
+        if (!requestIfMissing) return false;
+        debugPrint('[PrerequisiteGate] Calling permissions missing. Requesting...');
+        await _channel.invokeMethod('requestCallPermission');
+        hasPerm = await _channel.invokeMethod<bool>('checkCallPermission') ?? false;
+        if (!hasPerm) {
+          debugPrint('[PrerequisiteGate] Mandatory calling permissions denied.');
+          return false;
+        }
+      }
+
+      return true;
+    } catch (e) {
+      debugPrint('[PrerequisiteGate] Error: $e');
       return false;
     }
   }
@@ -139,8 +216,20 @@ class TelecomService {
 
   /// Direct outgoing GSM call placement via official Android TelecomManager.
   /// Binds to OctalInCallService when Octal is the Default Dialer.
+  ///
+  /// CRITICAL: Enforces Default Dialer role check.
+  /// If Octal is NOT the default dialer:
+  /// - DO NOT silently fall back to ACTION_CALL.
+  /// - DO NOT place the call.
+  /// - Returns false.
   Future<bool> placeCall(String phone, {int? simSlot, String? callId}) async {
     try {
+      final bool defaultDialer = await isDefaultDialer();
+      if (!defaultDialer) {
+        debugPrint('[TelecomService] Cannot place Telecom call: Octal is not the Default Dialer.');
+        return false;
+      }
+
       final bool? res = await _channel.invokeMethod<bool>('telecomPlaceCall', {
         'phone': phone,
         'simSlot': simSlot,
