@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.CallLog
+import android.provider.ContactsContract
 import android.telecom.CallAudioState
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
@@ -204,7 +205,8 @@ class MainActivity: FlutterActivity() {
                     val callGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
                     val stateGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
                     val logGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED
-                    result.success(callGranted && stateGranted && logGranted)
+                    val contactsGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                    result.success(callGranted && stateGranted && logGranted && contactsGranted)
                 }
                 "requestCallPermission" -> {
                     val permissionsNeeded = mutableListOf<String>()
@@ -216,6 +218,9 @@ class MainActivity: FlutterActivity() {
                     }
                     if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
                         permissionsNeeded.add(Manifest.permission.READ_CALL_LOG)
+                    }
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                        permissionsNeeded.add(Manifest.permission.READ_CONTACTS)
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
@@ -271,8 +276,16 @@ class MainActivity: FlutterActivity() {
                 }
                 "telecomSetSpeaker" -> {
                     val speaker = call.argument<Boolean>("speaker") ?: false
-                    val route = if (speaker) CallAudioState.ROUTE_SPEAKER else CallAudioState.ROUTE_EARPIECE
+                    val route = if (speaker) CallAudioState.ROUTE_SPEAKER else CallAudioState.ROUTE_WIRED_OR_EARPIECE
                     result.success(OctalCallManager.setAudioRoute(route))
+                }
+                "telecomHoldCall" -> {
+                    val callId = call.argument<String>("callId")
+                    result.success(OctalCallManager.holdCall(callId))
+                }
+                "telecomUnholdCall" -> {
+                    val callId = call.argument<String>("callId")
+                    result.success(OctalCallManager.unholdCall(callId))
                 }
                 "telecomSendDtmf" -> {
                     val digit = call.argument<String>("digit")?.firstOrNull()
@@ -293,6 +306,22 @@ class MainActivity: FlutterActivity() {
                 }
                 "getInCallDetails" -> {
                     result.success(OctalCallManager.getActiveCallInfo())
+                }
+                "telecomPlaceCall" -> {
+                    val phone = call.argument<String>("phone")
+                    val simSlot = call.argument<Int>("simSlot")
+                    val callId = call.argument<String>("callId")
+                    if (!phone.isNullOrEmpty()) {
+                        telecomPlaceCall(phone, simSlot, callId, result)
+                    } else {
+                        result.error("INVALID_PHONE", "Phone number is empty", null)
+                    }
+                }
+                "getDeviceContacts" -> {
+                    getDeviceContacts(result)
+                }
+                "getDeviceCallLogs" -> {
+                    getDeviceCallLogs(result)
                 }
                 else -> {
                     result.notImplemented()
@@ -587,6 +616,92 @@ class MainActivity: FlutterActivity() {
     }
 
     // ==========================================
+    // TELECOM DIRECT CALL INITIATION (PHASE 2)
+    // ==========================================
+    private fun telecomPlaceCall(phone: String, requestedSlot: Int?, requestedCallId: String?, result: MethodChannel.Result) {
+        try {
+            val telecomManager = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+            if (telecomManager == null) {
+                result.error("TELECOM_UNAVAILABLE", "TelecomManager service unavailable", null)
+                return
+            }
+
+            val hasCallPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
+            if (!hasCallPermission) {
+                result.error("PERMISSION_DENIED", "CALL_PHONE permission required", null)
+                return
+            }
+
+            val cleanPhone = phone.filter { it.isDigit() || it == '+' }
+            if (cleanPhone.isEmpty()) {
+                result.error("INVALID_PHONE", "Empty phone number", null)
+                return
+            }
+            val uri = Uri.parse("tel:$cleanPhone")
+
+            val (descriptors, effectiveSim, _) = getActiveSimsWithReconciliation()
+            val targetSim = if (requestedSlot != null) {
+                descriptors.find { it.simSlotIndex == requestedSlot } ?: effectiveSim
+            } else effectiveSim
+
+            val callAccounts = telecomManager.getCallCapablePhoneAccounts() ?: emptyList()
+            var matchedHandle: PhoneAccountHandle? = null
+
+            if (targetSim != null) {
+                val targetSubId = targetSim.subscriptionId
+                matchedHandle = callAccounts.find {
+                    it.id == targetSubId.toString() || it.id.contains(targetSubId.toString())
+                }
+                if (matchedHandle == null && targetSim.isSystemDefault) {
+                    matchedHandle = telecomManager.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
+                }
+            }
+
+            if (matchedHandle == null) {
+                matchedHandle = telecomManager.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
+            }
+
+            val extras = Bundle().apply {
+                if (matchedHandle != null) {
+                    putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, matchedHandle)
+                    putParcelable("android.telecom.extra.PHONE_ACCOUNT_HANDLE", matchedHandle)
+                }
+                if (targetSim != null) {
+                    putInt("com.android.phone.extra.slot", targetSim.simSlotIndex)
+                    putInt("simSlot", targetSim.simSlotIndex)
+                    putInt("slot", targetSim.simSlotIndex)
+                    putInt("com.android.phone.extra.Subscription", targetSim.subscriptionId)
+                    putInt("subscription", targetSim.subscriptionId)
+                    putInt("subscription_id", targetSim.subscriptionId)
+                }
+            }
+
+            if (!requestedCallId.isNullOrEmpty()) {
+                synchronized(callLock) {
+                    currentCall = ActiveCallSession(
+                        callId = requestedCallId,
+                        phoneNumber = cleanPhone,
+                        rawPhone = phone,
+                        startedAt = System.currentTimeMillis(),
+                        simSlot = targetSim?.simSlotIndex,
+                        subscriptionId = targetSim?.subscriptionId
+                    )
+                }
+            }
+
+            Log.d(TAG, "[Telecom] Placing direct Telecom call: phone=$cleanPhone slot=${targetSim?.simSlotIndex} subId=${targetSim?.subscriptionId} handle=${matchedHandle?.id ?: "DEFAULT"} callId=${requestedCallId ?: "NONE"}")
+            telecomManager.placeCall(uri, extras)
+            result.success(true)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "[Telecom] SecurityException on telecomPlaceCall: ${e.message}")
+            result.error("SECURITY_EXCEPTION", "Permission denied: ${e.message}", null)
+        } catch (e: Exception) {
+            Log.e(TAG, "[Telecom] telecomPlaceCall failed: ${e.message}")
+            result.error("PLACE_CALL_FAILED", e.message, null)
+        }
+    }
+
+    // ==========================================
     // TELEPHONY STATE LISTENER
     // ==========================================
     private fun registerTelephonyListeners() {
@@ -800,6 +915,124 @@ class MainActivity: FlutterActivity() {
             pendingDefaultDialerResult?.success(isDefault)
             pendingDefaultDialerResult = null
         }
+    }
+
+    private fun getDeviceContacts(result: MethodChannel.Result) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            result.success(emptyList<Map<String, Any?>>())
+            return
+        }
+        Thread {
+            val contacts = mutableListOf<Map<String, Any?>>()
+            try {
+                val cursor = contentResolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf(
+                        ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                        ContactsContract.CommonDataKinds.Phone.NUMBER,
+                        ContactsContract.CommonDataKinds.Phone.STARRED
+                    ),
+                    null, null,
+                    "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC LIMIT 300"
+                )
+                cursor?.use {
+                    val idCol = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
+                    val nameCol = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                    val numCol = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    val starCol = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.STARRED)
+                    val seenNumbers = mutableSetOf<String>()
+                    while (it.moveToNext()) {
+                        val name = if (nameCol >= 0) it.getString(nameCol) else "Contact"
+                        val number = if (numCol >= 0) it.getString(numCol) else ""
+                        val cleanNum = number.replace(Regex("[^0-9+]"), "")
+                        if (cleanNum.isNotEmpty() && !seenNumbers.contains(cleanNum)) {
+                            seenNumbers.add(cleanNum)
+                            val isStarred = if (starCol >= 0) it.getInt(starCol) == 1 else false
+                            val id = if (idCol >= 0) it.getString(idCol) else ""
+                            contacts.add(mapOf(
+                                "id" to id,
+                                "name" to (name ?: "Unknown"),
+                                "number" to number,
+                                "isFavorite" to isStarred
+                            ))
+                        }
+                    }
+                }
+                runOnUiThread { result.success(contacts) }
+            } catch (e: Exception) {
+                Log.e(TAG, "getDeviceContacts error: ${e.message}")
+                runOnUiThread { result.success(emptyList<Map<String, Any?>>()) }
+            }
+        }.start()
+    }
+
+    private fun getDeviceCallLogs(result: MethodChannel.Result) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+            result.success(emptyList<Map<String, Any?>>())
+            return
+        }
+        Thread {
+            val logs = mutableListOf<Map<String, Any?>>()
+            try {
+                val cursor = contentResolver.query(
+                    CallLog.Calls.CONTENT_URI,
+                    arrayOf(
+                        CallLog.Calls._ID,
+                        CallLog.Calls.CACHED_NAME,
+                        CallLog.Calls.NUMBER,
+                        CallLog.Calls.TYPE,
+                        CallLog.Calls.DATE,
+                        CallLog.Calls.DURATION,
+                        CallLog.Calls.PHONE_ACCOUNT_ID
+                    ),
+                    null, null,
+                    "${CallLog.Calls.DATE} DESC"
+                )
+                cursor?.use {
+                    val idCol = it.getColumnIndex(CallLog.Calls._ID)
+                    val nameCol = it.getColumnIndex(CallLog.Calls.CACHED_NAME)
+                    val numCol = it.getColumnIndex(CallLog.Calls.NUMBER)
+                    val typeCol = it.getColumnIndex(CallLog.Calls.TYPE)
+                    val dateCol = it.getColumnIndex(CallLog.Calls.DATE)
+                    val durCol = it.getColumnIndex(CallLog.Calls.DURATION)
+                    val simCol = it.getColumnIndex(CallLog.Calls.PHONE_ACCOUNT_ID)
+
+                    while (it.moveToNext() && logs.size < 100) {
+                        val id = if (idCol >= 0) it.getString(idCol) else ""
+                        val name = if (nameCol >= 0) it.getString(nameCol) else null
+                        val number = if (numCol >= 0) it.getString(numCol) else ""
+                        val type = if (typeCol >= 0) it.getInt(typeCol) else CallLog.Calls.INCOMING_TYPE
+                        val date = if (dateCol >= 0) it.getLong(dateCol) else 0L
+                        val duration = if (durCol >= 0) it.getInt(durCol) else 0
+                        val simId = if (simCol >= 0) it.getString(simCol) else ""
+
+                        val typeString = when (type) {
+                            CallLog.Calls.INCOMING_TYPE -> "INCOMING"
+                            CallLog.Calls.OUTGOING_TYPE -> "OUTGOING"
+                            CallLog.Calls.MISSED_TYPE -> "MISSED"
+                            CallLog.Calls.REJECTED_TYPE -> "REJECTED"
+                            CallLog.Calls.BLOCKED_TYPE -> "BLOCKED"
+                            else -> "UNKNOWN"
+                        }
+
+                        logs.add(mapOf(
+                            "id" to id,
+                            "name" to (name ?: number),
+                            "number" to number,
+                            "type" to typeString,
+                            "timestamp" to date,
+                            "duration" to duration,
+                            "simId" to simId
+                        ))
+                    }
+                }
+                runOnUiThread { result.success(logs) }
+            } catch (e: Exception) {
+                Log.e(TAG, "getDeviceCallLogs error: ${e.message}")
+                runOnUiThread { result.success(emptyList<Map<String, Any?>>()) }
+            }
+        }.start()
     }
 
     override fun onDestroy() {

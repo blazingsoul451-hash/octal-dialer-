@@ -1,8 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'screens/login_screen.dart';
-import 'screens/device_dashboard_screen.dart';
-import 'screens/connect_screen.dart';
+import 'screens/main_shell_screen.dart';
 import 'config/app_config.dart';
 import 'widgets/octal_logo.dart';
 
@@ -20,38 +17,8 @@ class OctalDialerApp extends StatefulWidget {
 }
 
 class _OctalDialerAppState extends State<OctalDialerApp> {
-  Widget _initialScreen = const Scaffold(
-    backgroundColor: OctalColors.bgDark,
-    body: Center(
-      child: CircularProgressIndicator(color: OctalColors.primaryGold),
-    ),
-  );
+  final Widget _initialScreen = const MainShellScreen();
 
-  @override
-  void initState() {
-    super.initState();
-    _checkInitialRoute();
-  }
-
-  Future<void> _checkInitialRoute() async {
-    final prefs = await SharedPreferences.getInstance();
-    final authToken = prefs.getString('auth_token');
-    final connectionUri = prefs.getString('connection_uri');
-
-    if (authToken != null && authToken.isNotEmpty) {
-      setState(() {
-        _initialScreen = const DeviceDashboardScreen();
-      });
-    } else if (connectionUri != null && connectionUri.isNotEmpty) {
-      setState(() {
-        _initialScreen = const ConnectScreen();
-      });
-    } else {
-      setState(() {
-        _initialScreen = const LoginScreen();
-      });
-    }
-  }
 
   @override
   Widget build(BuildContext context) {

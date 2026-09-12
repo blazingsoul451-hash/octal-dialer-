@@ -13,6 +13,7 @@ import 'calling_screen.dart';
 import 'standalone_dialer_screen.dart';
 import 'call_log_screen.dart';
 import 'dashboard_screen.dart';
+import 'main_shell_screen.dart';
 
 class ConnectedScreen extends StatefulWidget {
   final String sessionId;
@@ -349,19 +350,35 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF020617),
-      appBar: _selectedTabIndex == 3
-          ? AppBar(
-              backgroundColor: const Color(0xFF0F172A),
-              title: const Text('Bluetooth Bridge Console', style: TextStyle(fontFamily: 'Ubuntu', fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-              elevation: 0,
-              actions: [
-                IconButton(
-                  icon: const Icon(Icons.power_settings_new, color: Colors.redAccent),
-                  onPressed: _disconnect,
-                ),
-              ],
-            )
-          : null,
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0F172A),
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+          tooltip: 'Back to Phone',
+          onPressed: () {
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const MainShellScreen(initialTabIndex: 0)),
+              (route) => false,
+            );
+          },
+        ),
+        title: Text(
+          _selectedTabIndex == 0
+              ? 'Campaign Dashboard'
+              : (_selectedTabIndex == 1
+                  ? 'Auto Dialer'
+                  : (_selectedTabIndex == 2 ? 'Call Log' : 'Bluetooth Link')),
+          style: const TextStyle(fontFamily: 'Ubuntu', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.power_settings_new, color: Colors.redAccent),
+            tooltip: 'Disconnect',
+            onPressed: _disconnect,
+          ),
+        ],
+      ),
       body: IndexedStack(
         index: _selectedTabIndex,
         children: [
@@ -409,7 +426,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
                               children: [
                                 Icon(
                                   _isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-                                  color: _isConnected ? const Color(0xFF10B981) : Colors.redAccent,
+                                  color: _isConnected ? const Color(0xFFFFB800) : Colors.redAccent,
                                   size: 20,
                                 ),
                                 const SizedBox(width: 8),
@@ -418,7 +435,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
                                   style: TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.bold,
-                                    color: _isConnected ? const Color(0xFF10B981) : Colors.redAccent,
+                                    color: _isConnected ? const Color(0xFFFFB800) : Colors.redAccent,
                                     letterSpacing: 1.0,
                                   ),
                                 ),
@@ -429,7 +446,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
                               height: 8,
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
-                                color: _isConnected ? const Color(0xFF10B981) : Colors.redAccent,
+                                color: _isConnected ? const Color(0xFFFFB800) : Colors.redAccent,
                               ),
                             )
                           ],
@@ -452,7 +469,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
                               children: [
                                 const Text('PAIRED MOBILE', style: TextStyle(fontSize: 8, fontFamily: 'monospace', color: Color(0xFF64748B))),
                                 Text(_deviceName, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white)),
-                                Text(_deviceBtAddress, style: const TextStyle(fontSize: 10, fontFamily: 'monospace', color: Color(0xFF10B981))),
+                                Text(_deviceBtAddress, style: const TextStyle(fontSize: 10, fontFamily: 'monospace', color: Color(0xFFFFB800))),
                               ],
                             ),
                           ],
@@ -487,7 +504,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
                                     style: const TextStyle(
                                       fontFamily: 'monospace',
                                       fontSize: 10,
-                                      color: Color(0xFF10B981),
+                                      color: Color(0xFFFFB800),
                                       height: 1.4,
                                     ),
                                   ),
@@ -503,11 +520,18 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedTabIndex,
+        currentIndex: _selectedTabIndex + 1,
         onTap: (index) {
-          setState(() {
-            _selectedTabIndex = index;
-          });
+          if (index == 0) {
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const MainShellScreen(initialTabIndex: 0)),
+              (route) => false,
+            );
+          } else {
+            setState(() {
+              _selectedTabIndex = index - 1;
+            });
+          }
         },
         backgroundColor: const Color(0xFF0F172A),
         selectedItemColor: const Color(0xFFFFB800),
@@ -516,6 +540,11 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
         unselectedFontSize: 11,
         type: BottomNavigationBarType.fixed,
         items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home_outlined),
+            activeIcon: Icon(Icons.home_rounded, color: Color(0xFFFFB800)),
+            label: 'Home',
+          ),
           BottomNavigationBarItem(
             icon: Icon(Icons.pie_chart_outline),
             activeIcon: Icon(Icons.pie_chart, color: Color(0xFFFFB800)),

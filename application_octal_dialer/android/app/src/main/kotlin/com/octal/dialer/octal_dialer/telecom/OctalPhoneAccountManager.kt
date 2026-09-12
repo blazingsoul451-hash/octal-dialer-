@@ -1,4 +1,4 @@
-﻿package com.octal.dialer.octal_dialer.telecom
+package com.octal.dialer.octal_dialer.telecom
 
 import android.app.role.RoleManager
 import android.content.ComponentName
@@ -12,27 +12,42 @@ import android.telecom.TelecomManager
 import android.util.Log
 
 /**
- * Manages Octal's PhoneAccount registration, PhoneAccountHandle resolution,
- * and Android Default Dialer role checking/requesting via official Telecom APIs.
+ * Manages Octal's Default Dialer role checking/requesting via official Android Telecom APIs.
+ *
+ * NOTE: For physical GSM/carrier calling, Octal operates as a Default Dialer and InCallService UI.
+ * An InCallService is NOT a ConnectionService and must NOT register a custom PhoneAccount with
+ * CAPABILITY_CALL_PROVIDER. Cellular calls route through the system SIM PhoneAccountHandles
+ * returned by TelecomManager.callCapablePhoneAccounts.
  */
 object OctalPhoneAccountManager {
     private const val TAG = "OctalPhoneAccount"
-    private const val ACCOUNT_ID = "octal_dialer_phone_account"
-    private const val ACCOUNT_LABEL = "Octal Dialer"
+    private const val LEGACY_ACCOUNT_ID = "octal_dialer_phone_account"
 
     /**
-     * Obtains the unique PhoneAccountHandle representing the Octal calling service.
+     * Unregisters any legacy PhoneAccount that may have been erroneously registered
+     * pointing to OctalInCallService.
      */
-    fun getPhoneAccountHandle(context: Context): PhoneAccountHandle {
-        val componentName = ComponentName(context, OctalInCallService::class.java)
-        return PhoneAccountHandle(componentName, ACCOUNT_ID)
+    fun unregisterLegacyPhoneAccount(context: Context) {
+        try {
+            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
+            val componentName = ComponentName(context, OctalInCallService::class.java)
+            val legacyHandle = PhoneAccountHandle(componentName, LEGACY_ACCOUNT_ID)
+            telecomManager.unregisterPhoneAccount(legacyHandle)
+            Log.d(TAG, "[Telecom] Unregistered legacy PhoneAccount handle: ${legacyHandle.id}")
+        } catch (e: Exception) {
+            // Ignore if already unregistered or not supported
+        }
     }
 
     /**
-     * Registers Octal's PhoneAccount with Android TelecomManager.
-     * Uses official Android Telecom APIs without hardcoding SIM or device IDs.
+     * Initializes Telecom phone account architecture for Octal as Default Dialer.
+     * Ensures any legacy non-ConnectionService PhoneAccount is removed and logs available
+     * system carrier accounts.
      */
     fun registerPhoneAccount(context: Context): Boolean {
+        // Clean up legacy custom PhoneAccount if present
+        unregisterLegacyPhoneAccount(context)
+
         return try {
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
             if (telecomManager == null) {
@@ -40,22 +55,14 @@ object OctalPhoneAccountManager {
                 return false
             }
 
-            val handle = getPhoneAccountHandle(context)
-            val builder = PhoneAccount.builder(handle, ACCOUNT_LABEL)
-                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
-                .setIcon(android.graphics.drawable.Icon.createWithResource(context, com.octal.dialer.octal_dialer.R.mipmap.ic_launcher))
-                .setShortDescription("Octal Calling Service")
-                .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)
-
-            val account = builder.build()
-            telecomManager.registerPhoneAccount(account)
-            Log.d(TAG, "[Telecom] PhoneAccount registered successfully with handle: ${handle.id}")
+            val accounts = telecomManager.callCapablePhoneAccounts
+            Log.d(TAG, "[Telecom] Initialized Telecom dialer architecture. System SIM accounts: ${accounts?.size ?: 0}")
             true
         } catch (e: SecurityException) {
-            Log.w(TAG, "[Telecom] SecurityException registering PhoneAccount: ${e.message}")
-            false
+            Log.w(TAG, "[Telecom] SecurityException querying callCapablePhoneAccounts: ${e.message}")
+            true
         } catch (e: Exception) {
-            Log.e(TAG, "[Telecom] Failed to register PhoneAccount: ${e.message}")
+            Log.e(TAG, "[Telecom] Error initializing Telecom architecture: ${e.message}")
             false
         }
     }
@@ -103,17 +110,30 @@ object OctalPhoneAccountManager {
     }
 
     /**
-     * Checks if Octal's registered PhoneAccount is currently enabled by the user in system settings.
+     * Verifies that system call-capable PhoneAccounts (physical SIMs) are present
+     * and enabled for placing calls.
      */
     fun isPhoneAccountEnabled(context: Context): Boolean {
         return try {
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return false
-            val handle = getPhoneAccountHandle(context)
-            val account = telecomManager.getPhoneAccount(handle)
-            account?.isEnabled == true
+            val accounts = telecomManager.callCapablePhoneAccounts
+            !accounts.isNullOrEmpty() || isDefaultDialer(context)
         } catch (e: Exception) {
-            Log.w(TAG, "[Telecom] Error checking if PhoneAccount is enabled: ${e.message}")
+            Log.w(TAG, "[Telecom] Error checking if call-capable accounts enabled: ${e.message}")
             false
+        }
+    }
+
+    /**
+     * Resolves the list of active carrier/SIM PhoneAccountHandles provided by Android.
+     */
+    fun getSystemSimAccounts(context: Context): List<PhoneAccountHandle> {
+        return try {
+            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+            telecomManager?.callCapablePhoneAccounts ?: emptyList()
+        } catch (e: Exception) {
+            Log.w(TAG, "[Telecom] Error obtaining system SIM accounts: ${e.message}")
+            emptyList()
         }
     }
 }

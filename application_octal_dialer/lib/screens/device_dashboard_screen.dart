@@ -11,6 +11,8 @@ import 'connected_screen.dart';
 import 'standalone_dialer_screen.dart';
 import 'call_log_screen.dart';
 import 'calling_screen.dart';
+import 'regular_phone_screen.dart';
+import 'main_shell_screen.dart';
 
 class DeviceDashboardScreen extends StatefulWidget {
   const DeviceDashboardScreen({super.key});
@@ -339,13 +341,28 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                   ),
                 ],
               ),
-              IconButton(
-                icon: const Icon(Icons.notifications_none, color: Colors.white, size: 24),
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('All system notifications are up to date.')),
-                  );
-                },
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.home_rounded, color: Colors.white, size: 24),
+                    tooltip: 'Back to Phone',
+                    onPressed: () {
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(builder: (_) => const MainShellScreen(initialTabIndex: 0)),
+                        (route) => false,
+                      );
+                    },
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.notifications_none, color: Colors.white, size: 24),
+                    onPressed: () {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('All system notifications are up to date.')),
+                      );
+                    },
+                  ),
+                ],
               ),
             ],
           ),
@@ -419,7 +436,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                           Icon(
                             _bridge.isPaired ? Icons.bluetooth_connected : (isOnline ? Icons.phone_android : Icons.cloud_off),
                             size: 14,
-                            color: _bridge.isPaired ? OctalColors.success : (isOnline ? OctalColors.primaryGold : OctalColors.textMuted),
+                            color: _bridge.isPaired ? OctalColors.primaryGold : (isOnline ? OctalColors.primaryGold : OctalColors.textMuted),
                           ),
                           const SizedBox(width: 6),
                           Expanded(
@@ -430,7 +447,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
-                                color: _bridge.isPaired ? OctalColors.success : (isOnline ? OctalColors.primaryGold : OctalColors.textMuted),
+                                color: _bridge.isPaired ? OctalColors.primaryGold : (isOnline ? OctalColors.primaryGold : OctalColors.textMuted),
                               ),
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -465,11 +482,11 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     decoration: BoxDecoration(
                       color: _bridge.isPaired
-                          ? OctalColors.success.withOpacity(0.15)
+                          ? OctalColors.primaryGold.withOpacity(0.15)
                           : (isOnline ? OctalColors.primaryGold.withOpacity(0.2) : OctalColors.surfaceCard),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: _bridge.isPaired ? OctalColors.success.withOpacity(0.5) : OctalColors.primaryGold,
+                        color: _bridge.isPaired ? OctalColors.primaryGold.withOpacity(0.5) : OctalColors.primaryGold,
                         width: 1.5,
                       ),
                     ),
@@ -479,7 +496,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                         Icon(
                           _bridge.isPaired ? Icons.bluetooth_connected : (isOnline ? Icons.check_circle : Icons.sync),
                           size: 14,
-                          color: _bridge.isPaired ? OctalColors.success : OctalColors.primaryGold,
+                          color: _bridge.isPaired ? OctalColors.primaryGold : OctalColors.primaryGold,
                         ),
                         const SizedBox(width: 5),
                         Text(
@@ -487,7 +504,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w900,
-                            color: _bridge.isPaired ? OctalColors.success : OctalColors.primaryGold,
+                            color: _bridge.isPaired ? OctalColors.primaryGold : OctalColors.primaryGold,
                           ),
                         ),
                       ],
@@ -495,6 +512,70 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
                   ),
                 ),
               ],
+            ),
+          ),
+
+          // Phase 2: Regular Phone / Telecom In-Call Card
+          const SizedBox(height: 14),
+          InkWell(
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const RegularPhoneScreen()),
+              );
+            },
+            borderRadius: BorderRadius.circular(20),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [
+                    Color(0xFF1E293B),
+                    OctalColors.surfaceCard,
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: OctalColors.primaryGold.withOpacity(0.6), width: 1.5),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: OctalColors.primaryGold.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.dialpad_rounded, color: OctalColors.primaryGold, size: 24),
+                  ),
+                  const SizedBox(width: 14),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Regular Phone & Telecom Test',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          'Default Dialer status, SIM selector, live Telecom calling & in-call controls',
+                          style: TextStyle(
+                            color: OctalColors.textSecondary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.arrow_forward_ios_rounded, color: OctalColors.primaryGold, size: 16),
+                ],
+              ),
             ),
           ),
 
@@ -1387,6 +1468,14 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
             const SizedBox(height: 12),
 
             // Menu Items from Reference Screen 10
+            _buildDrawerItem(Icons.home_rounded, 'Phone Dialer (Home)', false, () {
+              Navigator.pop(context);
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const MainShellScreen(initialTabIndex: 0)),
+                (route) => false,
+              );
+            }, color: const Color(0xFFF09F7D)),
+            const Divider(color: OctalColors.border),
             _buildDrawerItem(Icons.dashboard_outlined, 'Dashboard', _selectedTabIndex == 0, () {
               Navigator.pop(context);
               setState(() => _selectedTabIndex = 0);

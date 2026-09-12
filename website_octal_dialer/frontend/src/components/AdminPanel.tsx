@@ -50,17 +50,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   return (
     <div className="space-y-6 text-left select-none transition-colors duration-200">
       {/* ── Enterprise Control Center Header Card ── */}
-      <div className={`border rounded-2xl p-6 shadow-2xl transition-colors ${
+      <div className={`border rounded-2xl p-4 sm:p-5 shadow-2xl transition-colors ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center font-bold text-purple-400 shadow-sm">
-              <Shield className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center font-bold text-purple-400 shadow-sm">
+              <Shield className="w-4.5 h-4.5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                <h1 className={`text-lg font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
                   Enterprise Control Center
                 </h1>
                 <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border uppercase ${
@@ -71,7 +71,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   {isPlatformAdmin ? 'Platform Supreme Authority' : 'Tenant Administrator'}
                 </span>
               </div>
-              <p className={`text-xs mt-1 font-medium ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
+              <p className={`text-xs mt-0.5 font-medium ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
                 Centralized platform administration for business tenants, user lifecycle, commercial subscriptions, engine operations, and forensic auditing.
               </p>
             </div>
@@ -84,7 +84,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
 
         {/* ── Sub-navigation Tab Bar ── */}
-        <div className={`flex flex-wrap items-center gap-2 pt-6 border-t mt-6 select-none ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
+        <div className={`flex flex-wrap items-center gap-1.5 pt-4 border-t mt-4 select-none ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
@@ -97,7 +97,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     setSelectedBusinessId(null);
                   }
                 }}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold font-mono transition-all flex items-center gap-2 cursor-pointer border ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold font-mono transition-all flex items-center gap-1.5 cursor-pointer border shrink-0 ${
                   active
                     ? 'bg-amber-500 text-black border-amber-500 shadow-sm font-black'
                     : isLight

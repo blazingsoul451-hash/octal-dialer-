@@ -81,11 +81,55 @@ export default function App() {
     facebookPoster: false
   });
 
+  // ─── UI Scale / Display Density State (Laptop & Desktop Adaptability) ─────
+  const [uiZoom, setUiZoom] = useState<string>(() => {
+    return localStorage.getItem('octal_ui_zoom') || '100%';
+  });
+
+  useEffect(() => {
+    try {
+      const zoomMap: Record<string, string> = {
+        '100%': '1',
+        '90%': '0.9',
+        '85%': '0.85',
+        '80%': '0.8'
+      };
+      const zoomVal = zoomMap[uiZoom] || '1';
+      (document.documentElement.style as any).zoom = zoomVal;
+      localStorage.setItem('octal_ui_zoom', uiZoom);
+    } catch (e) {
+      console.warn('CSS zoom not supported:', e);
+    }
+  }, [uiZoom]);
+
+  const cycleUiZoom = () => {
+    const zoomLevels = ['100%', '90%', '85%', '80%'];
+    const currentIndex = zoomLevels.indexOf(uiZoom);
+    const nextZoom = zoomLevels[(currentIndex + 1) % zoomLevels.length];
+    setUiZoom(nextZoom);
+  };
+
   // ─── Collapsible Hover & Pinned Navigation Drawer State ──────────
-  const [isNavPinned, setIsNavPinned] = useState(false);
+  const [isNavPinned, setIsNavPinned] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const savedPin = localStorage.getItem('octal_nav_pinned');
+      if (savedPin !== null) return savedPin === 'true';
+      return window.innerWidth >= 1440; // Default expanded only on large desktop screens >= 1440px
+    }
+    return false;
+  });
   const [isNavHovered, setIsNavHovered] = useState(false);
   const isNavExpanded = isNavPinned || isNavHovered;
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  const toggleNavPinned = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsNavPinned((prev) => {
+      const next = !prev;
+      localStorage.setItem('octal_nav_pinned', String(next));
+      return next;
+    });
+  };
 
   // Automatically close mobile menu when tab changes or Escape pressed
   useEffect(() => {
@@ -458,7 +502,7 @@ export default function App() {
 
       {/* Main Octal Accounts Style Rounded Header Block (Fixed Top) */}
       <header className={`fixed top-0 right-0 left-0 z-40 transition-all duration-300 ${
-        isNavExpanded ? 'md:left-64' : 'md:left-16'
+        isNavExpanded ? 'md:left-56' : 'md:left-16'
       } ${
         isLight
           ? 'bg-[#f8fafc] text-slate-900'
@@ -476,8 +520,8 @@ export default function App() {
 
               {/* Desktop Menu Icon Button */}
               <button
-                onClick={(e) => { e.stopPropagation(); setIsNavPinned(!isNavPinned); }}
-                title={isNavPinned ? "Unpin Navigation Sidebar" : "Pin Navigation Sidebar Open"}
+                onClick={toggleNavPinned}
+                title={isNavPinned ? "Unpin Navigation Sidebar (Collapse)" : "Pin Navigation Sidebar Open"}
                 className={`hidden md:block p-1.5 rounded-lg transition-all cursor-pointer ${
                   isNavPinned
                     ? isLight ? 'text-amber-700 bg-amber-50 border border-amber-200' : 'text-amber-400 bg-slate-900 border border-amber-500/30'
@@ -573,6 +617,20 @@ export default function App() {
               🎤
             </button>
 
+            {/* 🔍 Display Density / Scale Switcher */}
+            <button
+              onClick={cycleUiZoom}
+              title={`Display Scale: ${uiZoom} (Click to toggle 100% ➔ 90% ➔ 85% ➔ 80% for Laptops)`}
+              className={`h-8 px-2 rounded-full border text-[11px] font-mono font-bold flex items-center gap-1 transition-all cursor-pointer shadow-sm ${
+                isLight
+                  ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
+                  : 'bg-slate-900 border-slate-800 text-amber-400 hover:text-white'
+              }`}
+            >
+              <span className="text-[10px]">🔍</span>
+              <span>{uiZoom}</span>
+            </button>
+
             {/* ⚙️ Settings / Theme Toggle Circle */}
             <button
               onClick={toggleTheme}
@@ -645,10 +703,10 @@ export default function App() {
           onMouseLeave={() => setIsNavHovered(false)}
           className={`fixed top-0 bottom-0 z-50 transition-all duration-300 ease-in-out border-r shadow-2xl flex flex-col justify-between select-none ${
             isNavExpanded
-              ? 'w-64 p-4 left-0'
+              ? 'w-56 p-3 left-0'
               : 'w-16 p-2.5 items-center -left-16 md:left-0'
           } ${
-            isMobileMenuOpen ? 'left-0 w-64 p-4' : ''
+            isMobileMenuOpen ? 'left-0 w-56 p-3' : ''
           } ${
             isLight ? 'bg-white border-slate-200 text-slate-900 shadow-slate-300/50' : 'bg-[#09090b] border-[#18181b] text-white shadow-2xl'
           }`}
@@ -662,7 +720,7 @@ export default function App() {
               <button
                 onClick={() => setActiveTab('dashboard')}
                 title="Dashboard"
-                className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-3 pr-2 py-1.5 justify-start text-xs font-bold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                   activeTab === 'dashboard'
                     ? isLight
                       ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -681,7 +739,7 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('crm')}
                   title="CRM & Customer Intelligence"
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-3 pr-2 py-1.5 justify-start text-xs font-bold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'crm' || activeTab === 'follow-ups'
                       ? isLight
                         ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -701,7 +759,7 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('campaigns')}
                   title="Campaigns Workspace"
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-3 pr-2 py-1.5 justify-start text-xs font-bold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'campaigns'
                       ? isLight
                         ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -720,7 +778,7 @@ export default function App() {
               {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.leads) && (
                 <button
                   onClick={() => setActiveTab('leads')}
-                  className={`w-full flex items-center gap-2.5 pl-3.5 pr-2.5 py-1.5 rounded-lg transition-all duration-300 ${
+                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'leads'
                       ? isLight
                         ? 'bg-blue-500/15 text-blue-950 font-bold border-l-3 border-blue-500 shadow-sm'
@@ -739,7 +797,7 @@ export default function App() {
               {userRole === 'platform_admin' && (
                 <button
                   onClick={() => setActiveTab('admin')}
-                  className={`w-full flex items-center gap-2.5 pl-3.5 pr-2.5 py-1.5 rounded-lg transition-all duration-300 ${
+                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'admin'
                       ? isLight
                         ? 'bg-purple-500/15 text-purple-950 font-bold border-l-3 border-purple-500 shadow-sm'
@@ -758,7 +816,7 @@ export default function App() {
               {userRole === 'platform_admin' && (
                 <button
                   onClick={() => setActiveTab('billing')}
-                  className={`w-full flex items-center gap-2.5 pl-3.5 pr-2.5 py-1.5 rounded-lg transition-all duration-300 ${
+                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'billing'
                       ? isLight
                         ? 'bg-emerald-500/15 text-emerald-950 font-bold border-l-3 border-emerald-500 shadow-sm'
@@ -778,7 +836,7 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('reports')}
                   title="Reports & Analytics"
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-3 pr-2 py-1.5 justify-start text-xs font-bold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'reports'
                       ? isLight
                         ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -803,7 +861,7 @@ export default function App() {
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('octalDialer', e)}
-                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-300 cursor-pointer select-none ${
+                    className={`w-full flex items-center justify-between pl-2.5 pr-2 py-1.5 rounded-lg transition-all duration-300 cursor-pointer select-none ${
                       openAccordion.octalDialer
                         ? isLight
                           ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30 shadow-sm'
@@ -813,9 +871,9 @@ export default function App() {
                           : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <PhoneCall className={`w-4.5 h-4.5 shrink-0 ${openAccordion.octalDialer ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
-                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                    <div className="flex items-center gap-2">
+                      <PhoneCall className={`w-4 h-4 shrink-0 ${openAccordion.octalDialer ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-xs font-extrabold select-none">
                         <span className={openAccordion.octalDialer ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
                           OCTAL
                         </span>
@@ -832,7 +890,7 @@ export default function App() {
                     openAccordion.octalDialer ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'
                   }`}>
                     <div className="overflow-hidden">
-                      <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-1 pb-2">
+                      <div className="pl-2 space-y-1 border-l border-slate-300 dark:border-slate-800 ml-3 pt-1 pb-1.5">
                         {[
                           { id: 'dialer', label: 'Auto Dialer', icon: PlaySquare },
                           { id: 'pair', label: 'Connect to Phone', icon: Bluetooth },
@@ -846,7 +904,7 @@ export default function App() {
                             <button
                               key={item.label + idx}
                               onClick={() => setActiveTab(item.id as any)}
-                              className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              className={`w-full flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md text-xs font-sans font-medium transition-all duration-300 cursor-pointer ${
                                 active
                                   ? isLight
                                     ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
@@ -856,7 +914,7 @@ export default function App() {
                                     : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
                               }`}
                             >
-                              <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                              <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
                               <span className="truncate">{item.label}</span>
                             </button>
                           );
@@ -872,7 +930,7 @@ export default function App() {
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('googleScraper', e)}
-                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-300 cursor-pointer select-none ${
+                    className={`w-full flex items-center justify-between pl-2.5 pr-2 py-1.5 rounded-lg transition-all duration-300 cursor-pointer select-none ${
                       openAccordion.googleScraper
                         ? isLight
                           ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30 shadow-sm'
@@ -882,9 +940,9 @@ export default function App() {
                           : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <Database className={`w-4.5 h-4.5 shrink-0 ${openAccordion.googleScraper ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
-                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                    <div className="flex items-center gap-2">
+                      <Database className={`w-4 h-4 shrink-0 ${openAccordion.googleScraper ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-xs font-extrabold select-none">
                         <span className={openAccordion.googleScraper ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
                           GOOGLE
                         </span>
@@ -901,7 +959,7 @@ export default function App() {
                     openAccordion.googleScraper ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'
                   }`}>
                     <div className="overflow-hidden">
-                      <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-1 pb-2">
+                      <div className="pl-2 space-y-1 border-l border-slate-300 dark:border-slate-800 ml-3 pt-1 pb-1.5">
                         {[
                           { id: 'scraper', label: 'Run Scraper', icon: Play },
                           { id: 'scraper-import', label: 'File Manager', icon: Database },
@@ -913,7 +971,7 @@ export default function App() {
                             <button
                               key={item.label + idx}
                               onClick={() => setActiveTab(item.id as any)}
-                              className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              className={`w-full flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md text-xs font-sans font-medium transition-all duration-300 cursor-pointer ${
                                 active
                                   ? isLight
                                     ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
@@ -923,7 +981,7 @@ export default function App() {
                                     : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
                               }`}
                             >
-                              <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                              <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
                               <span className="truncate">{item.label}</span>
                             </button>
                           );
@@ -939,7 +997,7 @@ export default function App() {
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('autoEmailer', e)}
-                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-300 cursor-pointer select-none ${
+                    className={`w-full flex items-center justify-between pl-2.5 pr-2 py-1.5 rounded-lg transition-all duration-300 cursor-pointer select-none ${
                       openAccordion.autoEmailer
                         ? isLight
                           ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30 shadow-sm'
@@ -949,9 +1007,9 @@ export default function App() {
                           : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <Mail className={`w-4.5 h-4.5 shrink-0 ${openAccordion.autoEmailer ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
-                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                    <div className="flex items-center gap-2">
+                      <Mail className={`w-4 h-4 shrink-0 ${openAccordion.autoEmailer ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-xs font-extrabold select-none">
                         <span className={openAccordion.autoEmailer ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
                           AUTO
                         </span>
@@ -968,7 +1026,7 @@ export default function App() {
                     openAccordion.autoEmailer ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'
                   }`}>
                     <div className="overflow-hidden">
-                      <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-1 pb-2">
+                      <div className="pl-2 space-y-1 border-l border-slate-300 dark:border-slate-800 ml-3 pt-1 pb-1.5">
                         {[
                           { id: 'emailer-gmail', label: 'Email Accounts', icon: Mail },
                           { id: 'emailer-campaign', label: 'Campaign Manager', icon: Play },
@@ -981,7 +1039,7 @@ export default function App() {
                             <button
                               key={item.label + idx}
                               onClick={() => setActiveTab(item.id as any)}
-                              className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              className={`w-full flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md text-xs font-sans font-medium transition-all duration-300 cursor-pointer ${
                                 active
                                   ? isLight
                                     ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
@@ -991,7 +1049,7 @@ export default function App() {
                                     : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
                               }`}
                             >
-                              <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                              <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
                               <span className="truncate">{item.label}</span>
                             </button>
                           );
@@ -1007,7 +1065,7 @@ export default function App() {
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('facebookScraper', e)}
-                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-300 cursor-pointer select-none ${
+                    className={`w-full flex items-center justify-between pl-2.5 pr-2 py-1.5 rounded-lg transition-all duration-300 cursor-pointer select-none ${
                       openAccordion.facebookScraper
                         ? isLight
                           ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30 shadow-sm'
@@ -1017,9 +1075,9 @@ export default function App() {
                           : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <Facebook className={`w-4.5 h-4.5 shrink-0 ${openAccordion.facebookScraper ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
-                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                    <div className="flex items-center gap-2">
+                      <Facebook className={`w-4 h-4 shrink-0 ${openAccordion.facebookScraper ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-xs font-extrabold select-none">
                         <span className={openAccordion.facebookScraper ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
                           FACEBOOK
                         </span>
@@ -1036,7 +1094,7 @@ export default function App() {
                     openAccordion.facebookScraper ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'
                   }`}>
                     <div className="overflow-hidden">
-                      <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-1 pb-2">
+                      <div className="pl-2 space-y-1 border-l border-slate-300 dark:border-slate-800 ml-3 pt-1 pb-1.5">
                         {[
                           { id: 'fb-scraper', label: 'Run Scraper', icon: Play },
                           { id: 'fb-scraper-files', label: 'File Manager', icon: Database },
@@ -1047,7 +1105,7 @@ export default function App() {
                             <button
                               key={item.label + idx}
                               onClick={() => setActiveTab(item.id as any)}
-                              className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              className={`w-full flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md text-xs font-sans font-medium transition-all duration-300 cursor-pointer ${
                                 active
                                   ? isLight
                                     ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
@@ -1057,7 +1115,7 @@ export default function App() {
                                     : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
                               }`}
                             >
-                              <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                              <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
                               <span className="truncate">{item.label}</span>
                             </button>
                           );
@@ -1073,7 +1131,7 @@ export default function App() {
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('facebookPoster', e)}
-                    className={`w-full flex items-center justify-between pl-3.5 pr-2.5 py-2 rounded-lg transition-all duration-300 cursor-pointer select-none ${
+                    className={`w-full flex items-center justify-between pl-2.5 pr-2 py-1.5 rounded-lg transition-all duration-300 cursor-pointer select-none ${
                       openAccordion.facebookPoster
                         ? isLight
                           ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30 shadow-sm'
@@ -1083,9 +1141,9 @@ export default function App() {
                           : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <Share2 className={`w-4.5 h-4.5 shrink-0 ${openAccordion.facebookPoster ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
-                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-[13px] font-extrabold select-none">
+                    <div className="flex items-center gap-2">
+                      <Share2 className={`w-4 h-4 shrink-0 ${openAccordion.facebookPoster ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
+                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-xs font-extrabold select-none">
                         <span className={openAccordion.facebookPoster ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
                           FB
                         </span>
@@ -1102,7 +1160,7 @@ export default function App() {
                     openAccordion.facebookPoster ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'
                   }`}>
                     <div className="overflow-hidden">
-                      <div className="pl-2.5 space-y-2 border-l border-slate-300 dark:border-slate-800 ml-3.5 pt-1 pb-2">
+                      <div className="pl-2 space-y-1 border-l border-slate-300 dark:border-slate-800 ml-3 pt-1 pb-1.5">
                         {[
                           { id: 'fb-poster-accounts', label: 'FB Accounts', icon: Users },
                           { id: 'fb-poster-campaigns', label: 'Campaign Manager', icon: Play },
@@ -1116,7 +1174,7 @@ export default function App() {
                             <button
                               key={item.label + idx}
                               onClick={() => setActiveTab(item.id as any)}
-                              className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-[13px] font-sans font-semibold transition-all duration-300 cursor-pointer ${
+                              className={`w-full flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md text-xs font-sans font-medium transition-all duration-300 cursor-pointer ${
                                 active
                                   ? isLight
                                     ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
@@ -1126,7 +1184,7 @@ export default function App() {
                                     : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
                               }`}
                             >
-                              <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
+                              <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
                               <span className="truncate">{item.label}</span>
                             </button>
                           );
@@ -1175,13 +1233,13 @@ export default function App() {
           </div>
 
           {/* Bottom Sidebar Card: User Profile & Hardware Status */}
-          <div className={`pt-3 border-t w-full ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
+          <div className={`pt-2.5 border-t w-full ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
             {isNavExpanded ? (
-              <div className={`p-2.5 rounded-xl flex items-center justify-between text-left border ${
+              <div className={`p-2 rounded-xl flex items-center justify-between text-left border ${
                 isLight ? 'bg-slate-50 border-slate-200 shadow-sm' : 'bg-slate-950/60 border-slate-800'
               }`}>
                 <div className="flex items-center gap-2 min-w-0">
-                  <div className={`w-7 h-7 rounded-lg font-bold text-xs flex items-center justify-center border shrink-0 ${
+                  <div className={`w-6.5 h-6.5 rounded-lg font-bold text-xs flex items-center justify-center border shrink-0 ${
                     isLight ? 'bg-amber-500/15 text-amber-800 border-amber-300' : 'bg-amber-500/20 text-amber-400 border-amber-500/30'
                   }`}>
                     {authUser?.charAt(0).toUpperCase() || 'A'}
@@ -1205,7 +1263,7 @@ export default function App() {
         </nav>
 
         {/* Tab Content Panel Container */}
-        <main className={`flex-1 min-w-0 transition-all duration-300 p-4 sm:p-6 lg:p-8 ${isNavExpanded ? 'ml-0 md:ml-64' : 'ml-0 md:ml-16'}`}>
+        <main className={`flex-1 min-w-0 transition-all duration-300 p-3 sm:p-5 lg:p-6 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
           {activeTab === 'dashboard' && (
             <DashboardOverview
               isLight={isLight}

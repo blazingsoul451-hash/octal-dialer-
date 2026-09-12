@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../widgets/octal_logo.dart';
+import '../services/telecom_service.dart';
 
 class CallingScreen extends StatefulWidget {
   final String phone;
@@ -41,8 +42,10 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   // ignore: prefer_final_fields
   String _callStatus = '00:00';
   int _secondsLeft = 30;
+  int _talkSeconds = 0;
   Timer? _ringingTimer;
   Timer? _talkTimer;
+  StreamSubscription<TelecomCallEvent>? _telecomSub;
   CallPhase _phase = CallPhase.ringing;
   bool _callEnded = false;
   bool _isMuted = false;
@@ -68,7 +71,39 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       'accepted': true,
     });
 
-    // Register native telephony call state listener to track real GSM hardware states
+    // Register Telecom call event listener (primary source of truth for GSM calls)
+    _telecomSub = TelecomService.instance.callEvents.listen((event) {
+      if (!mounted || _callEnded) return;
+      if (event.type == 'state_changed') {
+        final st = event.state.toUpperCase();
+        debugPrint('CallingScreen: Telecom state_changed -> $st');
+        if (st == 'ACTIVE') {
+          if (_phase != CallPhase.connected) {
+            setState(() {
+              _phase = CallPhase.connected;
+            });
+            _startTalkTimer();
+          }
+        } else if (st == 'RINGING' || st == 'DIALING') {
+          widget.socket.emit('call:state-changed', {
+            'callId': widget.callId,
+            'commandId': widget.commandId,
+            'state': 'RINGING',
+          });
+        }
+      } else if (event.type == 'removed') {
+        final int dur = (event.duration != null && event.duration! > 0) ? event.duration! : _talkSeconds;
+        final bool answered = dur >= 10 || event.reason == 'ANSWERED' || (_phase == CallPhase.connected && _talkSeconds >= 10);
+        final String reason = answered ? 'ANSWERED' : (dur > 0 && event.reason != 'CANCELLED' ? 'COMPLETED' : (event.reason ?? 'NO_ANSWER'));
+        _endCall(
+          reason: reason,
+          duration: dur,
+          answered: answered,
+        );
+      }
+    });
+
+    // Register native telephony call state listener to track real GSM hardware states (legacy fallback)
     _nativeChannel.setMethodCallHandler((call) async {
       if (call.method == 'onCallStateChanged') {
         String state = 'UNKNOWN';
@@ -107,8 +142,25 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _placeGsmCall();
   }
 
+  void _startTalkTimer() {
+    _ringingTimer?.cancel();
+    _talkTimer?.cancel();
+    _talkSeconds = 0;
+    _talkTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _talkSeconds++;
+          final m = (_talkSeconds ~/ 60).toString().padLeft(2, '0');
+          final s = (_talkSeconds % 60).toString().padLeft(2, '0');
+          _callStatus = '$m:$s';
+        });
+      }
+    });
+  }
+
   void _handleRemoteHangup() {
     debugPrint('CallingScreen: Received remote hangup command');
+    TelecomService.instance.disconnect().catchError((_) => false);
     _nativeChannel.invokeMethod('endCall').catchError((e) {
       debugPrint('CallingScreen: Native endCall ignored: $e');
     });
@@ -187,20 +239,37 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         }
       }
 
-      final success = await _nativeChannel.invokeMethod('makeDirectCall', {
-        'phone': cleanPhone,
-        'callId': widget.callId,
-        'simSlot': widget.simSlot,
-      });
-      if (success != true) {
-        _endCall(reason: 'CALL_INTENT_FAILED');
-      } else {
-        widget.socket.emit('call:state-changed', {
-          'callId': widget.callId,
-          'commandId': widget.commandId,
-          'state': 'DIALING',
-        });
+      // Phase 3: Primary Auto Dialer placement via TelecomService -> TelecomManager.placeCall()
+      bool placed = false;
+      try {
+        placed = await TelecomService.instance.placeCall(
+          cleanPhone,
+          simSlot: widget.simSlot,
+          callId: widget.callId,
+        );
+      } catch (e) {
+        debugPrint('CallingScreen: TelecomService placeCall error: $e');
+        placed = false;
       }
+
+      if (!placed) {
+        debugPrint('CallingScreen: Telecom placeCall returned false, attempting legacy makeDirectCall fallback');
+        final success = await _nativeChannel.invokeMethod('makeDirectCall', {
+          'phone': cleanPhone,
+          'callId': widget.callId,
+          'simSlot': widget.simSlot,
+        });
+        if (success != true) {
+          _endCall(reason: 'CALL_INTENT_FAILED');
+          return;
+        }
+      }
+
+      widget.socket.emit('call:state-changed', {
+        'callId': widget.callId,
+        'commandId': widget.commandId,
+        'state': 'DIALING',
+      });
     } catch (e) {
       debugPrint('Direct GSM call failed: $e');
       _endCall(reason: 'CALL_FAILED');
@@ -218,6 +287,10 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       widget.onCallEnded?.call();
     } catch (_) {}
 
+    final effectiveDuration = duration > 0 ? duration : _talkSeconds;
+    final effectiveAnswered = answered || effectiveDuration >= 10 || reason == 'ANSWERED';
+    final effectiveReason = effectiveAnswered ? 'ANSWERED' : reason;
+
     widget.socket.emit('call:ended', {
       'sessionId': widget.sessionId,
       'callId': widget.callId,
@@ -225,9 +298,9 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       'phone': widget.phone,
       'name': widget.name,
       'commandId': widget.commandId,
-      'reason': reason,
-      'duration': duration,
-      'answered': answered,
+      'reason': effectiveReason,
+      'duration': effectiveDuration,
+      'answered': effectiveAnswered,
     });
 
     try {
@@ -247,6 +320,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _waveAnimController.dispose();
     _ringingTimer?.cancel();
     _talkTimer?.cancel();
+    _telecomSub?.cancel();
     widget.socket.off('phone:hangup');
     widget.socket.off('phone:hangup-call');
     _nativeChannel.setMethodCallHandler(null);
@@ -438,7 +512,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                     icon: _isMuted ? Icons.mic_off : Icons.mic,
                     label: 'Mute',
                     isActive: _isMuted,
-                    onTap: () => setState(() => _isMuted = !_isMuted),
+                    onTap: () async {
+                      final next = !_isMuted;
+                      await TelecomService.instance.setMuted(next);
+                      if (mounted) setState(() => _isMuted = next);
+                    },
                   ),
                   _buildControlItem(
                     icon: Icons.dialpad,
@@ -454,7 +532,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                     icon: _isSpeaker ? Icons.volume_up : Icons.volume_down,
                     label: 'Speaker',
                     isActive: _isSpeaker,
-                    onTap: () => setState(() => _isSpeaker = !_isSpeaker),
+                    onTap: () async {
+                      final next = !_isSpeaker;
+                      await TelecomService.instance.setSpeaker(next);
+                      if (mounted) setState(() => _isSpeaker = next);
+                    },
                   ),
                 ],
               ),
@@ -467,6 +549,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                 height: 54,
                 child: ElevatedButton.icon(
                   onPressed: () {
+                    TelecomService.instance.disconnect().catchError((_) => false);
                     _nativeChannel.invokeMethod('endCall').catchError((_) {});
                     Future.delayed(const Duration(milliseconds: 1500), () {
                       if (mounted && !_callEnded) {

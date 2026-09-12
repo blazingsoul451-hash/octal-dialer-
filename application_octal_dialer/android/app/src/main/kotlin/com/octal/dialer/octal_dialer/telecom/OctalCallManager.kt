@@ -1,4 +1,4 @@
-﻿package com.octal.dialer.octal_dialer.telecom
+package com.octal.dialer.octal_dialer.telecom
 
 import android.os.Build
 import android.telecom.Call
@@ -25,6 +25,9 @@ object OctalCallManager {
 
     // In-memory active calls map (keyed by unique Call hash/id)
     private val activeCalls = ConcurrentHashMap<String, Call>()
+
+    // Track active talk start times for accurate duration measurement
+    private val activeStartTimes = ConcurrentHashMap<String, Long>()
 
     // Event listeners
     private val listeners = CopyOnWriteArrayList<CallEventListener>()
@@ -139,6 +142,11 @@ object OctalCallManager {
         val number = getPhoneNumber(call)
         val stateStr = getStateString(state)
 
+        if (state == Call.STATE_ACTIVE && !activeStartTimes.containsKey(callId)) {
+            activeStartTimes[callId] = System.currentTimeMillis()
+            Log.d(TAG, "[Telecom] Active talk started for call $callId at ${activeStartTimes[callId]}")
+        }
+
         Log.d(TAG, "[Telecom] onCallStateChanged id=$callId state=$stateStr ($state)")
 
         listeners.forEach { listener ->
@@ -155,9 +163,14 @@ object OctalCallManager {
         activeCalls.remove(callId)
         val number = getPhoneNumber(call)
 
+        val activeStart = activeStartTimes.remove(callId) ?: 0L
+        val activeDuration = if (activeStart > 0L) {
+            ((System.currentTimeMillis() - activeStart) / 1000L).toInt().coerceAtLeast(0)
+        } else 0
+
         val details = call.details
         val disconnectCause = details?.disconnectCause
-        val reason = when (disconnectCause?.code) {
+        val rawDisconnectReason = when (disconnectCause?.code) {
             android.telecom.DisconnectCause.LOCAL -> "CANCELLED"
             android.telecom.DisconnectCause.REMOTE -> "COMPLETED"
             android.telecom.DisconnectCause.MISSED -> "MISSED"
@@ -168,11 +181,22 @@ object OctalCallManager {
         }
 
         val connectTime = details?.connectTimeMillis ?: 0L
-        val duration = if (connectTime > 0) {
+        val telecomDuration = if (connectTime > 0L) {
             ((System.currentTimeMillis() - connectTime) / 1000L).toInt().coerceAtLeast(0)
         } else 0
 
-        Log.d(TAG, "[Telecom] onCallRemoved id=$callId reason=$reason duration=${duration}s")
+        val duration = maxOf(activeDuration, telecomDuration)
+
+        // If the call was actively connected and sustained for >= 10s, it is authoritative ANSWERED
+        val reason = if (duration >= 10) {
+            "ANSWERED"
+        } else if (duration > 0 && rawDisconnectReason != "CANCELLED") {
+            "COMPLETED"
+        } else {
+            rawDisconnectReason
+        }
+
+        Log.d(TAG, "[Telecom] onCallRemoved id=$callId rawReason=$rawDisconnectReason finalReason=$reason duration=${duration}s (active=${activeDuration}s, telecom=${telecomDuration}s)")
 
         listeners.forEach { listener ->
             try {
@@ -306,6 +330,42 @@ object OctalCallManager {
                 false
             }
         } else false
+    }
+
+    fun holdCall(callId: String? = null): Boolean {
+        val call = if (callId != null) activeCalls[callId] else getPrimaryCall()
+        return if (call != null) {
+            try {
+                call.hold()
+                Log.d(TAG, "[Telecom] Call held successfully (id=$callId)")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "[Telecom] Failed to hold call: ${e.message}")
+                false
+            }
+        } else {
+            Log.w(TAG, "[Telecom] holdCall: No call found to hold")
+            false
+        }
+    }
+
+    fun unholdCall(callId: String? = null): Boolean {
+        val call = if (callId != null) activeCalls[callId] else {
+            activeCalls.values.find { it.state == Call.STATE_HOLDING } ?: getPrimaryCall()
+        }
+        return if (call != null) {
+            try {
+                call.unhold()
+                Log.d(TAG, "[Telecom] Call unheld successfully (id=$callId)")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "[Telecom] Failed to unhold call: ${e.message}")
+                false
+            }
+        } else {
+            Log.w(TAG, "[Telecom] unholdCall: No call found to unhold")
+            false
+        }
     }
 
     // ==========================================

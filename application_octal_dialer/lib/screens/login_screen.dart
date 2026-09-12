@@ -7,6 +7,7 @@ import '../config/app_config.dart';
 import '../widgets/octal_logo.dart';
 import 'device_dashboard_screen.dart';
 import 'connect_screen.dart';
+import 'regular_phone_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -186,6 +187,21 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: OctalColors.bgDark,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.dialpad_rounded, color: OctalColors.primaryGold),
+            tooltip: 'Regular Phone (Telecom Test)',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const RegularPhoneScreen()),
+              );
+            },
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Stack(
           children: [
@@ -528,6 +544,23 @@ class _LoginScreenState extends State<LoginScreen> {
                       label: const Text(
                         'Pair with Laptop via QR Code',
                         style: TextStyle(color: OctalColors.primaryGold, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    // Direct Regular Phone / Telecom Test Button
+                    TextButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const RegularPhoneScreen()),
+                        );
+                      },
+                      icon: const Icon(Icons.dialpad_rounded, color: OctalColors.primaryGold, size: 18),
+                      label: const Text(
+                        'Open Regular Phone (Default Dialer)',
+                        style: TextStyle(color: OctalColors.primaryGold, fontSize: 13, fontWeight: FontWeight.bold),
                       ),
                     ),
 

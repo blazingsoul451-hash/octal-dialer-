@@ -375,7 +375,10 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     let initialOutcome = 'NO_ANSWER';
     let requiresDisposition = false;
 
-    if (rawReason === 'CANCELLED') {
+    if (duration >= 10 || rawReason === 'CONNECTED' || rawReason === 'ANSWERED') {
+      initialOutcome = 'ANSWERED';
+      requiresDisposition = true;
+    } else if (rawReason === 'CANCELLED') {
       initialOutcome = 'CANCELLED';
       requiresDisposition = false;
     } else if (rawReason === 'BUSY') {
@@ -394,9 +397,6 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     ) {
       initialOutcome = 'FAILED';
       requiresDisposition = false;
-    } else if (rawReason === 'CONNECTED' || rawReason === 'ANSWERED') {
-      initialOutcome = 'ANSWERED';
-      requiresDisposition = true;
     } else {
       initialOutcome = 'UNKNOWN';
       requiresDisposition = false;

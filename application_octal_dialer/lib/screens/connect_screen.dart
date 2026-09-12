@@ -6,6 +6,7 @@ import '../config/app_config.dart';
 import '../widgets/octal_logo.dart';
 import 'connected_screen.dart';
 import 'login_screen.dart';
+import 'regular_phone_screen.dart';
 
 class ConnectScreen extends StatefulWidget {
   const ConnectScreen({super.key});
@@ -129,6 +130,21 @@ class _ConnectScreenState extends State<ConnectScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: OctalColors.bgDark,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.dialpad_rounded, color: OctalColors.primaryGold),
+            tooltip: 'Regular Phone (Telecom Test)',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const RegularPhoneScreen()),
+              );
+            },
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(

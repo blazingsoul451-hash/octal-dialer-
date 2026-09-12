@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -137,6 +137,22 @@ class TelecomService {
     return null;
   }
 
+  /// Direct outgoing GSM call placement via official Android TelecomManager.
+  /// Binds to OctalInCallService when Octal is the Default Dialer.
+  Future<bool> placeCall(String phone, {int? simSlot, String? callId}) async {
+    try {
+      final bool? res = await _channel.invokeMethod<bool>('telecomPlaceCall', {
+        'phone': phone,
+        'simSlot': simSlot,
+        'callId': callId,
+      });
+      return res ?? false;
+    } catch (e) {
+      debugPrint('[TelecomService] placeCall error: $e');
+      return false;
+    }
+  }
+
   /// Genuine hardware call answer via Android Telecom Call object.
   Future<bool> answer() async {
     try {
@@ -177,6 +193,32 @@ class TelecomService {
       return res ?? false;
     } catch (e) {
       debugPrint('[TelecomService] setSpeaker error: $e');
+      return false;
+    }
+  }
+
+  /// Genuine hardware call hold via Android Telecom Call object.
+  Future<bool> holdCall({String? callId}) async {
+    try {
+      final bool? res = await _channel.invokeMethod<bool>('telecomHoldCall', {
+        'callId': callId,
+      });
+      return res ?? false;
+    } catch (e) {
+      debugPrint('[TelecomService] holdCall error: $e');
+      return false;
+    }
+  }
+
+  /// Genuine hardware call unhold (resume) via Android Telecom Call object.
+  Future<bool> unholdCall({String? callId}) async {
+    try {
+      final bool? res = await _channel.invokeMethod<bool>('telecomUnholdCall', {
+        'callId': callId,
+      });
+      return res ?? false;
+    } catch (e) {
+      debugPrint('[TelecomService] unholdCall error: $e');
       return false;
     }
   }
