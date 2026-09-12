@@ -11,6 +11,7 @@ import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.telephony.SubscriptionInfo
 import android.telephony.SubscriptionManager
+import android.telephony.TelephonyManager
 import android.util.Log
 
 /**
@@ -142,18 +143,19 @@ object OctalPhoneAccountManager {
     /**
      * Deterministically resolves the system PhoneAccountHandle for a target SIM.
      * Priority order:
-     * 1. Exact PhoneAccountHandle.id match against subId.toString()
-     * 2. Exact PhoneAccountHandle.id match against info.iccId (if accessible)
-     * 3. Exact system default outgoing account if target is marked as default
-     * 4. Deductive dual-SIM reconciliation: if 2 SIMs and 2 accounts, and one account matches defaultHandle,
+     * 1. Official Android Telecom/Telephony mapping: TelephonyManager.getSubscriptionId(handle)
+     * 2. Exact PhoneAccountHandle.id match against subId.toString()
+     * 3. Exact PhoneAccountHandle.id match against info.iccId (if accessible)
+     * 4. Exact system default outgoing account if target is marked as default
+     * 5. Deductive dual-SIM reconciliation: if 2 SIMs and 2 accounts, and one account matches defaultHandle,
      *    the non-default SIM maps to the remaining callAccount
-     * 5. Slot-index correlation (slot 0 -> account 0, slot 1 -> account 1)
      * 6. Safe fallback to TelecomManager.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
      *
-     * Substring / contains matching is STRICTLY PROHIBITED to prevent cross-SIM collisions.
+     * Substring matching and arbitrary list index assumptions are STRICTLY PROHIBITED.
      */
     fun resolvePhoneAccountHandle(
         telecomManager: TelecomManager?,
+        telephonyManager: TelephonyManager? = null,
         callAccounts: List<PhoneAccountHandle>,
         subId: Int?,
         slotIndex: Int?,
@@ -166,42 +168,71 @@ object OctalPhoneAccountManager {
 
         val defaultHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
 
-        // 1. Exact PhoneAccountHandle ID match against actual subscription ID
-        if (subId != null && subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
-            val exactSubMatch = callAccounts.find { it.id == subId.toString() }
-            if (exactSubMatch != null) return exactSubMatch
+        // Resolve target subscription ID: either directly or via slotIndex lookup in activeList
+        val targetSubId = if (subId != null && subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+            subId
+        } else if (slotIndex != null) {
+            activeList.find { it.simSlotIndex == slotIndex }?.subscriptionId
+        } else null
 
-            // 2. Exact match against SIM ICCID (if accessible from SubscriptionInfo)
-            val subInfo = activeList.find { it.subscriptionId == subId }
+        // 1. Official Android Telecom/Telephony mapping: TelephonyManager.getSubscriptionId(handle)
+        if (targetSubId != null && targetSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID && telephonyManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                for (handle in callAccounts) {
+                    try {
+                        val handleSubId = telephonyManager.getSubscriptionId(handle)
+                        if (handleSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID && handleSubId == targetSubId) {
+                            Log.d(TAG, "[Telecom] Deterministic handle resolved via TelephonyManager.getSubscriptionId: handle=${handle.id} subId=$targetSubId")
+                            return handle
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "[Telecom] Error querying TelephonyManager.getSubscriptionId for handle ${handle.id}: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        // 2. Exact PhoneAccountHandle ID match against actual subscription ID string
+        if (targetSubId != null && targetSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+            val exactSubMatch = callAccounts.find { it.id == targetSubId.toString() }
+            if (exactSubMatch != null) {
+                Log.d(TAG, "[Telecom] Deterministic handle resolved via exact subId string: handle=${exactSubMatch.id} subId=$targetSubId")
+                return exactSubMatch
+            }
+
+            // 3. Exact match against SIM ICCID (if accessible from SubscriptionInfo)
+            val subInfo = activeList.find { it.subscriptionId == targetSubId }
             @Suppress("DEPRECATION")
             val iccId = try { subInfo?.iccId } catch (_: Exception) { null }
             if (!iccId.isNullOrEmpty()) {
                 val exactIccMatch = callAccounts.find { it.id.equals(iccId, ignoreCase = true) }
-                if (exactIccMatch != null) return exactIccMatch
+                if (exactIccMatch != null) {
+                    Log.d(TAG, "[Telecom] Deterministic handle resolved via exact ICCID: handle=${exactIccMatch.id} iccId=$iccId")
+                    return exactIccMatch
+                }
             }
         }
 
-        // 3. Exact system default account match if target is system default
+        // 4. Exact system default account match if target is system default
         if (isSystemDefault && defaultHandle != null && callAccounts.contains(defaultHandle)) {
+            Log.d(TAG, "[Telecom] Target SIM is system default; using defaultHandle: ${defaultHandle.id}")
             return defaultHandle
         }
 
-        // 4. Deductive dual-SIM reconciliation: if 2 accounts and 2 active subscriptions
+        // Deductive dual-SIM reconciliation: if 2 accounts and 2 active subscriptions
         if (callAccounts.size == 2 && activeList.size == 2 && defaultHandle != null && callAccounts.contains(defaultHandle)) {
             if (isSystemDefault) {
                 return defaultHandle
             } else {
                 val nonDefaultAccount = callAccounts.find { it != defaultHandle }
-                if (nonDefaultAccount != null) return nonDefaultAccount
+                if (nonDefaultAccount != null) {
+                    Log.d(TAG, "[Telecom] Deductive dual-SIM non-default account resolved: ${nonDefaultAccount.id}")
+                    return nonDefaultAccount
+                }
             }
         }
 
-        // 5. Slot-index correlation: slot 0 -> callAccounts[0], slot 1 -> callAccounts[1]
-        if (slotIndex != null && slotIndex in 0 until callAccounts.size) {
-            return callAccounts[slotIndex]
-        }
-
-        // 6. Safe fallback to default outgoing account rather than guessing
+        // 5. Safe fallback to system default outgoing account rather than guessing
         return defaultHandle ?: callAccounts.firstOrNull()
     }
 }

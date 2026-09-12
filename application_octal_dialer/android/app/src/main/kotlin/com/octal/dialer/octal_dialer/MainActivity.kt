@@ -424,8 +424,10 @@ class MainActivity: FlutterActivity() {
             val isSysDefaultInitial = (defaultVoiceSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID && defaultVoiceSubId == subId) ||
                     (defaultHandle != null && defaultHandle.id == subId.toString())
 
+            val teleManager = telephonyManager ?: (getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager)
             val matchedHandle = OctalPhoneAccountManager.resolvePhoneAccountHandle(
                 telecomManager = telecomManager,
+                telephonyManager = teleManager,
                 callAccounts = callAccounts,
                 subId = subId,
                 slotIndex = slot,
@@ -562,8 +564,10 @@ class MainActivity: FlutterActivity() {
             targetSlot = targetSim.simSlotIndex
             targetSubId = targetSim.subscriptionId
 
+            val teleManager = telephonyManager ?: (getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager)
             matchedHandle = OctalPhoneAccountManager.resolvePhoneAccountHandle(
                 telecomManager = telecomManager,
+                telephonyManager = teleManager,
                 callAccounts = callAccounts,
                 subId = targetSubId,
                 slotIndex = targetSlot,
@@ -660,8 +664,10 @@ class MainActivity: FlutterActivity() {
                 subManager.activeSubscriptionInfoList ?: emptyList()
             } else emptyList()
 
+            val teleManager = telephonyManager ?: (getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager)
             val matchedHandle = OctalPhoneAccountManager.resolvePhoneAccountHandle(
                 telecomManager = telecomManager,
+                telephonyManager = teleManager,
                 callAccounts = callAccounts,
                 subId = targetSim?.subscriptionId,
                 slotIndex = targetSim?.simSlotIndex,
