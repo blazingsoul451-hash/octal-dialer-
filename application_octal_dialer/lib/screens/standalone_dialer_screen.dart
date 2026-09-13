@@ -72,6 +72,7 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
   bool _callActive = false;
   String? _activeCallLeadId;
 
+  StreamSubscription<TelecomCallEvent>? _telecomSub;
   static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
 
   @override
@@ -80,12 +81,9 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
     WidgetsBinding.instance.addObserver(this);
     _queue = widget.queue ?? [];
 
-    _nativeChannel.setMethodCallHandler((call) async {
-      if (call.method == 'onCallStateChanged') {
-        final state = call.arguments as String;
-        if (mounted) {
-          _handleNativeCallStateChange(state);
-        }
+    _telecomSub = TelecomService.instance.callEvents.listen((event) {
+      if (event.type == 'legacy_state' && mounted) {
+        _handleNativeCallStateChange(event.state);
       }
     });
 
@@ -122,6 +120,7 @@ class _StandaloneDialerScreenState extends State<StandaloneDialerScreen> with Wi
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _telecomSub?.cancel();
     _nativeChannel.invokeMethod('keepScreenOn', {'enable': false});
     _autoDialTimer?.cancel();
     _phoneController.dispose();

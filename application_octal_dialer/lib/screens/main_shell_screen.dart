@@ -5,6 +5,7 @@ import '../widgets/octal_logo.dart';
 import '../services/telecom_service.dart';
 import '../services/phone_data_service.dart';
 import 'phone/phone_home_tab.dart';
+import 'phone/phone_keypad_view.dart';
 import 'auto_dialer/auto_dialer_tab.dart';
 import 'calling/incoming_call_screen.dart';
 import 'calling/shared_in_call_screen.dart';
@@ -29,21 +30,9 @@ class _MainShellScreenState extends State<MainShellScreen> {
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialTabIndex.clamp(0, 1);
+    _currentIndex = widget.initialTabIndex.clamp(0, 2);
     TelecomService.instance.reinitialize();
-    _checkDefaultDialer();
     _listenToTelecomEvents();
-  }
-
-  Future<void> _checkDefaultDialer() async {
-    try {
-      final isDefault = await TelecomService.instance.isDefaultDialer();
-      if (!isDefault && mounted) {
-        await TelecomService.instance.requestDefaultDialerRole();
-      }
-    } catch (e) {
-      debugPrint('[MainShellScreen] checkDefaultDialer error: $e');
-    }
   }
 
   @override
@@ -128,7 +117,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
   void _switchToTab(int index) {
     HapticFeedback.selectionClick();
     setState(() {
-      _currentIndex = index.clamp(0, 1);
+      _currentIndex = index.clamp(0, 2);
     });
   }
 
@@ -138,9 +127,12 @@ class _MainShellScreenState extends State<MainShellScreen> {
       backgroundColor: OctalColors.bgDark,
       body: IndexedStack(
         index: _currentIndex,
-        children: const [
-          PhoneHomeTab(),
-          AutoDialerTab(),
+        children: [
+          PhoneHomeTab(
+            onOpenKeypad: () => _switchToTab(1),
+          ),
+          const PhoneKeypadView(),
+          const AutoDialerTab(),
         ],
       ),
       bottomNavigationBar: _buildBottomNav(),
@@ -152,8 +144,8 @@ class _MainShellScreenState extends State<MainShellScreen> {
 
     return Container(
       padding: EdgeInsets.only(
-        left: 24,
-        right: 24,
+        left: 16,
+        right: 16,
         top: 6,
         bottom: bottomPadding > 0 ? bottomPadding + 4 : 10,
       ),
@@ -166,15 +158,21 @@ class _MainShellScreenState extends State<MainShellScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          // Tab 0: Phone
+          // Tab 0: Home
           _buildNavItem(
             index: 0,
-            icon: Icons.call_rounded,
-            label: 'Phone',
+            icon: Icons.home_rounded,
+            label: 'Home',
           ),
-          // Tab 1: Auto Dialer
+          // Tab 1: Keypad
           _buildNavItem(
             index: 1,
+            icon: Icons.dialpad_rounded,
+            label: 'Keypad',
+          ),
+          // Tab 2: Auto Dialer
+          _buildNavItem(
+            index: 2,
             icon: Icons.laptop_chromebook_rounded,
             label: 'Auto Dialer',
           ),
@@ -198,7 +196,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
         children: [
           AnimatedContainer(
             duration: const Duration(milliseconds: 180),
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 4),
             decoration: BoxDecoration(
               color: isSelected ? OctalColors.pillActive : Colors.transparent,
               borderRadius: BorderRadius.circular(18),

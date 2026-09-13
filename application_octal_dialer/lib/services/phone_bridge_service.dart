@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../config/app_config.dart';
+import 'telecom_service.dart';
 
 enum PairingMode {
   authenticated,
@@ -176,17 +177,14 @@ class PhoneBridgeService extends ChangeNotifier {
     _connectAuthenticatedSocket();
   }
 
+  StreamSubscription<TelecomCallEvent>? _telecomCallEventsSub;
+
   void _setupTelephonyChannel() {
-    _nativeChannel.setMethodCallHandler((call) async {
-      if (call.method == 'onCallStateChanged') {
-        String state = 'UNKNOWN';
-        String phoneNumber = '';
-        if (call.arguments is Map) {
-          state = (call.arguments['state'] ?? 'UNKNOWN').toString();
-          phoneNumber = (call.arguments['phoneNumber'] ?? '').toString();
-        } else if (call.arguments is String) {
-          state = call.arguments as String;
-        }
+    _telecomCallEventsSub?.cancel();
+    _telecomCallEventsSub = TelecomService.instance.callEvents.listen((event) {
+      if (event.type == 'legacy_state') {
+        final state = event.state;
+        final phoneNumber = event.phoneNumber;
 
         debugPrint('[PhoneBridge] Native call state change: $state (incoming phone: $phoneNumber)');
 
@@ -284,22 +282,27 @@ class PhoneBridgeService extends ChangeNotifier {
     );
 
     _socket!.onConnect((_) {
-      debugPrint('[PhoneBridge] Connected to server. Registering authenticated device...');
-      _setStatus(BridgeStatus.connecting, 'Registering device with backend...');
+      if (_authToken.isNotEmpty) {
+        debugPrint('[PhoneBridge] Connected to server. Registering authenticated device...');
+        _setStatus(BridgeStatus.connecting, 'Registering device with backend...');
 
-      _socket!.emit('phone:auth-register', {
-        'token': _authToken,
-        'deviceUid': _deviceUid,
-        'deviceName': _deviceName,
-        'btAddress': _deviceBtAddress,
-        'osType': _deviceOs,
-        'ipAddress': _deviceIp,
-        'platform': 'android',
-        'appVersion': '1.2.0',
-        'sims': _sims,
-        'selectedSimSlot': _selectedSimSlot,
-        'selectedCarrierName': _selectedCarrierName,
-      });
+        _socket!.emit('phone:auth-register', {
+          'token': _authToken,
+          'deviceUid': _deviceUid,
+          'deviceName': _deviceName,
+          'btAddress': _deviceBtAddress,
+          'osType': _deviceOs,
+          'ipAddress': _deviceIp,
+          'platform': 'android',
+          'appVersion': '1.2.0',
+          'sims': _sims,
+          'selectedSimSlot': _selectedSimSlot,
+          'selectedCarrierName': _selectedCarrierName,
+        });
+      } else {
+        debugPrint('[PhoneBridge] Connected to server in QR / unauthenticated mode.');
+        _setStatus(BridgeStatus.online, '● Connected to Octal Bridge');
+      }
     });
 
     _socket!.on('phone:auth-success', (data) {

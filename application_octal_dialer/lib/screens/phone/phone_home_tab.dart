@@ -6,7 +6,6 @@ import '../../services/phone_data_service.dart';
 import '../../services/telecom_service.dart';
 import 'phone_contacts_view.dart';
 import 'create_contact_screen.dart';
-import 'phone_keypad_view.dart';
 
 class PhoneHomeTab extends StatefulWidget {
   final Function(String number, int? simSlot)? onDirectCall;
@@ -372,36 +371,6 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
       key: _scaffoldKey,
       backgroundColor: OctalColors.bgDark,
       drawer: _buildSideDrawer(),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: OctalColors.primaryGold,
-        elevation: 6,
-        tooltip: 'Open Keypad',
-        child: const Icon(Icons.dialpad_rounded, color: OctalColors.bgDark, size: 26),
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => Scaffold(
-                backgroundColor: OctalColors.bgDark,
-                appBar: AppBar(
-                  backgroundColor: Colors.transparent,
-                  elevation: 0,
-                  leading: IconButton(
-                    icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-                    tooltip: 'Back to Phone',
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                  title: const Text(
-                    'Keypad',
-                    style: TextStyle(fontFamily: 'Ubuntu', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-                  ),
-                ),
-                body: const PhoneKeypadView(),
-              ),
-            ),
-          );
-        },
-      ),
       body: SafeArea(
         child: RefreshIndicator(
           color: OctalColors.coralAccent,
