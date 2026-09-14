@@ -47,6 +47,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
     WidgetsBinding.instance.addObserver(this);
     _bridge.addListener(_onBridgeUpdate);
     _bridge.onBridgePaired = _handlePaired;
+    _bridge.onPhoneDial = _handleIncomingDialCommand;
     _checkAndRequestCallPermission();
     if (_bridge.mode == PairingMode.authenticated && _bridge.authToken.isNotEmpty) {
       _bridge.initializeAuthenticated().then((_) {
@@ -207,7 +208,73 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _bridge.removeListener(_onBridgeUpdate);
+    if (_bridge.onPhoneDial == _handleIncomingDialCommand) {
+      _bridge.onPhoneDial = null;
+    }
     super.dispose();
+  }
+
+  bool _isCallingScreenActive = false;
+
+  void _handleIncomingDialCommand(Map<String, dynamic> data) {
+    debugPrint('[PhoneBridge] dispatching phone:dial -> CallingScreen: $data');
+    if (!mounted) return;
+
+    final phone = (data['phone'] ?? '').toString();
+    final name = (data['name'] ?? 'Contact').toString();
+    final leadId = (data['leadId'] ?? '').toString();
+    final commandId = data['commandId']?.toString();
+    final callId = data['callId']?.toString();
+    final timeout = data['timeout'] is int
+        ? data['timeout'] as int
+        : (int.tryParse(data['timeout']?.toString() ?? '') ?? _ringTimeoutSeconds);
+    final simSlot = data['simSlot'] is int
+        ? data['simSlot'] as int
+        : int.tryParse(data['simSlot']?.toString() ?? '');
+
+    final socket = _bridge.socket;
+    if (socket == null) {
+      debugPrint('[PhoneBridge] Cannot launch CallingScreen: bridge socket is null');
+      return;
+    }
+
+    if (_isCallingScreenActive) {
+      debugPrint('[PhoneBridge] Busy in active call — rejecting dial command');
+      socket.emit('phone:dial-ack', {
+        'commandId': commandId,
+        'callId': callId,
+        'accepted': false,
+        'reason': 'BUSY_IN_CALL',
+      });
+      return;
+    }
+
+    _isCallingScreenActive = true;
+    final sessionId = (_bridge.currentSessionId != null && _bridge.currentSessionId!.isNotEmpty)
+        ? _bridge.currentSessionId!
+        : 'sess_standalone';
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CallingScreen(
+          phone: phone,
+          name: name,
+          leadId: leadId,
+          commandId: commandId,
+          callId: callId,
+          simSlot: simSlot,
+          timeout: timeout,
+          socket: socket,
+          sessionId: sessionId,
+          onCallEnded: () {
+            _isCallingScreenActive = false;
+          },
+        ),
+      ),
+    ).then((_) {
+      _isCallingScreenActive = false;
+    });
   }
 
   @override
