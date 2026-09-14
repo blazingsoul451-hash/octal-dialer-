@@ -6,12 +6,9 @@ import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 import '../services/phone_bridge_service.dart';
 import '../widgets/octal_logo.dart';
-import 'login_screen.dart';
-import 'connected_screen.dart';
 import 'standalone_dialer_screen.dart';
 import 'call_log_screen.dart';
 import 'calling_screen.dart';
-import 'regular_phone_screen.dart';
 import 'main_shell_screen.dart';
 
 class DeviceDashboardScreen extends StatefulWidget {
@@ -51,16 +48,15 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
     _bridge.addListener(_onBridgeUpdate);
     _bridge.onBridgePaired = _handlePaired;
     _checkAndRequestCallPermission();
-    _bridge.initializeAuthenticated().then((_) {
-      if (_bridge.authToken.isEmpty && mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const LoginScreen()),
-        );
-      } else {
-        _fetchRealCampaignAndLeads();
-      }
-    });
+    if (_bridge.mode == PairingMode.authenticated && _bridge.authToken.isNotEmpty) {
+      _bridge.initializeAuthenticated().then((_) {
+        if (mounted) {
+          _fetchRealCampaignAndLeads();
+        }
+      });
+    } else {
+      _fetchRealCampaignAndLeads();
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _bridge.checkAndReconcileSim();
@@ -103,7 +99,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
 
   Future<void> _fetchRealCampaignAndLeads([String? targetCampId]) async {
     final serverUrl = AppConfig.apiBaseUrl.isNotEmpty ? AppConfig.apiBaseUrl : 'http://140.245.215.156';
-    final token = _bridge.authToken;
+    final token = _bridge.authToken.isNotEmpty ? _bridge.authToken : (_bridge.sessionToken ?? '');
     if (token.isEmpty) return;
 
     try {
@@ -227,43 +223,18 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
     if (mounted) setState(() {});
   }
 
-  bool _isConnectedScreenOpen = false;
-
   void _handlePaired(Map<String, dynamic> data) {
     if (!mounted) return;
-    final String sessionId = data['sessionId']?.toString() ?? '';
-    final String token = data['token']?.toString() ?? '';
-    final String laptopName = data['laptopName']?.toString() ?? 'Laptop Host';
-    final String laptopBtAddress = data['laptopBtAddress']?.toString() ?? '';
-    final String serverUrl = data['serverUrl']?.toString() ?? _bridge.serverUrl;
-
-    if (sessionId.isNotEmpty && !_isConnectedScreenOpen) {
-      _isConnectedScreenOpen = true;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => ConnectedScreen(
-            sessionId: sessionId,
-            token: token,
-            serverUrl: serverUrl,
-            laptopName: laptopName,
-            laptopBtAddress: laptopBtAddress,
-            mode: PairingMode.authenticated,
-          ),
-        ),
-      ).then((_) {
-        _isConnectedScreenOpen = false;
-        if (mounted) setState(() {});
-      });
-    }
+    _fetchRealCampaignAndLeads();
+    setState(() {});
   }
 
   Future<void> _logout() async {
     await _bridge.logout();
     if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const MainShellScreen(initialTabIndex: 0)),
+        (route) => false,
       );
     }
   }
@@ -515,69 +486,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
             ),
           ),
 
-          // Phase 2: Regular Phone / Telecom In-Call Card
-          const SizedBox(height: 14),
-          InkWell(
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const RegularPhoneScreen()),
-              );
-            },
-            borderRadius: BorderRadius.circular(20),
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [
-                    Color(0xFF1E293B),
-                    OctalColors.surfaceCard,
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: OctalColors.primaryGold.withOpacity(0.6), width: 1.5),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: OctalColors.primaryGold.withOpacity(0.2),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.dialpad_rounded, color: OctalColors.primaryGold, size: 24),
-                  ),
-                  const SizedBox(width: 14),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Regular Phone & Telecom Test',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        SizedBox(height: 4),
-                        Text(
-                          'Default Dialer status, SIM selector, live Telecom calling & in-call controls',
-                          style: TextStyle(
-                            color: OctalColors.textSecondary,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Icon(Icons.arrow_forward_ios_rounded, color: OctalColors.primaryGold, size: 16),
-                ],
-              ),
-            ),
-          ),
+
 
           if (!isOnline) ...[
             const SizedBox(height: 10),

@@ -5,7 +5,6 @@ import '../../widgets/octal_logo.dart';
 import '../../services/phone_bridge_service.dart';
 import '../../config/app_config.dart';
 import '../device_dashboard_screen.dart';
-import '../connected_screen.dart';
 
 class AutoDialerTab extends StatefulWidget {
   const AutoDialerTab({super.key});
@@ -78,25 +77,18 @@ class _AutoDialerTabState extends State<AutoDialerTab> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('connection_uri', uri);
 
+      await _bridge.pairWithQrSession(
+        sessionId: sessionId,
+        token: token,
+        serverUrl: effectiveServerUrl,
+        laptopName: laptopName,
+        laptopBtAddress: laptopBtAddress,
+      );
+
       if (mounted) {
-        await Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => ConnectedScreen(
-              sessionId: sessionId,
-              token: token,
-              serverUrl: effectiveServerUrl,
-              laptopName: laptopName,
-              laptopBtAddress: laptopBtAddress,
-            ),
-          ),
-        );
-        if (mounted) {
-          setState(() {
-            _isLoading = false;
-            _isScanning = true;
-          });
-        }
+        setState(() {
+          _isLoading = false;
+        });
       }
     } catch (e) {
       setState(() {

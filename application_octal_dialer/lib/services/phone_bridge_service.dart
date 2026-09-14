@@ -220,6 +220,144 @@ class PhoneBridgeService extends ChangeNotifier {
     _connectAuthenticatedSocket();
   }
 
+  /// Connect and pair with a laptop session via QR code payload
+  Future<void> pairWithQrSession({
+    required String sessionId,
+    required String token,
+    required String serverUrl,
+    String? laptopName,
+    String? laptopBtAddress,
+  }) async {
+    _mode = PairingMode.qr;
+    _currentSessionId = sessionId;
+    _sessionToken = token;
+    _currentLaptopName = laptopName ?? 'Laptop Host';
+    _currentLaptopBtAddress = laptopBtAddress ?? '';
+
+    final sanitized = AppConfig.sanitizeUrl(serverUrl) ?? serverUrl;
+    _serverUrl = sanitized;
+    await AppConfig.setBaseUrl(sanitized);
+
+    if (_deviceName == 'Android Device') {
+      await _gatherDeviceInfo();
+    }
+    await checkAndReconcileSim();
+    _setupTelephonyChannel();
+
+    if (_socket != null) {
+      _socket!.disconnect();
+      _socket!.dispose();
+      _socket = null;
+    }
+
+    _setStatus(BridgeStatus.connecting, 'Pairing with laptop via QR...');
+
+    _socket = io.io(
+      _serverUrl,
+      io.OptionBuilder()
+          .setTransports(['websocket', 'polling'])
+          .setExtraHeaders({'bypass-tunnel-reminder': 'true'})
+          .enableAutoConnect()
+          .enableReconnection()
+          .setReconnectionAttempts(9999)
+          .setReconnectionDelay(1500)
+          .build(),
+    );
+
+    void emitJoin() {
+      if (_socket != null && _socket!.connected) {
+        debugPrint('[PhoneBridge] Emitting phone:join for session $sessionId');
+        _socket!.emit('phone:join', {
+          'sessionId': sessionId,
+          'token': token,
+          'deviceName': _deviceName,
+          'deviceId': _deviceId,
+          'phoneOsType': Platform.isAndroid ? 'Android' : 'iOS',
+          'phoneBtAddress': _deviceBtAddress,
+          'authToken': _authToken,
+        });
+      }
+    }
+
+    _socket!.onConnect((_) {
+      debugPrint('[PhoneBridge] Socket connected. Emitting phone:join...');
+      emitJoin();
+    });
+
+    _socket!.on('phone:paired', (data) {
+      debugPrint('[PhoneBridge] phone:paired received: $data');
+      _handlePairingData(data);
+    });
+
+    _socket!.on('bridge:paired', (data) {
+      debugPrint('[PhoneBridge] bridge:paired received: $data');
+      _handlePairingData(data);
+    });
+
+    _socket!.on('bridge:unpaired', (data) {
+      final reason = data != null ? data['reason'] : 'Unpaired by dashboard';
+      debugPrint('[PhoneBridge] bridge:unpaired: $reason');
+      _handleUnpaired(reason?.toString() ?? 'Unpaired');
+    });
+
+    _socket!.on('phone:kicked', (data) {
+      final reason = data != null ? data['reason'] : 'Revoked by dashboard';
+      debugPrint('[PhoneBridge] phone:kicked: $reason');
+      _handleUnpaired(reason?.toString() ?? 'Revoked');
+    });
+
+    _socket!.on('phone:dial', (data) {
+      debugPrint('[PhoneBridge] phone:dial received: $data');
+      if (onPhoneDial != null && data != null) {
+        onPhoneDial!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket!.on('phone:answer-call', (_) {
+      debugPrint('[PhoneBridge] Answering call via native TelecomManager');
+      _nativeChannel.invokeMethod('answerCall').catchError((e) {
+        debugPrint('[PhoneBridge] Native answerCall error: $e');
+      });
+    });
+
+    _socket!.on('phone:hangup-call', (_) {
+      debugPrint('[PhoneBridge] Ending call via native TelecomManager');
+      _nativeChannel.invokeMethod('endCall').catchError((e) {
+        debugPrint('[PhoneBridge] Native endCall error: $e');
+      });
+    });
+
+    _socket!.on('phone:ping', (data) {
+      final timestamp = data != null ? data['timestamp'] : null;
+      _socket?.emit('phone:pong', {
+        'sessionId': _currentSessionId,
+        'timestamp': timestamp,
+      });
+    });
+
+    _socket!.on('app:update_available', (data) {
+      if (onUpdateAvailable != null && data != null) {
+        onUpdateAvailable!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket!.onDisconnect((_) {
+      debugPrint('[PhoneBridge] Socket disconnected');
+      if (_status != BridgeStatus.error) {
+        _setStatus(BridgeStatus.disconnected, 'Disconnected from server');
+      }
+    });
+
+    _socket!.onConnectError((err) {
+      debugPrint('[PhoneBridge] Connect error: $err');
+      _setStatus(BridgeStatus.error, 'Connect error: $err');
+    });
+
+    if (_socket!.connected) {
+      emitJoin();
+    }
+  }
+
   /// Gather hardware & network identifiers
   Future<void> _gatherDeviceInfo() async {
     _deviceOs = Platform.isAndroid ? 'Android' : (Platform.isIOS ? 'iOS' : 'Desktop');
@@ -335,6 +473,11 @@ class PhoneBridgeService extends ChangeNotifier {
 
     _socket!.on('bridge:paired', (data) {
       debugPrint('[PhoneBridge] bridge:paired received: $data');
+      _handlePairingData(data);
+    });
+
+    _socket!.on('phone:paired', (data) {
+      debugPrint('[PhoneBridge] phone:paired received: $data');
       _handlePairingData(data);
     });
 

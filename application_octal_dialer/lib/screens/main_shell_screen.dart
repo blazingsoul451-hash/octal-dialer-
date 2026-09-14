@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../widgets/octal_logo.dart';
 import '../services/telecom_service.dart';
 import '../services/phone_data_service.dart';
+import '../services/phone_bridge_service.dart';
 import 'phone/phone_home_tab.dart';
 import 'phone/phone_keypad_view.dart';
 import 'auto_dialer/auto_dialer_tab.dart';
@@ -31,14 +32,20 @@ class _MainShellScreenState extends State<MainShellScreen> {
   void initState() {
     super.initState();
     _currentIndex = widget.initialTabIndex.clamp(0, 2);
+    PhoneBridgeService.instance.addListener(_onBridgeUpdate);
     TelecomService.instance.reinitialize();
     _listenToTelecomEvents();
   }
 
   @override
   void dispose() {
+    PhoneBridgeService.instance.removeListener(_onBridgeUpdate);
     _telecomSub?.cancel();
     super.dispose();
+  }
+
+  void _onBridgeUpdate() {
+    if (mounted) setState(() {});
   }
 
   void _listenToTelecomEvents() {
@@ -123,6 +130,8 @@ class _MainShellScreenState extends State<MainShellScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final bool isPairedInAutoDialer = _currentIndex == 2 && PhoneBridgeService.instance.isPaired;
+
     return Scaffold(
       backgroundColor: OctalColors.bgDark,
       body: IndexedStack(
@@ -135,7 +144,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
           const AutoDialerTab(),
         ],
       ),
-      bottomNavigationBar: _buildBottomNav(),
+      bottomNavigationBar: isPairedInAutoDialer ? null : _buildBottomNav(),
     );
   }
 
