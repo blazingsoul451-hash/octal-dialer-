@@ -189,6 +189,10 @@ class PhoneBridgeService extends ChangeNotifier {
         debugPrint('[PhoneBridge] Native call state change: $state (incoming phone: $phoneNumber)');
 
         if (state == 'RINGING') {
+          if (TelecomService.instance.isAutoDialerCallActive) {
+            debugPrint('[PhoneBridge] Suppressing incoming-call event for outbound Auto Dialer call');
+            return;
+          }
           _socket?.emit('phone:incoming-call', {
             'sessionId': _currentSessionId,
             'deviceId': _deviceId,

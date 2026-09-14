@@ -22,6 +22,7 @@ class PhoneKeypadView extends StatefulWidget {
 
 class _PhoneKeypadViewState extends State<PhoneKeypadView> {
   String _phoneNumber = '';
+  Offset _tapPosition = Offset.zero;
   final PhoneDataService _dataService = PhoneDataService.instance;
 
   @override
@@ -76,6 +77,142 @@ class _PhoneKeypadViewState extends State<PhoneKeypadView> {
         _phoneNumber = '';
       });
     }
+  }
+
+  void _pasteFromClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text?.trim() ?? '';
+    if (text.isNotEmpty) {
+      final filtered = text.replaceAll(RegExp(r'[^\d+*#,;]'), '');
+      if (filtered.isNotEmpty) {
+        HapticFeedback.mediumImpact();
+        setState(() {
+          _phoneNumber = _phoneNumber.isEmpty ? filtered : (_phoneNumber + filtered);
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Pasted $filtered'),
+              duration: const Duration(seconds: 1),
+              backgroundColor: OctalColors.surfaceElevated,
+            ),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Clipboard has no dialable digits'),
+              duration: Duration(seconds: 1),
+              backgroundColor: OctalColors.surfaceElevated,
+            ),
+          );
+        }
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Clipboard is empty'),
+            duration: Duration(seconds: 1),
+            backgroundColor: OctalColors.surfaceElevated,
+          ),
+        );
+      }
+    }
+  }
+
+  void _copyToClipboard() {
+    if (_phoneNumber.isNotEmpty) {
+      Clipboard.setData(ClipboardData(text: _phoneNumber));
+      HapticFeedback.lightImpact();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Number copied to clipboard'),
+          duration: Duration(seconds: 1),
+          backgroundColor: OctalColors.surfaceElevated,
+        ),
+      );
+    }
+  }
+
+  void _cutToClipboard() {
+    if (_phoneNumber.isNotEmpty) {
+      Clipboard.setData(ClipboardData(text: _phoneNumber));
+      HapticFeedback.mediumImpact();
+      setState(() {
+        _phoneNumber = '';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Number cut to clipboard'),
+          duration: Duration(seconds: 1),
+          backgroundColor: OctalColors.surfaceElevated,
+        ),
+      );
+    }
+  }
+
+  void _showCopyPasteMenu(Offset position) async {
+    final RenderBox? overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+
+    final selected = await showMenu<String>(
+      context: context,
+      color: OctalColors.surfaceCard,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: OctalColors.fieldBorder, width: 1),
+      ),
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 40, 40),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        const PopupMenuItem(
+          value: 'paste',
+          height: 40,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.paste_rounded, color: OctalColors.primaryGold, size: 18),
+              SizedBox(width: 10),
+              Text('Paste', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
+        if (_phoneNumber.isNotEmpty) ...[
+          const PopupMenuItem(
+            value: 'copy',
+            height: 40,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.copy_rounded, color: Colors.white, size: 18),
+                SizedBox(width: 10),
+                Text('Copy', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+          const PopupMenuItem(
+            value: 'cut',
+            height: 40,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.cut_rounded, color: Colors.white70, size: 18),
+                SizedBox(width: 10),
+                Text('Cut', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+
+    if (selected == 'paste') _pasteFromClipboard();
+    if (selected == 'copy') _copyToClipboard();
+    if (selected == 'cut') _cutToClipboard();
   }
 
   void _handleCall([String? directNumber]) async {
@@ -224,27 +361,112 @@ class _PhoneKeypadViewState extends State<PhoneKeypadView> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Keypad Header: [ ⋮   0300   [⌫] ]
+                  // Keypad Header: [ ⋮   Interactive Number Line (Copy/Paste)   [⌫] ]
                   SizedBox(
                     height: 52,
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        IconButton(
+                        PopupMenuButton<String>(
                           icon: const Icon(Icons.more_vert_rounded, color: OctalColors.textSecondary, size: 22),
-                          onPressed: () {},
+                          color: OctalColors.surfaceCard,
+                          tooltip: 'Keypad options',
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: const BorderSide(color: OctalColors.fieldBorder, width: 1),
+                          ),
+                          onSelected: (val) {
+                            if (val == 'paste') _pasteFromClipboard();
+                            if (val == 'copy') _copyToClipboard();
+                            if (val == 'cut') _cutToClipboard();
+                            if (val == 'clear') _onClear();
+                          },
+                          itemBuilder: (ctx) => [
+                            const PopupMenuItem(
+                              value: 'paste',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.paste_rounded, color: OctalColors.primaryGold, size: 18),
+                                  SizedBox(width: 10),
+                                  Text('Paste', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                                ],
+                              ),
+                            ),
+                            if (_phoneNumber.isNotEmpty) ...[
+                              const PopupMenuItem(
+                                value: 'copy',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.copy_rounded, color: Colors.white, size: 18),
+                                    SizedBox(width: 10),
+                                    Text('Copy', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'cut',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.cut_rounded, color: Colors.white70, size: 18),
+                                    SizedBox(width: 10),
+                                    Text('Cut', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'clear',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.clear_all_rounded, color: Colors.redAccent, size: 18),
+                                    SizedBox(width: 10),
+                                    Text('Clear all', style: TextStyle(color: Colors.redAccent, fontSize: 13, fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                         Expanded(
-                          child: Text(
-                            _phoneNumber,
-                            textAlign: TextAlign.center,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 32,
-                              fontWeight: FontWeight.w400,
-                              color: Colors.white,
-                              letterSpacing: 1.0,
+                          child: GestureDetector(
+                            onTapDown: (details) => _tapPosition = details.globalPosition,
+                            onLongPress: () => _showCopyPasteMenu(_tapPosition),
+                            onTap: () {
+                              if (_phoneNumber.isEmpty) {
+                                _pasteFromClipboard();
+                              } else {
+                                _showCopyPasteMenu(_tapPosition);
+                              }
+                            },
+                            behavior: HitTestBehavior.opaque,
+                            child: Center(
+                              child: _phoneNumber.isEmpty
+                                  ? Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.paste_rounded, size: 14, color: OctalColors.primaryGold.withOpacity(0.7)),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'Tap or hold to paste',
+                                          style: TextStyle(
+                                            fontSize: 15,
+                                            color: Colors.white.withOpacity(0.35),
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : Text(
+                                      _phoneNumber,
+                                      textAlign: TextAlign.center,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 32,
+                                        fontWeight: FontWeight.w400,
+                                        color: Colors.white,
+                                        letterSpacing: 1.0,
+                                      ),
+                                    ),
                             ),
                           ),
                         ),

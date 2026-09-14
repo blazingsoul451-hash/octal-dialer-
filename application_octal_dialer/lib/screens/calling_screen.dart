@@ -48,6 +48,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   StreamSubscription<TelecomCallEvent>? _telecomSub;
   CallPhase _phase = CallPhase.ringing;
   bool _callEnded = false;
+  bool _hasEmittedPickedUp = false;
   bool _isMuted = false;
   bool _isSpeaker = false;
 
@@ -86,6 +87,14 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
               _phase = CallPhase.connected;
             });
             _startTalkTimer();
+          }
+          if (!_hasEmittedPickedUp) {
+            _hasEmittedPickedUp = true;
+            debugPrint('CallingScreen: Emitting call:picked-up to sync ACTIVE state with server & web');
+            widget.socket.emit('call:picked-up', {
+              'callId': widget.callId,
+              'sessionId': widget.sessionId,
+            });
           }
         } else if (st == 'RINGING' || st == 'DIALING') {
           widget.socket.emit('call:state-changed', {
