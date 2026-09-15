@@ -35,17 +35,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const isPlatformAdmin = currentUserRole === 'platform_admin';
 
   // Master Navigation Items
-  const navItems = [
-    { id: 'overview' as AdminTab, label: 'Overview', icon: LayoutDashboard },
-    { id: 'businesses' as AdminTab, label: 'Businesses', icon: Building2 },
-    { id: 'users' as AdminTab, label: 'Users', icon: Users },
-    { id: 'commercial' as AdminTab, label: 'Commercial', icon: CreditCard },
-    { id: 'security' as AdminTab, label: 'Security & Audit', icon: Lock },
-    { id: 'operations' as AdminTab, label: 'Operations', icon: Activity },
-    { id: 'modules' as AdminTab, label: 'Module Control', icon: Sliders },
-    { id: 'settings' as AdminTab, label: 'Platform Settings', icon: Settings },
-    { id: 'keys' as AdminTab, label: 'Integrations / API', icon: Key },
+  const allNavItems = [
+    { id: 'overview' as AdminTab, label: 'Overview', icon: LayoutDashboard, platformOnly: false },
+    { id: 'businesses' as AdminTab, label: 'Businesses', icon: Building2, platformOnly: true },
+    { id: 'users' as AdminTab, label: 'Users', icon: Users, platformOnly: false },
+    { id: 'commercial' as AdminTab, label: 'Commercial', icon: CreditCard, platformOnly: true },
+    { id: 'security' as AdminTab, label: 'Security & Audit', icon: Lock, platformOnly: false },
+    { id: 'operations' as AdminTab, label: 'Operations', icon: Activity, platformOnly: true },
+    { id: 'modules' as AdminTab, label: 'Module Control', icon: Sliders, platformOnly: true },
+    { id: 'settings' as AdminTab, label: isPlatformAdmin ? 'Platform Settings' : 'Dialing Settings', icon: Settings, platformOnly: false },
+    { id: 'keys' as AdminTab, label: 'Integrations / API', icon: Key, platformOnly: false },
   ];
+
+  const navItems = allNavItems.filter(item => !item.platformOnly || isPlatformAdmin);
 
   return (
     <div className="space-y-6 text-left select-none transition-colors duration-200">
@@ -61,7 +63,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h1 className={`text-lg font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  Enterprise Control Center
+                  {isPlatformAdmin ? 'Enterprise Control Center' : 'Organization Administration'}
                 </h1>
                 <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border uppercase ${
                   isPlatformAdmin

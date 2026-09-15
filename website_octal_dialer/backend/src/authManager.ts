@@ -286,7 +286,6 @@ export async function registerGoogleSignUp(profile: { googleId: string; email: s
   };
 }
 
-/** Handle Google OAuth with explicit intent */
 export async function handleGoogleAuthWithIntent(
   profile: { googleId: string; email: string; name?: string; picture?: string },
   intent: 'signin' | 'signup' = 'signin'
@@ -669,36 +668,42 @@ export async function registerPublicUser(params: { username: string; email?: str
 
 // ─── Default admin bootstrap ──────────────────────────────────────────────────
 export async function ensureDefaultAdmin(): Promise<void> {
+  const now = new Date().toISOString();
   const primaryOwner = await db.queryOne<any>(`SELECT * FROM users WHERE username = 'mohsin1' OR email = 'blazingsoul451@gmail.com'`);
   if (primaryOwner) {
     if (primaryOwner.role !== 'platform_admin') {
       await db.execute(`UPDATE users SET role = 'platform_admin' WHERE id = $1`, [primaryOwner.id]);
     }
-    return;
+  } else {
+    const { hash: ownerHash } = hashPassword('octal123');
+    await db.execute(`
+      INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
+      VALUES ('user_mohsin1', 'mohsin1', 'Mohsin Babar', 'blazingsoul451@gmail.com', $1, 'platform_admin', 'tenant_default', 'google_linked', 1, $2, $3)
+    `, [ownerHash, now, now]);
+    console.log('[Auth Bootstrap] Primary owner mohsin1 (blazingsoul451@gmail.com) seeded as platform_admin.');
   }
 
-  const countRow = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM users`);
-  const count = countRow ? Number(countRow.c) : 0;
-  if (count > 0) return;
+  const existingAdmin = await db.queryOne<any>(`SELECT id FROM users WHERE username = 'admin'`);
+  if (!existingAdmin) {
+    const defaultPassword = 'octal' + crypto.randomBytes(6).toString('hex').toUpperCase();
+    const { hash } = hashPassword(defaultPassword);
 
-  const defaultPassword = 'octal' + crypto.randomBytes(6).toString('hex').toUpperCase();
-  const { hash } = hashPassword(defaultPassword);
+    await db.execute(`
+      INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "createdAt", "updatedAt")
+      VALUES ($1, $2, 'admin@octaldialer.local', $3, 'platform_admin', 'tenant_default', 'local', $4, $5)
+    `, ['user_admin_' + crypto.randomBytes(4).toString('hex'), 'admin', hash, now, now]);
 
-  await db.execute(`
-    INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "createdAt", "updatedAt")
-    VALUES ($1, $2, 'admin@octaldialer.local', $3, 'platform_admin', 'tenant_default', 'local', $4, $5)
-  `, ['user_admin_' + crypto.randomBytes(4).toString('hex'), 'admin', hash, new Date().toISOString(), new Date().toISOString()]);
-
-  console.log('');
-  console.log('╔══════════════════════════════════════════════╗');
-  console.log('║       OCTAL DIALER — FIRST BOOT AUTH         ║');
-  console.log('╠══════════════════════════════════════════════╣');
-  console.log(`║  Username : admin                            ║`);
-  console.log(`║  Role     : platform_admin                   ║`);
-  console.log(`║  Password : ${defaultPassword.padEnd(32)} ║`);
-  console.log('║  Change this after first login!              ║');
-  console.log('╚══════════════════════════════════════════════╝');
-  console.log('');
+    console.log('');
+    console.log('╔══════════════════════════════════════════════╗');
+    console.log('║       OCTAL DIALER — FIRST BOOT AUTH         ║');
+    console.log('╠══════════════════════════════════════════════╣');
+    console.log(`║  Username : admin                            ║`);
+    console.log(`║  Role     : platform_admin                   ║`);
+    console.log(`║  Password : ${defaultPassword.padEnd(32)} ║`);
+    console.log('║  Change this after first login!              ║');
+    console.log('╚══════════════════════════════════════════════╝');
+    console.log('');
+  }
 }
 
 // ─── Auth operations ──────────────────────────────────────────────────────────

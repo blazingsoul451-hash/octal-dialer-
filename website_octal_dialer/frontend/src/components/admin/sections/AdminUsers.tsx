@@ -79,7 +79,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${serverUrl}/admin/users`, {
+      const res = await fetch(`${serverUrl}/api/admin/users`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
       if (res.ok) {
@@ -123,7 +123,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     try {
       const initialPermissions = Object.keys(selectedModules).filter(k => selectedModules[k]);
 
-      const res = await fetch(`${serverUrl}/admin/users`, {
+      const res = await fetch(`${serverUrl}/api/admin/users`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -174,7 +174,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     setSavingUserEdit(true);
     setError(null);
     try {
-      const res = await fetch(`${serverUrl}/admin/users/${editingUser.id}`, {
+      const res = await fetch(`${serverUrl}/api/admin/users/${editingUser.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -208,7 +208,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     setDeletingUser(true);
     setError(null);
     try {
-      const res = await fetch(`${serverUrl}/admin/users/${userToDelete.id}`, {
+      const res = await fetch(`${serverUrl}/api/admin/users/${userToDelete.id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
@@ -232,7 +232,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
   const handleTogglePermission = async (userId: string, moduleId: string, currentlyEnabled: boolean) => {
     setError(null);
     try {
-      const res = await fetch(`${serverUrl}/admin/permissions`, {
+      const res = await fetch(`${serverUrl}/api/admin/permissions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

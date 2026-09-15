@@ -1,6 +1,14 @@
 {
   "rewrites": [
     {
+      "source": "/auth/(.*)",
+      "destination": "http://140.245.215.156/auth/$1"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "http://140.245.215.156/api/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

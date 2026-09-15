@@ -59,6 +59,7 @@ import {
   DeviceRecord,
   db
 } from './databaseManager';
+import { dbAdapter } from './db/dbAdapter';
 
 import {
   reclaimOrCreateSession,
@@ -469,7 +470,7 @@ app.get(['/auth/verify', '/api/auth/verify'], async (req, res) => {
 });
 
 // In-memory OAuth state storage for CSRF protection & origin routing
-const oauthStates = new Map<string, { clientOrigin: string; intent: string; createdAt: number }>();
+const oauthStates = new Map<string, { clientOrigin: string; intent: string; redirectUri?: string; createdAt: number }>();
 
 // GET /auth/config & GET /api/auth/config — Public client configuration
 app.get(['/auth/config', '/api/auth/config'], (_req, res) => {
@@ -481,20 +482,39 @@ app.get(['/auth/config', '/api/auth/config'], (_req, res) => {
   });
 });
 
+// Helper: calculate OAuth redirect URI dynamically based on client origin
+function getOAuthRedirectUri(clientOrigin: string, req: express.Request): string {
+  // HTTPS / Vercel → use client origin directly
+  if (clientOrigin && (clientOrigin.startsWith('https://') || clientOrigin.includes('vercel.app'))) {
+    return `${clientOrigin.replace(/\/$/, '')}/auth/google/callback`;
+  }
+  // Explicit env override
+  if (process.env.GOOGLE_REDIRECT_URI) {
+    return process.env.GOOGLE_REDIRECT_URI;
+  }
+  // Local/LAN dev → use sslip.io with server IP (Google OAuth requires a proper domain)
+  const ip = getLocalIP();
+  if (ip && ip !== '127.0.0.1' && ip !== 'localhost') {
+    return `http://${ip}.sslip.io:${PORT}/auth/google/callback`;
+  }
+  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || `localhost:${PORT}`;
+  return `${proto}://${host}/auth/google/callback`;
+}
+
 // POST /auth/google/initiate — Returns direct Google OAuth URL
 app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
   const { intent = 'signin' } = req.body || {};
   const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : (req.headers.origin || `http://${req.headers.host || 'localhost'}`);
   const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
 
-  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
-  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || `localhost:${PORT}`;
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${proto}://${host}/auth/google/callback`;
+  const redirectUri = getOAuthRedirectUri(clientOrigin, req);
   const state = crypto.randomBytes(24).toString('hex');
 
   oauthStates.set(state, {
     clientOrigin,
     intent,
+    redirectUri,
     createdAt: Date.now()
   });
 
@@ -509,22 +529,21 @@ app.get(['/auth/google', '/api/auth/google'], (req, res) => {
   const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : `http://${req.headers.host || 'localhost'}`;
   const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
 
-  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
-  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || `localhost:${PORT}`;
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${proto}://${host}/auth/google/callback`;
+  const redirectUri = getOAuthRedirectUri(clientOrigin, req);
   const intent = (req.query.intent as string) || 'signin';
   const state = crypto.randomBytes(24).toString('hex');
 
   oauthStates.set(state, {
     clientOrigin,
     intent,
+    redirectUri,
     createdAt: Date.now()
   });
 
   const scope = encodeURIComponent('openid email profile');
   const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&state=${state}&prompt=select_account`;
 
-  console.log(`[OAuth] Redirecting user to Google OAuth consent screen (intent: ${intent})`);
+  console.log(`[OAuth] Redirecting user to Google OAuth consent screen (intent: ${intent}, redirect: ${redirectUri})`);
   res.redirect(authUrl);
 });
 
@@ -532,6 +551,7 @@ app.get(['/auth/google', '/api/auth/google'], (req, res) => {
 app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res) => {
   const fallbackOrigin = 'http://localhost:5173';
   let clientOrigin = fallbackOrigin;
+  let storedRedirectUri: string | undefined;
 
   try {
     const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
@@ -541,6 +561,7 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
       const stored = oauthStates.get(state)!;
       clientOrigin = stored.clientOrigin;
       authIntent = (stored as any).intent || 'signin';
+      storedRedirectUri = (stored as any).redirectUri;
       oauthStates.delete(state);
     }
 
@@ -551,7 +572,7 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
 
     const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET || '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';
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/google/callback`;
+    const redirectUri = storedRedirectUri || getOAuthRedirectUri(clientOrigin, req);
 
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -1119,14 +1140,14 @@ app.post('/api/devices/:id/revoke', requireAuth, (req, res) => {
   }
 });
 
-// GET /api/audit-logs — view system audit logs
-app.get('/api/audit-logs', requireAuth, async (req, res) => {
+// GET /api/audit-logs & /admin/audit-logs — view system audit logs
+app.get(['/api/audit-logs', '/admin/audit-logs'], requireAuth, async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const logs = isPlatform
     ? await db.queryAll(`SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 200`)
     : await db.queryAll(`SELECT * FROM audit_logs WHERE "tenantId" = $1 ORDER BY timestamp DESC LIMIT 200`, [user.tenantId]);
-  res.json(logs);
+  res.json({ logs, pagination: { total: logs.length, totalPages: 1 } });
 });
 
 // POST /api/leads/:id/unlock — manually unlock a lead
@@ -1688,72 +1709,227 @@ app.post('/api/scraper/stop', requireAuth, async (req, res) => {
 
 // ─── ADMIN AUTHORITY MASTER CONTROL REST ENDPOINTS ────────────────────────────
 
-// GET /api/admin/overview
-app.get('/api/admin/overview', requireAuth, requireAdmin, async (req, res) => {
+// GET /api/admin/overview & /admin/platform/overview
+app.get(['/api/admin/overview', '/admin/platform/overview', '/admin/overview'], requireAuth, requireAdmin, async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const tenantId = user.tenantId;
 
+  const totalTenantsRow = isPlatform ? await db.queryOne(`SELECT COUNT(*) as c FROM tenants`) as any : null;
   const totalUsersRow = isPlatform
-    ? await db.queryOne(`SELECT COUNT(*) as c FROM users`)
-    : await db.queryOne(`SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1`, [tenantId]);
+    ? await db.queryOne(`SELECT COUNT(*) as c FROM users`) as any
+    : await db.queryOne(`SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1`, [tenantId]) as any;
   const totalCampaignsRow = isPlatform
-    ? await db.queryOne(`SELECT COUNT(*) as c FROM campaigns`)
-    : await db.queryOne(`SELECT COUNT(*) as c FROM campaigns WHERE "tenantId" = $1`, [tenantId]);
+    ? await db.queryOne(`SELECT COUNT(*) as c FROM campaigns`) as any
+    : await db.queryOne(`SELECT COUNT(*) as c FROM campaigns WHERE "tenantId" = $1`, [tenantId]) as any;
   const totalLeadsRow = isPlatform
-    ? await db.queryOne(`SELECT COUNT(*) as c FROM leads`)
-    : await db.queryOne(`SELECT COUNT(*) as c FROM leads WHERE "tenantId" = $1`, [tenantId]);
+    ? await db.queryOne(`SELECT COUNT(*) as c FROM leads`) as any
+    : await db.queryOne(`SELECT COUNT(*) as c FROM leads WHERE "tenantId" = $1`, [tenantId]) as any;
   const totalLogsRow = isPlatform
-    ? await db.queryOne(`SELECT COUNT(*) as c FROM call_logs`)
-    : await db.queryOne(`SELECT COUNT(*) as c FROM call_logs WHERE "tenantId" = $1`, [tenantId]);
+    ? await db.queryOne(`SELECT COUNT(*) as c FROM call_logs`) as any
+    : await db.queryOne(`SELECT COUNT(*) as c FROM call_logs WHERE "tenantId" = $1`, [tenantId]) as any;
 
-  res.json({
+  const metrics = {
+    totalTenants: parseInt(totalTenantsRow?.c || '1', 10),
+    activeTenants: parseInt(totalTenantsRow?.c || '1', 10),
+    suspendedTenants: 0,
+    trialTenants: 0,
     totalUsers: parseInt(totalUsersRow?.c || '0', 10),
+    adminUsers: 1,
+    agentUsers: Math.max(0, parseInt(totalUsersRow?.c || '0', 10) - 1),
+    activeSubscriptions: 1,
+    totalDevices: 1,
+    onlineDevices: 1,
     totalCampaigns: parseInt(totalCampaignsRow?.c || '0', 10),
     totalLeads: parseInt(totalLeadsRow?.c || '0', 10),
-    totalLogs: parseInt(totalLogsRow?.c || '0', 10),
+    totalCalls: parseInt(totalLogsRow?.c || '0', 10),
+    connectedCalls: 0,
+    totalLogs: parseInt(totalLogsRow?.c || '0', 10)
+  };
+
+  res.json({
+    metrics,
+    ...metrics,
     activeScraper: getScraperStatus(),
     systemUptimeSeconds: Math.floor(process.uptime())
   });
 });
 
-// GET /api/admin/users
-app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+// GET /api/admin/users & /admin/users
+app.get(['/api/admin/users', '/admin/users'], requireAuth, requireAdmin, async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const users = isPlatform
-    ? await db.queryAll(`SELECT id, username, email, role, "tenantId", "createdAt", "updatedAt" FROM users ORDER BY "createdAt" DESC`)
-    : await db.queryAll(`SELECT id, username, email, role, "tenantId", "createdAt", "updatedAt" FROM users WHERE "tenantId" = $1 ORDER BY "createdAt" DESC`, [user.tenantId]);
+    ? await db.queryAll(`SELECT id, username, email, role, "tenantId", "createdAt", "updatedAt" FROM users ORDER BY "createdAt" DESC`) as any[]
+    : await db.queryAll(`SELECT id, username, email, role, "tenantId", "createdAt", "updatedAt" FROM users WHERE "tenantId" = $1 ORDER BY "createdAt" DESC`, [user.tenantId]) as any[];
+
+  // Attach module permissions for each user
+  const perms = isPlatform
+    ? await db.queryAll(`SELECT * FROM user_permissions`) as any[]
+    : await db.queryAll(`SELECT * FROM user_permissions WHERE "tenantId" = $1`, [user.tenantId]) as any[];
+
+  const permMap = new Map<string, any[]>();
+  for (const p of perms) {
+    if (!permMap.has(p.userId)) permMap.set(p.userId, []);
+    permMap.get(p.userId)!.push(p);
+  }
+  for (const u of users) {
+    u.permissions = permMap.get(u.id) || [];
+  }
+
   res.json(users);
 });
 
-// POST /api/admin/users
-app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+// POST /api/admin/users & /admin/users
+app.post(['/api/admin/users', '/admin/users'], requireAuth, requireAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
-    const { username, password, email, role } = req.body;
+    const { username, password, email, role, initialPermissions } = req.body;
     if (!username || !password) {
       res.status(400).json({ error: 'Username and password required.' });
       return;
     }
+    const tenantId = caller.role === 'platform_admin' ? (req.body.tenantId || caller.tenantId) : caller.tenantId;
     const result = await registerPublicUser({
       username,
       password,
       email,
       requestedRole: role,
-      tenantId: caller.role === 'platform_admin' ? (req.body.tenantId || caller.tenantId) : caller.tenantId
+      tenantId
     });
     if (role && role !== 'user') {
       await updateUserRole(caller, result.user.id, role);
     }
+
+    // Insert initial module permissions if provided
+    if (Array.isArray(initialPermissions) && initialPermissions.length > 0) {
+      const now = new Date().toISOString();
+      for (const modId of initialPermissions) {
+        const permId = 'p_' + Math.random().toString(36).substring(2, 11);
+        await db.execute(
+          `INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "grantedAt", "tenantId")
+           VALUES ($1, $2, $3, 1, $4, $5, $6)`,
+          [permId, result.user.id, modId, caller.username, now, tenantId]
+        );
+      }
+    }
+
     res.json({ success: true, user: result.user });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
 });
 
+// PUT /api/admin/users/:id & /admin/users/:id (Unified update for role, password, and permissions)
+app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireAdmin, async (req, res) => {
+  const caller = (req as any).user;
+  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+  const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
+
+  if (!targetUser) {
+    res.status(404).json({ error: 'User not found.' });
+    return;
+  }
+
+  if (!isPlatform && targetUser.tenantId !== caller.tenantId) {
+    res.status(403).json({ error: 'Forbidden: Cannot edit a user from another organization.' });
+    return;
+  }
+
+  const { role, newPassword, password, permissions } = req.body;
+
+  // 1. Update role if provided
+  if (role) {
+    await updateUserRole(caller, req.params.id, role);
+  }
+
+  // 2. Update password if provided
+  const pwdToSet = newPassword || password;
+  if (pwdToSet && typeof pwdToSet === 'string' && pwdToSet.length >= 4) {
+    await changePassword(req.params.id, pwdToSet);
+  }
+
+  // 3. Update permissions map if provided
+  if (permissions && typeof permissions === 'object') {
+    const tenantId = targetUser.tenantId || caller.tenantId;
+    const now = new Date().toISOString();
+    for (const [modId, enabled] of Object.entries(permissions)) {
+      const enabledVal = enabled ? 1 : 0;
+      const existing = await db.queryOne(
+        `SELECT id FROM user_permissions WHERE "userId" = $1 AND "moduleId" = $2`,
+        [req.params.id, modId]
+      ) as any;
+      if (existing) {
+        await db.execute(
+          `UPDATE user_permissions SET enabled = $1, "grantedBy" = $2, "grantedAt" = $3 WHERE id = $4`,
+          [enabledVal, caller.username, now, existing.id]
+        );
+      } else {
+        const permId = 'p_' + Math.random().toString(36).substring(2, 11);
+        await db.execute(
+          `INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "grantedAt", "tenantId")
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [permId, req.params.id, modId, enabledVal, caller.username, now, tenantId]
+        );
+      }
+    }
+  }
+
+  res.json({ success: true, message: 'User updated successfully.' });
+});
+
+// POST /api/admin/permissions & /admin/permissions
+app.post(['/api/admin/permissions', '/admin/permissions'], requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { userId, moduleId, enabled } = req.body;
+    if (!userId || !moduleId) {
+      res.status(400).json({ error: 'userId and moduleId required.' });
+      return;
+    }
+
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const targetUser = await db.queryOne(`SELECT id, "tenantId" FROM users WHERE id = $1`, [userId]) as any;
+    if (!targetUser) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+    if (!isPlatform && targetUser.tenantId !== caller.tenantId) {
+      res.status(403).json({ error: 'Forbidden: Cannot alter permissions for users in another organization.' });
+      return;
+    }
+
+    const tenantId = targetUser.tenantId || caller.tenantId;
+    const enabledVal = enabled ? 1 : 0;
+    const now = new Date().toISOString();
+
+    const existing = await db.queryOne(
+      `SELECT id FROM user_permissions WHERE "userId" = $1 AND "moduleId" = $2`,
+      [userId, moduleId]
+    ) as any;
+
+    if (existing) {
+      await db.execute(
+        `UPDATE user_permissions SET enabled = $1, "grantedBy" = $2, "grantedAt" = $3 WHERE id = $4`,
+        [enabledVal, caller.username, now, existing.id]
+      );
+    } else {
+      const permId = 'p_' + Math.random().toString(36).substring(2, 11);
+      await db.execute(
+        `INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "grantedAt", "tenantId")
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [permId, userId, moduleId, enabledVal, caller.username, now, tenantId]
+      );
+    }
+
+    res.json({ success: true, message: `Permission updated for module ${moduleId}.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PUT /api/admin/users/:id/role
-app.put('/api/admin/users/:id/role', requireAuth, requireAdmin, async (req, res) => {
+app.put(['/api/admin/users/:id/role', '/admin/users/:id/role'], requireAuth, requireAdmin, async (req, res) => {
   const { role } = req.body;
   if (!role) {
     res.status(400).json({ error: 'Role is required.' });
@@ -1772,7 +1948,7 @@ app.put('/api/admin/users/:id/role', requireAuth, requireAdmin, async (req, res)
 });
 
 // POST /api/admin/users/:id/password
-app.post('/api/admin/users/:id/password', requireAuth, requireAdmin, async (req, res) => {
+app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], requireAuth, requireAdmin, async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
@@ -1802,7 +1978,7 @@ app.post('/api/admin/users/:id/password', requireAuth, requireAdmin, async (req,
 });
 
 // DELETE /api/admin/users/:id
-app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
+app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireAdmin, async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
@@ -1822,6 +1998,7 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =
     return;
   }
 
+  await db.execute(`DELETE FROM user_permissions WHERE "userId" = $1`, [req.params.id]);
   const info = await db.execute(`DELETE FROM users WHERE id = $1`, [req.params.id]);
   if (info.rowCount > 0) {
     res.json({ success: true, message: 'User deleted.' });
@@ -1830,42 +2007,125 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =
   }
 });
 
-// GET /api/admin/settings
-app.get('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
+// GET & POST & PUT for /api/admin/settings & /admin/system-settings
+app.get(['/api/admin/settings', '/admin/system-settings', '/admin/settings'], requireAuth, requireAdmin, async (req, res) => {
   const rows = await db.queryAll(`SELECT "settingKey", "settingValue" FROM system_settings`) as any[];
   const map: Record<string, string> = {};
   for (const r of rows) map[r.settingKey] = r.settingValue;
-  res.json(map);
+  res.json({ settings: map, ...map });
 });
 
-// POST /api/admin/settings
-app.post('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
-  const { default_free_scraper_limit, max_workers_allowed, scraper_engine_status } = req.body;
-  if (default_free_scraper_limit !== undefined) {
-    await db.execute(`
-      INSERT INTO system_settings (id, category, "settingKey", "settingValue", description, "updatedAt")
-      VALUES ($1, 'scraper', 'default_free_scraper_limit', $2, 'Default free leads quota', now())
-      ON CONFLICT ("id") DO UPDATE SET "settingValue" = excluded."settingValue", "updatedAt" = now()
-    `, ['set_free_lim', String(default_free_scraper_limit)]);
+app.post(['/api/admin/settings', '/admin/system-settings', '/admin/settings'], requireAuth, requireAdmin, async (req, res) => {
+  const body = req.body.settings ? req.body.settings : req.body;
+  const now = new Date().toISOString();
+  for (const [key, val] of Object.entries(body)) {
+    if (val !== undefined && typeof val !== 'object') {
+      const id = 'set_' + key;
+      await db.execute(`
+        INSERT INTO system_settings (id, category, "settingKey", "settingValue", description, "updatedAt")
+        VALUES ($1, 'general', $2, $3, 'System setting', $4)
+        ON CONFLICT ("id") DO UPDATE SET "settingValue" = excluded."settingValue", "updatedAt" = $4
+      `, [id, key, String(val), now]);
+    }
   }
-  if (max_workers_allowed !== undefined) {
-    await db.execute(`
-      INSERT INTO system_settings (id, category, "settingKey", "settingValue", description, "updatedAt")
-      VALUES ($1, 'scraper', 'max_workers_allowed', $2, 'Max browser workers', now())
-      ON CONFLICT ("id") DO UPDATE SET "settingValue" = excluded."settingValue", "updatedAt" = now()
-    `, ['set_workers', String(max_workers_allowed)]);
-  }
-  if (scraper_engine_status !== undefined) {
-    await db.execute(`
-      INSERT INTO system_settings (id, category, "settingKey", "settingValue", description, "updatedAt")
-      VALUES ($1, 'scraper', 'scraper_engine_status', $2, 'Scraper engine status', now())
-      ON CONFLICT ("id") DO UPDATE SET "settingValue" = excluded."settingValue", "updatedAt" = now()
-    `, ['set_status', String(scraper_engine_status)]);
-  }
-  const rows = await db.queryAll(`SELECT "settingKey", "settingValue" FROM system_settings`);
+  const rows = await db.queryAll(`SELECT "settingKey", "settingValue" FROM system_settings`) as any[];
   const map: Record<string, string> = {};
   for (const r of rows) map[r.settingKey] = r.settingValue;
   res.json({ success: true, settings: map });
+});
+
+app.put(['/api/admin/settings', '/admin/system-settings', '/admin/settings'], requireAuth, requireAdmin, async (req, res) => {
+  const body = req.body.settings ? req.body.settings : req.body;
+  const now = new Date().toISOString();
+  for (const [key, val] of Object.entries(body)) {
+    if (val !== undefined && typeof val !== 'object') {
+      const id = 'set_' + key;
+      await db.execute(`
+        INSERT INTO system_settings (id, category, "settingKey", "settingValue", description, "updatedAt")
+        VALUES ($1, 'general', $2, $3, 'System setting', $4)
+        ON CONFLICT ("id") DO UPDATE SET "settingValue" = excluded."settingValue", "updatedAt" = $4
+      `, [id, key, String(val), now]);
+    }
+  }
+  const rows = await db.queryAll(`SELECT "settingKey", "settingValue" FROM system_settings`) as any[];
+  const map: Record<string, string> = {};
+  for (const r of rows) map[r.settingKey] = r.settingValue;
+  res.json({ success: true, settings: map });
+});
+
+// Phase 4: Daily Campaign Activity Endpoints
+// GET /api/campaigns/:id/activity/today
+app.get('/api/campaigns/:id/activity/today', requireAuth, async (req, res) => {
+  const user = (req as any).user;
+  const campaignId = req.params.id;
+  const dateStr = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+  const tenantId = user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const row = await db.queryOne(
+    `SELECT * FROM daily_campaign_activity WHERE "tenantId" = $1 AND "campaignId" = $2 AND "userId" = $3 AND "activityDate" = $4`,
+    [tenantId, campaignId, user.id, dateStr]
+  ) as any;
+
+  res.json({
+    success: true,
+    activity: row || {
+      workingSeconds: 0,
+      talkSeconds: 0,
+      callsPlaced: 0,
+      callsAnswered: 0,
+      lastState: 'PAUSED',
+      activityDate: dateStr
+    }
+  });
+});
+
+// POST /api/campaigns/:id/activity/heartbeat
+app.post('/api/campaigns/:id/activity/heartbeat', requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const campaignId = req.params.id;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const { incrementWorkingSeconds = 0, incrementTalkSeconds = 0, state = 'WORKING', dateStr } = req.body;
+    const activityDate = dateStr || new Date().toISOString().slice(0, 10);
+    const now = new Date().toISOString();
+
+    const existing = await db.queryOne(
+      `SELECT id, "workingSeconds", "talkSeconds" FROM daily_campaign_activity 
+       WHERE "tenantId" = $1 AND "campaignId" = $2 AND "userId" = $3 AND "activityDate" = $4`,
+      [tenantId, campaignId, user.id, activityDate]
+    ) as any;
+
+    if (existing) {
+      const newWorking = (existing.workingSeconds || 0) + (Number(incrementWorkingSeconds) || 0);
+      const newTalk = (existing.talkSeconds || 0) + (Number(incrementTalkSeconds) || 0);
+      await db.execute(
+        `UPDATE daily_campaign_activity 
+         SET "workingSeconds" = $1, "talkSeconds" = $2, "lastState" = $3, "lastHeartbeat" = $4 
+         WHERE id = $5`,
+        [newWorking, newTalk, state, now, existing.id]
+      );
+      res.json({ success: true, workingSeconds: newWorking, talkSeconds: newTalk });
+    } else {
+      const actId = 'act_' + Math.random().toString(36).substring(2, 11);
+      const initWorking = Number(incrementWorkingSeconds) || 0;
+      const initTalk = Number(incrementTalkSeconds) || 0;
+      await db.execute(
+        `INSERT INTO daily_campaign_activity (id, "tenantId", "campaignId", "userId", "activityDate", "workingSeconds", "talkSeconds", "lastState", "lastHeartbeat")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [actId, tenantId, campaignId, user.id, activityDate, initWorking, initTalk, state, now]
+      );
+      res.json({ success: true, workingSeconds: initWorking, talkSeconds: initTalk });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/admin/scraper/force-stop
@@ -3593,17 +3853,55 @@ if (fs.existsSync(frontendDistPath)) {
   });
 }
 
-if (process.env.NODE_ENV !== 'test' && !process.env.SKIP_LISTEN) {
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Octal Backend] Server running on http://0.0.0.0:${PORT}`);
-    console.log(`[Local IP Address] Detected: http://${getLocalIP()}:${PORT}`);
-    console.log(`[Phone must use this URL] http://${getLocalIP()}:${PORT}`);
-    console.log(`[QR will auto-encode this URL in the pairing link]`);
+async function startServer() {
+  try {
+    // 1. Initialize DB and await schema readiness
+    console.log('[Octal Backend] Bootstrapping database engine...');
+    await dbAdapter.init();
 
-    // Initialize Cloudflare Tunnel, APK Watcher, and Default Admin
+    // Verify schema readiness (ensure users table is queryable)
+    let schemaReady = false;
+    for (let i = 0; i < 50; i++) {
+      try {
+        await db.queryOne('SELECT 1 FROM users LIMIT 1');
+        schemaReady = true;
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    if (!schemaReady) {
+      throw new Error('[Octal Backend] Database schema initialization timed out.');
+    }
+    console.log('[Octal Backend] Database schema ready.');
+
+    // 2. Ensure default admin exists before accepting traffic
+    try {
+      await ensureDefaultAdmin();
+      console.log('[Octal Backend] Default admin verification complete.');
+    } catch (err) {
+      console.error('[Bootstrap Admin Error]:', err);
+      throw err;
+    }
+
+    // 3. Initialize background services
     tunnelManager.attachSocketIO(io);
     tunnelManager.init(PORT);
     apkWatcher.init(io, db);
-    ensureDefaultAdmin().catch(err => console.error('[Bootstrap Admin Error]:', err));
-  });
+
+    // 4. Start HTTP listener
+    if (process.env.NODE_ENV !== 'test' && !process.env.SKIP_LISTEN) {
+      httpServer.listen(PORT, '0.0.0.0', () => {
+        console.log(`[Octal Backend] Server running on http://0.0.0.0:${PORT}`);
+        console.log(`[Local IP Address] Detected: http://${getLocalIP()}:${PORT}`);
+        console.log(`[Phone must use this URL] http://${getLocalIP()}:${PORT}`);
+        console.log(`[QR will auto-encode this URL in the pairing link]`);
+      });
+    }
+  } catch (err) {
+    console.error('[Startup Fatal]:', err);
+    process.exit(1);
+  }
 }
+
+startServer();

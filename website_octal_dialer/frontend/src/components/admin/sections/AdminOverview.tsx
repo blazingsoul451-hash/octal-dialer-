@@ -27,9 +27,14 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${serverUrl}/admin/platform/overview`, {
+      let res = await fetch(`${serverUrl}/api/admin/overview`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
+      if (!res.ok && res.status === 404) {
+        res = await fetch(`${serverUrl}/admin/platform/overview`, {
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+      }
       if (res.ok) {
         const json = await res.json();
         setData(json);

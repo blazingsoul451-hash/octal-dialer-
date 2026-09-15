@@ -35,6 +35,16 @@ const formatTimer = (seconds: number): string => {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 };
 
+const formatDuration = (seconds: number): string => {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hrs > 0) {
+    return `${hrs}h ${mins.toString().padStart(2, '0')}m ${secs.toString().padStart(2, '0')}s`;
+  }
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
 export const LeadQueue: React.FC<LeadQueueProps> = ({
   phoneConnected,
   campaigns,
@@ -106,6 +116,122 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   useEffect(() => {
     selectedCampIdRef.current = selectedCampId;
   }, [selectedCampId]);
+
+  // Phase 4: Daily Campaign Working Clock & Activity State
+  const [todayWorkingSeconds, setTodayWorkingSeconds] = useState(0);
+  const [todayTalkSeconds, setTodayTalkSeconds] = useState(0);
+  const workingTimerRef = useRef<any>(null);
+  const heartbeatTimerRef = useRef<any>(null);
+  const unsentWorkingSecsRef = useRef<number>(0);
+  const unsentTalkSecsRef = useRef<number>(0);
+  const callStateRef = useRef(callState);
+
+  useEffect(() => {
+    callStateRef.current = callState;
+  }, [callState]);
+
+  const flushHeartbeat = async (campId: string, state: string) => {
+    if (!campId) return;
+    const incWorking = unsentWorkingSecsRef.current;
+    const incTalk = unsentTalkSecsRef.current;
+    if (incWorking === 0 && incTalk === 0 && state !== 'PAUSED') {
+      return;
+    }
+    unsentWorkingSecsRef.current = 0;
+    unsentTalkSecsRef.current = 0;
+
+    try {
+      await fetch(`${serverUrl}/api/campaigns/${campId}/activity/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          incrementWorkingSeconds: incWorking,
+          incrementTalkSeconds: incTalk,
+          state
+        })
+      });
+    } catch {
+      unsentWorkingSecsRef.current += incWorking;
+      unsentTalkSecsRef.current += incTalk;
+    }
+  };
+
+  // Fetch initial activity on campaign selection
+  useEffect(() => {
+    if (!selectedCampId) {
+      setTodayWorkingSeconds(0);
+      setTodayTalkSeconds(0);
+      return;
+    }
+
+    fetch(`${serverUrl}/api/campaigns/${selectedCampId}/activity/today`, {
+      headers: { 'Authorization': `Bearer ${authToken}` }
+    })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.activity) {
+          setTodayWorkingSeconds(data.activity.workingSeconds || 0);
+          setTodayTalkSeconds(data.activity.talkSeconds || 0);
+        }
+      })
+      .catch(err => console.warn('Failed to load today campaign activity:', err));
+
+    return () => {
+      if (selectedCampIdRef.current) {
+        flushHeartbeat(selectedCampIdRef.current, 'PAUSED');
+      }
+    };
+  }, [selectedCampId, serverUrl, authToken]);
+
+  // Working ticker & heartbeat sync
+  useEffect(() => {
+    if (workingTimerRef.current) {
+      clearInterval(workingTimerRef.current);
+      workingTimerRef.current = null;
+    }
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+
+    const isWorking = (isAutoDialing && phoneConnected) || callState === 'ACTIVE';
+
+    if (isWorking && selectedCampId) {
+      workingTimerRef.current = setInterval(() => {
+        setTodayWorkingSeconds(prev => prev + 1);
+        unsentWorkingSecsRef.current += 1;
+
+        if (callStateRef.current === 'ACTIVE') {
+          setTodayTalkSeconds(prev => prev + 1);
+          unsentTalkSecsRef.current += 1;
+        }
+      }, 1000);
+
+      heartbeatTimerRef.current = setInterval(() => {
+        if (selectedCampIdRef.current) {
+          flushHeartbeat(selectedCampIdRef.current, isAutoDialingRef.current ? 'WORKING' : 'IN_CALL');
+        }
+      }, 5000);
+    } else {
+      if (selectedCampIdRef.current) {
+        flushHeartbeat(selectedCampIdRef.current, 'PAUSED');
+      }
+    }
+
+    return () => {
+      if (workingTimerRef.current) {
+        clearInterval(workingTimerRef.current);
+        workingTimerRef.current = null;
+      }
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
+      }
+    };
+  }, [isAutoDialing, phoneConnected, callState, selectedCampId]);
 
   // Inter-call delay configuration & cooldown countdown
   const [interCallDelay, setInterCallDelay] = useState<number>(() => {
@@ -823,7 +949,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
         {/* Real Campaign Statistics Grid */}
         {selectedCampId && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-2">
             <div className={`p-3.5 rounded-xl border space-y-1 ${
               isLight ? 'bg-slate-50 border-slate-200 shadow-sm' : 'bg-[#121215] border-[#27272a]'
             }`}>
@@ -847,6 +973,24 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
             }`}>
               <span className="text-[9px] font-mono font-bold text-blue-400 uppercase">REMAINING</span>
               <p className="text-xl font-black font-display text-blue-400">{remainingCount}</p>
+            </div>
+            <div className={`p-3.5 rounded-xl border space-y-1 ${
+              isLight ? 'bg-purple-500/10 border-purple-300 shadow-sm' : 'bg-[#121215] border-[#27272a]'
+            }`}>
+              <span className="text-[9px] font-mono font-bold text-purple-400 uppercase flex items-center gap-1">
+                <Clock className="w-2.5 h-2.5" />
+                <span>TODAY'S WORKING TIME</span>
+              </span>
+              <p className="text-xl font-black font-mono text-purple-400">{formatDuration(todayWorkingSeconds)}</p>
+            </div>
+            <div className={`p-3.5 rounded-xl border space-y-1 ${
+              isLight ? 'bg-emerald-500/10 border-emerald-300 shadow-sm' : 'bg-[#121215] border-[#27272a]'
+            }`}>
+              <span className="text-[9px] font-mono font-bold text-emerald-400 uppercase flex items-center gap-1">
+                <PhoneCall className="w-2.5 h-2.5" />
+                <span>TODAY'S TALK TIME</span>
+              </span>
+              <p className="text-xl font-black font-mono text-emerald-400">{formatDuration(todayTalkSeconds)}</p>
             </div>
           </div>
         )}

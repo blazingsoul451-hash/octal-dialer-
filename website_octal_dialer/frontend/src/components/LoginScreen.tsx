@@ -209,21 +209,25 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
     setError(null);
 
     try {
-      const candidateUrls = Array.from(new Set([
-        '',
-        serverUrl,
-        'http://140.245.215.156',
-        `http://${window.location.hostname}`
-      ]));
+      const isLocal = typeof window !== 'undefined' &&
+        (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
+      const candidateUrls = isLocal
+        ? Array.from(new Set(['', serverUrl, 'http://127.0.0.1:5000', `http://${window.location.hostname}:5000`].filter(Boolean)))
+        : Array.from(new Set(['', serverUrl, 'http://140.245.215.156', `http://${window.location.hostname}`].filter(Boolean)));
 
       let res: Response | null = null;
       for (const baseUrl of candidateUrls) {
         try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
           res = await fetch(`${baseUrl}/auth/google/initiate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ intent, captchaToken })
+            body: JSON.stringify({ intent, captchaToken }),
+            signal: controller.signal
           });
+          clearTimeout(timeoutId);
           if (res && res.ok) break;
         } catch {}
       }
@@ -268,12 +272,12 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
     setLoading(true);
 
     try {
-      const candidateUrls = Array.from(new Set([
-        '',
-        serverUrl,
-        `http://${window.location.hostname}:5000`,
-        'http://140.245.215.156:5000'
-      ]));
+      const isLocal = typeof window !== 'undefined' &&
+        (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
+      const candidateUrls = isLocal
+        ? Array.from(new Set(['', serverUrl, 'http://127.0.0.1:5000', `http://${window.location.hostname}:5000`].filter(Boolean)))
+        : Array.from(new Set(['', serverUrl, `http://${window.location.hostname}:5000`, 'http://140.245.215.156:5000'].filter(Boolean)));
 
       let res: Response | null = null;
 
@@ -287,11 +291,17 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
             payload = { identifier: (email || username).trim(), captchaToken };
           }
 
-          res = await fetch(endpoint, {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+          const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: controller.signal
           });
+          clearTimeout(timeoutId);
+          res = response;
           if (res) break;
         } catch {
           // try next url

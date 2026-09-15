@@ -442,6 +442,22 @@ CREATE TABLE IF NOT EXISTS "lead_activities" (
   "createdAt" TEXT NOT NULL DEFAULT ''
 );
 
+-- Table: daily_campaign_activity
+CREATE TABLE IF NOT EXISTS "daily_campaign_activity" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "campaignId" TEXT NOT NULL,
+  "userId" TEXT NOT NULL,
+  "activityDate" TEXT NOT NULL,
+  "workingSeconds" INTEGER NOT NULL DEFAULT 0,
+  "talkSeconds" INTEGER NOT NULL DEFAULT 0,
+  "callsPlaced" INTEGER NOT NULL DEFAULT 0,
+  "callsAnswered" INTEGER NOT NULL DEFAULT 0,
+  "lastState" TEXT NOT NULL DEFAULT 'PAUSED',
+  "lastHeartbeat" TEXT NOT NULL,
+  UNIQUE("tenantId", "campaignId", "userId", "activityDate")
+);
+
 -- Performance & Multi-Tenant Indexes
 CREATE INDEX IF NOT EXISTS "idx_leads_tenant_camp_status" ON "leads"("tenantId", "campaignId", "status");
 CREATE INDEX IF NOT EXISTS "idx_leads_locked" ON "leads"("tenantId", "lockedBy");
@@ -454,3 +470,4 @@ CREATE INDEX IF NOT EXISTS "idx_users_googleId" ON "users"("googleId");
 CREATE INDEX IF NOT EXISTS "idx_suppression_tenant_phone" ON "suppression_list"("tenantId", "phone");
 CREATE INDEX IF NOT EXISTS "idx_crm_follow_ups_tenant" ON "crm_follow_ups"("tenantId");
 CREATE INDEX IF NOT EXISTS "idx_lead_activities_lead" ON "lead_activities"("leadId");
+CREATE INDEX IF NOT EXISTS "idx_daily_campaign_act" ON "daily_campaign_activity"("tenantId", "userId", "activityDate");

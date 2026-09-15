@@ -33,7 +33,7 @@ export const AdminSystemSettings: React.FC<AdminSystemSettingsProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${serverUrl}/admin/system-settings`, {
+      const res = await fetch(`${serverUrl}/api/admin/settings`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
       if (res.ok) {
@@ -58,7 +58,7 @@ export const AdminSystemSettings: React.FC<AdminSystemSettingsProps> = ({
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`${serverUrl}/admin/system-settings`, {
+      const res = await fetch(`${serverUrl}/api/admin/settings`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

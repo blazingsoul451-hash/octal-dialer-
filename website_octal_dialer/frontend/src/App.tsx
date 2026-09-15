@@ -37,11 +37,11 @@ const getBackendUrl = () => {
       return 'http://127.0.0.1:5000';
     }
     if (loc.hostname.includes('vercel.app')) {
-      return 'http://140.245.215.156';
+      return '';
     }
-    return `http://${loc.hostname}`;
+    return `http://${loc.hostname}:5000`;
   }
-  return 'http://140.245.215.156';
+  return '';
 };
 
 const SERVER_URL = getBackendUrl();
@@ -793,8 +793,8 @@ export default function App() {
                 </button>
               )}
 
-              {/* Platform Admin — STRICTLY MASTER ADMIN ONLY */}
-              {userRole === 'platform_admin' && (
+              {/* Administration — Available to Platform Admin & Tenant Admin */}
+              {(userRole === 'platform_admin' || userRole === 'admin') && (
                 <button
                   onClick={() => setActiveTab('admin')}
                   className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
@@ -808,7 +808,7 @@ export default function App() {
                   }`}
                 >
                   <Shield className={`w-4 h-4 shrink-0 ${activeTab === 'admin' ? (isLight ? 'text-purple-700' : 'text-purple-400') : 'text-slate-400'}`} />
-                  {isNavExpanded && <span className="truncate">Platform Admin</span>}
+                  {isNavExpanded && <span className="truncate">{userRole === 'platform_admin' ? 'Platform Admin' : 'Administration'}</span>}
                 </button>
               )}
 
