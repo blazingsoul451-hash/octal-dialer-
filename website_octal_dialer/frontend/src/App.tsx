@@ -36,7 +36,7 @@ const getBackendUrl = () => {
     if (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') {
       return 'http://127.0.0.1:5000';
     }
-    if (loc.hostname.includes('vercel.app')) {
+    if (loc.hostname.includes('vercel.app') || loc.hostname.includes('sslip.io') || loc.hostname.includes('.')) {
       return '';
     }
     return `http://${loc.hostname}:5000`;
