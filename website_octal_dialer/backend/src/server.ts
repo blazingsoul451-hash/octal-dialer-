@@ -93,12 +93,15 @@ import {
   logout,
   validateToken,
   changePassword,
+  verifyUserPassword,
   registerPublicUser,
   handleGoogleAuthWithIntent,
   updateUserRole,
   requirePlatformAdmin,
   requireTenantAdmin,
   requireModule,
+  getEffectivePermissions,
+  requirePermission,
   signupTenant
 } from './authManager';
 
@@ -776,23 +779,32 @@ app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, async (req,
     return;
   }
 
-  if (user.role === 'platform_admin' || user.role === 'admin') {
-    const allPerms: Record<string, boolean> = {};
-    for (const m of ALL_BUSINESS_MODULES) {
-      allPerms[m] = true;
+  // Resolve effective permissions
+  const effectivePerms = await getEffectivePermissions(user);
+  const isFullAccess = effectivePerms.has('*') || effectivePerms.has('all') || user.role === 'platform_admin' || user.role === 'master_admin';
+
+  // Compute module visibility map expected by the frontend
+  const modulePerms: Record<string, boolean> = {};
+  for (const m of ALL_BUSINESS_MODULES) {
+    if (isFullAccess) {
+      modulePerms[m] = true;
+    } else {
+      if (m === 'octalDialer') {
+        modulePerms[m] = Array.from(effectivePerms).some(p => p.startsWith('calls:'));
+      } else if (m === 'reports') {
+        modulePerms[m] = Array.from(effectivePerms).some(p => p.startsWith('reports:') || p.startsWith('history:'));
+      } else if (m === 'googleScraper' || m === 'autoEmailer' || m === 'facebookScraper' || m === 'facebookPoster') {
+        modulePerms[m] = effectivePerms.has(m) || effectivePerms.has(`${m}:view`);
+      } else {
+        modulePerms[m] = effectivePerms.has(`${m}:view`) || Array.from(effectivePerms).some(p => p.startsWith(`${m}:`));
+      }
     }
-    res.json({
-      success: true,
-      permissions: allPerms,
-      userRole: user.role
-    });
-    return;
   }
 
-  const perms = await getUserPermissions(user.id, user.tenantId);
   res.json({
     success: true,
-    permissions: perms,
+    permissions: modulePerms,
+    actionPermissions: Array.from(effectivePerms),
     userRole: user.role
   });
 });
@@ -920,6 +932,170 @@ app.post('/auth/change-password', requireAuth, async (req, res) => {
 // GET /auth/me — validate token and return current user
 app.get('/auth/me', requireAuth, (req, res) => {
   res.json({ user: (req as any).user });
+});
+
+// ─── User Profile & Account Management REST Endpoints ─────────────────────────
+
+// GET /api/user/profile — Return authenticated user's profile details
+app.get('/api/user/profile', requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const user = await db.queryOne<any>(
+      `SELECT id, username, "displayName", email, phone, role, "tenantId", status, "ipRestrictions", avatar_url, "createdAt" FROM users WHERE id = $1`,
+      [caller.id]
+    );
+    if (!user) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+    const parts = (user.displayName || user.username || '').split(' ');
+    const firstName = parts[0] || '';
+    const lastName = parts.slice(1).join(' ') || '';
+    const accountNo = user.tenantId ? `Account-${user.tenantId.replace(/[^a-zA-Z0-9]/g, '').slice(-4).toUpperCase()}` : 'Trial-2421';
+
+    res.json({
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName || user.username,
+      firstName,
+      lastName,
+      email: user.email || '',
+      phone: user.phone || '',
+      role: user.role,
+      status: user.status || 'Active',
+      accountNo,
+      recordsPerPage: 25,
+      twoFactorEnabled: false,
+      avatarUrl: user.avatar_url || ''
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch user profile.' });
+  }
+});
+
+// PUT /api/user/profile — Update personal information and preferences
+app.put('/api/user/profile', requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { firstName = '', lastName = '', phone = '', recordsPerPage = 25, twoFactorEnabled = false, avatarUrl } = req.body;
+    const computedDisplayName = `${firstName} ${lastName}`.trim() || caller.username;
+    const now = new Date().toISOString();
+
+    if (avatarUrl !== undefined) {
+      await db.execute(
+        `UPDATE users SET "displayName" = $1, phone = $2, avatar_url = $3, "updatedAt" = $4 WHERE id = $5`,
+        [computedDisplayName, phone, avatarUrl, now, caller.id]
+      );
+    } else {
+      await db.execute(
+        `UPDATE users SET "displayName" = $1, phone = $2, "updatedAt" = $3 WHERE id = $4`,
+        [computedDisplayName, phone, now, caller.id]
+      );
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully.',
+      profile: {
+        displayName: computedDisplayName,
+        firstName,
+        lastName,
+        phone,
+        recordsPerPage,
+        twoFactorEnabled,
+        avatarUrl
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update profile.' });
+  }
+});
+
+// POST /api/user/avatar — Dedicated image upload/update endpoint
+app.post('/api/user/avatar', requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { avatarUrl } = req.body;
+    if (!avatarUrl) {
+      res.status(400).json({ error: 'avatarUrl is required.' });
+      return;
+    }
+    const now = new Date().toISOString();
+    await db.execute(
+      `UPDATE users SET avatar_url = $1, "updatedAt" = $2 WHERE id = $3`,
+      [avatarUrl, now, caller.id]
+    );
+    res.json({ success: true, message: 'Avatar updated successfully.', avatarUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update avatar.' });
+  }
+});
+
+// POST /api/user/change-password — Secure password update with validation rules
+app.post('/api/user/change-password', requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { oldPassword, newPassword, confirmPassword } = req.body;
+
+    if (!oldPassword || !newPassword) {
+      res.status(400).json({ error: 'Current password and new password are required.' });
+      return;
+    }
+
+    // 1. Verify old password against stored hash
+    const isValidOld = await verifyUserPassword(caller.id, oldPassword);
+    if (!isValidOld) {
+      res.status(400).json({ error: 'Current password is incorrect.' });
+      return;
+    }
+
+    // 2. Validate password rules
+    if (newPassword.length < 8) {
+      res.status(400).json({ error: 'New password must be at least 8 characters long.' });
+      return;
+    }
+    if (!/[A-Z]/.test(newPassword)) {
+      res.status(400).json({ error: 'New password must contain at least 1 capital letter.' });
+      return;
+    }
+    if (!/[0-9]/.test(newPassword)) {
+      res.status(400).json({ error: 'New password must contain at least 1 numeric character.' });
+      return;
+    }
+    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(newPassword)) {
+      res.status(400).json({ error: 'New password must contain at least 1 special character.' });
+      return;
+    }
+    if (confirmPassword && newPassword !== confirmPassword) {
+      res.status(400).json({ error: 'New password and confirmation do not match.' });
+      return;
+    }
+
+    // 3. Save new password
+    await changePassword(caller.id, newPassword);
+    res.json({ success: true, message: 'Password updated successfully.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to change password.' });
+  }
+});
+
+// POST /api/user/revoke-devices — Remove all other trusted sessions
+app.post('/api/user/revoke-devices', requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const authHeader = req.headers.authorization;
+    const currentToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : '';
+
+    if (currentToken) {
+      await db.execute(`DELETE FROM sessions_store WHERE "userId" = $1 AND token != $2`, [caller.id, currentToken]);
+    } else {
+      await db.execute(`DELETE FROM sessions_store WHERE "userId" = $1`, [caller.id]);
+    }
+
+    res.json({ success: true, message: 'All other trusted devices have been removed.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to revoke devices.' });
+  }
 });
 
 // ─── Safety Controller REST Endpoints ───────────────────────────────────────
@@ -1756,12 +1932,25 @@ app.get(['/api/admin/overview', '/admin/platform/overview', '/admin/overview'], 
 });
 
 // GET /api/admin/users & /admin/users
-app.get(['/api/admin/users', '/admin/users'], requireAuth, requireAdmin, async (req, res) => {
+app.get(['/api/admin/users', '/admin/users'], requireAuth, requirePermission('users:view'), async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const users = isPlatform
-    ? await db.queryAll(`SELECT id, username, email, role, "tenantId", "createdAt", "updatedAt" FROM users ORDER BY "createdAt" DESC`) as any[]
-    : await db.queryAll(`SELECT id, username, email, role, "tenantId", "createdAt", "updatedAt" FROM users WHERE "tenantId" = $1 ORDER BY "createdAt" DESC`, [user.tenantId]) as any[];
+    ? await db.queryAll(`
+        SELECT u.id, u.username, u."displayName", u.phone, u.email, u.role, u.status, u."ipRestrictions", u."tenantId", u."createdAt", u."updatedAt", u."roleId",
+               COALESCE(cr."roleName", CASE WHEN LOWER(u.role) = 'admin' THEN 'Administrator' WHEN LOWER(u.role) IN ('agent', 'user') THEN 'Agent' ELSE u.role END) AS "roleName"
+        FROM users u
+        LEFT JOIN custom_roles cr ON cr.id = u."roleId"
+        ORDER BY u."createdAt" DESC
+      `) as any[]
+    : await db.queryAll(`
+        SELECT u.id, u.username, u."displayName", u.phone, u.email, u.role, u.status, u."ipRestrictions", u."tenantId", u."createdAt", u."updatedAt", u."roleId",
+               COALESCE(cr."roleName", CASE WHEN LOWER(u.role) = 'admin' THEN 'Administrator' WHEN LOWER(u.role) IN ('agent', 'user') THEN 'Agent' ELSE u.role END) AS "roleName"
+        FROM users u
+        LEFT JOIN custom_roles cr ON cr.id = u."roleId"
+        WHERE u."tenantId" = $1
+        ORDER BY u."createdAt" DESC
+      `, [user.tenantId]) as any[];
 
   // Attach module permissions for each user
   const perms = isPlatform
@@ -1781,25 +1970,41 @@ app.get(['/api/admin/users', '/admin/users'], requireAuth, requireAdmin, async (
 });
 
 // POST /api/admin/users & /admin/users
-app.post(['/api/admin/users', '/admin/users'], requireAuth, requireAdmin, async (req, res) => {
+app.post(['/api/admin/users', '/admin/users'], requireAuth, requirePermission('users:add'), async (req, res) => {
   try {
     const caller = (req as any).user;
-    const { username, password, email, role, initialPermissions } = req.body;
+    const { username, password, email, role, roleId, phone, status = 'Active', ipRestrictions, firstName, lastName, initialPermissions } = req.body;
     if (!username || !password) {
       res.status(400).json({ error: 'Username and password required.' });
       return;
     }
+    let normalizedRole = (role || 'agent').toLowerCase();
+    if (normalizedRole.includes('admin')) normalizedRole = 'admin';
+    else if (normalizedRole.includes('supervisor') || normalizedRole.includes('agent')) normalizedRole = 'agent';
+    else if (!['user', 'agent', 'admin'].includes(normalizedRole)) normalizedRole = 'agent';
+
     const tenantId = caller.role === 'platform_admin' ? (req.body.tenantId || caller.tenantId) : caller.tenantId;
     const result = await registerPublicUser({
       username,
       password,
       email,
-      requestedRole: role,
+      requestedRole: normalizedRole,
       tenantId
     });
-    if (role && role !== 'user') {
-      await updateUserRole(caller, result.user.id, role);
+    if (normalizedRole !== 'user') {
+      if (caller.role === 'platform_admin' || caller.role === 'master_admin') {
+        await updateUserRole(caller, result.user.id, normalizedRole);
+      } else {
+        await db.execute(`UPDATE users SET role = $1 WHERE id = $2`, [normalizedRole, result.user.id]);
+      }
     }
+
+    // Save extended fields: displayName, phone, status, ipRestrictions, roleId
+    const computedDisplayName = (req.body.displayName || `${firstName || ''} ${lastName || ''}`.trim()) || username;
+    await db.execute(
+      `UPDATE users SET "displayName" = $1, phone = $2, status = $3, "ipRestrictions" = $4, "roleId" = $5 WHERE id = $6`,
+      [computedDisplayName, phone || '', status || 'Active', ipRestrictions || '', roleId || null, result.user.id]
+    );
 
     // Insert initial module permissions if provided
     if (Array.isArray(initialPermissions) && initialPermissions.length > 0) {
@@ -1814,14 +2019,24 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireAdmin, async 
       }
     }
 
-    res.json({ success: true, user: result.user });
+    res.json({
+      success: true,
+      user: {
+        ...result.user,
+        displayName: computedDisplayName,
+        phone: phone || '',
+        status: status || 'Active',
+        ipRestrictions: ipRestrictions || '',
+        roleId: roleId || null
+      }
+    });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
 });
 
 // PUT /api/admin/users/:id & /admin/users/:id (Unified update for role, password, and permissions)
-app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireAdmin, async (req, res) => {
+app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requirePermission('users:edit'), async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
@@ -1836,11 +2051,18 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireAdmin,
     return;
   }
 
-  const { role, newPassword, password, permissions } = req.body;
+  const { role, roleId, newPassword, password, permissions, displayName, firstName, lastName, email, phone, status, ipRestrictions } = req.body;
 
   // 1. Update role if provided
   if (role) {
-    await updateUserRole(caller, req.params.id, role);
+    if (caller.role === 'platform_admin' || caller.role === 'master_admin') {
+      await updateUserRole(caller, req.params.id, role);
+    } else {
+      let normalizedRole = (role || 'agent').toLowerCase();
+      if (!['platform_admin', 'master_admin'].includes(normalizedRole)) {
+        await db.execute(`UPDATE users SET role = $1 WHERE id = $2`, [normalizedRole, req.params.id]);
+      }
+    }
   }
 
   // 2. Update password if provided
@@ -1849,7 +2071,25 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireAdmin,
     await changePassword(req.params.id, pwdToSet);
   }
 
-  // 3. Update permissions map if provided
+  // 3. Update user profile fields (displayName, phone, status, ipRestrictions, email, roleId)
+  const computedDisplayName = displayName || (firstName || lastName ? `${firstName || ''} ${lastName || ''}`.trim() : undefined);
+  const updates: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+
+  if (computedDisplayName !== undefined) { updates.push(`"displayName" = $${idx++}`); params.push(computedDisplayName); }
+  if (email !== undefined) { updates.push(`email = $${idx++}`); params.push(email); }
+  if (phone !== undefined) { updates.push(`phone = $${idx++}`); params.push(phone); }
+  if (status !== undefined) { updates.push(`status = $${idx++}`); params.push(status); }
+  if (ipRestrictions !== undefined) { updates.push(`"ipRestrictions" = $${idx++}`); params.push(ipRestrictions); }
+  if (roleId !== undefined) { updates.push(`"roleId" = $${idx++}`); params.push(roleId || null); }
+
+  if (updates.length > 0) {
+    params.push(req.params.id);
+    await db.execute(`UPDATE users SET ${updates.join(', ')} WHERE id = $${idx}`, params);
+  }
+
+  // 4. Update permissions map if provided
   if (permissions && typeof permissions === 'object') {
     const tenantId = targetUser.tenantId || caller.tenantId;
     const now = new Date().toISOString();
@@ -1929,7 +2169,7 @@ app.post(['/api/admin/permissions', '/admin/permissions'], requireAuth, requireA
 });
 
 // PUT /api/admin/users/:id/role
-app.put(['/api/admin/users/:id/role', '/admin/users/:id/role'], requireAuth, requireAdmin, async (req, res) => {
+app.put(['/api/admin/users/:id/role', '/admin/users/:id/role'], requireAuth, requirePermission('users:edit'), async (req, res) => {
   const { role } = req.body;
   if (!role) {
     res.status(400).json({ error: 'Role is required.' });
@@ -1948,7 +2188,7 @@ app.put(['/api/admin/users/:id/role', '/admin/users/:id/role'], requireAuth, req
 });
 
 // POST /api/admin/users/:id/password
-app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], requireAuth, requireAdmin, async (req, res) => {
+app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], requireAuth, requirePermission('users:edit'), async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
@@ -1978,7 +2218,7 @@ app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], require
 });
 
 // DELETE /api/admin/users/:id
-app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireAdmin, async (req, res) => {
+app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requirePermission('users:delete'), async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
@@ -2005,6 +2245,167 @@ app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireAdm
   } else {
     res.status(404).json({ error: 'User not found.' });
   }
+});
+
+// ─── Custom Roles Endpoints ──────────────────────────────────────────────────
+
+// GET /api/admin/roles & /admin/roles
+app.get(['/api/admin/roles', '/admin/roles'], requireAuth, requirePermission('roles:view'), async (req, res) => {
+  const user = (req as any).user;
+  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const roles = isPlatform
+    ? await db.queryAll(`
+        SELECT r.id, r."roleName", r.description, r.permissions, r.status, r."createdBy", r."createdAt", r."tenantId",
+               COUNT(u.id)::int AS "userCount"
+        FROM custom_roles r
+        LEFT JOIN users u ON (u."roleId" = r.id OR (u."roleId" IS NULL AND LOWER(u.role) = LOWER(r."roleName")))
+        GROUP BY r.id, r."roleName", r.description, r.permissions, r.status, r."createdBy", r."createdAt", r."tenantId"
+        ORDER BY r."createdAt" ASC
+      `) as any[]
+    : await db.queryAll(`
+        SELECT r.id, r."roleName", r.description, r.permissions, r.status, r."createdBy", r."createdAt", r."tenantId",
+               COUNT(u.id)::int AS "userCount"
+        FROM custom_roles r
+        LEFT JOIN users u ON (u."roleId" = r.id OR (u."roleId" IS NULL AND LOWER(u.role) = LOWER(r."roleName")))
+        WHERE (r."tenantId" = $1 OR r."tenantId" = 'tenant_default')
+        GROUP BY r.id, r."roleName", r.description, r.permissions, r.status, r."createdBy", r."createdAt", r."tenantId"
+        ORDER BY r."createdAt" ASC
+      `, [user.tenantId]) as any[];
+
+  // If no custom roles exist yet, seed and return the standard roles matching the UI mock
+  if (roles.length === 0) {
+    const tenant = user.tenantId || 'tenant_default';
+    const now = new Date().toISOString();
+    const defaults = [
+      { id: '1', roleName: 'Administrator', description: 'Full access to organization and settings', permissions: JSON.stringify(['all']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 1 },
+      { id: '2', roleName: 'Supervisor', description: 'Campaign oversight, lead queue and call monitoring', permissions: JSON.stringify(['campaigns:view', 'campaigns:create', 'campaigns:edit', 'leads:view', 'leads:import', 'reports:cdr_view']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 },
+      { id: '3', roleName: 'Agent', description: 'Direct dialing and call disposition logging', permissions: JSON.stringify(['calls:view_queue', 'calls:dial_outbound', 'calls:manual_keypad', 'calls:log_disposition']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 },
+      { id: '4', roleName: 'Auditor', description: 'Read-only access to audit records and reporting', permissions: JSON.stringify(['reports:cdr_view', 'reports:cdr_export']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 },
+      { id: '5', roleName: 'Custom', description: 'Custom tenant configuration', permissions: JSON.stringify([]), status: 'Inactive', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 }
+    ];
+    for (const r of defaults) {
+      await db.execute(
+        `INSERT INTO custom_roles (id, "roleName", description, permissions, status, "createdBy", "createdAt", "tenantId")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (id) DO NOTHING`,
+        [r.id, r.roleName, r.description, r.permissions, r.status, r.createdBy, r.createdAt, r.tenantId]
+      );
+    }
+    return res.json(defaults);
+  }
+
+  res.json(roles);
+});
+
+// POST /api/admin/roles & /admin/roles
+app.post(['/api/admin/roles', '/admin/roles'], requireAuth, requirePermission('roles:add'), async (req, res) => {
+  const caller = (req as any).user;
+  const rawRoleName = req.body.roleName || req.body.name || '';
+  const roleName = typeof rawRoleName === 'string' ? rawRoleName.trim() : '';
+  const { description = '', permissions = [], status = 'Active' } = req.body;
+  if (!roleName) {
+    res.status(400).json({ error: 'Role name is required.' });
+    return;
+  }
+  const tenantId = caller.role === 'platform_admin' ? (req.body.tenantId || caller.tenantId) : caller.tenantId;
+
+  // Check for duplicate role name in tenant
+  const dup = await db.queryOne(`SELECT id FROM custom_roles WHERE "tenantId" = $1 AND LOWER("roleName") = LOWER($2)`, [tenantId, roleName.trim()]) as any;
+  if (dup) {
+    res.status(409).json({ error: `A role named "${roleName}" already exists in your organization.` });
+    return;
+  }
+
+  const id = 'role_' + Math.random().toString(36).substring(2, 9);
+  const now = new Date().toISOString();
+  const permsStr = typeof permissions === 'string' ? permissions : JSON.stringify(permissions);
+
+  await db.execute(
+    `INSERT INTO custom_roles (id, "roleName", description, permissions, status, "createdBy", "createdAt", "tenantId")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [id, roleName.trim(), description, permsStr, status, caller.username, now, tenantId]
+  );
+
+  res.json({
+    success: true,
+    role: { id, roleName: roleName.trim(), description, permissions: permsStr, status, createdBy: caller.username, createdAt: now, tenantId, userCount: 0 }
+  });
+});
+
+// PUT /api/admin/roles/:id & /admin/roles/:id
+app.put(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requirePermission('roles:edit'), async (req, res) => {
+  const caller = (req as any).user;
+  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+  const targetRole = await db.queryOne(`SELECT id, "roleName", "tenantId" FROM custom_roles WHERE id = $1`, [req.params.id]) as any;
+
+  if (!targetRole) {
+    res.status(404).json({ error: 'Role not found.' });
+    return;
+  }
+
+  if (!isPlatform && targetRole.tenantId !== caller.tenantId && targetRole.tenantId !== 'tenant_default') {
+    res.status(403).json({ error: 'Forbidden: Cannot edit roles from another organization.' });
+    return;
+  }
+
+  const rawRoleName = req.body.roleName !== undefined ? req.body.roleName : req.body.name;
+  const { description, permissions, status } = req.body;
+  const updates: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+
+  if (rawRoleName !== undefined) {
+    const trimmedName = String(rawRoleName).trim();
+    if (!trimmedName) {
+      res.status(400).json({ error: 'Role name cannot be empty.' });
+      return;
+    }
+    updates.push(`"roleName" = $${idx++}`);
+    params.push(trimmedName);
+  }
+  if (description !== undefined) { updates.push(`description = $${idx++}`); params.push(description); }
+  if (permissions !== undefined) { updates.push(`permissions = $${idx++}`); params.push(typeof permissions === 'string' ? permissions : JSON.stringify(permissions)); }
+  if (status !== undefined) { updates.push(`status = $${idx++}`); params.push(status); }
+
+  if (updates.length > 0) {
+    params.push(req.params.id);
+    await db.execute(`UPDATE custom_roles SET ${updates.join(', ')} WHERE id = $${idx}`, params);
+  }
+
+  res.json({ success: true, message: 'Role updated successfully.' });
+});
+
+// DELETE /api/admin/roles/:id & /admin/roles/:id
+app.delete(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requirePermission('roles:delete'), async (req, res) => {
+  const caller = (req as any).user;
+  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+  const targetRole = await db.queryOne(`SELECT id, "roleName", "tenantId" FROM custom_roles WHERE id = $1`, [req.params.id]) as any;
+
+  if (!targetRole) {
+    res.status(404).json({ error: 'Role not found.' });
+    return;
+  }
+
+  if (!isPlatform && targetRole.tenantId !== caller.tenantId) {
+    res.status(403).json({ error: 'Forbidden: Cannot delete roles from another organization.' });
+    return;
+  }
+
+  // Guard: Protect default system roles
+  if (['1', '2', '3'].includes(targetRole.id) || ['administrator'].includes(targetRole.roleName.toLowerCase())) {
+    res.status(403).json({ error: 'Forbidden: Core system roles cannot be deleted.' });
+    return;
+  }
+
+  // Guard: Check if users are currently assigned to this role
+  const assignedUsers = await db.queryOne(`SELECT COUNT(id)::int AS count FROM users WHERE "roleId" = $1`, [req.params.id]) as any;
+  if (assignedUsers && assignedUsers.count > 0) {
+    res.status(400).json({ error: `Cannot delete role: ${assignedUsers.count} user(s) are currently assigned to this role. Please reassign them first.` });
+    return;
+  }
+
+  await db.execute(`DELETE FROM custom_roles WHERE id = $1`, [req.params.id]);
+  res.json({ success: true, message: 'Role deleted.' });
 });
 
 // GET & POST & PUT for /api/admin/settings & /admin/system-settings

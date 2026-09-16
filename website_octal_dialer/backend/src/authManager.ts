@@ -53,6 +53,7 @@ export interface AuthUser {
   role: string;
   tenantId: string;
   email?: string;
+  roleId?: string | null;
 }
 
 export interface AuthSession {
@@ -758,7 +759,8 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
         displayName: dbUser.displayName || dbUser.username,
         role: dbUser.role,
         tenantId: dbUser.tenantId,
-        email: dbUser.email
+        email: dbUser.email,
+        roleId: dbUser.roleId || null
       };
     }
     if (decoded.sub && !decoded.tenantId) {
@@ -787,13 +789,21 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
     username: user.username,
     role: user.role,
     tenantId: user.tenantId,
-    email: user.email
+    email: user.email,
+    roleId: user.roleId || null
   };
 }
 
 /** Destroy a session (logout) */
 export async function logout(token: string): Promise<void> {
   await db.execute(`DELETE FROM sessions_store WHERE token = $1`, [token]);
+}
+
+/** Verify password for a user against stored PBKDF2 hash */
+export async function verifyUserPassword(userId: string, passwordCandidate: string): Promise<boolean> {
+  const user = await db.queryOne<any>(`SELECT "passwordHash" FROM users WHERE id = $1`, [userId]);
+  if (!user || !user.passwordHash) return false;
+  return verifyPassword(passwordCandidate, user.passwordHash);
 }
 
 /** Change password for a user */
@@ -924,6 +934,134 @@ export async function requireTenantAdmin(req: express.Request, res: express.Resp
 
 export const requireAdmin = requireTenantAdmin;
 
+/**
+ * Resolves the authoritative effective permissions for a user.
+ *
+ * 1. Platform / Master Admins: Wildcard full access ('*').
+ * 2. If user has a custom role assigned (roleId):
+ *    - Queries custom_roles table scoped to tenant (or 'tenant_default').
+ *    - If status === 'Active': parses JSON permissions array and returns Set of keys.
+ *    - If status === 'Inactive': returns empty Set (0 permissions).
+ * 3. Fallback for unassigned accounts (roleId is null/empty):
+ *    - If user.role === 'admin': Wildcard full access ('*') to avoid administrative lockout.
+ *    - If user.role === 'agent' or 'user': Default calling permissions + merges with legacy user_permissions.
+ */
+export async function getEffectivePermissions(user: AuthUser): Promise<Set<string>> {
+  const permissions = new Set<string>();
+
+  // 1. Platform / Master Admins have full access
+  if (user.role === 'platform_admin' || user.role === 'master_admin') {
+    permissions.add('*');
+    return permissions;
+  }
+
+  // 2. Resolve roleId (either from user object or query if missing)
+  let roleId = user.roleId;
+  if (roleId === undefined) {
+    const dbUser = await db.queryOne<{ roleId: string | null }>(
+      `SELECT "roleId" FROM users WHERE id = $1`,
+      [user.id]
+    );
+    roleId = dbUser?.roleId || null;
+  }
+
+  // 3. If roleId is set, authoritative source is custom_roles
+  if (roleId) {
+    const role = await db.queryOne<{ permissions: string; status: string }>(
+      `SELECT permissions, status FROM custom_roles WHERE id = $1 AND ("tenantId" = $2 OR "tenantId" = 'tenant_default')`,
+      [roleId, user.tenantId]
+    );
+
+    if (role && role.status === 'Active') {
+      try {
+        const parsed = typeof role.permissions === 'string' ? JSON.parse(role.permissions) : role.permissions;
+        if (Array.isArray(parsed)) {
+          for (const p of parsed) {
+            if (typeof p === 'string' && p.trim()) {
+              permissions.add(p.trim());
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[Auth] Error parsing permissions for role ${roleId}:`, err);
+      }
+      return permissions;
+    } else if (role && role.status === 'Inactive') {
+      // Role is deactivated - user has 0 effective permissions
+      return permissions;
+    }
+  }
+
+  // 4. Fallback for unassigned accounts (roleId is null)
+  if (user.role === 'admin') {
+    // Primary unassigned tenant admin retains full rights to avoid lockout
+    permissions.add('*');
+    return permissions;
+  }
+
+  // Standard unassigned agents: default calling permissions
+  permissions.add('calls:view_queue');
+  permissions.add('calls:dial_outbound');
+  permissions.add('calls:manual_keypad');
+  permissions.add('calls:log_disposition');
+
+  // Also merge legacy user_permissions table for backward compatibility
+  try {
+    const legacyPerms = await db.queryAll<{ moduleId: string; enabled: number | boolean }>(
+      `SELECT "moduleId", enabled FROM user_permissions WHERE "userId" = $1 AND "tenantId" = $2`,
+      [user.id, user.tenantId]
+    );
+    for (const lp of legacyPerms) {
+      if (lp.enabled === 1 || lp.enabled === true) {
+        permissions.add(`${lp.moduleId}:view`);
+        if (lp.moduleId === 'campaigns') {
+          permissions.add('campaigns:create');
+          permissions.add('campaigns:edit');
+        }
+        if (lp.moduleId === 'leads') {
+          permissions.add('leads:import');
+          permissions.add('leads:edit');
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[Auth] Error querying legacy permissions for user ${user.id}:`, err);
+  }
+
+  return permissions;
+}
+
+/**
+ * Reusable backend authorization guard: requirePermission(permKey)
+ * 1. Requires authenticated user (req.user must be set via requireAuth).
+ * 2. Resolves effective permissions via getEffectivePermissions(user).
+ * 3. Allows request if user has '*', 'all', or the exact required permission.
+ * 4. Rejects with 403 Forbidden if unauthorized.
+ */
+export function requirePermission(requiredPerm: string) {
+  return async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
+    const user = (req as any).user;
+    if (!user) {
+      res.status(401).json({ error: 'Unauthorized. Please log in.' });
+      return;
+    }
+
+    // Platform / master admin bypass
+    if (user.role === 'platform_admin' || user.role === 'master_admin') {
+      return next();
+    }
+
+    const effective = await getEffectivePermissions(user);
+    if (effective.has('*') || effective.has('all') || effective.has(requiredPerm)) {
+      return next();
+    }
+
+    res.status(403).json({
+      error: `Forbidden: You do not have the required permission (${requiredPerm}) to perform this action.`
+    });
+  };
+}
+
 /** Middleware: require specific business module permission */
 export function requireModule(moduleId: string) {
   return async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
@@ -936,22 +1074,18 @@ export function requireModule(moduleId: string) {
       return;
     }
 
-    if (user.role === 'platform_admin' || user.role === 'admin') {
-      (req as any).user = user;
-      next();
-      return;
-    }
-
-    const perm = await db.queryOne<{ enabled: number | boolean }>(`
-      SELECT enabled FROM user_permissions WHERE "userId" = $1 AND "tenantId" = $2 AND "moduleId" = $3
-    `, [user.id, user.tenantId, moduleId]);
-    if (!perm || (perm.enabled !== 1 && perm.enabled !== true)) {
-      res.status(403).json({ error: `Forbidden. You do not have permission to access the ${moduleId} module.` });
-      return;
-    }
-
     (req as any).user = user;
-    next();
+
+    if (user.role === 'platform_admin' || user.role === 'master_admin') {
+      return next();
+    }
+
+    const effective = await getEffectivePermissions(user);
+    if (effective.has('*') || effective.has('all') || effective.has(`${moduleId}:view`) || Array.from(effective).some(p => p.startsWith(`${moduleId}:`))) {
+      return next();
+    }
+
+    res.status(403).json({ error: `Forbidden. You do not have permission to access the ${moduleId} module.` });
   };
 }
 

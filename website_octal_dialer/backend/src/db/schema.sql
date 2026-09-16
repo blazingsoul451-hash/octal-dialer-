@@ -55,7 +55,12 @@ CREATE TABLE IF NOT EXISTS "users" (
   "emailVerified" INTEGER DEFAULT 0,
   "emailVerifiedAt" TEXT,
   "needsProfileSetup" INTEGER DEFAULT 0,
-  "displayName" TEXT
+  "displayName" TEXT,
+  "phone" TEXT,
+  "status" TEXT NOT NULL DEFAULT 'Active',
+  "ipRestrictions" TEXT,
+  "avatar_url" TEXT,
+  "roleId" TEXT
 );
 
 -- Table: custom_roles
@@ -66,7 +71,8 @@ CREATE TABLE IF NOT EXISTS "custom_roles" (
   "permissions" TEXT NOT NULL,
   "createdBy" TEXT NOT NULL,
   "createdAt" TEXT NOT NULL DEFAULT '',
-  "tenantId" TEXT DEFAULT 'tenant_default'
+  "tenantId" TEXT DEFAULT 'tenant_default',
+  "status" TEXT NOT NULL DEFAULT 'Active'
 );
 
 -- Table: module_tools

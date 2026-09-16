@@ -27,6 +27,7 @@ import { CampaignWorkspacePage } from './components/crm/CampaignWorkspacePage';
 import { FollowUpsPage } from './components/crm/FollowUpsPage';
 import { CRMWorkspacePage } from './components/crm/CRMWorkspacePage';
 import { GoogleProfileSetupModal } from './components/GoogleProfileSetupModal';
+import { UserProfileMenu } from './components/profile/UserProfileMenu';
 import type { Campaign } from './types';
 
 const getBackendUrl = () => {
@@ -48,6 +49,7 @@ const SERVER_URL = getBackendUrl();
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs'>('dashboard');
+  const [adminInitialTab, setAdminInitialTab] = useState<'overview' | 'settings' | 'users' | 'roles'>('overview');
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
   const [lanServerUrl, setLanServerUrl] = useState<string>(SERVER_URL);
@@ -644,30 +646,35 @@ export default function App() {
               {isLight ? <Moon className="w-4 h-4 text-slate-800" /> : <Sun className="w-4 h-4 text-amber-400" />}
             </button>
 
-            {/* 👤 User Profile Avatar Circle with green online status dot */}
-            <div className="relative cursor-pointer" title={`Logged in as ${authUser}`}>
-              <div className={`w-8 h-8 rounded-full font-bold text-xs flex items-center justify-center border ${
-                isLight ? 'bg-slate-100 text-slate-900 border-slate-300' : 'bg-slate-900 text-amber-400 border-slate-800'
-              }`}>
-                👤
-              </div>
-              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00A651] border-2 border-white dark:border-slate-800" />
-            </div>
+            {/* 👤 User Profile Avatar Dropdown & Modals */}
+            <UserProfileMenu
+              isLight={isLight}
+              serverUrl={lanServerUrl || SERVER_URL}
+              authToken={authToken || ''}
+              authUser={authUser}
+              onLogout={handleLogout}
+            />
 
-            {/* Download APK Link for Mobile */}
-            <a
-              href="/download/apk"
-              title="Download Android Dialer APK"
+            {/* Settings Button */}
+            <button
+              id="btn-settings"
+              onClick={() => {
+                setAdminInitialTab('settings');
+                setActiveTab('admin');
+              }}
+              title="Settings"
               className={`p-1.5 rounded-lg transition-all flex items-center justify-center cursor-pointer ${
-                isLight
-                  ? 'text-emerald-700 hover:text-emerald-950 hover:bg-emerald-50'
-                  : 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/30'
+                activeTab === 'admin' && adminInitialTab === 'settings'
+                  ? isLight
+                    ? 'bg-amber-500/20 text-amber-900 border border-amber-500/40 shadow-sm'
+                    : 'bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-sm'
+                  : isLight
+                    ? 'text-slate-700 hover:text-amber-600 hover:bg-slate-100'
+                    : 'text-slate-400 hover:text-amber-400 hover:bg-slate-800/60'
               }`}
             >
-              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
-                <path d="M17.5 12.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5m-11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5m10.3-4.72l1.9-3.29a.498.498 0 00-.18-.68.498.498 0 00-.68.18l-1.92 3.32C14.73 6.47 13.41 6 12 6s-2.73.47-3.92 1.31L6.16 3.99a.498.498 0 00-.68-.18.498.498 0 00-.18.68l1.9 3.29C4.54 9.17 3 11.9 3 15h18c0-3.1-1.54-5.83-4.2-7.22z"/>
-              </svg>
-            </a>
+              <Settings className="w-5 h-5" />
+            </button>
 
             {/* Logout */}
             <button
@@ -1368,13 +1375,15 @@ export default function App() {
           )}
 
           {activeTab === 'admin' && (
-            (userRole === 'admin' || userRole === 'platform_admin') ? (
+            (userRole === 'admin' || userRole === 'platform_admin' || adminInitialTab === 'settings') ? (
               <AdminPanel
                 isLight={isLight}
                 serverUrl={lanServerUrl}
                 authToken={authToken || ''}
                 currentUser={authUser || ''}
                 currentUserRole={userRole}
+                initialTab={adminInitialTab as any}
+                key={adminInitialTab}
               />
             ) : (
               <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>

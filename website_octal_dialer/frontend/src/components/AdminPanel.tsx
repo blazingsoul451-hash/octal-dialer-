@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  Shield, Building2, Users, CreditCard, Lock, Activity, Settings, Key, LayoutDashboard, Sliders
+  Shield, Building2, Users, CreditCard, Lock, Activity, Settings, Key, LayoutDashboard, Sliders, ArrowLeft
 } from 'lucide-react';
 import { AdminOverview } from './admin/sections/AdminOverview';
 import { AdminBusinesses } from './admin/sections/AdminBusinesses';
 import { AdminUsers } from './admin/sections/AdminUsers';
+import { AdminRoles } from './admin/sections/AdminRoles';
+import { SettingsDirectory } from './admin/sections/SettingsDirectory';
 import { AdminCommercial } from './admin/sections/AdminCommercial';
 import { AdminSecurityAudit } from './admin/sections/AdminSecurityAudit';
 import { AdminOperations } from './admin/sections/AdminOperations';
@@ -18,19 +20,31 @@ interface AdminPanelProps {
   authToken: string;
   currentUser: string;
   currentUserRole?: 'platform_admin' | 'admin' | 'agent';
+  initialTab?: AdminTab;
 }
 
-type AdminTab = 'overview' | 'businesses' | 'users' | 'commercial' | 'security' | 'operations' | 'modules' | 'settings' | 'keys';
+export type AdminTab = 'overview' | 'businesses' | 'users' | 'roles' | 'commercial' | 'security' | 'operations' | 'modules' | 'settings' | 'keys';
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   isLight,
   serverUrl,
   authToken,
   currentUser,
-  currentUserRole = 'admin'
+  currentUserRole = 'admin',
+  initialTab = 'overview'
 }) => {
-  const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+  const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
   const [selectedBusinessId, setSelectedBusinessId] = useState<string | null>(null);
+  const [settingsSubView, setSettingsSubView] = useState<'directory' | 'system'>('directory');
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+      if (initialTab === 'settings') {
+        setSettingsSubView('directory');
+      }
+    }
+  }, [initialTab]);
 
   const isPlatformAdmin = currentUserRole === 'platform_admin';
 
@@ -38,12 +52,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const allNavItems = [
     { id: 'overview' as AdminTab, label: 'Overview', icon: LayoutDashboard, platformOnly: false },
     { id: 'businesses' as AdminTab, label: 'Businesses', icon: Building2, platformOnly: true },
+    { id: 'settings' as AdminTab, label: 'Settings', icon: Settings, platformOnly: false },
     { id: 'users' as AdminTab, label: 'Users', icon: Users, platformOnly: false },
+    { id: 'roles' as AdminTab, label: 'Roles', icon: Lock, platformOnly: false },
     { id: 'commercial' as AdminTab, label: 'Commercial', icon: CreditCard, platformOnly: true },
     { id: 'security' as AdminTab, label: 'Security & Audit', icon: Lock, platformOnly: false },
     { id: 'operations' as AdminTab, label: 'Operations', icon: Activity, platformOnly: true },
     { id: 'modules' as AdminTab, label: 'Module Control', icon: Sliders, platformOnly: true },
-    { id: 'settings' as AdminTab, label: isPlatformAdmin ? 'Platform Settings' : 'Dialing Settings', icon: Settings, platformOnly: false },
     { id: 'keys' as AdminTab, label: 'Integrations / API', icon: Key, platformOnly: false },
   ];
 
@@ -95,6 +110,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 key={item.id}
                 onClick={() => {
                   setActiveTab(item.id);
+                  if (item.id === 'settings') {
+                    setSettingsSubView('directory');
+                  }
                   if (item.id !== 'businesses') {
                     setSelectedBusinessId(null);
                   }
@@ -124,7 +142,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             isLight={isLight}
             serverUrl={serverUrl}
             authToken={authToken}
-            onNavigateToTab={(tab) => setActiveTab(tab as AdminTab)}
+            onNavigateToTab={(tab) => {
+              if (tab === 'settings') {
+                setSettingsSubView('directory');
+              }
+              setActiveTab(tab as AdminTab);
+            }}
             onSelectBusiness={(bId) => {
               setSelectedBusinessId(bId);
               setActiveTab('businesses');
@@ -141,6 +164,42 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           />
         )}
 
+        {activeTab === 'settings' && (
+          settingsSubView === 'directory' ? (
+            <SettingsDirectory
+              isLight={isLight}
+              onNavigate={(section) => {
+                if (section === 'users') {
+                  setActiveTab('users');
+                } else if (section === 'roles') {
+                  setActiveTab('roles');
+                } else {
+                  setSettingsSubView('system');
+                }
+              }}
+            />
+          ) : (
+            <div className="space-y-4">
+              <button
+                onClick={() => setSettingsSubView('directory')}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  isLight
+                    ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
+                    : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-700 text-zinc-300'
+                }`}
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back to Settings Directory</span>
+              </button>
+              <AdminSystemSettings
+                isLight={isLight}
+                serverUrl={serverUrl}
+                authToken={authToken}
+              />
+            </div>
+          )
+        )}
+
         {activeTab === 'users' && (
           <AdminUsers
             isLight={isLight}
@@ -148,6 +207,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             authToken={authToken}
             currentUser={currentUser}
             currentUserRole={currentUserRole}
+            onNavigateToRoles={() => setActiveTab('roles')}
+            onNavigateBackToSettings={() => {
+              setSettingsSubView('directory');
+              setActiveTab('settings');
+            }}
+          />
+        )}
+
+        {activeTab === 'roles' && (
+          <AdminRoles
+            isLight={isLight}
+            serverUrl={serverUrl}
+            authToken={authToken}
+            onNavigateUsers={() => setActiveTab('users')}
+            onBackToSettings={() => {
+              setSettingsSubView('directory');
+              setActiveTab('settings');
+            }}
           />
         )}
 
@@ -177,14 +254,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
         {activeTab === 'modules' && (
           <AdminModuleControl
-            isLight={isLight}
-            serverUrl={serverUrl}
-            authToken={authToken}
-          />
-        )}
-
-        {activeTab === 'settings' && (
-          <AdminSystemSettings
             isLight={isLight}
             serverUrl={serverUrl}
             authToken={authToken}
