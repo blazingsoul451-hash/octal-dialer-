@@ -26,7 +26,9 @@ import {
   createCampaign,
   appendLeadsToCampaign,
   getCampaigns,
+  getCampaignById,
   getLeads,
+  getLead,
   getLogs,
   createLog,
   createManualLog,
@@ -57,6 +59,17 @@ import {
   revokeDevice,
   updateDeviceStatus,
   DeviceRecord,
+  getTeams,
+  getTeamById,
+  createTeam,
+  updateTeam,
+  deleteTeam,
+  getTeamMembers,
+  setTeamMembers,
+  getTeamCampaigns,
+  setTeamCampaigns,
+  getUserTeamIds,
+  getUserScopedCampaignIds,
   db
 } from './databaseManager';
 import { dbAdapter } from './db/dbAdapter';
@@ -102,6 +115,8 @@ import {
   requireModule,
   getEffectivePermissions,
   requirePermission,
+  validateRoleBelongsToTenant,
+  getTenantId,
   signupTenant
 } from './authManager';
 
@@ -211,7 +226,10 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
   const authHeader = req.headers['authorization'] || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  let token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!token && typeof req.query?.token === 'string') {
+    token = req.query.token;
+  }
   const user = await validateToken(token);
   if (!user) {
     res.status(401).json({ error: 'Unauthorized. Please log in.' });
@@ -445,6 +463,28 @@ app.post(['/auth/register', '/api/auth/register'], (_req, res) => {
     code: 'REGISTRATION_DISABLED',
     error: 'Direct email/password registration is disabled. New accounts must sign up using Google OAuth.'
   });
+});
+
+// POST /auth/signup-tenant & /api/auth/signup-tenant
+app.post(['/auth/signup-tenant', '/api/auth/signup-tenant'], async (req, res) => {
+  try {
+    const { companyName, username, email, password, country, logoUrl } = req.body;
+    if (!companyName || !username || !password) {
+      res.status(400).json({ error: 'Company name, username, and password are required.' });
+      return;
+    }
+    const result = await signupTenant({
+      companyName,
+      username,
+      email: email || '',
+      password,
+      country,
+      logoUrl
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // GET /auth/verify & GET /api/auth/verify — Verifies current JWT auth token
@@ -1179,7 +1219,7 @@ app.post('/api/emergency-stop', requireAuth, async (req, res) => {
     return;
   }
   triggerEmergencyStop(tenantId);
-  await writeAuditLog('EMERGENCY_STOP', 'tenant', tenantId, user.username, 'Emergency stop activated');
+  await writeAuditLog('EMERGENCY_STOP', 'tenant', tenantId, user.username, 'Emergency stop activated', tenantId);
 
   // Send hangup only to this tenant's active sessions' phones
   for (const [, sess] of getSessions()) {
@@ -1206,7 +1246,7 @@ app.post('/api/emergency-stop/clear', requireAuth, async (req, res) => {
     return;
   }
   clearEmergencyStop(tenantId);
-  await writeAuditLog('EMERGENCY_STOP_CLEAR', 'tenant', tenantId, user.username, 'Emergency stop cleared');
+  await writeAuditLog('EMERGENCY_STOP_CLEAR', 'tenant', tenantId, user.username, 'Emergency stop cleared', tenantId);
   io.to(`tenant_${tenantId}`).emit('campaign:emergency_cleared', { clearedBy: user.username });
   res.json({ success: true, message: 'Emergency stop cleared. Dialing re-enabled.' });
 });
@@ -1284,12 +1324,12 @@ app.get('/api/devices', requireAuth, async (req, res) => {
 });
 
 // POST /api/devices/:id/revoke — revoke device access
-app.post('/api/devices/:id/revoke', requireAuth, (req, res) => {
+app.post('/api/devices/:id/revoke', requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
     const deviceId = req.params.id;
     const isAdmin = user.role === 'platform_admin' || user.role === 'admin';
-    const success = revokeDevice(deviceId, user.id, user.tenantId, isAdmin);
+    const success = await revokeDevice(deviceId, user.id, user.tenantId, isAdmin);
     if (!success) {
       res.status(404).json({ error: 'Device not found or not authorized.' });
       return;
@@ -1326,9 +1366,20 @@ app.get(['/api/audit-logs', '/admin/audit-logs'], requireAuth, async (req, res) 
   res.json({ logs, pagination: { total: logs.length, totalPages: 1 } });
 });
 
-// POST /api/leads/:id/unlock — manually unlock a lead
+// POST /api/leads/:id/unlock — manually unlock a lead (strictly tenant-scoped)
 app.post('/api/leads/:id/unlock', requireAuth, async (req, res) => {
-  await releaseLeadLock(req.params.id);
+  const user = (req as any).user;
+  const tenantId = user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const lead = await getLead(req.params.id, tenantId);
+  if (!lead) {
+    res.status(404).json({ error: 'Lead not found in your organization.' });
+    return;
+  }
+  await releaseLeadLock(req.params.id, undefined, tenantId);
   res.json({ success: true, message: `Lead ${req.params.id} unlocked.` });
 });
 
@@ -1369,17 +1420,60 @@ app.get('/api/session/resolve', requireAuth, (req, res) => {
   });
 });
 
-// REST: Campaigns (protected, with mobile fallback)
-app.get(['/campaigns', '/api/campaigns', '/api/campaigns/mobile'], async (req, res) => {
-  let tenantId: string | undefined;
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7).trim();
-    const user = await validateToken(token);
-    if (user) tenantId = user.tenantId;
+// REST: Campaigns (protected, strictly tenant-scoped with team-level scoping for agents)
+app.get(['/campaigns', '/api/campaigns', '/api/campaigns/mobile'], requireAuth, async (req, res) => {
+  const user = (req as any).user;
+  const tenantId = user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
   }
-  const finalTenantId: string = tenantId || ((req as any).user?.tenantId) || 'tenant_default';
-  res.json(await getCampaigns(finalTenantId));
+  const allCampaigns = await getCampaigns(tenantId);
+  const isElevated = ['admin', 'platform_admin', 'master_admin'].includes(user.role?.toLowerCase());
+  if (isElevated) {
+    res.json(allCampaigns);
+    return;
+  }
+
+  // Non-admin agent/user: check if team scoping is configured in this tenant
+  const hasTeamsInTenant = await db.queryOne<{ count: string | number }>(
+    `SELECT COUNT(*)::int AS count FROM campaign_teams WHERE "tenantId" = $1`,
+    [tenantId]
+  );
+  const activeScopingCount = Number(hasTeamsInTenant?.count || 0);
+
+  // If no campaigns are mapped to any teams in this tenant, fallback to all tenant campaigns
+  if (activeScopingCount === 0) {
+    res.json(allCampaigns);
+    return;
+  }
+
+  // Scoping is active: only return campaigns assigned to this user's teams
+  const scopedCampaignIds = await getUserScopedCampaignIds(user.id, tenantId);
+  const scopedSet = new Set(scopedCampaignIds);
+  const filtered = allCampaigns.filter(c => scopedSet.has(c.id));
+  res.json(filtered);
+});
+
+// REST: Create campaign (protected, strictly tenant-scoped)
+app.post(['/campaigns', '/api/campaigns'], requireAuth, async (req, res) => {
+  try {
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const { name, description = '' } = req.body;
+    if (!name) {
+      res.status(400).json({ error: 'Campaign name is required.' });
+      return;
+    }
+    const result = await createCampaign(name, description, [], tenantId);
+    io.to(`tenant_${tenantId}`).emit('campaigns:updated');
+    res.json(result.campaign);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // REST: Get leads for a campaign (protected)
@@ -1389,11 +1483,16 @@ app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
+  const campaign = await getCampaignById(req.params.id, tenantId);
+  if (!campaign) {
+    res.status(404).json({ error: 'Campaign not found in your organization.' });
+    return;
+  }
   res.json(await getLeads(req.params.id, tenantId));
 });
 
 // REST: Global Leads search & pagination (protected)
-app.get(['/leads', '/api/leads'], requireAuth, async (req, res) => {
+app.get(['/leads', '/api/leads'], requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId;
     if (!tenantId) {
@@ -1478,7 +1577,7 @@ app.get(['/leads', '/api/leads'], requireAuth, async (req, res) => {
 });
 
 // REST: Update lead status (protected)
-app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, async (req, res) => {
+app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, requirePermission(['leads:edit', 'crm:edit']), async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId;
     if (!tenantId) {
@@ -1486,10 +1585,16 @@ app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, async (req, res) => {
       return;
     }
     const { status } = req.body;
-    if (status) {
-      await db.execute(`UPDATE leads SET status = $1 WHERE id = $2 AND "tenantId" = $3`, [status, req.params.id, tenantId]);
-      io.to(`tenant_${tenantId}`).emit('leads:updated');
+    if (!status) {
+      res.status(400).json({ error: 'Status is required' });
+      return;
     }
+    const info = await db.execute(`UPDATE leads SET status = $1 WHERE id = $2 AND "tenantId" = $3`, [status, req.params.id, tenantId]);
+    if (info.rowCount === 0) {
+      res.status(404).json({ error: 'Lead not found in your organization.' });
+      return;
+    }
+    io.to(`tenant_${tenantId}`).emit('leads:updated');
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1497,7 +1602,7 @@ app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, async (req, res) => {
 });
 
 // REST: CRM Campaign Workspace telemetry & leads (protected)
-app.get('/api/crm/campaigns/:id/workspace', requireAuth, async (req, res) => {
+app.get('/api/crm/campaigns/:id/workspace', requireAuth, requirePermission(['campaigns:view', 'crm:view']), async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId;
     if (!tenantId) {
@@ -1505,6 +1610,11 @@ app.get('/api/crm/campaigns/:id/workspace', requireAuth, async (req, res) => {
       return;
     }
     const campaignId = req.params.id;
+    const campaign = await getCampaignById(campaignId, tenantId);
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found in your organization.' });
+      return;
+    }
 
     const leads = await db.queryAll(`SELECT * FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED' ORDER BY "createdAt" ASC, "id" ASC`, [campaignId, tenantId]) as any[];
 
@@ -1538,8 +1648,239 @@ app.get('/api/crm/campaigns/:id/workspace', requireAuth, async (req, res) => {
   }
 });
 
+// REST: CRM Lead authoritative profile, activities, call history, and follow-ups (protected)
+app.get('/api/crm/leads/:id/profile', requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
+  try {
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const leadId = req.params.id;
+    const lead = await db.queryOne<any>(`
+      SELECT l.*, c.name as "campaignName"
+      FROM leads l
+      LEFT JOIN campaigns c ON l."campaignId" = c.id
+      WHERE l.id = $1 AND l."tenantId" = $2
+    `, [leadId, tenantId]);
+
+    if (!lead) {
+      res.status(404).json({ error: 'Lead not found in your organization.' });
+      return;
+    }
+
+    const activities = await getLeadActivities(leadId, tenantId);
+    const callLogs = await db.queryAll<any>(`
+      SELECT id, outcome, duration, timestamp
+      FROM call_logs
+      WHERE "leadId" = $1 AND "tenantId" = $2
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 50
+    `, [leadId, tenantId]);
+
+    const followUps = await db.queryAll<any>(`
+      SELECT id, "scheduledAt", status, notes, "assignedAgent"
+      FROM crm_follow_ups
+      WHERE "leadId" = $1 AND "tenantId" = $2
+      ORDER BY "scheduledAt" ASC
+    `, [leadId, tenantId]);
+
+    res.json({
+      lead: {
+        id: lead.id,
+        name: lead.name,
+        businessName: lead.businessName || lead.company || lead.name,
+        phone: lead.phone,
+        email: lead.email || null,
+        address: lead.address || null,
+        website: lead.website || null,
+        source: lead.source || lead.campaignName || 'CRM',
+        status: lead.status,
+        campaignName: lead.campaignName || 'Unknown Campaign',
+        campaignId: lead.campaignId,
+        createdAt: lead.createdAt
+      },
+      activities,
+      callLogs,
+      followUps
+    });
+  } catch (err: any) {
+    console.error('Error fetching lead profile:', err);
+    res.status(500).json({ error: 'Internal server error while fetching lead profile' });
+  }
+});
+
+// REST: Record lead interaction note (protected)
+app.post('/api/crm/leads/:id/notes', requireAuth, requirePermission(['leads:edit', 'crm:edit', 'calls:log_disposition']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const leadId = req.params.id;
+    const note = (req.body?.note || '').trim();
+    if (!note) {
+      res.status(400).json({ error: 'Note content is required.' });
+      return;
+    }
+
+    const lead = await getLead(leadId, tenantId);
+    if (!lead) {
+      res.status(404).json({ error: 'Lead not found in your organization.' });
+      return;
+    }
+
+    await recordLeadActivity({
+      leadId,
+      tenantId,
+      userId: user.id,
+      username: user.username,
+      eventType: 'NOTE_ADDED',
+      description: note
+    });
+
+    res.json({ success: true, message: 'Note recorded successfully.' });
+  } catch (err: any) {
+    console.error('Error recording note:', err);
+    res.status(500).json({ error: 'Internal server error while recording note' });
+  }
+});
+
+// REST: Get scheduled follow-ups for tenant (protected)
+app.get('/api/crm/follow-ups', requireAuth, requirePermission(['crm:view', 'leads:view']), async (req, res) => {
+  try {
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const status = req.query.status as string | undefined;
+    const followUps = await getFollowUps(tenantId, status ? { status } : undefined);
+    res.json({ followUps });
+  } catch (err: any) {
+    console.error('Error fetching follow-ups:', err);
+    res.status(500).json({ error: 'Internal server error while fetching follow-ups' });
+  }
+});
+
+// REST: Create scheduled follow-up (protected)
+app.post('/api/crm/follow-ups', requireAuth, requirePermission(['crm:edit', 'crm:create', 'leads:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const { leadId, leadName, leadPhone, campaignId, campaignName, scheduledAt, notes } = req.body;
+    if (!leadId || !scheduledAt) {
+      res.status(400).json({ error: 'leadId and scheduledAt are required.' });
+      return;
+    }
+
+    const lead = await getLead(leadId, tenantId);
+    if (!lead) {
+      res.status(404).json({ error: 'Lead not found in your organization.' });
+      return;
+    }
+
+    const followUp = await createFollowUp({
+      leadId,
+      leadName: leadName || lead.name,
+      leadPhone: leadPhone || lead.phone,
+      campaignId: campaignId || lead.campaignId,
+      campaignName: campaignName || '',
+      tenantId,
+      userId: user.id,
+      assignedAgent: user.username,
+      scheduledAt,
+      notes
+    });
+
+    await recordLeadActivity({
+      leadId,
+      tenantId,
+      userId: user.id,
+      username: user.username,
+      eventType: 'FOLLOW_UP_SCHEDULED',
+      description: `Follow-up scheduled for ${new Date(scheduledAt).toLocaleString()}${notes ? ': ' + notes : ''}`
+    });
+
+    res.json({ success: true, followUp });
+  } catch (err: any) {
+    console.error('Error creating follow-up:', err);
+    res.status(500).json({ error: 'Internal server error while creating follow-up' });
+  }
+});
+
+// REST: Update follow-up status (protected)
+app.patch('/api/crm/follow-ups/:id/status', requireAuth, requirePermission(['crm:edit', 'leads:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const { status, notes } = req.body;
+    const validStatuses = ['pending', 'completed', 'cancelled', 'rescheduled'];
+    if (!status || !validStatuses.includes(status)) {
+      res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+      return;
+    }
+
+    const updated = await updateFollowUpStatus(id, tenantId, status, notes);
+    if (!updated) {
+      res.status(404).json({ error: 'Follow-up not found in your organization.' });
+      return;
+    }
+
+    const fu = await db.queryOne<{ leadId: string }>(`SELECT "leadId" FROM crm_follow_ups WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    if (fu?.leadId) {
+      await recordLeadActivity({
+        leadId: fu.leadId,
+        tenantId,
+        userId: user.id,
+        username: user.username,
+        eventType: 'FOLLOW_UP_UPDATED',
+        description: `Follow-up marked as ${status}${notes ? ': ' + notes : ''}`
+      });
+    }
+
+    res.json({ success: true, message: 'Follow-up status updated successfully.' });
+  } catch (err: any) {
+    console.error('Error updating follow-up status:', err);
+    res.status(500).json({ error: 'Internal server error while updating follow-up status' });
+  }
+});
+
+// REST: Get lead activity history timeline (protected)
+app.get('/api/crm/leads/:id/activities', requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
+  try {
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const leadId = req.params.id;
+    const lead = await getLead(leadId, tenantId);
+    if (!lead) {
+      res.status(404).json({ error: 'Lead not found in your organization.' });
+      return;
+    }
+    const activities = await getLeadActivities(leadId, tenantId);
+    res.json({ activities });
+  } catch (err: any) {
+    console.error('Error fetching lead activities:', err);
+    res.status(500).json({ error: 'Internal server error while fetching lead activities' });
+  }
+});
+
 // REST: Delete single lead (protected)
-app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, async (req, res) => {
+app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, requirePermission(['leads:delete', 'crm:delete']), async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -1555,7 +1896,7 @@ app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, async (req, res) => {
 });
 
 // REST: Purge all fake/sample leads across queue (protected)
-app.post('/api/leads/purge-fake', requireAuth, async (req, res) => {
+app.post('/api/leads/purge-fake', requireAuth, requirePermission('leads:delete'), async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -1567,10 +1908,15 @@ app.post('/api/leads/purge-fake', requireAuth, async (req, res) => {
 });
 
 // REST: Clear all leads in a campaign (protected)
-app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async (req, res) => {
+app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, requirePermission(['leads:delete', 'campaigns:delete']), async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const campaign = await getCampaignById(req.params.id, tenantId);
+  if (!campaign) {
+    res.status(404).json({ error: 'Campaign not found in your organization.' });
     return;
   }
   const count = await clearAllLeadsInCampaign(req.params.id, tenantId);
@@ -1579,10 +1925,15 @@ app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, as
 });
 
 // REST: Reset all lead statuses in a campaign to PENDING without deleting leads (protected)
-app.post(['/campaigns/:id/reset-status', '/api/campaigns/:id/reset-status'], requireAuth, async (req, res) => {
+app.post(['/campaigns/:id/reset-status', '/api/campaigns/:id/reset-status'], requireAuth, requirePermission(['leads:edit', 'campaigns:edit']), async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const campaign = await getCampaignById(req.params.id, tenantId);
+  if (!campaign) {
+    res.status(404).json({ error: 'Campaign not found in your organization.' });
     return;
   }
   const count = await resetAllLeadStatusesInCampaign(req.params.id, tenantId);
@@ -1591,7 +1942,7 @@ app.post(['/campaigns/:id/reset-status', '/api/campaigns/:id/reset-status'], req
 });
 
 // REST: Call logs history (protected — for dashboard & mobile)
-app.get(['/logs', '/api/logs', '/api/call-logs'], requireAuth, async (req, res) => {
+app.get(['/logs', '/api/logs', '/api/call-logs'], requireAuth, requirePermission(['history:view_logs', 'calls:view_queue']), async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -1601,8 +1952,9 @@ app.get(['/logs', '/api/logs', '/api/call-logs'], requireAuth, async (req, res) 
 });
 
 // POST /api/logs/update & /logs/update — Update call disposition (protected)
-app.post(['/api/logs/update', '/logs/update'], requireAuth, async (req, res) => {
-  const { leadId, outcome, notes } = req.body as { leadId?: string; outcome?: string; notes?: string };
+app.post(['/api/logs/update', '/logs/update'], requireAuth, requirePermission(['calls:log_disposition', 'history:edit_disposition']), async (req, res) => {
+  const { leadId, notes, logId } = req.body as { leadId?: string; outcome?: string; notes?: string; disposition?: string; logId?: string };
+  const outcome = req.body.outcome || req.body.disposition;
   const user = (req as any).user;
   const tenantId = user?.tenantId;
 
@@ -1624,7 +1976,8 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, async (req, res) => 
     notes: notes || '',
     tenantId,
     userId: user?.id,
-    username: user?.username
+    username: user?.username,
+    logId
   });
 
   if (updated) {
@@ -1984,6 +2337,13 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requirePermission('u
     else if (!['user', 'agent', 'admin'].includes(normalizedRole)) normalizedRole = 'agent';
 
     const tenantId = caller.role === 'platform_admin' ? (req.body.tenantId || caller.tenantId) : caller.tenantId;
+    if (roleId) {
+      const isValidRole = await validateRoleBelongsToTenant(roleId, tenantId);
+      if (!isValidRole) {
+        res.status(403).json({ error: 'Forbidden: Selected role does not belong to your organization.' });
+        return;
+      }
+    }
     const result = await registerPublicUser({
       username,
       password,
@@ -2052,6 +2412,16 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requirePermis
   }
 
   const { role, roleId, newPassword, password, permissions, displayName, firstName, lastName, email, phone, status, ipRestrictions } = req.body;
+
+  // Validate roleId if provided
+  if (roleId) {
+    const targetTenantId = targetUser.tenantId || caller.tenantId;
+    const isValidRole = await validateRoleBelongsToTenant(roleId, targetTenantId);
+    if (!isValidRole) {
+      res.status(403).json({ error: 'Forbidden: Selected role does not belong to user\'s organization.' });
+      return;
+    }
+  }
 
   // 1. Update role if provided
   if (role) {
@@ -2239,7 +2609,9 @@ app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requirePer
   }
 
   await db.execute(`DELETE FROM user_permissions WHERE "userId" = $1`, [req.params.id]);
-  const info = await db.execute(`DELETE FROM users WHERE id = $1`, [req.params.id]);
+  const info = isPlatform
+    ? await db.execute(`DELETE FROM users WHERE id = $1`, [req.params.id])
+    : await db.execute(`DELETE FROM users WHERE id = $1 AND "tenantId" = $2`, [req.params.id, caller.tenantId]);
   if (info.rowCount > 0) {
     res.json({ success: true, message: 'User deleted.' });
   } else {
@@ -2343,8 +2715,8 @@ app.put(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requirePermis
     return;
   }
 
-  if (!isPlatform && targetRole.tenantId !== caller.tenantId && targetRole.tenantId !== 'tenant_default') {
-    res.status(403).json({ error: 'Forbidden: Cannot edit roles from another organization.' });
+  if (!isPlatform && targetRole.tenantId !== caller.tenantId) {
+    res.status(403).json({ error: 'Forbidden: Cannot edit system default roles or roles from another organization.' });
     return;
   }
 
@@ -2408,6 +2780,229 @@ app.delete(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requirePer
   res.json({ success: true, message: 'Role deleted.' });
 });
 
+// ─── Teams & Scoping Endpoints ───────────────────────────────────────────────
+
+// GET /api/admin/teams & /admin/teams
+app.get(['/api/admin/teams', '/admin/teams'], requireAuth, requirePermission(['teams:view', 'users:view', 'settings:view']), async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const tenantId = isPlatform ? (req.query.tenantId as string || caller.tenantId) : caller.tenantId;
+
+    const teams = await getTeams(tenantId);
+
+    // Fetch members and campaigns for each team
+    const enrichedTeams = await Promise.all(teams.map(async (t) => {
+      const members = await getTeamMembers(t.id, t.tenantId);
+      const campaigns = await getTeamCampaigns(t.id, t.tenantId);
+      return {
+        ...t,
+        members,
+        campaigns,
+        memberCount: members.length,
+        campaignCount: campaigns.length
+      };
+    }));
+
+    res.json(enrichedTeams);
+  } catch (err: any) {
+    console.error('[TEAMS API] GET teams error:', err);
+    res.status(500).json({ error: 'Failed to retrieve teams: ' + err.message });
+  }
+});
+
+// GET /api/admin/teams/:id & /admin/teams/:id
+app.get(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requirePermission(['teams:view', 'users:view', 'settings:view']), async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const team = await getTeamById(req.params.id, caller.tenantId);
+    if (!team && !isPlatform) {
+      res.status(404).json({ error: 'Team not found.' });
+      return;
+    }
+    const teamRecord = team || (await db.queryOne(`SELECT * FROM teams WHERE id = $1`, [req.params.id]));
+    if (!teamRecord) {
+      res.status(404).json({ error: 'Team not found.' });
+      return;
+    }
+    const members = await getTeamMembers(teamRecord.id, teamRecord.tenantId);
+    const campaigns = await getTeamCampaigns(teamRecord.id, teamRecord.tenantId);
+    res.json({
+      ...teamRecord,
+      members,
+      campaigns,
+      memberCount: members.length,
+      campaignCount: campaigns.length
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/teams & /admin/teams
+app.post(['/api/admin/teams', '/admin/teams'], requireAuth, requirePermission(['teams:edit', 'users:edit', 'users:add']), async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { name, description = '', leaderId, memberIds = [], campaignIds = [], status = 'active' } = req.body;
+    if (!name || !String(name).trim()) {
+      res.status(400).json({ error: 'Team name is required.' });
+      return;
+    }
+    const tenantId = (caller.role === 'platform_admin' || caller.role === 'master_admin')
+      ? (req.body.tenantId || caller.tenantId)
+      : caller.tenantId;
+
+    const team = await createTeam({
+      name: String(name).trim(),
+      description: String(description || '').trim(),
+      leaderId: leaderId || undefined,
+      tenantId,
+      status: status === 'inactive' ? 'inactive' : 'active'
+    });
+
+    if (Array.isArray(memberIds) && memberIds.length > 0) {
+      await setTeamMembers(team.id, tenantId, memberIds, leaderId);
+    }
+    if (Array.isArray(campaignIds) && campaignIds.length > 0) {
+      await setTeamCampaigns(team.id, tenantId, campaignIds);
+    }
+
+    const members = await getTeamMembers(team.id, tenantId);
+    const campaigns = await getTeamCampaigns(team.id, tenantId);
+
+    res.status(201).json({
+      ...team,
+      members,
+      campaigns,
+      memberCount: members.length,
+      campaignCount: campaigns.length
+    });
+  } catch (err: any) {
+    console.error('[TEAMS API] POST team error:', err);
+    res.status(500).json({ error: 'Failed to create team: ' + err.message });
+  }
+});
+
+// PUT /api/admin/teams/:id & /admin/teams/:id
+app.put(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requirePermission(['teams:edit', 'users:edit']), async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const tenantId = caller.tenantId;
+    const { name, description, leaderId, memberIds, campaignIds, status } = req.body;
+
+    const existing = await getTeamById(req.params.id, tenantId);
+    if (!existing && !isPlatform) {
+      res.status(404).json({ error: 'Team not found.' });
+      return;
+    }
+    const effectiveTenantId = existing ? existing.tenantId : tenantId;
+
+    await updateTeam(req.params.id, effectiveTenantId, {
+      name: name ? String(name).trim() : undefined,
+      description: description !== undefined ? String(description).trim() : undefined,
+      leaderId: leaderId !== undefined ? (leaderId || null) : undefined,
+      status: status !== undefined ? status : undefined
+    });
+
+    if (Array.isArray(memberIds)) {
+      await setTeamMembers(req.params.id, effectiveTenantId, memberIds, leaderId || existing?.leaderId);
+    }
+    if (Array.isArray(campaignIds)) {
+      await setTeamCampaigns(req.params.id, effectiveTenantId, campaignIds);
+    }
+
+    const updated = await getTeamById(req.params.id, effectiveTenantId);
+    const members = await getTeamMembers(req.params.id, effectiveTenantId);
+    const campaigns = await getTeamCampaigns(req.params.id, effectiveTenantId);
+
+    res.json({
+      ...updated,
+      members,
+      campaigns,
+      memberCount: members.length,
+      campaignCount: campaigns.length
+    });
+  } catch (err: any) {
+    console.error('[TEAMS API] PUT team error:', err);
+    res.status(500).json({ error: 'Failed to update team: ' + err.message });
+  }
+});
+
+// DELETE /api/admin/teams/:id & /admin/teams/:id
+app.delete(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requirePermission(['teams:delete', 'users:delete']), async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const tenantId = caller.tenantId;
+    const ok = await deleteTeam(req.params.id, tenantId);
+    if (ok) {
+      res.json({ success: true, message: 'Team removed successfully.' });
+    } else {
+      res.status(404).json({ error: 'Team not found or already deleted.' });
+    }
+  } catch (err: any) {
+    console.error('[TEAMS API] DELETE team error:', err);
+    res.status(500).json({ error: 'Failed to delete team: ' + err.message });
+  }
+});
+
+// GET /api/admin/teams/:id/members
+app.get(['/api/admin/teams/:id/members', '/admin/teams/:id/members'], requireAuth, requirePermission(['teams:view', 'users:view']), async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const members = await getTeamMembers(req.params.id, caller.tenantId);
+    res.json(members);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/teams/:id/members
+app.post(['/api/admin/teams/:id/members', '/admin/teams/:id/members'], requireAuth, requirePermission(['teams:edit', 'users:edit']), async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { userIds, leaderId } = req.body;
+    if (!Array.isArray(userIds)) {
+      res.status(400).json({ error: 'userIds must be an array.' });
+      return;
+    }
+    await setTeamMembers(req.params.id, caller.tenantId, userIds, leaderId);
+    const members = await getTeamMembers(req.params.id, caller.tenantId);
+    res.json({ success: true, members });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/teams/:id/campaigns
+app.get(['/api/admin/teams/:id/campaigns', '/admin/teams/:id/campaigns'], requireAuth, requirePermission(['teams:view', 'campaigns:view']), async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const campaigns = await getTeamCampaigns(req.params.id, caller.tenantId);
+    res.json(campaigns);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/teams/:id/campaigns
+app.post(['/api/admin/teams/:id/campaigns', '/admin/teams/:id/campaigns'], requireAuth, requirePermission(['teams:edit', 'campaigns:edit']), async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { campaignIds } = req.body;
+    if (!Array.isArray(campaignIds)) {
+      res.status(400).json({ error: 'campaignIds must be an array.' });
+      return;
+    }
+    await setTeamCampaigns(req.params.id, caller.tenantId, campaignIds);
+    const campaigns = await getTeamCampaigns(req.params.id, caller.tenantId);
+    res.json({ success: true, campaigns });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET & POST & PUT for /api/admin/settings & /admin/system-settings
 app.get(['/api/admin/settings', '/admin/system-settings', '/admin/settings'], requireAuth, requireAdmin, async (req, res) => {
   const rows = await db.queryAll(`SELECT "settingKey", "settingValue" FROM system_settings`) as any[];
@@ -2417,6 +3012,11 @@ app.get(['/api/admin/settings', '/admin/system-settings', '/admin/settings'], re
 });
 
 app.post(['/api/admin/settings', '/admin/system-settings', '/admin/settings'], requireAuth, requireAdmin, async (req, res) => {
+  const caller = (req as any).user;
+  if (caller.role !== 'platform_admin' && caller.role !== 'master_admin') {
+    res.status(403).json({ error: 'Forbidden: Platform administrator privileges required to modify system settings.' });
+    return;
+  }
   const body = req.body.settings ? req.body.settings : req.body;
   const now = new Date().toISOString();
   for (const [key, val] of Object.entries(body)) {
@@ -2436,6 +3036,11 @@ app.post(['/api/admin/settings', '/admin/system-settings', '/admin/settings'], r
 });
 
 app.put(['/api/admin/settings', '/admin/system-settings', '/admin/settings'], requireAuth, requireAdmin, async (req, res) => {
+  const caller = (req as any).user;
+  if (caller.role !== 'platform_admin' && caller.role !== 'master_admin') {
+    res.status(403).json({ error: 'Forbidden: Platform administrator privileges required to modify system settings.' });
+    return;
+  }
   const body = req.body.settings ? req.body.settings : req.body;
   const now = new Date().toISOString();
   for (const [key, val] of Object.entries(body)) {
@@ -2740,7 +3345,7 @@ app.post('/api/leads/import/mobile', requireAuth, async (req, res) => {
 });
 
 // REST: Export logs to CSV (protected)
-app.get('/api/logs/export', requireAuth, async (req, res) => {
+app.get('/api/logs/export', requireAuth, requirePermission(['history:view_logs', 'calls:view_queue']), async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId;
     if (!tenantId) {
@@ -2766,6 +3371,63 @@ app.get('/api/logs/export', requireAuth, async (req, res) => {
     res.send(csv);
   } catch (err: any) {
     console.error('CSV Export error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REST: Export leads to CSV (protected)
+app.get('/api/leads/export', requireAuth, requirePermission(['leads:export', 'leads:view']), async (req, res) => {
+  try {
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const source = (req.query.source as string || '').trim();
+    const status = (req.query.status as string || '').trim();
+
+    let query = `
+      SELECT l.id, l.name, l.phone, l.status, l.outcome, l.duration, l."createdAt",
+             c.name as "campaignName"
+      FROM leads l
+      LEFT JOIN campaigns c ON l."campaignId" = c.id
+      WHERE l."tenantId" = $1 AND l.status != 'ARCHIVED'
+    `;
+    const params: any[] = [tenantId];
+
+    if (source) {
+      query += ` AND (c.name LIKE $${params.length + 1} OR l."campaignId" = $${params.length + 2})`;
+      params.push(`%${source}%`, source);
+    }
+    if (status) {
+      query += ` AND l.status = $${params.length + 1}`;
+      params.push(status);
+    }
+
+    query += ` ORDER BY l."createdAt" DESC LIMIT 50000`;
+
+    const leads = await db.queryAll<any>(query, params);
+
+    const header = ['ID', 'Name', 'Phone', 'Status', 'Campaign', 'Outcome', 'Duration (s)', 'Created At'];
+    const rows = leads.map(l => [
+      `"${(l.id || '').replace(/"/g, '""')}"`,
+      `"${(l.name || '').replace(/"/g, '""')}"`,
+      `"${(l.phone || '').replace(/"/g, '""')}"`,
+      l.status || '',
+      `"${(l.campaignName || '').replace(/"/g, '""')}"`,
+      l.outcome || '',
+      l.duration || 0,
+      l.createdAt || ''
+    ]);
+
+    const csv = [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="octal_dialer_leads.csv"');
+    res.send(csv);
+  } catch (err: any) {
+    console.error('Leads CSV Export error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3973,18 +4635,30 @@ io.on('connection', (socket) => {
 // AUTO-EMAILER MODULE ROUTES
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Job state for the emailer campaign runner
-const emailerJob: { running: boolean; logs: string[]; stop: boolean } = {
-  running: false,
-  logs: [],
-  stop: false,
-};
+// Job state for the emailer campaign runner (strictly isolated per tenant)
+interface TenantEmailerJob {
+  running: boolean;
+  logs: string[];
+  stop: boolean;
+}
 
-function emailLog(msg: string) {
+const tenantEmailerJobs = new Map<string, TenantEmailerJob>();
+
+function getTenantEmailerJob(tenantId: string): TenantEmailerJob {
+  let job = tenantEmailerJobs.get(tenantId);
+  if (!job) {
+    job = { running: false, logs: [], stop: false };
+    tenantEmailerJobs.set(tenantId, job);
+  }
+  return job;
+}
+
+function emailLog(tenantId: string, msg: string) {
   const line = `[${new Date().toISOString()}] ${msg}`;
-  emailerJob.logs.push(line);
-  if (emailerJob.logs.length > 500) emailerJob.logs.shift();
-  console.log('[Emailer]', msg);
+  const job = getTenantEmailerJob(tenantId);
+  job.logs.push(line);
+  if (job.logs.length > 500) job.logs.shift();
+  console.log(`[Emailer][${tenantId}]`, msg);
 }
 
 // ── GET /email/leads
@@ -4123,14 +4797,15 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  if (emailerJob.running) {
+  const job = getTenantEmailerJob(tenantId);
+  if (job.running) {
     res.json({ success: true, message: 'Campaign already running.' });
     return;
   }
   const { limit = 300 } = req.body as { limit?: number };
 
-  emailerJob.running = true;
-  emailerJob.stop = false;
+  job.running = true;
+  job.stop = false;
 
   (async () => {
     try {
@@ -4139,10 +4814,10 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
       const accounts = await db.queryAll(`SELECT * FROM email_accounts WHERE "tenantId" = $1 AND status = 'active'`, [tenantId]) as any[];
       const templates = await db.queryAll(`SELECT * FROM email_templates WHERE ("tenantId" = $1 OR "systemTemplate" = 1) ORDER BY stage ASC, id ASC`, [tenantId]) as any[];
 
-      emailLog(`=== Campaign Started [Tenant: ${tenantId}]: ${leads.length} eligible leads, ${accounts.length} accounts, ${templates.length} templates ===`);
+      emailLog(tenantId, `=== Campaign Started [Tenant: ${tenantId}]: ${leads.length} eligible leads, ${accounts.length} accounts, ${templates.length} templates ===`);
 
-      if (!accounts.length) { emailLog('❌ No active SMTP accounts for tenant!'); return; }
-      if (!templates.length) { emailLog('❌ No email templates for tenant!'); return; }
+      if (!accounts.length) { emailLog(tenantId, '❌ No active SMTP accounts for tenant!'); return; }
+      if (!templates.length) { emailLog(tenantId, '❌ No email templates for tenant!'); return; }
 
       const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
       const now = Date.now();
@@ -4155,15 +4830,15 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
         return false;
       });
 
-      emailLog(`Found ${eligible.length} leads eligible for sending.`);
+      emailLog(tenantId, `Found ${eligible.length} leads eligible for sending.`);
 
       let leadIdx = 0;
       let tplIdx = 0;
 
       for (const acc of accounts) {
-        if (leadIdx >= eligible.length || emailerJob.stop) break;
+        if (leadIdx >= eligible.length || job.stop) break;
 
-        emailLog(`Using sender: ${acc.email}`);
+        emailLog(tenantId, `Using sender: ${acc.email}`);
         const transporter = nodemailer.createTransport({
           host: acc.smtpHost,
           port: acc.smtpPort,
@@ -4173,7 +4848,7 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
         });
 
         let sent = 0;
-        while (sent < limit && leadIdx < eligible.length && !emailerJob.stop) {
+        while (sent < limit && leadIdx < eligible.length && !job.stop) {
           const lead = eligible[leadIdx++];
           const tpl = templates[tplIdx++ % templates.length];
 
@@ -4181,7 +4856,7 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
           const body = tpl.body.replace(/{{name}}/g, lead.name).replace(/{{company}}/g, lead.company);
 
           try {
-            emailLog(`Sending Stage ${lead.stage} to: ${lead.email}`);
+            emailLog(tenantId, `Sending Stage ${lead.stage} to: ${lead.email}`);
             await transporter.sendMail({
               from: `"${acc.senderName || 'Office'}" <${acc.email}>`,
               to: lead.email,
@@ -4191,15 +4866,15 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
             const newStage = Math.min(lead.stage + 1, 3);
             const newStatus = newStage >= 3 ? 'completed' : 'sent';
             await db.execute('UPDATE email_leads SET status = $1, stage = $2, "lastSentAt" = $3 WHERE id = $4 AND "tenantId" = $5', [newStatus, newStage, new Date().toISOString(), lead.id, tenantId]);
-            emailLog(`✅ Sent to ${lead.email} (Stage ${lead.stage})`);
+            emailLog(tenantId, `✅ Sent to ${lead.email} (Stage ${lead.stage})`);
             sent++;
             const delay = 30000 + Math.random() * 30000;
             await new Promise(r => setTimeout(r, delay));
           } catch (err: unknown) {
-            emailLog(`❌ Failed: ${lead.email} — ${(err as Error).message}`);
+            emailLog(tenantId, `❌ Failed: ${lead.email} — ${(err as Error).message}`);
             if ((err as Error).message?.includes('Authentication') || (err as Error).message?.includes('Username and Password')) {
               await db.execute('UPDATE email_accounts SET status = \'disabled\' WHERE id = $1 AND "tenantId" = $2', [acc.id, tenantId]);
-              emailLog(`⚠️ Disabled account ${acc.email} (auth failure)`);
+              emailLog(tenantId, `⚠️ Disabled account ${acc.email} (auth failure)`);
               break;
             }
           }
@@ -4207,11 +4882,11 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
         transporter.close();
       }
 
-      emailLog(`=== Campaign Completed [Tenant: ${tenantId}] ===`);
+      emailLog(tenantId, `=== Campaign Completed [Tenant: ${tenantId}] ===`);
     } catch (err: unknown) {
-      emailLog(`❌ Campaign error: ${(err as Error).message}`);
+      emailLog(tenantId, `❌ Campaign error: ${(err as Error).message}`);
     } finally {
-      emailerJob.running = false;
+      job.running = false;
     }
   })();
 
@@ -4219,16 +4894,28 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
 });
 
 // ── POST /emailer/stop
-app.post('/emailer/stop', requireAuth, (_req: express.Request, res: express.Response): void => {
-  emailerJob.stop = true;
+app.post('/emailer/stop', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const job = getTenantEmailerJob(tenantId);
+  job.stop = true;
   res.json({ success: true });
 });
 
 // ── GET /emailer/status
-app.get('/emailer/status', requireAuth, (_req: express.Request, res: express.Response): void => {
+app.get('/emailer/status', requireAuth, (req: express.Request, res: express.Response): void => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const job = getTenantEmailerJob(tenantId);
   res.json({
-    status: emailerJob.running ? 'running' : 'idle',
-    logs: emailerJob.logs.slice(-200)
+    status: job.running ? 'running' : 'idle',
+    logs: job.logs.slice(-200)
   });
 });
 

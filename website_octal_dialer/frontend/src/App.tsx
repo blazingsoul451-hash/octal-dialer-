@@ -800,12 +800,38 @@ export default function App() {
                 </button>
               )}
 
+              {/* Settings — Module Directory (Users, Roles, Calling, System) */}
+              {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.settings) && (
+                <button
+                  onClick={() => {
+                    setAdminInitialTab('settings');
+                    setActiveTab('admin');
+                  }}
+                  title="Organization Settings & Users"
+                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                    activeTab === 'admin' && adminInitialTab === 'settings'
+                      ? isLight
+                        ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
+                        : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500 shadow-sm'
+                      : isLight
+                        ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                        : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+                  }`}
+                >
+                  <Settings className={`w-4 h-4 shrink-0 ${activeTab === 'admin' && adminInitialTab === 'settings' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
+                  {isNavExpanded && <span className="truncate">Settings</span>}
+                </button>
+              )}
+
               {/* Administration — Available to Platform Admin & Tenant Admin */}
               {(userRole === 'platform_admin' || userRole === 'admin') && (
                 <button
-                  onClick={() => setActiveTab('admin')}
+                  onClick={() => {
+                    setAdminInitialTab('overview');
+                    setActiveTab('admin');
+                  }}
                   className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
-                    activeTab === 'admin'
+                    activeTab === 'admin' && adminInitialTab !== 'settings'
                       ? isLight
                         ? 'bg-purple-500/15 text-purple-950 font-bold border-l-3 border-purple-500 shadow-sm'
                         : 'bg-purple-500/15 text-purple-400 font-bold border-l-3 border-purple-500 shadow-sm'
@@ -814,7 +840,7 @@ export default function App() {
                         : 'text-slate-200 hover:text-purple-400 hover:bg-purple-500/10 hover:translate-x-0.5 shadow-sm'
                   }`}
                 >
-                  <Shield className={`w-4 h-4 shrink-0 ${activeTab === 'admin' ? (isLight ? 'text-purple-700' : 'text-purple-400') : 'text-slate-400'}`} />
+                  <Shield className={`w-4 h-4 shrink-0 ${activeTab === 'admin' && adminInitialTab !== 'settings' ? (isLight ? 'text-purple-700' : 'text-purple-400') : 'text-slate-400'}`} />
                   {isNavExpanded && <span className="truncate">{userRole === 'platform_admin' ? 'Platform Admin' : 'Administration'}</span>}
                 </button>
               )}

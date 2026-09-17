@@ -476,4 +476,55 @@ CREATE INDEX IF NOT EXISTS "idx_users_googleId" ON "users"("googleId");
 CREATE INDEX IF NOT EXISTS "idx_suppression_tenant_phone" ON "suppression_list"("tenantId", "phone");
 CREATE INDEX IF NOT EXISTS "idx_crm_follow_ups_tenant" ON "crm_follow_ups"("tenantId");
 CREATE INDEX IF NOT EXISTS "idx_lead_activities_lead" ON "lead_activities"("leadId");
+CREATE INDEX IF NOT EXISTS "idx_lead_activities_tenant_lead" ON "lead_activities"("tenantId", "leadId");
 CREATE INDEX IF NOT EXISTS "idx_daily_campaign_act" ON "daily_campaign_activity"("tenantId", "userId", "activityDate");
+CREATE INDEX IF NOT EXISTS "idx_dispositions_tenant_lead" ON "dispositions"("tenantId", "leadId");
+CREATE INDEX IF NOT EXISTS "idx_audit_logs_tenant_ts" ON "audit_logs"("tenantId", "timestamp");
+CREATE INDEX IF NOT EXISTS "idx_email_leads_tenant_status" ON "email_leads"("tenantId", "status");
+CREATE INDEX IF NOT EXISTS "idx_email_accounts_tenant" ON "email_accounts"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_email_templates_tenant" ON "email_templates"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_scraped_leads_tenant" ON "scraped_leads"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_subscriptions_tenant" ON "subscriptions"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_user_permissions_tenant_user" ON "user_permissions"("tenantId", "userId");
+
+-- Table: teams
+CREATE TABLE IF NOT EXISTS "teams" (
+  "id" TEXT PRIMARY KEY,
+  "name" TEXT NOT NULL,
+  "description" TEXT DEFAULT '',
+  "leaderId" TEXT,
+  "tenantId" TEXT NOT NULL,
+  "status" TEXT NOT NULL DEFAULT 'Active',
+  "createdAt" TEXT NOT NULL,
+  "updatedAt" TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS "idx_teams_tenant" ON "teams"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_teams_leader" ON "teams"("leaderId");
+
+-- Table: team_members
+CREATE TABLE IF NOT EXISTS "team_members" (
+  "id" TEXT PRIMARY KEY,
+  "teamId" TEXT NOT NULL,
+  "userId" TEXT NOT NULL,
+  "tenantId" TEXT NOT NULL,
+  "roleInTeam" TEXT NOT NULL DEFAULT 'member',
+  "joinedAt" TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS "idx_team_members_tenant_user" ON "team_members"("tenantId", "userId");
+CREATE INDEX IF NOT EXISTS "idx_team_members_tenant_team" ON "team_members"("tenantId", "teamId");
+
+-- Table: campaign_teams
+CREATE TABLE IF NOT EXISTS "campaign_teams" (
+  "id" TEXT PRIMARY KEY,
+  "campaignId" TEXT NOT NULL,
+  "teamId" TEXT NOT NULL,
+  "tenantId" TEXT NOT NULL,
+  "assignedAt" TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS "idx_campaign_teams_tenant_team" ON "campaign_teams"("tenantId", "teamId");
+CREATE INDEX IF NOT EXISTS "idx_campaign_teams_tenant_camp" ON "campaign_teams"("tenantId", "campaignId");
+
+

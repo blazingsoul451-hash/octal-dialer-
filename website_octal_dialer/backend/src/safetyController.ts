@@ -246,12 +246,13 @@ export async function writeAuditLog(
   entityType: string,
   entityId: string,
   performedBy: string,
-  details?: string
+  details?: string,
+  tenantId?: string
 ): Promise<void> {
   try {
     await db.execute(`
-      INSERT INTO audit_logs (id, action, "entityType", "entityId", "performedBy", details, timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO audit_logs (id, action, "entityType", "entityId", "performedBy", details, "tenantId", timestamp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `, [
       'audit_' + Math.random().toString(36).substring(2, 11),
       action,
@@ -259,6 +260,7 @@ export async function writeAuditLog(
       entityId,
       performedBy,
       details || null,
+      tenantId || null,
       new Date().toISOString()
     ]);
   } catch (err) {
@@ -294,7 +296,7 @@ export async function addToSuppressionList(phone: string, reason: string, source
     new Date().toISOString()
   ]);
   if (result.rowCount > 0) {
-    await writeAuditLog('DNC_ADD', 'suppression_list', normalized, addedBy, `Reason: ${reason} (Tenant: ${tenantId})`);
+    await writeAuditLog('DNC_ADD', 'suppression_list', normalized, addedBy, `Reason: ${reason} (Tenant: ${tenantId})`, tenantId);
     return true;
   }
   return false;
@@ -336,7 +338,7 @@ export async function bulkAddToSuppressionList(
     }
   });
 
-  await writeAuditLog('DNC_BULK_ADD', 'suppression_list', `${added}_added`, addedBy, `Imported ${added} entries, ${skipped} skipped (Tenant: ${tenantId})`);
+  await writeAuditLog('DNC_BULK_ADD', 'suppression_list', `${added}_added`, addedBy, `Imported ${added} entries, ${skipped} skipped (Tenant: ${tenantId})`, tenantId);
   return { added, skipped };
 }
 
@@ -356,7 +358,7 @@ export async function removeFromSuppressionList(id: string, removedBy: string, t
   if (!tenantId || !id) return false;
   const result = await db.execute(`DELETE FROM suppression_list WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
   if (result.rowCount > 0) {
-    await writeAuditLog('DNC_REMOVE', 'suppression_list', id, removedBy, `Tenant: ${tenantId}`);
+    await writeAuditLog('DNC_REMOVE', 'suppression_list', id, removedBy, `Tenant: ${tenantId}`, tenantId);
     return true;
   }
   return false;

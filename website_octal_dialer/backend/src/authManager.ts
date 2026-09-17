@@ -1004,6 +1004,8 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
   permissions.add('calls:dial_outbound');
   permissions.add('calls:manual_keypad');
   permissions.add('calls:log_disposition');
+  permissions.add('leads:view');
+  permissions.add('crm:view');
 
   // Also merge legacy user_permissions table for backward compatibility
   try {
@@ -1032,13 +1034,13 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
 }
 
 /**
- * Reusable backend authorization guard: requirePermission(permKey)
+ * Reusable backend authorization guard: requirePermission(permKey | permKeys[])
  * 1. Requires authenticated user (req.user must be set via requireAuth).
  * 2. Resolves effective permissions via getEffectivePermissions(user).
- * 3. Allows request if user has '*', 'all', or the exact required permission.
+ * 3. Allows request if user has '*', 'all', or any of the required permissions.
  * 4. Rejects with 403 Forbidden if unauthorized.
  */
-export function requirePermission(requiredPerm: string) {
+export function requirePermission(requiredPerm: string | string[]) {
   return async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
     const user = (req as any).user;
     if (!user) {
@@ -1052,14 +1054,45 @@ export function requirePermission(requiredPerm: string) {
     }
 
     const effective = await getEffectivePermissions(user);
-    if (effective.has('*') || effective.has('all') || effective.has(requiredPerm)) {
+    if (effective.has('*') || effective.has('all')) {
+      return next();
+    }
+
+    const perms = Array.isArray(requiredPerm) ? requiredPerm : [requiredPerm];
+    const hasAny = perms.some(p => effective.has(p));
+    if (hasAny) {
       return next();
     }
 
     res.status(403).json({
-      error: `Forbidden: You do not have the required permission (${requiredPerm}) to perform this action.`
+      error: `Forbidden: You do not have the required permission (${perms.join(' or ')}) to perform this action.`
     });
   };
+}
+
+/**
+ * Validate that a given roleId belongs to the caller's tenant OR is an explicitly supported global/default role.
+ * Prevents cross-tenant role assignment attacks (Company A assigning Company B roles).
+ */
+export async function validateRoleBelongsToTenant(roleId: string, tenantId: string): Promise<boolean> {
+  if (!roleId || !tenantId) return false;
+  const role = await db.queryOne<{ id: string }>(
+    `SELECT id FROM custom_roles WHERE id = $1 AND ("tenantId" = $2 OR "tenantId" = 'tenant_default')`,
+    [roleId, tenantId]
+  );
+  return !!role;
+}
+
+/**
+ * Authoritatively extract tenantId from authenticated request context.
+ * Throws an error if user or tenant context is missing.
+ */
+export function getTenantId(req: express.Request): string {
+  const user = (req as any).user as AuthUser | undefined;
+  if (!user || !user.tenantId) {
+    throw new Error('Unauthorized: missing tenant identity');
+  }
+  return user.tenantId;
 }
 
 /** Middleware: require specific business module permission */

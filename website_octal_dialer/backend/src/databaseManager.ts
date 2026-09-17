@@ -341,7 +341,7 @@ export async function getLogByLeadId(leadId: string, tenantId: string): Promise<
 
 export async function createLog(leadId: string, outcome: string, duration: number, tenantId: string): Promise<CallLog | null> {
   if (!tenantId || !leadId) return null;
-  const lead = (await getLead(leadId, tenantId)) || (await getLeadById(leadId));
+  const lead = await getLead(leadId, tenantId);
   if (!lead) return null;
 
   const resolvedTenantId = (lead as any).tenantId || tenantId;
@@ -460,8 +460,23 @@ export async function resetAllLeadStatusesInCampaign(campaignId: string, tenantI
   return result.rowCount;
 }
 
-export async function releaseLeadLock(leadId: string, sessionId?: string): Promise<void> {
-  if (sessionId) {
+export async function releaseLeadLock(leadId: string, sessionId?: string, tenantId?: string): Promise<void> {
+  if (tenantId && sessionId) {
+    const result = await db.execute(`
+      UPDATE leads
+      SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+      WHERE id = $1 AND "lockedBy" = $2 AND "tenantId" = $3
+    `, [leadId, sessionId, tenantId]);
+    if (result.rowCount === 0) {
+      console.warn(`[LeadLock] Rejected lock release for lead ${leadId} — not owned by session ${sessionId} or tenant ${tenantId}`);
+    }
+  } else if (tenantId) {
+    await db.execute(`
+      UPDATE leads
+      SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+      WHERE id = $1 AND "tenantId" = $2
+    `, [leadId, tenantId]);
+  } else if (sessionId) {
     const result = await db.execute(`
       UPDATE leads
       SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
@@ -647,10 +662,11 @@ export async function getFollowUps(tenantId: string, filter?: { status?: string 
 }
 
 export async function updateFollowUpStatus(id: string, tenantId: string, status: string, notes?: string): Promise<boolean> {
-  let query = `UPDATE crm_follow_ups SET status = $1, "updatedAt" = now()`;
-  const params: any[] = [status];
+  const now = new Date().toISOString();
+  let query = `UPDATE crm_follow_ups SET status = $1, "updatedAt" = $2`;
+  const params: any[] = [status, now];
   if (notes !== undefined) {
-    query += `, notes = $2`;
+    query += `, notes = $3`;
     params.push(notes);
   }
   const idIdx = params.length + 1;
@@ -723,8 +739,9 @@ export async function updateLogDisposition(data: {
   tenantId: string;
   userId?: string;
   username?: string;
+  logId?: string;
 }): Promise<boolean> {
-  const { leadId, outcome, notes, tenantId, userId, username } = data;
+  const { leadId, outcome, notes, tenantId, userId, username, logId } = data;
   if (!leadId || !tenantId) return false;
 
   const lead = await getLead(leadId, tenantId);
@@ -735,10 +752,28 @@ export async function updateLogDisposition(data: {
     // 1. Update Lead status and outcome
     await updateLeadStatus(leadId, 'COMPLETED', outcome, lead.duration || 0, tenantId);
 
-    // 2. Update existing call log or create disposition log
-    const existingLog = await getLogByLeadId(leadId, tenantId);
-    if (existingLog) {
-      await db.execute(`UPDATE call_logs SET outcome = $1 WHERE "leadId" = $2 AND "tenantId" = $3`, [outcome, leadId, tenantId]);
+    // 2. Update specific call log attempt or create disposition log
+    // Preserves per-attempt history: never overwrites prior call attempts on redial
+    let targetLog: CallLog | undefined;
+    if (logId) {
+      targetLog = await db.queryOne<CallLog>(
+        `SELECT * FROM call_logs WHERE id = $1 AND "tenantId" = $2 LIMIT 1`,
+        [logId, tenantId]
+      );
+    }
+    if (!targetLog) {
+      targetLog = await db.queryOne<CallLog>(
+        `SELECT * FROM call_logs WHERE "leadId" = $1 AND "tenantId" = $2 ORDER BY timestamp DESC, id DESC LIMIT 1`,
+        [leadId, tenantId]
+      );
+    }
+
+    if (targetLog) {
+      // UPDATE ONLY the specific target log by its unique primary key id
+      await db.execute(
+        `UPDATE call_logs SET outcome = $1 WHERE id = $2 AND "tenantId" = $3`,
+        [outcome, targetLog.id, tenantId]
+      );
     } else {
       await createLog(leadId, outcome, lead.duration || 0, tenantId);
     }
@@ -746,9 +781,9 @@ export async function updateLogDisposition(data: {
     // 3. Record in dispositions table
     const dispId = 'disp_' + Math.random().toString(36).substring(2, 11);
     await db.execute(`
-      INSERT INTO dispositions (id, "leadId", outcome, notes, "loggedAt")
-      VALUES ($1, $2, $3, $4, $5)
-    `, [dispId, leadId, outcome, notes || '', now]);
+      INSERT INTO dispositions (id, "leadId", outcome, notes, "loggedAt", "tenantId")
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [dispId, leadId, outcome, notes || '', now, tenantId]);
 
     // 4. Record in lead activities
     await recordLeadActivity({
@@ -907,10 +942,267 @@ export async function updateDeviceStatus(id: string, status: string, lastSeenAt?
   return result.rowCount > 0;
 }
 
+// ─── Teams & Scoping Module Database Helpers ───────────────────────────────
+
+export interface TeamRecord {
+  id: string;
+  name: string;
+  description?: string;
+  leaderId?: string;
+  leaderName?: string;
+  tenantId: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  memberCount?: number;
+  campaignCount?: number;
+}
+
+export interface TeamMemberRecord {
+  teamId: string;
+  userId: string;
+  username?: string;
+  displayName?: string;
+  email?: string;
+  role?: string;
+  roleInTeam: string;
+  joinedAt: string;
+  tenantId: string;
+}
+
+export async function getTeams(tenantId: string): Promise<TeamRecord[]> {
+  const teams = await db.queryAll<TeamRecord>(`
+    SELECT t.id, t.name, t.description, t."leaderId", t."tenantId", t.status, t."createdAt", t."updatedAt",
+           u."displayName" as "leaderName"
+    FROM teams t
+    LEFT JOIN users u ON u.id = t."leaderId"
+    WHERE t."tenantId" = $1
+    ORDER BY t."createdAt" DESC
+  `, [tenantId]);
+
+  for (const t of teams) {
+    const memCount = await db.queryOne<{ count: number | string }>(
+      `SELECT COUNT(*)::int AS count FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2`,
+      [t.id, tenantId]
+    );
+    const campCount = await db.queryOne<{ count: number | string }>(
+      `SELECT COUNT(*)::int AS count FROM campaign_teams WHERE "teamId" = $1 AND "tenantId" = $2`,
+      [t.id, tenantId]
+    );
+    t.memberCount = Number(memCount?.count || 0);
+    t.campaignCount = Number(campCount?.count || 0);
+  }
+
+  return teams;
+}
+
+export async function getTeamById(id: string, tenantId: string): Promise<TeamRecord | null> {
+  const team = await db.queryOne<TeamRecord>(`
+    SELECT t.id, t.name, t.description, t."leaderId", t."tenantId", t.status, t."createdAt", t."updatedAt",
+           u."displayName" as "leaderName"
+    FROM teams t
+    LEFT JOIN users u ON u.id = t."leaderId"
+    WHERE t.id = $1 AND t."tenantId" = $2
+  `, [id, tenantId]);
+
+  if (!team) return null;
+
+  const memCount = await db.queryOne<{ count: number | string }>(
+    `SELECT COUNT(*)::int AS count FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2`,
+    [team.id, tenantId]
+  );
+  const campCount = await db.queryOne<{ count: number | string }>(
+    `SELECT COUNT(*)::int AS count FROM campaign_teams WHERE "teamId" = $1 AND "tenantId" = $2`,
+    [team.id, tenantId]
+  );
+  team.memberCount = Number(memCount?.count || 0);
+  team.campaignCount = Number(campCount?.count || 0);
+
+  return team;
+}
+
+export async function createTeam(data: {
+  id?: string;
+  name: string;
+  description?: string;
+  leaderId?: string;
+  tenantId: string;
+  status?: string;
+}): Promise<TeamRecord> {
+  const id = data.id || `team_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const now = new Date().toISOString();
+  await db.execute(`
+    INSERT INTO teams (id, name, description, "leaderId", "tenantId", status, "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+  `, [
+    id,
+    data.name.trim(),
+    data.description || '',
+    data.leaderId || null,
+    data.tenantId,
+    data.status || 'Active',
+    now,
+    now
+  ]);
+
+  if (data.leaderId) {
+    const existing = await db.queryOne(`SELECT id FROM team_members WHERE "teamId" = $1 AND "userId" = $2`, [id, data.leaderId]);
+    if (existing) {
+      await db.execute(`UPDATE team_members SET "roleInTeam" = 'leader' WHERE id = $1`, [(existing as any).id]);
+    } else {
+      const leadMemId = 'tm_' + Math.random().toString(36).substring(2, 11);
+      await db.execute(`
+        INSERT INTO team_members (id, "teamId", "userId", "tenantId", "roleInTeam", "joinedAt")
+        VALUES ($1, $2, $3, $4, 'leader', $5)
+      `, [leadMemId, id, data.leaderId, data.tenantId, now]);
+    }
+  }
+
+  const team = await getTeamById(id, data.tenantId);
+  return team!;
+}
+
+export async function updateTeam(
+  id: string,
+  tenantId: string,
+  data: { name?: string; description?: string; leaderId?: string; status?: string }
+): Promise<boolean> {
+  const updates: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+
+  if (data.name !== undefined) {
+    updates.push(`name = $${idx++}`);
+    params.push(data.name.trim());
+  }
+  if (data.description !== undefined) {
+    updates.push(`description = $${idx++}`);
+    params.push(data.description);
+  }
+  if (data.leaderId !== undefined) {
+    updates.push(`"leaderId" = $${idx++}`);
+    params.push(data.leaderId || null);
+  }
+  if (data.status !== undefined) {
+    updates.push(`status = $${idx++}`);
+    params.push(data.status);
+  }
+
+  if (updates.length === 0) return true;
+
+  const now = new Date().toISOString();
+  updates.push(`"updatedAt" = $${idx++}`);
+  params.push(now);
+
+  params.push(id);
+  params.push(tenantId);
+
+  const query = `UPDATE teams SET ${updates.join(', ')} WHERE id = $${idx++} AND "tenantId" = $${idx++}`;
+  const result = await db.execute(query, params);
+
+  if (data.leaderId) {
+    const existing = await db.queryOne(`SELECT id FROM team_members WHERE "teamId" = $1 AND "userId" = $2`, [id, data.leaderId]);
+    if (existing) {
+      await db.execute(`UPDATE team_members SET "roleInTeam" = 'leader' WHERE id = $1`, [(existing as any).id]);
+    } else {
+      const leadMemId = 'tm_' + Math.random().toString(36).substring(2, 11);
+      await db.execute(`
+        INSERT INTO team_members (id, "teamId", "userId", "tenantId", "roleInTeam", "joinedAt")
+        VALUES ($1, $2, $3, $4, 'leader', $5)
+      `, [leadMemId, id, data.leaderId, tenantId, now]);
+    }
+  }
+
+  return result.rowCount > 0;
+}
+
+export async function deleteTeam(id: string, tenantId: string): Promise<boolean> {
+  await db.execute(`DELETE FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2`, [id, tenantId]);
+  await db.execute(`DELETE FROM campaign_teams WHERE "teamId" = $1 AND "tenantId" = $2`, [id, tenantId]);
+  const result = await db.execute(`DELETE FROM teams WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+  return result.rowCount > 0;
+}
+
+export async function getTeamMembers(teamId: string, tenantId: string): Promise<TeamMemberRecord[]> {
+  return db.queryAll<TeamMemberRecord>(`
+    SELECT tm."teamId", tm."userId", tm."roleInTeam", tm."joinedAt", tm."tenantId",
+           u.username, u."displayName", u.email, u.role
+    FROM team_members tm
+    JOIN users u ON u.id = tm."userId"
+    WHERE tm."teamId" = $1 AND tm."tenantId" = $2
+    ORDER BY CASE WHEN tm."roleInTeam" = 'leader' THEN 0 ELSE 1 END, u.username ASC
+  `, [teamId, tenantId]);
+}
+
+export async function setTeamMembers(teamId: string, tenantId: string, userIds: string[], leaderId?: string): Promise<void> {
+  const now = new Date().toISOString();
+  await db.execute(`DELETE FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2`, [teamId, tenantId]);
+
+  const uniqueUsers = Array.from(new Set(userIds));
+  for (const uid of uniqueUsers) {
+    const role = (leaderId && uid === leaderId) ? 'leader' : 'member';
+    const memId = 'tm_' + Math.random().toString(36).substring(2, 11);
+    await db.execute(`
+      INSERT INTO team_members (id, "teamId", "userId", "tenantId", "roleInTeam", "joinedAt")
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [memId, teamId, uid, tenantId, role, now]);
+  }
+
+  if (leaderId && !uniqueUsers.includes(leaderId)) {
+    const leadMemId = 'tm_' + Math.random().toString(36).substring(2, 11);
+    await db.execute(`
+      INSERT INTO team_members (id, "teamId", "userId", "tenantId", "roleInTeam", "joinedAt")
+      VALUES ($1, $2, $3, $4, 'leader', $5)
+    `, [leadMemId, teamId, leaderId, tenantId, now]);
+  }
+}
+
+export async function getTeamCampaigns(teamId: string, tenantId: string): Promise<any[]> {
+  return db.queryAll(`
+    SELECT c.id, c.name, c.status, c."fileName", c."leadCount", ct."assignedAt"
+    FROM campaign_teams ct
+    JOIN campaigns c ON c.id = ct."campaignId"
+    WHERE ct."teamId" = $1 AND ct."tenantId" = $2
+    ORDER BY c."createdAt" DESC
+  `, [teamId, tenantId]);
+}
+
+export async function setTeamCampaigns(teamId: string, tenantId: string, campaignIds: string[]): Promise<void> {
+  const now = new Date().toISOString();
+  await db.execute(`DELETE FROM campaign_teams WHERE "teamId" = $1 AND "tenantId" = $2`, [teamId, tenantId]);
+
+  const uniqueCamps = Array.from(new Set(campaignIds));
+  for (const cid of uniqueCamps) {
+    const ctId = 'ct_' + Math.random().toString(36).substring(2, 11);
+    await db.execute(`
+      INSERT INTO campaign_teams (id, "campaignId", "teamId", "tenantId", "assignedAt")
+      VALUES ($1, $2, $3, $4, $5)
+    `, [ctId, cid, teamId, tenantId, now]);
+  }
+}
+
+export async function getUserTeamIds(userId: string, tenantId: string): Promise<string[]> {
+  const rows = await db.queryAll<{ teamId: string }>(`
+    SELECT "teamId" FROM team_members WHERE "userId" = $1 AND "tenantId" = $2
+  `, [userId, tenantId]);
+  return rows.map(r => r.teamId);
+}
+
+export async function getUserScopedCampaignIds(userId: string, tenantId: string): Promise<string[]> {
+  const rows = await db.queryAll<{ campaignId: string }>(`
+    SELECT DISTINCT ct."campaignId"
+    FROM campaign_teams ct
+    JOIN team_members tm ON tm."teamId" = ct."teamId"
+    WHERE tm."userId" = $1 AND tm."tenantId" = $2
+  `, [userId, tenantId]);
+  return rows.map(r => r.campaignId);
+}
+
 // ─── Expose the raw db instance for future steps ─────────────────────────────
 export function getDatabase(): DbAdapter {
   return db;
 }
 export { db };
+
 
 

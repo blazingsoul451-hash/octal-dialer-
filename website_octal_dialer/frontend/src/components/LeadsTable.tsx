@@ -114,14 +114,29 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
     }
   };
 
-  const handleExport = () => {
-    const params = new URLSearchParams({ format: 'csv' });
-    if (sourceFilter) params.append('source', sourceFilter);
-    if (statusFilter) params.append('status', statusFilter);
+  const handleExport = async () => {
+    try {
+      const params = new URLSearchParams({ format: 'csv' });
+      if (sourceFilter) params.append('source', sourceFilter);
+      if (statusFilter) params.append('status', statusFilter);
 
-    const targetUrl = serverUrl && serverUrl.startsWith('http') ? serverUrl : window.location.origin;
-    const exportUrl = `${targetUrl}/api/logs/export?${params}`;
-    window.open(exportUrl, '_blank');
+      const targetUrl = serverUrl && serverUrl.startsWith('http') ? serverUrl : window.location.origin;
+      const res = await fetch(`${targetUrl}/api/leads/export?${params}`, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (!res.ok) throw new Error('Failed to export leads');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `octal_dialer_leads_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      setError('Failed to export leads: ' + err.message);
+    }
   };
 
   const getStatusBadge = (status: string) => {

@@ -5,7 +5,7 @@ import {
 
 interface SettingsDirectoryProps {
   isLight?: boolean;
-  onNavigate: (section: 'users' | 'roles' | 'permissions' | 'organization' | 'calling' | 'campaigns' | 'security' | 'system') => void;
+  onNavigate: (section: 'users' | 'roles' | 'permissions' | 'teams' | 'organization' | 'calling' | 'campaigns' | 'security' | 'system') => void;
 }
 
 export const SettingsDirectory: React.FC<SettingsDirectoryProps> = ({
@@ -131,6 +131,17 @@ export const SettingsDirectory: React.FC<SettingsDirectoryProps> = ({
                 }`}
               >
                 <span>Permissions</span>
+                <ChevronRight className="w-4 h-4 opacity-40" />
+              </button>
+            </li>
+            <li>
+              <button
+                onClick={() => onNavigate('teams')}
+                className={`w-full text-left py-1 px-2 rounded-lg transition-colors cursor-pointer flex items-center justify-between ${
+                  isLight ? 'text-slate-700 hover:bg-slate-100 hover:text-slate-900' : 'text-zinc-400 hover:bg-zinc-900 hover:text-white'
+                }`}
+              >
+                <span>Teams & Scoping</span>
                 <ChevronRight className="w-4 h-4 opacity-40" />
               </button>
             </li>

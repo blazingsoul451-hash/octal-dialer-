@@ -757,18 +757,48 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({
             VIEW 2: ROLES LIST TABLE
            ══════════════════════════════════════════════════════════════════════════ */
         <div className="space-y-6">
+          {/* Breadcrumb */}
+          <div className="flex items-center gap-2 text-xs font-mono text-slate-500">
+            <span className="text-zinc-500 font-bold uppercase">WORKSPACE</span>
+            <span>/</span>
+            <button
+              onClick={onBackToSettings}
+              className="hover:text-amber-500 transition-colors uppercase font-bold cursor-pointer"
+            >
+              Settings
+            </button>
+            <span>/</span>
+            <button
+              onClick={onNavigateUsers}
+              className="hover:text-amber-500 transition-colors font-bold cursor-pointer"
+            >
+              Users
+            </button>
+            <span>/</span>
+            <span className="text-amber-500 font-bold">Roles</span>
+          </div>
+
           {/* Header */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-zinc-200 dark:border-zinc-800">
             <div>
               <h1 className={`text-2xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                Roles Management
+                Roles
               </h1>
               <p className={`text-xs mt-1 font-medium ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
-                Manage system roles, granular permissions, and operational access rights
+                Manage user roles and permissions
               </p>
             </div>
 
             <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={handleOpenAdd}
+                className="px-5 py-2 rounded-xl text-xs font-bold font-mono transition-all bg-[#00A651] hover:bg-[#008f45] text-white shadow-md flex items-center gap-2 cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Create New</span>
+              </button>
+
               {onNavigateUsers && (
                 <button
                   type="button"
@@ -779,19 +809,10 @@ export const AdminRoles: React.FC<AdminRolesProps> = ({
                       : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-700 text-zinc-300'
                   }`}
                 >
-                  <Users className="w-4 h-4" />
+                  <Users className="w-4 h-4 text-emerald-500" />
                   <span>Manage Users</span>
                 </button>
               )}
-
-              <button
-                type="button"
-                onClick={handleOpenAdd}
-                className="px-5 py-2 rounded-xl text-xs font-bold font-mono transition-all bg-[#00A651] hover:bg-[#008f45] text-white shadow-md flex items-center gap-2 cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Add Role</span>
-              </button>
             </div>
           </div>
 

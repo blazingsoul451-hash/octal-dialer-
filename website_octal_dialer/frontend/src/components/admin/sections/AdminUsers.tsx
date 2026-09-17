@@ -8,6 +8,8 @@ export interface UserRecord {
   id: string;
   username: string;
   displayName?: string;
+  firstName?: string;
+  lastName?: string;
   phone?: string;
   email?: string;
   role: 'platform_admin' | 'admin' | 'agent' | string;
@@ -296,6 +298,31 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     }
   };
 
+  // ─── Toggle User Status (Active / Suspended) ─────────────────────────────────
+  const handleToggleStatus = async (u: UserRecord) => {
+    const newStatus = u.status === 'Suspended' ? 'Active' : 'Suspended';
+    try {
+      const res = await fetch(`${serverUrl}/api/admin/users/${u.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ status: newStatus })
+      });
+      if (res.ok) {
+        setSuccess(`User "${u.username}" marked as ${newStatus}.`);
+        setOpenDropdownId(null);
+        fetchUsers();
+      } else {
+        const data = await res.json();
+        setError(data.error || 'Failed to update user status');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Error updating status');
+    }
+  };
+
   // ─── Filtered Users ──────────────────────────────────────────────────────────
   const filteredUsers = useMemo(() => {
     return users.filter(u => {
@@ -326,6 +353,8 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
   // ─── Breadcrumb Component ────────────────────────────────────────────────────
   const renderBreadcrumb = () => (
     <div className="flex items-center gap-2 text-xs font-mono text-slate-500 mb-2">
+      <span className="text-zinc-500 font-bold uppercase">WORKSPACE</span>
+      <span>/</span>
       <button
         onClick={onNavigateBackToSettings}
         className="hover:text-amber-500 transition-colors uppercase font-bold cursor-pointer"
@@ -855,6 +884,18 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                                 }`}
                               >
                                 <span>Edit Profile</span>
+                              </button>
+
+                              <button
+                                onClick={() => handleToggleStatus(u)}
+                                disabled={u.username === currentUser || u.role === 'platform_admin'}
+                                className={`w-full text-left px-3.5 py-1.5 text-xs font-semibold transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                                  isSuspended
+                                    ? (isLight ? 'text-emerald-700 hover:bg-emerald-50' : 'text-emerald-400 hover:bg-emerald-950/20')
+                                    : (isLight ? 'text-amber-700 hover:bg-amber-50' : 'text-amber-400 hover:bg-amber-950/20')
+                                }`}
+                              >
+                                <span>{isSuspended ? 'Activate User' : 'Suspend User'}</span>
                               </button>
                               
                               <button
