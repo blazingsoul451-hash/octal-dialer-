@@ -88,11 +88,16 @@ export interface CampaignImportResult {
   finalCount: number;
 }
 
+export interface CreateCampaignOptions {
+  allowSharedPhoneBranches?: boolean;
+}
+
 export async function createCampaign(
   name: string,
   fileName: string,
-  rawLeads: { name: string; phone: string }[],
-  tenantId: string
+  rawLeads: { name: string; phone: string; address?: string; listingId?: string }[],
+  tenantId: string,
+  options?: CreateCampaignOptions
 ): Promise<CampaignImportResult> {
   if (!tenantId) {
     throw new Error('Tenant ID is required to create a campaign (fail-closed).');
@@ -113,7 +118,7 @@ export async function createCampaign(
   let dncSkippedCount = 0;
 
   const batchSeen = new Set<string>();
-  const validLeads: { name: string; phone: string }[] = [];
+  const validLeads: { name: string; phone: string; address?: string; listingId?: string }[] = [];
 
   for (const lead of rawLeads) {
     const norm = normalizePhone(lead.phone);
@@ -126,16 +131,31 @@ export async function createCampaign(
     }
 
     const leadName = (lead.name || 'Unknown Lead').trim();
-    const leadKey = `${leadName.toLowerCase()}:::${norm}`;
+    let leadKey: string;
 
-    // Check batch or global duplicate for identical business + phone
-    if (batchSeen.has(leadKey) || existingSet.has(leadKey)) {
+    if (options?.allowSharedPhoneBranches) {
+      // Disambiguate same-name, same-phone branches by listingId or physical address
+      const branchId = lead.listingId || (lead.address && lead.address !== 'N/A' ? `${leadName} [${lead.address}]` : leadName);
+      leadKey = `${branchId.toLowerCase()}:::${norm}`;
+    } else {
+      // Default CRM duplicate policy: deduplicate by name + phone
+      leadKey = `${leadName.toLowerCase()}:::${norm}`;
+    }
+
+    // Check batch duplicate
+    if (batchSeen.has(leadKey)) {
+      dedupedCount++;
+      continue;
+    }
+
+    // For standard CRM campaigns without shared phone branch opt-in, enforce cross-campaign deduplication
+    if (!options?.allowSharedPhoneBranches && existingSet.has(leadKey)) {
       dedupedCount++;
       continue;
     }
 
     batchSeen.add(leadKey);
-    validLeads.push({ name: leadName, phone: norm });
+    validLeads.push({ name: leadName, phone: norm, address: lead.address, listingId: lead.listingId });
   }
 
   const newCampaign: Campaign & { tenantId: string } = {

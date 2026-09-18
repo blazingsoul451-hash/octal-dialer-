@@ -59,6 +59,7 @@ export interface ScraperJobCounters {
   discovered: number;
   extracted: number;
   enriched: number;
+  qualified: number;
   skippedPhone: number;
   skippedEmail: number;
   failed: number;
@@ -77,6 +78,7 @@ export interface ScraperJobRecord {
   maxLimit: number;
   outputFile?: string;
   checkpointFile?: string;
+  checkpointPath?: string;
   logs: string[];
   errorCode?: string;
   errorMessage?: string;

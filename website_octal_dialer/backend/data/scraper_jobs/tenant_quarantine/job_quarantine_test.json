@@ -1,0 +1,10 @@
+{
+  "jobId": "job_quarantine_test",
+  "tenantId": "tenant_quarantine",
+  "status": "failed",
+  "logs": [
+    "⚠️ Job reconciled as interrupted due to server restart."
+  ],
+  "errorMessage": "Server restarted while job was in flight.",
+  "completedAt": "2026-09-18T19:08:25.166Z"
+}

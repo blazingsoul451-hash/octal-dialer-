@@ -1,0 +1,9 @@
+{
+  "jobId": "job_concurrency_A",
+  "tenantId": "tenant_concurrency",
+  "status": "stopped",
+  "logs": [
+    "🛑 Job stopped by user request."
+  ],
+  "completedAt": "2026-09-18T19:08:25.306Z"
+}

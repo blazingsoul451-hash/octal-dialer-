@@ -2,6 +2,7 @@ import { chromium, Browser, Page } from 'playwright';
 import ExcelJS from 'exceljs';
 import fs from 'fs';
 import path from 'path';
+import readline from 'readline';
 import {
   ScraperJobOptions,
   ScrapedLead,
@@ -13,6 +14,7 @@ import { enrichCompanyWebsite } from './websiteEnricher';
 
 declare const document: any;
 declare const window: any;
+declare const navigator: any;
 
 let isStopRequested = false;
 let activeBrowser: Browser | null = null;
@@ -51,17 +53,23 @@ export function sanitizeSpreadsheetValue(val: any): any {
   return val;
 }
 
-export async function writeLeadsToExcel(leads: ScrapedLead[], targetPath: string): Promise<void> {
+export async function writeLeadsToExcel(leadsOrSource: ScrapedLead[] | string, targetPath: string): Promise<void> {
   const dir = path.dirname(targetPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const tmpPath = `${targetPath}.tmp_${Date.now()}`;
-  const workbook = new ExcelJS.Workbook();
+  const workbook = new (ExcelJS.stream?.xlsx?.WorkbookWriter || ExcelJS.Workbook)({
+    filename: tmpPath,
+    useStyles: true,
+    useSharedStrings: false
+  });
+
   const worksheet = workbook.addWorksheet('Scraped Leads', {
     views: [{ state: 'frozen', ySplit: 1 }]
   });
 
   worksheet.columns = [
+    { header: 'Listing ID', key: 'listingId', width: 30 },
     { header: 'Business Name', key: 'businessName', width: 35 },
     { header: 'Phone Number', key: 'phone', width: 22 },
     { header: 'Category', key: 'category', width: 25 },
@@ -75,16 +83,21 @@ export async function writeLeadsToExcel(leads: ScrapedLead[], targetPath: string
     { header: 'Discovered At', key: 'discoveredAt', width: 24 }
   ];
 
-  worksheet.getRow(1).font = { name: 'Segoe UI', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
-  worksheet.getRow(1).fill = {
+  const headerRow = worksheet.getRow(1);
+  headerRow.font = { name: 'Segoe UI', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.fill = {
     type: 'pattern',
     pattern: 'solid',
     fgColor: { argb: 'FFD97706' } // Amber-600
   };
-  worksheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+  headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+  if (typeof (headerRow as any).commit === 'function') {
+    (headerRow as any).commit();
+  }
 
-  for (const lead of leads) {
-    worksheet.addRow({
+  const addLeadRow = (lead: ScrapedLead) => {
+    const row = worksheet.addRow({
+      listingId: sanitizeSpreadsheetValue(lead.listingId || ''),
       businessName: sanitizeSpreadsheetValue(lead.businessName),
       phone: sanitizeSpreadsheetValue(lead.phone),
       category: sanitizeSpreadsheetValue(lead.category),
@@ -97,9 +110,38 @@ export async function writeLeadsToExcel(leads: ScrapedLead[], targetPath: string
       mapsUrl: sanitizeSpreadsheetValue(lead.mapsUrl),
       discoveredAt: sanitizeSpreadsheetValue(lead.discoveredAt)
     });
+    if (typeof (row as any).commit === 'function') {
+      (row as any).commit();
+    }
+  };
+
+  if (typeof leadsOrSource === 'string') {
+    if (fs.existsSync(leadsOrSource)) {
+      const fileStream = fs.createReadStream(leadsOrSource, { encoding: 'utf8' });
+      const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        try {
+          const lead = JSON.parse(line);
+          addLeadRow(lead);
+        } catch (_) {}
+      }
+    }
+  } else {
+    for (const lead of leadsOrSource) {
+      addLeadRow(lead);
+    }
   }
 
-  await workbook.xlsx.writeFile(tmpPath);
+  if (typeof (worksheet as any).commit === 'function') {
+    (worksheet as any).commit();
+  }
+  if (typeof (workbook as any).commit === 'function') {
+    await (workbook as any).commit();
+  } else if (typeof (workbook as any).xlsx?.writeFile === 'function') {
+    await (workbook as any).xlsx.writeFile(tmpPath);
+  }
+
   // Atomic rename to publish completed file
   fs.renameSync(tmpPath, targetPath);
 }
@@ -147,6 +189,7 @@ export async function executeScraperRun(
     discovered: 0,
     extracted: 0,
     enriched: 0,
+    qualified: 0,
     skippedPhone: 0,
     skippedEmail: 0,
     failed: 0
@@ -191,6 +234,17 @@ export async function executeScraperRun(
     const page = await context.newPage();
     page.setDefaultNavigationTimeout(30000);
     page.setDefaultTimeout(15000);
+
+    // Stealth injections to prevent bot identification
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      (window as any).chrome = {
+        runtime: {},
+        loadTimes: () => {},
+        csi: () => {},
+        app: {}
+      };
+    });
 
     // Block heavy fonts and media to save memory, while preserving scripts and XHR
     await page.route('**/*.{png,jpg,jpeg,gif,svg,webp,woff,woff2,ttf,mp4}', route => route.abort());
@@ -276,8 +330,15 @@ export async function executeScraperRun(
       let scrollAttempts = 0;
       const maxScrollAttempts = 30;
       let consecutiveNoProgress = 0;
+      const maxTotalAttempts = Math.max(targetLimit * 5, 100);
+      let totalAttempts = 0;
 
-      while (counters.extracted < targetLimit && scrollAttempts < maxScrollAttempts && !isStopRequested) {
+      while (
+        (requirePhone || requireEmail ? counters.qualified : counters.extracted) < targetLimit &&
+        scrollAttempts < maxScrollAttempts &&
+        totalAttempts < maxTotalAttempts &&
+        !isStopRequested
+      ) {
         // Collect plain URLs and identifiers from feed
         const rawPlaceItems = await page.$$eval('a[href*="/maps/place/"]', els =>
           els.map(el => ({
@@ -301,8 +362,11 @@ export async function executeScraperRun(
         counters.discovered = seenListingIds.size;
         log(`📊 Feed scan found ${newInThisBatch} new unvisited listings (${seenListingIds.size} total discovered)...`);
 
+        let lastFingerprint: { listingId?: string; address?: string; phone?: string } | null = null;
+
         for (const candidate of candidateItems) {
-          if (isStopRequested || counters.extracted >= targetLimit) break;
+          if (isStopRequested || (requirePhone || requireEmail ? counters.qualified : counters.extracted) >= targetLimit) break;
+          totalAttempts++;
 
           try {
             // Find specific element by href to avoid stale ElementHandle issues
@@ -320,19 +384,23 @@ export async function executeScraperRun(
             if (!proceed || isStopRequested) break;
 
             // Confirm panel identity:
-            // 1. URL must reflect candidate listing identity
-            // 2. Heading must match candidate ariaLabel (if ariaLabel is present)
-            // 3. Reject any stale heading or leftover panel from previous listing
+            // 1. Detail panel container (div[role="main"]) must exist
+            // 2. URL must reflect candidate listing identity
+            // 3. Heading inside panel must match candidate ariaLabel (if ariaLabel is present)
+            // 4. Reject stale panel from previous listing (same-name branches / un-refreshed DOM)
             const isConfirmed = await page.waitForFunction(
-              ({ expectedId, expectedName }) => {
+              ({ expectedId, expectedName, prevFingerprint }) => {
+                const panel = document.querySelector('div[role="main"]') || document.querySelector('div.m6QErb[aria-label]');
+                if (!panel) return false;
+
                 const url = window.location.href;
-                const h1 = document.querySelector('h1.DUwDvf, h1[class*="header"], h1')?.textContent?.trim() || '';
+                const h1 = panel.querySelector('h1.DUwDvf, h1[class*="header"], h1')?.textContent?.trim() || '';
 
                 // URL check: URL must contain expectedId
                 const urlMatches = expectedId ? url.includes(expectedId) : false;
                 if (!urlMatches) return false;
 
-                // Heading check: if expectedName is provided, h1 must match or contain it
+                // Heading check: if expectedName is provided, panel h1 must match or contain it
                 if (expectedName) {
                   const normH1 = h1.toLowerCase();
                   const normName = expectedName.toLowerCase();
@@ -342,9 +410,22 @@ export async function executeScraperRun(
                   return false;
                 }
 
+                // Stale panel check: if candidate is different from previous listing, panel must not still display previous listing fields
+                if (prevFingerprint && prevFingerprint.listingId && expectedId !== prevFingerprint.listingId) {
+                  const currentAddress = panel.querySelector('button[data-item-id*="address"], button[aria-label*="Address" i]')?.textContent?.trim();
+                  const currentPhone = panel.querySelector('button[data-tooltip*="phone" i], button[aria-label*="Phone" i], button[data-item-id*="phone:tel:"]')?.textContent?.trim();
+
+                  if (prevFingerprint.address && currentAddress && currentAddress === prevFingerprint.address) {
+                    return false; // panel still shows previous listing address
+                  }
+                  if (prevFingerprint.phone && currentPhone && currentPhone === prevFingerprint.phone && (!currentAddress || currentAddress === prevFingerprint.address)) {
+                    return false; // panel still shows previous listing phone
+                  }
+                }
+
                 return true;
               },
-              { expectedId: candidate.listingId, expectedName: candidate.ariaLabel },
+              { expectedId: candidate.listingId, expectedName: candidate.ariaLabel, prevFingerprint: lastFingerprint },
               { timeout: 5000 }
             ).catch(() => false);
 
@@ -355,12 +436,21 @@ export async function executeScraperRun(
             }
 
             // Extract fields atomically with double-checked identity verification
-            const lead = await extractPanelDetails(page, location, candidate.ariaLabel, candidate.href, candidate.listingId);
+            const lead = await extractPanelDetails(page, location, candidate.ariaLabel, candidate.href, candidate.listingId, lastFingerprint || undefined);
             if (!lead || !lead.businessName) {
               log(`⚠️ Panel extraction failed or identity mismatch for: ${candidate.listingId}. Skipping.`);
               counters.failed++;
               continue;
             }
+
+            // Record verified fingerprint for subsequent stale-panel detection
+            lastFingerprint = {
+              listingId: lead.listingId,
+              address: lead.address,
+              phone: lead.phone
+            };
+
+            counters.extracted++;
 
             // Enforce requirePhone
             if (requirePhone && (!lead.phone || lead.phone === 'N/A')) {
@@ -391,12 +481,12 @@ export async function executeScraperRun(
             }
 
             leads.push(lead);
-            counters.extracted++;
+            counters.qualified++;
 
             // Durable incremental write (Phase 4)
             fs.appendFileSync(checkpointPath, JSON.stringify(lead) + '\n', 'utf8');
 
-            log(`✅ [#${counters.extracted}/${targetLimit}] ${lead.businessName} | 📞 ${lead.phone} | ✉️ ${lead.email || 'None'}`);
+            log(`✅ [#${counters.qualified}/${targetLimit}] ${lead.businessName} | 📞 ${lead.phone} | ✉️ ${lead.email || 'None'}`);
 
             sendToParent({
               type: 'PROGRESS',
@@ -447,10 +537,10 @@ export async function executeScraperRun(
       }
     }
 
-    // Write final Excel file atomically
-    if (leads.length > 0) {
-      await writeLeadsToExcel(leads, outputPath);
-      log(`💾 Saved ${leads.length} validated leads to Excel: ${path.basename(outputPath)}`);
+    // Write final Excel file atomically by streaming from checkpoint
+    if (counters.qualified > 0 || counters.extracted > 0 || (fs.existsSync(checkpointPath) && fs.statSync(checkpointPath).size > 0)) {
+      await writeLeadsToExcel(checkpointPath, outputPath);
+      log(`💾 Saved validated leads to Excel via streaming: ${path.basename(outputPath)}`);
     }
 
     if (activeBrowser) {
@@ -492,12 +582,17 @@ export async function extractPanelDetails(
   searchLocation: string,
   expectedName: string = '',
   href: string = '',
-  listingId: string = ''
+  listingId: string = '',
+  previousFingerprint?: { listingId?: string; address?: string; phone?: string }
 ): Promise<ScrapedLead | null> {
-  return await page.evaluate(({ searchLocation, expectedName, href, listingId }) => {
-    // 1. Panel Identity Verification BEFORE reading fields
+  return await page.evaluate(({ searchLocation, expectedName, href, listingId, previousFingerprint }) => {
+    // 1. Locate confirmed detail panel container
+    const panel = document.querySelector('div[role="main"]') || document.querySelector('div.m6QErb[aria-label]');
+    if (!panel) return null;
+
+    // 2. Panel Identity Verification BEFORE reading fields
     const urlBefore = window.location.href;
-    const nameElBefore = document.querySelector('h1.DUwDvf, h1[class*="header"], h1');
+    const nameElBefore = panel.querySelector('h1.DUwDvf, h1[class*="header"], h1');
     const h1Before = (nameElBefore?.textContent || '').trim();
 
     if (!h1Before) return null;
@@ -516,14 +611,14 @@ export async function extractPanelDetails(
       }
     }
 
-    // 2. Phone (Strictly from verified button/anchor nodes, NO full page regex)
+    // 3. Phone (Strictly from verified button/anchor nodes within panel, NO full page regex)
     let phone = '';
-    const phoneBtn = document.querySelector('button[data-tooltip*="phone" i], button[aria-label*="Phone" i], button[data-item-id*="phone:tel:"]');
+    const phoneBtn = panel.querySelector('button[data-tooltip*="phone" i], button[aria-label*="Phone" i], button[data-item-id*="phone:tel:"]');
     if (phoneBtn) {
       phone = (phoneBtn.textContent || '').replace(/[^0-9+\s\-()]/g, '').trim();
     }
     if (!phone) {
-      const telLink = document.querySelector('a[href^="tel:"]');
+      const telLink = panel.querySelector('a[href^="tel:"]');
       if (telLink) {
         phone = (telLink.getAttribute('href') || '').replace('tel:', '').replace(/[^0-9+\s\-()]/g, '').trim();
       }
@@ -533,36 +628,47 @@ export async function extractPanelDetails(
     const digitsOnly = phone.replace(/\D/g, '');
     const validPhone = digitsOnly.length >= 7 ? phone : 'N/A';
 
-    // 3. Category
-    const catEl = document.querySelector('button.DkEaL, span[class*="category"], button[jsaction*="category"]');
+    // 4. Category
+    const catEl = panel.querySelector('button.DkEaL, span[class*="category"], button[jsaction*="category"]');
     const category = (catEl?.textContent || '').trim();
 
-    // 4. Address (separate from searchLocation)
-    const addressBtn = document.querySelector('button[data-item-id*="address"], button[aria-label*="Address" i]');
+    // 5. Address (strictly within panel)
+    const addressBtn = panel.querySelector('button[data-item-id*="address"], button[aria-label*="Address" i]');
     const address = (addressBtn?.textContent || '').trim();
 
-    // 5. Website
-    const webBtn = document.querySelector('a[data-item-id*="authority"], a[aria-label*="Website" i]');
+    // 6. Website
+    const webBtn = panel.querySelector('a[data-item-id*="authority"], a[aria-label*="Website" i]');
     const website = (webBtn?.getAttribute('href') || 'N/A').trim();
 
-    // 6. Rating & Reviews
-    const ratingEl = document.querySelector('div.F7nice span[aria-hidden="true"]');
+    // 7. Rating & Reviews
+    const ratingEl = panel.querySelector('div.F7nice span[aria-hidden="true"]');
     const rating = (ratingEl?.textContent || 'N/A').trim();
 
-    const reviewsEl = document.querySelector('div.F7nice span[aria-label*="reviews"]');
+    const reviewsEl = panel.querySelector('div.F7nice span[aria-label*="reviews"]');
     const reviewsCount = (reviewsEl?.textContent || '0').replace(/[^0-9]/g, '').trim();
 
-    // 7. Hours
-    const hoursEl = document.querySelector('div[aria-label*="Hours"], div[data-item-id*="oh"]');
+    // 8. Hours
+    const hoursEl = panel.querySelector('div[aria-label*="Hours"], div[data-item-id*="oh"]');
     const hours = (hoursEl?.textContent || '').slice(0, 100).trim();
 
-    // 8. Panel Identity Verification AFTER reading fields
+    // 9. Stale panel rejection against previous listing fingerprint
+    // (Prevents accepting Branch A's old address/phone under candidate B when both have identical names)
+    if (previousFingerprint && listingId && previousFingerprint.listingId && previousFingerprint.listingId !== listingId) {
+      if (previousFingerprint.address && address && address === previousFingerprint.address) {
+        return null; // Stale address from previous branch/listing
+      }
+      if (previousFingerprint.phone && validPhone !== 'N/A' && previousFingerprint.phone === validPhone && (!address || address === 'N/A')) {
+        return null; // Stale phone from previous branch/listing
+      }
+    }
+
+    // 10. Panel Identity Verification AFTER reading fields
     const urlAfter = window.location.href;
-    const nameElAfter = document.querySelector('h1.DUwDvf, h1[class*="header"], h1');
+    const nameElAfter = panel.querySelector('h1.DUwDvf, h1[class*="header"], h1');
     const h1After = (nameElAfter?.textContent || '').trim();
 
-    // Abort if panel mutated or changed identity during extraction
-    if (urlBefore !== urlAfter || h1Before !== h1After) {
+    // Abort if panel mutated, changed identity, or detached from DOM during extraction
+    if (!panel.isConnected || urlBefore !== urlAfter || h1Before !== h1After) {
       return null;
     }
 
@@ -582,7 +688,7 @@ export async function extractPanelDetails(
       mapsUrl: href || urlAfter,
       discoveredAt: new Date().toISOString()
     };
-  }, { searchLocation, expectedName, href, listingId });
+  }, { searchLocation, expectedName, href, listingId, previousFingerprint });
 }
 
 // IPC listener when invoked as forked child process

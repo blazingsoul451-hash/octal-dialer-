@@ -295,13 +295,18 @@ class PhoneBridgeService extends ChangeNotifier {
     _socket!.onConnect((_) {
       debugPrint('[PhoneBridge] Socket connected. Emitting phone:join...');
       emitJoin();
-      CallOutboxService.instance.flush(_socket);
     });
 
     _socket!.on('call:ended-ack', (data) {
       debugPrint('[PhoneBridge] Received call:ended-ack: $data');
       if (data != null && data['callId'] != null) {
-        CallOutboxService.instance.acknowledgeOutcome(data['callId'].toString());
+        CallOutboxService.instance.acknowledgeOutcome(
+          data['callId'].toString(),
+          tenantId: data['tenantId']?.toString() ?? (_tenantId.isNotEmpty ? _tenantId : null),
+          deviceId: _deviceId.isNotEmpty ? _deviceId : null,
+          serverOrigin: _serverUri.isNotEmpty ? _serverUri : null,
+          outboxId: data['outboxId']?.toString(),
+        );
       }
     });
 
@@ -462,13 +467,18 @@ class PhoneBridgeService extends ChangeNotifier {
         debugPrint('[PhoneBridge] Connected to server in QR / unauthenticated mode.');
         _setStatus(BridgeStatus.online, '● Connected to Octal Bridge');
       }
-      CallOutboxService.instance.flush(_socket);
     });
 
     _socket!.on('call:ended-ack', (data) {
       debugPrint('[PhoneBridge] Received call:ended-ack: $data');
       if (data != null && data['callId'] != null) {
-        CallOutboxService.instance.acknowledgeOutcome(data['callId'].toString());
+        CallOutboxService.instance.acknowledgeOutcome(
+          data['callId'].toString(),
+          tenantId: data['tenantId']?.toString() ?? (_tenantId.isNotEmpty ? _tenantId : null),
+          deviceId: _deviceId.isNotEmpty ? _deviceId : null,
+          serverOrigin: _serverUri.isNotEmpty ? _serverUri : null,
+          outboxId: data['outboxId']?.toString(),
+        );
       }
     });
 
@@ -477,10 +487,27 @@ class PhoneBridgeService extends ChangeNotifier {
       if (data != null && data['deviceId'] != null) {
         _deviceId = data['deviceId'];
       }
+      if (data != null && data['tenantId'] != null) {
+        _tenantId = data['tenantId'].toString();
+      }
       _errorMessage = '';
       _setStatus(BridgeStatus.online, '● Device Online & Ready to Connect');
       _startHeartbeat();
       _checkOtaUpdate();
+
+      // Flush outbox only after successful authentication/registration
+      CallOutboxService.instance.flush(
+        _socket,
+        currentOrigin: _serverUri,
+        currentTenantId: _tenantId.isNotEmpty ? _tenantId : null,
+        currentDeviceId: _deviceId.isNotEmpty ? _deviceId : null,
+      );
+      CallOutboxService.instance.startPeriodicRetry(
+        () => _socket,
+        getTenantId: () => _tenantId.isNotEmpty ? _tenantId : null,
+        getDeviceId: () => _deviceId.isNotEmpty ? _deviceId : null,
+        getOrigin: () => _serverUri,
+      );
 
       // Broadcast SIM capabilities to backend
       if (_socket != null && _sims.isNotEmpty) {
@@ -593,12 +620,28 @@ class PhoneBridgeService extends ChangeNotifier {
       'status': 'Paired with $_currentLaptopName. Ready for calls.'
     }).catchError((_) {});
 
+    // Flush pending outbox entries now that pairing is confirmed
+    final sessionTenantId = map['tenantId']?.toString() ?? (_tenantId.isNotEmpty ? _tenantId : null);
+    CallOutboxService.instance.flush(
+      _socket,
+      currentOrigin: _serverUri,
+      currentTenantId: sessionTenantId,
+      currentDeviceId: _deviceId.isNotEmpty ? _deviceId : null,
+    );
+    CallOutboxService.instance.startPeriodicRetry(
+      () => _socket,
+      getTenantId: () => _tenantId.isNotEmpty ? _tenantId : sessionTenantId,
+      getDeviceId: () => _deviceId.isNotEmpty ? _deviceId : null,
+      getOrigin: () => _serverUri,
+    );
+
     if (onBridgePaired != null) {
       onBridgePaired!(map);
     }
   }
 
   void _handleUnpaired(String reason) {
+    CallOutboxService.instance.stopPeriodicRetry();
     _currentSessionId = null;
     _currentLaptopName = null;
     _currentLaptopBtAddress = null;
@@ -665,6 +708,7 @@ class PhoneBridgeService extends ChangeNotifier {
 
   /// Full logout cleanup
   Future<void> logout() async {
+    CallOutboxService.instance.stopPeriodicRetry();
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
 

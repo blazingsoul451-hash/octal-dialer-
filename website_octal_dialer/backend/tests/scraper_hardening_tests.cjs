@@ -5,53 +5,29 @@ const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const EventEmitter = require('node:events');
+const http = require('node:http');
+const zlib = require('node:zlib');
 const ts = require('typescript');
 const ExcelJS = require('exceljs');
 
 const root = path.join(__dirname, '../src');
 
-// Mock databaseManager to avoid opening live PostgreSQL connections during tests
-const mockDatabaseManager = {
-  db: {
-    init: async () => {},
-    queryOne: async () => null,
-    queryAll: async () => [],
-    execute: async () => ({ rowCount: 1 }),
-    withTransaction: async fn => fn({})
-  },
-  createCampaign: async (name, fileName, rawLeads, tenantId) => {
-    // Mimics production createCampaign deduplication by (businessName + phone)
-    const batchSeen = new Set();
-    const validLeads = [];
-    let dedupedCount = 0;
-
-    for (const lead of rawLeads) {
-      const cleanPhone = String(lead.phone || '').replace(/\D/g, '');
-      if (cleanPhone.length < 7) continue;
-
-      const leadName = String(lead.name || 'Unknown').trim();
-      const leadKey = `${leadName.toLowerCase()}:::${cleanPhone}`;
-
-      if (batchSeen.has(leadKey)) {
-        dedupedCount++;
-        continue;
-      }
-      batchSeen.add(leadKey);
-      validLeads.push({ name: leadName, phone: cleanPhone });
+let mockDncList = [];
+let mockExistingLeads = [];
+const mockDbAdapter = {
+  init: async () => {},
+  queryOne: async () => null,
+  queryAll: async (sql, params) => {
+    if (sql.includes('FROM suppression_list')) {
+      return (mockDncList || []).map(phone => ({ phone }));
     }
-
-    return {
-      campaign: {
-        id: `mock_camp_${Date.now()}`,
-        name,
-        fileName,
-        leadCount: validLeads.length,
-        createdAt: new Date().toISOString()
-      },
-      finalCount: validLeads.length,
-      dedupedCount
-    };
-  }
+    if (sql.includes('FROM leads')) {
+      return (mockExistingLeads || []).map(l => ({ name: l.name, phone: l.phone }));
+    }
+    return [];
+  },
+  execute: async () => ({ rowCount: 1 }),
+  withTransaction: async fn => fn({})
 };
 
 let currentMockWindow = { location: { href: 'http://localhost' } };
@@ -62,7 +38,7 @@ function setMockBrowser(win, doc) {
   currentMockDocument = doc;
 }
 
-function load(file, imports = {}) {
+function load(file, imports = {}, extraGlobals = {}) {
   const code = fs.readFileSync(path.join(root, file), 'utf8');
   const js = ts.transpileModule(code, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true }
@@ -78,22 +54,29 @@ function load(file, imports = {}) {
     console,
     get window() { return currentMockWindow; },
     get document() { return currentMockDocument; },
-    process: { env: { ...process.env, NODE_ENV: 'test', MAX_ACTIVE_SCRAPERS: '1' }, cwd: () => root },
+    process: { ...process, env: { ...process.env, NODE_ENV: 'test', MAX_ACTIVE_SCRAPERS: '1' }, cwd: () => root },
     setTimeout,
     clearTimeout,
     setInterval: () => 0,
     clearInterval: () => {},
     require: id => {
       if (Object.hasOwn(imports, id)) return imports[id];
-      if (id === './databaseManager') return mockDatabaseManager;
-      if (['crypto', 'os', 'fs', 'path', 'node:fs', 'node:path', 'child_process', 'exceljs', 'url', 'net', 'http', 'https', 'dns', 'zlib', 'tls', 'events'].includes(id)) {
+      if (id === './databaseManager') return realDatabaseManager;
+      if (id === './ssrfProtection') return ssrfProtection;
+      if (['crypto', 'os', 'fs', 'path', 'node:fs', 'node:path', 'child_process', 'exceljs', 'url', 'net', 'http', 'https', 'dns', 'zlib', 'tls', 'events', 'readline', 'node:readline'].includes(id)) {
         return require(id);
       }
       throw new Error('Unexpected dependency: ' + id);
-    }
+    },
+    ...extraGlobals
   });
   return module.exports;
 }
+
+const realDatabaseManager = load('databaseManager.ts', {
+  './entitlementManager': { checkLimit: async () => ({ allowed: true, current: 0, limit: 100 }), initializeCatalogPlans: async () => {} },
+  './db/dbAdapter': { dbAdapter: mockDbAdapter }
+});
 
 const ssrfProtection = load('ssrfProtection.ts');
 const {
@@ -104,6 +87,9 @@ const {
   createSafeAgents,
   SsrfError
 } = ssrfProtection;
+
+const websiteEnricher = load('websiteEnricher.ts');
+const { safeHttpGet } = websiteEnricher;
 
 const scraperWorker = load('scraperWorker.ts', {
   './websiteEnricher': { enrichCompanyWebsite: async () => ({}) },
@@ -145,26 +131,58 @@ async function main() {
   // GROUP 1: BEHAVIORAL LISTING CORRELATION & STALE PANEL DEFENSE
   // ============================================================================
 
+  function createMockPanelDoc(panelFields) {
+    const panelObj = {
+      isConnected: panelFields.isConnected !== undefined ? panelFields.isConnected : true,
+      querySelector: (subSel) => {
+        if (subSel.includes('h1')) return panelFields.h1 ? { textContent: typeof panelFields.h1 === 'function' ? panelFields.h1() : panelFields.h1 } : null;
+        if (subSel.includes('phone') || subSel.includes('tel:')) return panelFields.phone ? { textContent: panelFields.phone, getAttribute: () => `tel:${panelFields.phone}` } : null;
+        if (subSel.includes('address')) return panelFields.address ? { textContent: panelFields.address } : null;
+        if (subSel.includes('category')) return panelFields.category ? { textContent: panelFields.category } : null;
+        if (subSel.includes('authority') || subSel.includes('Website')) return panelFields.website ? { getAttribute: () => panelFields.website } : null;
+        return null;
+      }
+    };
+    return {
+      querySelector: (sel) => {
+        if (sel.includes('div[role="main"]') || sel.includes('m6QErb')) return panelObj;
+        return null;
+      }
+    };
+  }
+
+  await check('Behavioral: Extraction fails closed when no confirmed detail panel container exists in DOM', async () => {
+    const noPanelPage = {
+      evaluate: async (fn, arg) => {
+        const mockWindow = { location: { href: 'https://www.google.com/maps/place/Listing+B/@40.7,-74.0,15z/data=!1s0xbbb:0xbbb' } };
+        const mockDoc = { querySelector: () => null }; // No div[role="main"]
+        setMockBrowser(mockWindow, mockDoc);
+        return await fn(arg);
+      }
+    };
+
+    const result = await extractPanelDetails(
+      noPanelPage,
+      'New York',
+      'Listing B Supplies',
+      'https://www.google.com/maps/place/Listing+B/@40.7,-74.0,15z/data=!1s0xbbb:0xbbb',
+      '0xbbb:0xbbb'
+    );
+
+    assert.equal(result, null, 'Must fail closed when panel container is absent');
+  });
+
   await check('Behavioral: Extraction rejects stale panel where URL changed to B but DOM still has A', async () => {
     // Simulated Page fixture where URL has updated to Listing B,
-    // but the DOM heading (H1) and phone button still belong to old Listing A
+    // but the panel heading (H1) and phone button still belong to old Listing A
     const staleDomPage = {
       evaluate: async (fn, arg) => {
         const mockWindow = { location: { href: 'https://www.google.com/maps/place/Listing+B/@40.7,-74.0,15z/data=!1s0xbbb:0xbbb' } };
-        const mockDoc = {
-          querySelector: (sel) => {
-            if (sel.includes('h1')) {
-              return { textContent: 'Listing A Hardware' }; // Stale heading from A!
-            }
-            if (sel.includes('phone')) {
-              return { textContent: '(212) 555-1111' }; // Stale phone from A!
-            }
-            if (sel.includes('address')) {
-              return { textContent: '100 Old Street, New York, NY' };
-            }
-            return null;
-          }
-        };
+        const mockDoc = createMockPanelDoc({
+          h1: 'Listing A Hardware', // Stale heading from A
+          phone: '(212) 555-1111',
+          address: '100 Old Street, New York, NY'
+        });
         setMockBrowser(mockWindow, mockDoc);
         return await fn(arg);
       }
@@ -183,23 +201,49 @@ async function main() {
     assert.equal(result, null, 'Stale panel data from previous listing must be rejected');
   });
 
+  await check('Behavioral: Same-name branch rejects stale panel when URL changed to B but panel still holds A address and phone', async () => {
+    // Candidate B is clicked: URL updates to Branch B (0xbbb), candidate ariaLabel is "Starbucks"
+    // Both branch A and branch B are named "Starbucks", so heading check alone would pass!
+    // But Google Maps SPA has not yet updated the panel DOM: panel still displays Branch A's address and phone
+    const staleBranchPanelPage = {
+      evaluate: async (fn, arg) => {
+        const mockWindow = { location: { href: 'https://www.google.com/maps/place/Starbucks/@40.7,-74.0,15z/data=!1s0xbbb:0xbbb' } };
+        const mockDoc = createMockPanelDoc({
+          h1: 'Starbucks', // Heading matches Branch B!
+          phone: '(212) 555-1111', // Stale phone from Branch A
+          address: '100 Old St, Branch A' // Stale address from Branch A
+        });
+        setMockBrowser(mockWindow, mockDoc);
+        return await fn(arg);
+      }
+    };
+
+    // Candidate B extraction with previousFingerprint from Branch A
+    const result = await extractPanelDetails(
+      staleBranchPanelPage,
+      'New York',
+      'Starbucks', // Heading matches Branch B!
+      'https://www.google.com/maps/place/Starbucks/@40.7,-74.0,15z/data=!1s0xbbb:0xbbb',
+      '0xbbb:0xbbb',
+      { listingId: '0xaaa:0xaaa', address: '100 Old St, Branch A', phone: '(212) 555-1111' } // Previous fingerprint
+    );
+
+    assert.equal(result, null, 'Must reject stale panel for same-name branch when address matches previous listing');
+  });
+
   await check('Behavioral: Extraction rejects panel mutation during field extraction', async () => {
     // DOM mutates mid-extraction (e.g. user clicked or SPA rerendered)
     let callCount = 0;
     const mutatingPage = {
       evaluate: async (fn, arg) => {
         const mockWindow = { location: { href: 'https://www.google.com/maps/place/Branch/@40.7,-74.0,15z/data=!1s0x123:0x456' } };
-        const mockDoc = {
-          querySelector: (sel) => {
-            if (sel.includes('h1')) {
-              callCount++;
-              // Returns different heading on subsequent checks
-              return { textContent: callCount === 1 ? 'Expected Branch' : 'Completely Different Place' };
-            }
-            if (sel.includes('phone')) return { textContent: '(212) 555-9999' };
-            return null;
-          }
-        };
+        const mockDoc = createMockPanelDoc({
+          h1: () => {
+            callCount++;
+            return callCount === 1 ? 'Expected Branch' : 'Completely Different Place';
+          },
+          phone: '(212) 555-9999'
+        });
         setMockBrowser(mockWindow, mockDoc);
         return await fn(arg);
       }
@@ -221,14 +265,11 @@ async function main() {
     const makeBranchPage = (placeId, branchAddress) => ({
       evaluate: async (fn, arg) => {
         const mockWindow = { location: { href: `https://www.google.com/maps/place/Metro+Dental/@40.7,-74.0,15z/data=!1s${placeId}` } };
-        const mockDoc = {
-          querySelector: (sel) => {
-            if (sel.includes('h1')) return { textContent: 'Metro Dental' };
-            if (sel.includes('phone')) return { textContent: '(800) 555-0100' };
-            if (sel.includes('address')) return { textContent: branchAddress };
-            return null;
-          }
-        };
+        const mockDoc = createMockPanelDoc({
+          h1: 'Metro Dental',
+          phone: '(800) 555-0100',
+          address: branchAddress
+        });
         setMockBrowser(mockWindow, mockDoc);
         return await fn(arg);
       }
@@ -324,6 +365,60 @@ async function main() {
     try { fs.unlinkSync(testExcelPath); } catch (_) {}
   });
 
+  await check('Behavioral: Excel export with Listing ID allows CRM import to disambiguate identical name and phone branches', async () => {
+    const tenantId = 'tenant_ident_branches';
+    const tenantDir = getTenantOutputDir(tenantId);
+    const testExcelPath = path.join(tenantDir, 'leads_ident_branches.xlsx');
+
+    const lead1 = {
+      listingId: '0xaaa:0x111',
+      businessName: 'Starbucks',
+      phone: '+18007827282',
+      category: 'Coffee',
+      address: '100 Broadway, New York, NY',
+      searchLocation: 'NYC',
+      website: 'https://starbucks.com',
+      mapsUrl: 'https://maps.google.com/?1',
+      discoveredAt: new Date().toISOString()
+    };
+    const lead2 = {
+      listingId: '0xbbb:0x222',
+      businessName: 'Starbucks',
+      phone: '+18007827282', // Identical phone
+      category: 'Coffee',
+      address: '200 5th Ave, New York, NY', // Distinct address
+      searchLocation: 'NYC',
+      website: 'https://starbucks.com',
+      mapsUrl: 'https://maps.google.com/?2',
+      discoveredAt: new Date().toISOString()
+    };
+    const lead3 = { // Truly duplicate of lead1
+      listingId: '0xaaa:0x111',
+      businessName: 'Starbucks',
+      phone: '+18007827282',
+      category: 'Coffee',
+      address: '100 Broadway, New York, NY',
+      searchLocation: 'NYC',
+      website: 'https://starbucks.com',
+      mapsUrl: 'https://maps.google.com/?1',
+      discoveredAt: new Date().toISOString()
+    };
+
+    await writeLeadsToExcel([lead1, lead2, lead3], testExcelPath);
+
+    const importResult = await importScraperFileToCampaign(
+      testExcelPath,
+      'Identical Name Phone Campaign',
+      tenantId,
+      'admin'
+    );
+
+    assert.equal(importResult.importedCount, 2, 'Should import both distinct branches');
+    assert.equal(importResult.dedupedCount, 1, 'Should deduplicate the exact duplicate 3rd lead');
+
+    try { fs.unlinkSync(testExcelPath); } catch (_) {}
+  });
+
   // ============================================================================
   // GROUP 3: AWAITED IDEMPOTENT SHUTDOWN & CONCURRENCY CAPACITY
   // ============================================================================
@@ -378,6 +473,57 @@ async function main() {
     assert.equal(serviceWithMock.getActiveScraperCount(), 0, 'Capacity released after worker exits');
   });
 
+  await check('Behavioral: Process shutdown failure quarantines capacity and refuses to release execution slot', async () => {
+    const unkillableWorker = new EventEmitter();
+    unkillableWorker.connected = true;
+    unkillableWorker.killed = false;
+    unkillableWorker.exitCode = null;
+    unkillableWorker.pid = 999999;
+    unkillableWorker.send = () => {};
+    unkillableWorker.kill = () => {};
+
+    const mockProcess = {
+      ...process,
+      kill: (pid, sig) => {
+        if (sig === 0 && pid === 999999) return true; // simulates PID 999999 is alive
+        return true;
+      }
+    };
+    const mockChildProcess = {
+      ...require('child_process'),
+      execFile: (file, args, cb) => {
+        if (typeof cb === 'function') cb(null, '', '');
+      }
+    };
+
+    const serviceWithQuarantine = load('googleMapsScraperService.ts',
+      { child_process: mockChildProcess },
+      { process: mockProcess }
+    );
+
+    const quarantineJobId = 'job_quarantine_test';
+    const fakeRuntime = {
+      jobId: quarantineJobId,
+      tenantId: 'tenant_quarantine',
+      executionId: 301,
+      workerProcess: unkillableWorker,
+      abortController: new AbortController(),
+      record: { jobId: quarantineJobId, tenantId: 'tenant_quarantine', status: 'running', logs: [] },
+      hasReceivedDone: false,
+      isShuttingDown: false,
+      isExited: false
+    };
+
+    serviceWithQuarantine.registerRuntimeForTesting(fakeRuntime);
+    assert.equal(serviceWithQuarantine.getActiveScraperCount(), 1);
+
+    // Attempt shutdown: process cannot be terminated, so it must quarantine and retain capacity
+    await serviceWithQuarantine.shutdownWorker(quarantineJobId, 'quarantine_check');
+
+    assert.equal(fakeRuntime.quarantined, true, 'Slot must be marked quarantined when process cannot be killed');
+    assert.equal(serviceWithQuarantine.getActiveScraperCount(), 1, 'Capacity must NOT be released when shutdown fails');
+  });
+
   await check('Behavioral: Stale messages cannot override or resurrect stopped job status', async () => {
     const tenantId = 'tenant_stale_msg_test';
     const jobsDir = getTenantJobsDir(tenantId);
@@ -399,6 +545,103 @@ async function main() {
     assert.equal(record.status, 'stopped');
 
     try { fs.unlinkSync(mockJobFile); } catch (_) {}
+  });
+
+  await check('Behavioral: DONE message without disk output or checkpoint artifact transitions to failed', async () => {
+    const service = load('googleMapsScraperService.ts');
+    const tenantId = 'tenant_fake_done';
+    const jobsDir = getTenantJobsDir(tenantId);
+    const jobFile = path.join(jobsDir, 'job_fake_done.json');
+
+    const fakeJob = {
+      jobId: 'job_fake_done',
+      tenantId,
+      status: 'running',
+      counters: { extracted: 0, discovered: 10, failed: 0 },
+      logs: [],
+      outputFile: path.join(jobsDir, 'non_existent_output.xlsx'),
+      checkpointPath: path.join(jobsDir, 'non_existent_checkpoint.jsonl')
+    };
+    fs.writeFileSync(jobFile, JSON.stringify(fakeJob, null, 2), 'utf8');
+
+    const mockWorker = new EventEmitter();
+    mockWorker.pid = 999991;
+    mockWorker.send = () => {};
+    mockWorker.kill = () => {};
+
+    const runtime = {
+      jobId: 'job_fake_done',
+      tenantId,
+      executionId: 401,
+      workerProcess: mockWorker,
+      abortController: new AbortController(),
+      record: fakeJob,
+      hasReceivedDone: false,
+      isShuttingDown: false,
+      isExited: true
+    };
+    service.registerRuntimeForTesting(runtime);
+
+    // Worker emits DONE claiming 5 extracted leads, but neither output nor checkpoint exists on disk
+    mockWorker.emit('message', {
+      type: 'DONE',
+      jobId: 'job_fake_done',
+      executionId: 401,
+      status: 'completed',
+      counters: { extracted: 5, discovered: 10, failed: 0 }
+    });
+
+    assert.equal(runtime.record.status, 'failed', 'Must transition to failed when completion evidence is missing on disk');
+    assert.match(runtime.record.errorMessage, /neither output artifact nor checkpoint file exists/i);
+
+    try { fs.unlinkSync(jobFile); } catch (_) {}
+  });
+
+  await check('Behavioral: Process exit without DONE and zero-byte checkpoint transitions to failed, not partial', async () => {
+    const service = load('googleMapsScraperService.ts');
+    const tenantId = 'tenant_exit_empty_cp';
+    const jobsDir = getTenantJobsDir(tenantId);
+    const jobFile = path.join(jobsDir, 'job_empty_cp.json');
+    const checkpointFile = path.join(jobsDir, 'checkpoint_empty.jsonl');
+
+    // Create 0-byte checkpoint file
+    fs.writeFileSync(checkpointFile, '', 'utf8');
+
+    const fakeJob = {
+      jobId: 'job_empty_cp',
+      tenantId,
+      status: 'running',
+      counters: { extracted: 4, discovered: 10, failed: 0 },
+      logs: [],
+      checkpointPath: checkpointFile
+    };
+    fs.writeFileSync(jobFile, JSON.stringify(fakeJob, null, 2), 'utf8');
+
+    const mockWorker = new EventEmitter();
+    mockWorker.pid = 999992;
+    mockWorker.send = () => {};
+    mockWorker.kill = () => {};
+
+    const runtime = {
+      jobId: 'job_empty_cp',
+      tenantId,
+      executionId: 501,
+      workerProcess: mockWorker,
+      abortController: new AbortController(),
+      record: fakeJob,
+      hasReceivedDone: false,
+      isShuttingDown: false,
+      isExited: false
+    };
+    service.registerRuntimeForTesting(runtime);
+
+    // Worker process exits unexpectedly without DONE
+    mockWorker.emit('exit', 0, null);
+
+    assert.equal(runtime.record.status, 'failed', 'Must mark failed when checkpoint is empty on disk');
+    assert.match(runtime.record.errorMessage, /without completion acknowledgment and no flushed checkpoint found/i);
+
+    try { fs.unlinkSync(jobFile); fs.unlinkSync(checkpointFile); } catch (_) {}
   });
 
   await check('Behavioral: Exit code 0 without explicit DONE message is marked failed or partial, NEVER completed', async () => {
@@ -595,6 +838,247 @@ async function main() {
     assert.equal(result.skippedCount, 3);
 
     try { fs.unlinkSync(testExcelPath); } catch (_) {}
+  });
+
+  // ============================================================================
+  // GROUP 8: DETAILED ATTRIBUTION & DOM BOUNDARY FIXTURES
+  // ============================================================================
+
+  await check('Behavioral: Extraction fails closed when heading exists in outer DOM but detail panel has no heading', async () => {
+    const outerHeadingPage = {
+      evaluate: async (fn, arg) => {
+        const mockWindow = { location: { href: 'https://www.google.com/maps/place/FakeListing/@40.7,-74.0,15z/data=!1s0xout:0xout' } };
+        const mockDoc = {
+          querySelector: (sel) => {
+            if (sel === 'div[role="main"]' || sel.includes('m6QErb')) {
+              return {
+                isConnected: true,
+                querySelector: (subSel) => {
+                  if (subSel.includes('h1')) return null;
+                  if (subSel.includes('phone')) return { textContent: '1234567890' };
+                  return null;
+                }
+              };
+            }
+            if (sel.includes('h1')) return { textContent: 'Outer Search Header' };
+            return null;
+          }
+        };
+        setMockBrowser(mockWindow, mockDoc);
+        return await fn(arg);
+      }
+    };
+
+    const result = await extractPanelDetails(
+      outerHeadingPage,
+      'NY',
+      'Candidate Name',
+      'https://www.google.com/maps/place/FakeListing/@40.7,-74.0,15z/data=!1s0xout:0xout',
+      '0xout:0xout'
+    );
+    assert.equal(result, null, 'Must fail closed when detail panel itself contains no heading');
+  });
+
+  await check('Behavioral: Empty or unrelated substring headings are rejected', async () => {
+    const wrongHeadingPage = {
+      evaluate: async (fn, arg) => {
+        const mockWindow = { location: { href: 'https://www.google.com/maps/place/Listing/@40.7,-74.0,15z/data=!1s0xwrong:0xwrong' } };
+        const mockDoc = createMockPanelDoc({
+          h1: 'Completely Unrelated Shop',
+          phone: '+12125559876'
+        });
+        setMockBrowser(mockWindow, mockDoc);
+        return await fn(arg);
+      }
+    };
+
+    const result = await extractPanelDetails(
+      wrongHeadingPage,
+      'NY',
+      'Expected Target Name',
+      'https://www.google.com/maps/place/Listing/@40.7,-74.0,15z/data=!1s0xwrong:0xwrong',
+      '0xwrong:0xwrong'
+    );
+    assert.equal(result, null, 'Unrelated heading must fail verification and return null');
+  });
+
+  await check('Behavioral: Single-result Google Maps navigation extracts details without feed container', async () => {
+    const singleResultPage = {
+      evaluate: async (fn, arg) => {
+        const mockWindow = { location: { href: 'https://www.google.com/maps/place/Solo+Business/@40.7,-74.0,15z/data=!1ssolo123:solo123' } };
+        const mockDoc = createMockPanelDoc({
+          h1: 'Solo Business',
+          phone: '+12125554321',
+          address: '456 Main St, New York, NY',
+          category: 'Bakery',
+          website: 'https://solobakery.com'
+        });
+        setMockBrowser(mockWindow, mockDoc);
+        return await fn(arg);
+      }
+    };
+
+    const result = await extractPanelDetails(
+      singleResultPage,
+      'New York',
+      '',
+      'https://www.google.com/maps/place/Solo+Business/@40.7,-74.0,15z/data=!1ssolo123:solo123',
+      'solo123:solo123'
+    );
+
+    assert.ok(result !== null);
+    assert.equal(result.businessName, 'Solo Business');
+    assert.equal(result.phone, '+12125554321');
+    assert.equal(result.category, 'Bakery');
+  });
+
+  // ============================================================================
+  // GROUP 9: SSRF REDIRECT, LOOP, AND TRANSPORT INTERCEPTION
+  // ============================================================================
+
+  await check('Behavioral SSRF: HTTP 302 redirect to private loopback/metadata IP is blocked', async () => {
+    let serverPort;
+    const testServer = http.createServer((req, res) => {
+      if (req.url === '/redirect-private') {
+        res.writeHead(302, { Location: 'http://127.0.0.1:23456/internal-secret' });
+        res.end();
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('ok');
+      }
+    });
+
+    await new Promise(resolve => testServer.listen(0, '127.0.0.1', () => {
+      serverPort = testServer.address().port;
+      resolve();
+    }));
+
+    try {
+      const result = await safeHttpGet(`http://localhost:${serverPort}/redirect-private`);
+      assert.equal(result, null, 'Direct private host or redirect to private IP must return null');
+    } finally {
+      testServer.close();
+    }
+  });
+
+  await check('Behavioral SSRF: Redirect loop terminates safely after MAX_REDIRECTS', async () => {
+    let serverPort;
+    const testServer = http.createServer((req, res) => {
+      res.writeHead(302, { Location: `http://localhost:${serverPort}/loop` });
+      res.end();
+    });
+
+    await new Promise(resolve => testServer.listen(0, '127.0.0.1', () => {
+      serverPort = testServer.address().port;
+      resolve();
+    }));
+
+    try {
+      const result = await safeHttpGet(`http://localhost:${serverPort}/loop`);
+      assert.equal(result, null, 'Redirect loops must be safely capped and return null');
+    } finally {
+      testServer.close();
+    }
+  });
+
+  await check('Behavioral SSRF: Oversized compressed payload is bounded and capped at decompression ceiling', async () => {
+    const largeBuffer = Buffer.alloc(2 * 1024 * 1024, 'a');
+    const gzipped = zlib.gzipSync(largeBuffer);
+
+    let serverPort;
+    const testServer = http.createServer((req, res) => {
+      res.writeHead(200, {
+        'Content-Type': 'text/html',
+        'Content-Encoding': 'gzip'
+      });
+      res.end(gzipped);
+    });
+
+    await new Promise(resolve => testServer.listen(0, '127.0.0.1', () => {
+      serverPort = testServer.address().port;
+      resolve();
+    }));
+
+    try {
+      const result = await safeHttpGet(`http://localhost:${serverPort}/large`);
+      if (result) {
+        assert.ok(result.body.length <= 1024 * 1024 + 1024, 'Decompressed body must be capped at 1MB');
+      }
+    } finally {
+      testServer.close();
+    }
+  });
+
+  // ============================================================================
+  // GROUP 10: DNC SUPPRESSION & CRM IMPORT IDEMPOTENCY
+  // ============================================================================
+
+  await check('Behavioral: DNC list suppression excludes suppressed numbers during CRM import', async () => {
+    const tenantId = 'tenant_dnc_test';
+    const tenantDir = getTenantOutputDir(tenantId);
+    const testExcelPath = path.join(tenantDir, 'leads_dnc_check.xlsx');
+
+    mockDncList = ['+12125550199', '12125550199'];
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Leads');
+    sheet.columns = [
+      { header: 'Business Name', key: 'businessName' },
+      { header: 'Phone Number', key: 'phone' }
+    ];
+    sheet.addRow({ businessName: 'Suppressed Business', phone: '+12125550199' });
+    sheet.addRow({ businessName: 'Allowed Clean Business', phone: '+13105550188' });
+    await workbook.xlsx.writeFile(testExcelPath);
+
+    const result = await importScraperFileToCampaign(testExcelPath, 'DNC Test Campaign', tenantId, 'admin');
+    assert.equal(result.importedCount, 1, 'Only clean non-DNC lead should be imported');
+
+    mockDncList = [];
+    try { fs.unlinkSync(testExcelPath); } catch (_) {}
+  });
+
+  // ============================================================================
+  // GROUP 11: 20,000 SYNTHETIC RECORDS OFFLINE STREAMING & IMPORT TEST
+  // ============================================================================
+
+  await check('Behavioral & Scale: 20,000 synthetic records offline streaming test with CRM import', async () => {
+    const tenantId = 'tenant_20k_scale_test';
+    const tenantDir = getTenantOutputDir(tenantId);
+    const checkpoint20kPath = path.join(tenantDir, 'checkpoint_20k_test.jsonl');
+    const output20kPath = path.join(tenantDir, 'leads_20k_streamed.xlsx');
+
+    const stream = fs.createWriteStream(checkpoint20kPath, { flags: 'w' });
+    for (let i = 0; i < 20000; i++) {
+      const lead = {
+        listingId: `place_20k_${i}`,
+        businessName: `Synthetic Business #${i}`,
+        phone: `+1800555${String(i).padStart(4, '0')}`,
+        category: 'Scale Testing',
+        address: `${i} Industrial Parkway, Tech City`,
+        searchLocation: 'Tech City',
+        website: `https://biz${i}.example.com`,
+        email: i % 2 === 0 ? `contact@biz${i}.example.com` : 'N/A',
+        rating: '4.5',
+        reviewsCount: '10',
+        mapsUrl: `https://maps.google.com/?cid=${i}`,
+        discoveredAt: new Date().toISOString()
+      };
+      stream.write(JSON.stringify(lead) + '\n');
+    }
+    await new Promise(resolve => stream.end(resolve));
+
+    await writeLeadsToExcel(checkpoint20kPath, output20kPath);
+
+    assert.ok(fs.existsSync(output20kPath), 'Streamed 20k Excel file must exist on disk');
+    const fileStats = fs.statSync(output20kPath);
+    assert.ok(fileStats.size > 500000, '20k Excel file must be larger than 500KB');
+
+    const importRes1 = await importScraperFileToCampaign(output20kPath, '20k Scale Campaign', tenantId, 'admin');
+    assert.equal(importRes1.success, true);
+    assert.equal(importRes1.importedCount, 20000, 'All 20,000 dialable leads must be imported');
+
+    try { fs.unlinkSync(checkpoint20kPath); } catch (_) {}
+    try { fs.unlinkSync(output20kPath); } catch (_) {}
   });
 
   console.log(`\nAll ${count} Scraper Hardening & Behavioral tests PASSED!`);

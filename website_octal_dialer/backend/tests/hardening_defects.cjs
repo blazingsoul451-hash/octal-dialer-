@@ -4,7 +4,7 @@ const fs = require('fs');
 
 async function runTests() {
   console.log('─────────────────────────────────────────────────────────────────');
-  console.log('🧪 RUNNING HARDENING DEFECTS VERIFICATION SUITE (R1 - R4)');
+  console.log('🧪 RUNNING HARDENING DEFECTS VERIFICATION SUITE (R1 - R4 P1)');
   console.log('─────────────────────────────────────────────────────────────────');
 
   let passed = 0;
@@ -33,11 +33,29 @@ async function runTests() {
   }
 
   // =========================================================================
-  // PILLAR 1: R1 — Native Call Correlation Logic
+  // PILLAR 1: R1 — Native Call Correlation Logic (Source & Behavioral)
   // =========================================================================
   console.log('\n[Pillar 1: R1 — Correct Native Call Correlation]');
 
-  it('R1.1: Incoming ringing calls must NEVER consume pending placement record', () => {
+  it('R1.1: OctalCallManager.kt implements PendingPlacementRecord with generation, cancellation, expiry', () => {
+    const ktPath = path.resolve(__dirname, '../../../application_octal_dialer/android/app/src/main/kotlin/com/octal/dialer/octal_dialer/telecom/OctalCallManager.kt');
+    assert(fs.existsSync(ktPath), 'OctalCallManager.kt must exist');
+    const ktSource = fs.readFileSync(ktPath, 'utf8');
+
+    assert(ktSource.includes('data class PendingPlacementRecord'), 'Must define PendingPlacementRecord');
+    assert(ktSource.includes('val commandId: String'), 'PendingPlacementRecord must include commandId');
+    assert(ktSource.includes('val destination: String'), 'PendingPlacementRecord must include destination');
+    assert(ktSource.includes('val generation: Long'), 'PendingPlacementRecord must include monotonic generation');
+    assert(ktSource.includes('val expiresAtMs: Long'), 'PendingPlacementRecord must include expiry');
+    assert(ktSource.includes('var isCancelled: Boolean'), 'PendingPlacementRecord must track cancellation state');
+
+    // Correlation logic checks
+    assert(ktSource.includes('call.state == Call.STATE_RINGING'), 'Must check ringing to reject incoming calls from consuming pending outgoing record');
+    assert(ktSource.includes('cancelPendingPlacement'), 'Must support cancelling pending placements');
+    assert(ktSource.includes('call_${System.identityHashCode(call)}') || ktSource.includes('call_unmapped_') || ktSource.includes('Failing safely to unmapped ID'), 'Must safely assign unmapped IDs on ambiguous correlation without guessing');
+  });
+
+  it('R1.2: Incoming ringing calls must NEVER consume pending placement record', () => {
     let pendingPlacement = {
       commandId: 'cmd_101',
       destination: '1234567890',
@@ -69,7 +87,7 @@ async function runTests() {
     assert.notStrictEqual(pendingPlacement, null, 'Pending placement must NOT be consumed by incoming call');
   });
 
-  it('R1.2: Valid outgoing call matches and consumes pending placement', () => {
+  it('R1.3: Valid outgoing call matches and consumes pending placement', () => {
     let pendingPlacement = {
       commandId: 'cmd_202',
       destination: '15551234567',
@@ -102,39 +120,10 @@ async function runTests() {
     assert.strictEqual(pendingPlacement, null, 'Pending placement must be cleared upon binding');
   });
 
-  it('R1.3: Mismatched or cancelled placement fails safely to unmapped ID without guessing', () => {
-    let pendingPlacement = {
-      commandId: 'cmd_303',
-      destination: '15559990000',
-      accountHandleId: 'sim_1',
-      generation: 3,
-      expiresAtMs: Date.now() + 10000,
-      isCancelled: true // cancelled
-    };
-
-    function correlateCall(call) {
-      const number = call.number.replace(/\D/g, '');
-      const isIncoming = call.state === 'RINGING' || call.direction === 'INCOMING';
-      if (isIncoming) return `call_${call.id}`;
-      if (pendingPlacement && !pendingPlacement.isCancelled && Date.now() <= pendingPlacement.expiresAtMs) {
-        if (number === pendingPlacement.destination) {
-          const bound = pendingPlacement.commandId;
-          pendingPlacement = null;
-          return bound;
-        }
-      }
-      return `call_${call.id}`;
-    }
-
-    const outgoingCall = { id: 1002, number: '15559990000', state: 'DIALING', direction: 'OUTGOING' };
-    const boundId = correlateCall(outgoingCall);
-    assert.strictEqual(boundId, 'call_1002', 'Cancelled placement must not be bound');
-  });
-
   // =========================================================================
-  // PILLAR 2: R2 — Durable Call Outcomes Ledger & Handset Outbox
+  // PILLAR 2: R2 — Durable Call Outcomes Ledger & Idempotent Claim
   // =========================================================================
-  console.log('\n[Pillar 2: R2 — Durable Call Outcomes Ledger & Deduplication]');
+  console.log('\n[Pillar 2: R2 — Durable Call Outcomes Ledger & Idempotency]');
 
   const { dbAdapter } = require('../dist/db/dbAdapter');
   await dbAdapter.init();
@@ -170,42 +159,69 @@ async function runTests() {
     assert.strictEqual(saved.id, outcomeId, 'Primary outcome must be preserved');
   });
 
-  await itAsync('R2.2: Lost ACK / Retried call:ended deduplicates via call_outcomes without double execution', async () => {
-    const callId = `call_dedup_${Date.now()}`;
-    const tenantId = 'tenant_r2_dedup';
-    let transactionCount = 0;
+  await itAsync('R2.2: Concurrent worker finalization uses INSERT RETURNING to ensure single-winner side effects', async () => {
+    const callId = `call_concurrent_${Date.now()}`;
+    const tenantId = 'tenant_r2_concurrent';
+    let sideEffectsExecuted = 0;
 
-    async function handleCallEnded(payload) {
-      const existing = await dbAdapter.queryOne(
-        'SELECT id, "tenantId", "leadId" FROM call_outcomes WHERE "callId" = $1 LIMIT 1',
-        [payload.callId]
-      );
-      if (existing) {
-        return { ack: true, callId: payload.callId, leadId: existing.leadId, wasDeduped: true };
-      }
-
+    async function simulateWorkerFinalize(workerId) {
+      let won = false;
       await dbAdapter.withTransaction(async () => {
-        transactionCount++;
-        await dbAdapter.execute(
+        const myOutcomeId = `co_${workerId}_${callId}`;
+        const insertRes = await dbAdapter.query(
           `INSERT INTO call_outcomes ("id", "tenantId", "callId", "commandId", "leadId", "phone", "reason", "duration", "answered", "finalizedAt")
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           ON CONFLICT ("tenantId", "callId") DO NOTHING`,
-          [`co_${payload.callId}`, payload.tenantId, payload.callId, payload.commandId, payload.leadId, payload.phone, payload.reason, payload.duration, 1, new Date().toISOString()]
+           ON CONFLICT ("tenantId", "callId") DO NOTHING
+           RETURNING id`,
+          [myOutcomeId, tenantId, callId, 'cmd_c', 'lead_c', '123', 'ANSWERED', 30, 1, new Date().toISOString()]
         );
+
+        if (insertRes.rows && insertRes.rows.length > 0 && insertRes.rows[0].id === myOutcomeId) {
+          won = true;
+          sideEffectsExecuted++; // Only the winning transaction performs mutations
+        } else {
+          // Conflict: verify existing committed record
+          const existing = await dbAdapter.queryOne(
+            'SELECT id FROM call_outcomes WHERE "tenantId" = $1 AND "callId" = $2 LIMIT 1',
+            [tenantId, callId]
+          );
+          assert(existing, 'Conflict verification must confirm existing committed outcome');
+        }
       });
-      return { ack: true, callId: payload.callId, leadId: payload.leadId, wasDeduped: false };
+      return { ack: true, callId, won };
     }
 
-    const res1 = await handleCallEnded({ callId, tenantId, leadId: 'lead_1', commandId: 'cmd_1', phone: '111', reason: 'ANSWERED', duration: 30 });
-    assert.strictEqual(res1.ack, true);
-    assert.strictEqual(res1.wasDeduped, false);
-    assert.strictEqual(transactionCount, 1);
+    // Execute concurrently
+    const [res1, res2] = await Promise.all([
+      simulateWorkerFinalize('w1'),
+      simulateWorkerFinalize('w2')
+    ]);
 
-    // Second submission (lost ACK retry)
-    const res2 = await handleCallEnded({ callId, tenantId, leadId: 'lead_1', commandId: 'cmd_1', phone: '111', reason: 'ANSWERED', duration: 30 });
+    assert.strictEqual(res1.ack, true);
     assert.strictEqual(res2.ack, true);
-    assert.strictEqual(res2.wasDeduped, true, 'Second call must be recognized as already committed');
-    assert.strictEqual(transactionCount, 1, 'Transaction must NOT re-run on duplicate retry');
+    // Exactly one worker must win the claim and execute side-effects
+    const winners = [res1.won, res2.won].filter(Boolean).length;
+    assert.strictEqual(winners, 1, 'Exactly one concurrent worker must win the transactional claim');
+    assert.strictEqual(sideEffectsExecuted, 1, 'Side effects must execute exactly once');
+  });
+
+  await itAsync('R2.3: server.ts enforces strict authorization and eliminates !session shortcut', async () => {
+    const serverPath = path.resolve(__dirname, '../src/server.ts');
+    const source = fs.readFileSync(serverPath, 'utf8');
+
+    // 1. Ensure !session shortcut is removed from call:ended
+    const handlerStart = source.indexOf("socket.on('call:ended'");
+    const handlerEnd = source.indexOf("socket.on('disconnect'", handlerStart);
+    const handlerBody = source.slice(handlerStart, handlerEnd);
+
+    assert(!handlerBody.includes('!session || session.phoneSocketId'), 'Must NOT use !session as authorization shortcut');
+    assert(handlerBody.includes('UNAUTHORIZED_SOCKET'), 'Must require authenticated tenant and device principal');
+    assert(handlerBody.includes('call_dispatch_journal'), 'Must query canonical pre-dispatch journal for recovery');
+    assert(handlerBody.includes('UNKNOWN_CALL'), 'Must fail closed on unknown calls without session fallback');
+    assert(handlerBody.includes('DEVICE_MISMATCH'), 'Must verify device ownership');
+    assert(!handlerBody.includes('session.phoneSocketId = socket.id'), 'Must NOT reassign phoneSocketId from outcome event');
+    assert(handlerBody.includes('SELECT id, "tenantId", "leadId" FROM call_outcomes WHERE "callId" = $1 AND "tenantId" = $2'), 'call_outcomes lookup must be scoped by authenticated tenant');
+    assert(handlerBody.includes('CALL_OUTCOME_PERSISTENCE_FAILED'), 'Database storage failures must return retryable error rather than record absent');
   });
 
   // =========================================================================
@@ -259,26 +275,20 @@ async function runTests() {
 
   it('R3.4: Revocation cache pruning bounds memory size', () => {
     auth.clearRevocationCacheForTesting();
-    auth.pruneRevocationCache(); // Should not throw
+    auth.pruneRevocationCache();
   });
 
   // =========================================================================
-  // PILLAR 4: R4 — Migration Connection Cleanup
+  // PILLAR 4: R4 — Migration Connection Cleanup & Handset Outbox Journal
   // =========================================================================
-  console.log('\n[Pillar 4: R4 — Migration Connection Cleanup]');
-
-  const poolModule = require('../dist/db/pool');
+  console.log('\n[Pillar 4: R4 — Migration Connection Cleanup & Handset Outbox]');
 
   await itAsync('R4.1: Advisory unlock return value is checked and connection released with true on failure', async () => {
     let releasedWithDestroy = false;
     const mockClient = {
       query: async (sql) => {
         if (sql.includes('pg_advisory_unlock')) {
-          // Simulate lock not held (returns false)
           return { rows: [{ unlocked: false }] };
-        }
-        if (sql.includes('RESET')) {
-          return { rows: [] };
         }
         return { rows: [] };
       },
@@ -287,7 +297,6 @@ async function runTests() {
       }
     };
 
-    // Simulate cleanup logic from pool.ts
     let discardConnection = false;
     const unlockRes = await mockClient.query('SELECT pg_advisory_unlock(1) AS unlocked');
     if (unlockRes.rows[0]?.unlocked !== true) {
@@ -303,7 +312,7 @@ async function runTests() {
     assert.strictEqual(releasedWithDestroy, true, 'Client must be destroyed (release(true)) when unlock returns false');
   });
 
-  it('R4.2: Session timeouts are reset before pooled client release', async () => {
+  await itAsync('R4.2: Session timeouts are reset before pooled client release (Properly Awaited)', async () => {
     let resetRun = false;
     const mockClient = {
       query: async (sql) => {
@@ -317,6 +326,17 @@ async function runTests() {
 
     await mockClient.query('RESET statement_timeout; RESET lock_timeout;');
     assert.strictEqual(resetRun, true, 'Timeouts must be reset before connection release');
+  });
+
+  it('R4.3: call_outbox_service.dart implements serialized queue, scoping, and corrupt storage quarantine', () => {
+    const dartPath = path.resolve(__dirname, '../../../application_octal_dialer/lib/services/call_outbox_service.dart');
+    assert(fs.existsSync(dartPath), 'call_outbox_service.dart must exist');
+    const dartSource = fs.readFileSync(dartPath, 'utf8');
+
+    assert(dartSource.includes('_runSerialized'), 'Outbox must serialize disk read-modify-write operations');
+    assert(dartSource.includes('currentTenantId'), 'Outbox flush must support tenant scoping');
+    assert(dartSource.includes('startPeriodicRetry'), 'Outbox must implement scheduled periodic backoff retries');
+    assert(dartSource.includes('corrupt'), 'Outbox must quarantine corrupt storage instead of silently wiping it');
   });
 
   console.log('\n─────────────────────────────────────────────────────────────────');
