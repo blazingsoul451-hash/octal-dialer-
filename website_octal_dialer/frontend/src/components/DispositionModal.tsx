@@ -40,6 +40,7 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
   const [outcome, setOutcome] = useState(initialOutcome);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState(60);
 
   const outcomeRef = useRef(outcome);
@@ -84,18 +85,17 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
           notes: finalNotes
         })
       });
-      if (res.ok) {
-        const data: DispositionResult = await res.json();
-        onSaveSuccess(data);
-      } else {
-        onSaveSuccess({ success: false, nextLeadId: null });
-      }
+      if (!res.ok) throw new Error('Disposition was not saved. Please retry.');
+      const data: DispositionResult = await res.json();
+      if (!data.success) throw new Error('Disposition was not acknowledged. Please retry.');
+      onSaveSuccess(data);
+      handleClose();
     } catch (err) {
       console.error('Error auto-saving disposition:', err);
-      onSaveSuccess({ success: false, nextLeadId: null });
+      setSaveError('Auto-save failed. Your notes are still here; please retry.');
     } finally {
       setSaving(false);
-      handleClose();
+      isSavingRef.current = false;
     }
   };
 
@@ -108,6 +108,7 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
       return;
     }
 
+    setSaveError(null);
     setOutcome(initialOutcome || 'ANSWERED');
     setNotes('');
     setTimeLeft(60);
@@ -133,7 +134,7 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
         autoSaveTimerRef.current = null;
       }
     };
-  }, [isOpen, initialOutcome]);
+  }, [isOpen, initialOutcome, leadId]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -168,13 +169,18 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
       });
       if (res.ok) {
         const data: DispositionResult = await res.json();
+        if (!data.success) throw new Error('Disposition was not acknowledged.');
         onSaveSuccess(data);
         handleClose();
+      } else {
+        throw new Error('Disposition was not saved.');
       }
     } catch (err) {
       console.error('Error saving disposition:', err);
+      setSaveError('Save failed. Your notes are still here; please retry.');
     } finally {
       setSaving(false);
+      isSavingRef.current = false;
     }
   };
 
@@ -190,6 +196,7 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
       <div className={`border p-6 rounded-2xl max-w-sm w-full space-y-4 shadow-2xl transition-colors ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
+        {saveError && <p role="alert" className="text-sm text-red-500">{saveError}</p>}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-amber-500 font-display font-bold">
             <ShieldCheck className="w-5 h-5 shrink-0" />

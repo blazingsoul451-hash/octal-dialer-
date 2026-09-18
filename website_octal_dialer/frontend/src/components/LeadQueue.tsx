@@ -5,6 +5,7 @@ import type { DispositionResult } from './DispositionModal';
 
 interface LeadQueueProps {
   phoneConnected: boolean;
+  isConnected: boolean;
   campaigns: Campaign[];
   serverUrl: string;
   authToken: string;
@@ -47,6 +48,7 @@ const formatDuration = (seconds: number): string => {
 
 export const LeadQueue: React.FC<LeadQueueProps> = ({
   phoneConnected,
+  isConnected,
   campaigns,
   serverUrl,
   authToken,
@@ -101,7 +103,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const [callDuration, setCallDuration] = useState(0);
   const tickerRef = useRef<any>(null);
   // Ring/dial timeout — auto-hangup if no pickup within ringing period
-  const ringTimeoutRef = useRef<any>(null);
+  // Ring timeout belongs to the handset call controller, not a browser timer.
   const [autoDialTimeout, setAutoDialTimeout] = useState(35); // seconds before auto-hangup if no answer
   const [isAutoDialing, setIsAutoDialing] = useState(false); // tracks if campaign auto-pilot is ON
 
@@ -141,7 +143,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     unsentTalkSecsRef.current = 0;
 
     try {
-      await fetch(`${serverUrl}/api/campaigns/${campId}/activity/heartbeat`, {
+      const response = await fetch(`${serverUrl}/api/campaigns/${campId}/activity/heartbeat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -153,6 +155,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
           state
         })
       });
+      if (!response.ok) throw new Error('Activity heartbeat failed.');
     } catch {
       unsentWorkingSecsRef.current += incWorking;
       unsentTalkSecsRef.current += incTalk;
@@ -241,6 +244,20 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const countdownTimerRef = useRef<any>(null);
   const nextLeadToDialRef = useRef<{ id: string; name: string; phone: string; campaignId?: string } | null>(null);
+  const dialReadyRef = useRef(false);
+  dialReadyRef.current = isConnected && phoneConnected && callState === 'IDLE';
+  useEffect(() => {
+    setIsAutoDialing(false);
+    isAutoDialingRef.current = false;
+    nextLeadToDialRef.current = null;
+    if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+    countdownTimerRef.current = null;
+    setCountdownSeconds(null);
+    return () => {
+      if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    };
+  }, [selectedCampId, isConnected, phoneConnected]);
 
   // Helper to schedule the next dial using authoritative lead
   const scheduleNextDial = (nextLead: { id: string; name: string; phone: string; campaignId?: string }) => {
@@ -267,6 +284,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
         countdownTimerRef.current = null;
         setCountdownSeconds(null);
+        if (!dialReadyRef.current || !isAutoDialingRef.current) return;
         setLogs(prev => [...prev, `[Auto Dialer] Dialing: ${nextLead.name} (${nextLead.phone})`]);
         dialLead(
           nextLead.phone,
@@ -448,25 +466,8 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       tickerRef.current = setInterval(() => {
         setCallDuration(prev => prev + 1);
       }, 1000);
-      // Clear any ring timeout since call was answered
-      if (ringTimeoutRef.current) {
-        clearTimeout(ringTimeoutRef.current);
-        ringTimeoutRef.current = null;
-      }
-    } else if (callState === 'CALLING') {
-      // Phone is ringing/dialing — start ring timeout
+    } else {
       setCallDuration(0);
-      if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
-      ringTimeoutRef.current = setTimeout(() => {
-        // Auto-hangup if no answer within timeout
-        setLogs(prev => [...prev, `[Auto Dialer] No answer after ${autoDialTimeout}s — hanging up...`]);
-        hangupCall();
-      }, autoDialTimeout * 1000);
-    } else if (callState === 'IDLE') {
-      if (tickerRef.current) clearInterval(tickerRef.current);
-      tickerRef.current = null;
-      if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
-      ringTimeoutRef.current = null;
     }
     return () => {
       if (tickerRef.current) clearInterval(tickerRef.current);
@@ -570,7 +571,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
 
   // Handle authoritative backend disposition save event
   useEffect(() => {
-    if (!lastDispositionSaved) return;
+    if (!lastDispositionSaved?.success) return;
 
     if (isAutoDialingRef.current && phoneConnected && selectedCampIdRef.current) {
       const currIdx = currentCampaignIndexRef.current !== null ? currentCampaignIndexRef.current : currentIndex;

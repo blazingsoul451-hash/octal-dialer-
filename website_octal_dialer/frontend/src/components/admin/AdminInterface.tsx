@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft, BarChart3, Users, Settings, FileText, TrendingUp, Lock, Activity, Mail, Key } from 'lucide-react';
+import { Shield, ArrowLeft, BarChart3, Users, Settings, FileText, TrendingUp, Lock, Activity, Mail, Key } from 'lucide-react';
 import { AdminDashboard } from './sections/AdminDashboard';
 import { AdminUsers } from './sections/AdminUsers';
 import { AdminSystemSettings } from './sections/AdminSystemSettings';

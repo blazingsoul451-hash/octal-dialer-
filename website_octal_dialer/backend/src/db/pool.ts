@@ -14,6 +14,10 @@
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import fs from 'fs';
 import path from 'path';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+// All adapter helpers inside a transaction must use its checked-out connection.
+const transactionContext = new AsyncLocalStorage<{ client: PoolClient; active: boolean; rollbackOnly: boolean }>();
 
 let pool: Pool | null = null;
 let isInMemory = false;
@@ -102,7 +106,9 @@ export async function query<T extends QueryResultRow = any>(
   text: string,
   params?: any[]
 ): Promise<QueryResult<T>> {
-  const p = getPool();
+  const transaction = transactionContext.getStore();
+  if (transaction && !transaction.active) throw new Error('Query attempted after transaction completed. Await all transaction work.');
+  const p = transaction?.client || getPool();
   const start = Date.now();
   try {
     const res = await p.query<T>(text, params);
@@ -124,31 +130,49 @@ export async function query<T extends QueryResultRow = any>(
 export async function withTransaction<T>(
   callback: (client: PoolClient) => Promise<T>
 ): Promise<T> {
+  const parent = transactionContext.getStore();
+  if (parent) {
+    if (!parent.active) throw new Error('Transaction already completed.');
+    try {
+      return await callback(parent.client);
+    } catch (err) {
+      parent.rollbackOnly = true;
+      throw err;
+    }
+  }
   const p = getPool();
   if (isInMemory && (p as any)._memDb) {
     const backup = (p as any)._memDb.backup();
     const client = await p.connect();
+    const context = { client, active: true, rollbackOnly: false };
     try {
-      const result = await callback(client);
+      const result = await transactionContext.run(context, () => callback(client));
+      if (context.rollbackOnly) throw new Error('Transaction aborted by nested operation.');
       return result;
     } catch (err) {
       backup.restore();
       throw err;
     } finally {
+      context.active = false;
       client.release();
     }
   }
 
   const client = await p.connect();
+  const context = { client, active: true, rollbackOnly: false };
   try {
     await client.query('BEGIN');
-    const result = await callback(client);
+    const result = await transactionContext.run(context, () => callback(client));
+    if (context.rollbackOnly) throw new Error('Transaction aborted by nested operation.');
     await client.query('COMMIT');
     return result;
   } catch (err) {
-    await client.query('ROLLBACK');
+    try { await client.query('ROLLBACK'); } catch (rollbackError) {
+      console.error('[PostgreSQL] Rollback failed:', rollbackError);
+    }
     throw err;
   } finally {
+    context.active = false;
     client.release();
   }
 }

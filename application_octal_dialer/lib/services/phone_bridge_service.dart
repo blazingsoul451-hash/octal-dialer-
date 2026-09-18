@@ -215,7 +215,11 @@ class PhoneBridgeService extends ChangeNotifier {
 
   /// Connect or re-point the authenticated socket to a specific server URL
   Future<void> connectTo(String url) async {
-    final sanitized = AppConfig.sanitizeUrl(url) ?? url;
+    final sanitized = AppConfig.sanitizeUrl(url);
+    if (sanitized == null) throw ArgumentError('Invalid server URL');
+    if (_authToken.isNotEmpty && Uri.parse(sanitized).origin != Uri.parse(_serverUrl).origin) {
+      throw StateError('Sign out before changing the authenticated server.');
+    }
     _serverUrl = sanitized;
     await AppConfig.setBaseUrl(sanitized);
     if (_deviceName == 'Android Device') {
@@ -238,7 +242,11 @@ class PhoneBridgeService extends ChangeNotifier {
     _currentLaptopName = laptopName ?? 'Laptop Host';
     _currentLaptopBtAddress = laptopBtAddress ?? '';
 
-    final sanitized = AppConfig.sanitizeUrl(serverUrl) ?? serverUrl;
+    final sanitized = AppConfig.sanitizeUrl(serverUrl);
+    if (sanitized == null) throw ArgumentError('Invalid QR server URL');
+    if (_authToken.isNotEmpty && Uri.parse(sanitized).origin != Uri.parse(_serverUrl).origin) {
+      throw StateError('QR server differs from your login server. Sign out before switching servers.');
+    }
     _serverUrl = sanitized;
     await AppConfig.setBaseUrl(sanitized);
 
@@ -278,7 +286,7 @@ class PhoneBridgeService extends ChangeNotifier {
           'deviceId': _deviceId,
           'phoneOsType': Platform.isAndroid ? 'Android' : 'iOS',
           'phoneBtAddress': _deviceBtAddress,
-          'authToken': _authToken,
+          // A QR pairing grants only session access; never forward a saved login token.
         });
       }
     }

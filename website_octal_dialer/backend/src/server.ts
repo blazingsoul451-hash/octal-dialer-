@@ -109,6 +109,7 @@ import {
   verifyUserPassword,
   registerPublicUser,
   handleGoogleAuthWithIntent,
+  verifyGoogleIdToken,
   updateUserRole,
   requirePlatformAdmin,
   requireTenantAdmin,
@@ -517,7 +518,7 @@ const oauthStates = new Map<string, { clientOrigin: string; intent: string; redi
 
 // GET /auth/config & GET /api/auth/config — Public client configuration
 app.get(['/auth/config', '/api/auth/config'], (_req, res) => {
-  const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
+  const clientId = (process.env.GOOGLE_CLIENT_ID || '');
   res.json({
     googleClientId: clientId,
     captchaSiteKey: null,
@@ -549,7 +550,7 @@ function getOAuthRedirectUri(clientOrigin: string, req: express.Request): string
 app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
   const { intent = 'signin' } = req.body || {};
   const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : (req.headers.origin || `http://${req.headers.host || 'localhost'}`);
-  const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
+  const clientId = (process.env.GOOGLE_CLIENT_ID || '');
 
   const redirectUri = getOAuthRedirectUri(clientOrigin, req);
   const state = crypto.randomBytes(24).toString('hex');
@@ -570,7 +571,7 @@ app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
 // GET /auth/google & GET /api/auth/google — Initiates OAuth Redirect
 app.get(['/auth/google', '/api/auth/google'], (req, res) => {
   const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : `http://${req.headers.host || 'localhost'}`;
-  const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
+  const clientId = (process.env.GOOGLE_CLIENT_ID || '');
 
   const redirectUri = getOAuthRedirectUri(clientOrigin, req);
   const intent = (req.query.intent as string) || 'signin';
@@ -613,8 +614,8 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
       return;
     }
 
-    const clientId = process.env.GOOGLE_CLIENT_ID || '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com';
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET || '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';
+    const clientId = (process.env.GOOGLE_CLIENT_ID || '');
+    const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '');
     const redirectUri = storedRedirectUri || getOAuthRedirectUri(clientOrigin, req);
 
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -634,44 +635,8 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
       throw new Error(tokenData.error_description || tokenData.error || 'Failed to obtain Google tokens.');
     }
 
-    let email = '';
-    let name = '';
-    let picture = '';
-    let googleId = '';
-
-    if (tokenData.id_token) {
-      const parts = tokenData.id_token.split('.');
-      if (parts.length >= 2) {
-        const payloadJson = Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8');
-        const payload = JSON.parse(payloadJson);
-        email = payload.email || '';
-        name = payload.name || '';
-        picture = payload.picture || '';
-        googleId = payload.sub || '';
-      }
-    }
-
-    if (!email && tokenData.access_token) {
-      const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` }
-      });
-      const userInfo = await userInfoRes.json() as any;
-      email = userInfo.email || '';
-      name = userInfo.name || '';
-      picture = userInfo.picture || '';
-      googleId = userInfo.id || '';
-    }
-
-    if (!email) {
-      throw new Error('Could not retrieve verified email from Google.');
-    }
-
-    const result = await handleGoogleAuthWithIntent({
-      email,
-      name,
-      googleId,
-      picture
-    }, authIntent);
+    const profile = await verifyGoogleIdToken(tokenData.id_token);
+    const result = await handleGoogleAuthWithIntent(profile, authIntent);
 
     res.redirect(`${clientOrigin}/?token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&displayName=${encodeURIComponent((result.user as any).displayName || result.user.username)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
   } catch (err: any) {
@@ -683,130 +648,18 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
 });
 
 // POST /auth/google/verify & /api/auth/google/verify — Google One-Tap / Pop-up verification with intent
-app.post(['/auth/google/verify', '/api/auth/google/verify'], async (req, res) => {
-  const { credential, intent = 'signin' } = req.body as {
-    credential?: string;
-    intent?: 'signin' | 'signup';
-    captchaToken?: string;
-  };
-
-  if (!credential || typeof credential !== 'string') {
-    res.status(400).json({ error: 'Google credential token is required.' });
+app.post(['/auth/google/verify', '/api/auth/google/verify', '/auth/google', '/api/auth/google'], async (req, res) => {
+  const { credential, intent = 'signin' } = req.body || {};
+  if (typeof credential !== 'string' || !credential || !['signin', 'signup'].includes(intent)) {
+    res.status(400).json({ error: 'A Google ID token and valid sign-in intent are required.' });
     return;
   }
-
-  let email = '';
-  let name = '';
-  let googleId = '';
-  let picture = '';
-
   try {
-    const parts = credential.split('.');
-    if (parts.length >= 2) {
-      const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-      const payloadJson = Buffer.from(payloadBase64, 'base64').toString('utf-8');
-      const payload = JSON.parse(payloadJson);
-      if (payload.email) email = payload.email;
-      if (payload.name) name = payload.name;
-      if (payload.sub) googleId = payload.sub;
-      if (payload.picture) picture = payload.picture;
-    }
-  } catch (e) {
-    console.warn('[Google OAuth Verify] Failed to decode Google JWT credential:', e);
-  }
-
-  if (!email) {
-    res.status(400).json({ error: 'Could not extract valid email from Google credential token.' });
-    return;
-  }
-
-  try {
-    const result = await handleGoogleAuthWithIntent({
-      email,
-      name,
-      googleId,
-      picture
-    }, intent);
-
-    res.json({
-      success: true,
-      token: result.token,
-      username: result.user.username,
-      role: result.user.role,
-      user: result.user,
-      isNewUser: result.isNewUser
-    });
+    const profile = await verifyGoogleIdToken(credential);
+    const result = await handleGoogleAuthWithIntent(profile, intent);
+    res.json({ success: true, token: result.token, username: result.user.username,
+      role: result.user.role, user: result.user, isNewUser: result.isNewUser });
   } catch (err: any) {
-    if (err.code === 'ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' ||
-        err.code === 'ACCOUNT_EXISTS' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
-      res.status(400).json({ code: err.code, error: err.message, email: err.email });
-      return;
-    }
-    res.status(400).json({ code: err.code || 'GOOGLE_AUTH_FAILED', error: err.message || 'Google authentication failed.' });
-  }
-});
-
-// POST /auth/google — Google OAuth 2.0 Sign In & Sign Up (One-Tap & Direct)
-app.post(['/auth/google', '/api/auth/google'], async (req, res) => {
-  const { credential, email, name, googleId, picture, intent = 'signin' } = req.body as {
-    credential?: string;
-    email?: string;
-    name?: string;
-    googleId?: string;
-    picture?: string;
-    intent?: 'signin' | 'signup';
-  };
-
-  let targetEmail = email || '';
-  let targetName = name || '';
-  let targetGoogleId = googleId || '';
-  let targetPicture = picture || '';
-
-  // If Google Identity Services JWT credential string is provided, decode payload
-  if (credential && typeof credential === 'string') {
-    try {
-      const parts = credential.split('.');
-      if (parts.length >= 2) {
-        const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-        const payloadJson = Buffer.from(payloadBase64, 'base64').toString('utf-8');
-        const payload = JSON.parse(payloadJson);
-        if (payload.email) targetEmail = payload.email;
-        if (payload.name) targetName = payload.name;
-        if (payload.sub) targetGoogleId = payload.sub;
-        if (payload.picture) targetPicture = payload.picture;
-      }
-    } catch (e) {
-      console.warn('[Google OAuth] Failed to decode Google JWT credential token:', e);
-    }
-  }
-
-  if (!targetEmail) {
-    res.status(400).json({ error: 'Valid Google email account is required.' });
-    return;
-  }
-
-  try {
-    const result = await handleGoogleAuthWithIntent({
-      email: targetEmail,
-      name: targetName,
-      googleId: targetGoogleId,
-      picture: targetPicture
-    }, intent);
-
-    res.json({
-      success: true,
-      token: result.token,
-      username: result.user.username,
-      role: result.user.role,
-      user: result.user,
-      isNewUser: result.isNewUser
-    });
-  } catch (err: any) {
-    if (err.code === 'ACCOUNT_NOT_FOUND' || err.code === 'GOOGLE_ACCOUNT_NOT_FOUND' ||
-        err.code === 'ACCOUNT_EXISTS' || err.code === 'GOOGLE_ACCOUNT_ALREADY_EXISTS') {
-      res.status(400).json({ code: err.code, error: err.message, email: err.email });
-      return;
-    }
     res.status(400).json({ code: err.code || 'GOOGLE_AUTH_FAILED', error: err.message || 'Google authentication failed.' });
   }
 });
@@ -867,12 +720,8 @@ app.post('/api/mobile/login', async (req, res) => {
 
     if (googleAuthData && (googleAuthData.email || googleAuthData.credential)) {
       const gIntent = googleAuthData.intent === 'signup' ? 'signup' : 'signin';
-      authResult = await handleGoogleAuthWithIntent({
-        email: googleAuthData.email || '',
-        name: googleAuthData.name || '',
-        googleId: googleAuthData.googleId || googleAuthData.sub || '',
-        picture: googleAuthData.picture || ''
-      }, gIntent);
+      const profile = await verifyGoogleIdToken(googleAuthData.credential);
+      authResult = await handleGoogleAuthWithIntent(profile, gIntent);
     } else if (username && password) {
       const token = await login(username, password);
       if (token) {
@@ -898,19 +747,10 @@ app.post('/api/mobile/login', async (req, res) => {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
     }
-    const tenantSessions = (Array.from(getSessions().values()) as Session[]).filter(s => s.tenantId === tenantId);
-    const activeSession = tenantSessions.length > 0 ? tenantSessions[0] : reclaimOrCreateSession('laptop_mobile_host', undefined, tenantId);
+    const tenantSessions = (Array.from(getSessions().values()) as Session[]).filter(s => s.tenantId === tenantId && s.userId === authResult!.user.id && s.status === 'WAITING');
+    const activeSession = tenantSessions.length > 0 ? tenantSessions[0] : reclaimOrCreateSession('laptop_mobile_host', undefined, tenantId, authResult.user.id);
 
-    // Automatically pair device
-    pairPhone(
-      activeSession.token,
-      'mobile_http_preauth',
-      deviceName || 'Android Client',
-      phoneBtAddress || null,
-      phoneOsType || 'Android',
-      phoneIpAddress || '127.0.0.1',
-      activeSession.id
-    );
+    // HTTP login does not create a fake online socket. Pair after the authenticated socket connects.
 
     // Retrieve database campaigns & leads summary
     const campaigns = await db.queryAll(`SELECT * FROM campaigns WHERE "tenantId" = $1 ORDER BY "createdAt" DESC`, [tenantId]);
@@ -3446,6 +3286,7 @@ interface ActivePhoneSocket {
   appVersion?: string;
 }
 const authenticatedPhoneSockets = new Map<string, ActivePhoneSocket>();
+const pendingDialSessions = new Set<string>();
 
 // Socket.IO Handshake Auth Middleware
 io.use(async (socket, next) => {
@@ -3967,59 +3808,28 @@ io.on('connection', (socket) => {
     phoneIpAddress?: string;
     deviceId?: string;
   }) => {
-    let tokenOrSessionId = data.token || data.sessionId || data.authToken || '';
-    let targetTenantId = socket.data.tenantId;
-
-    if (!targetTenantId && data.authToken) {
-      const u = await validateToken(data.authToken);
-      if (u) {
-        targetTenantId = u.tenantId;
-        socket.data.user = u;
-        socket.data.tenantId = u.tenantId;
-      }
-    }
-
-    let session = await pairPhone(
-      tokenOrSessionId,
-      socket.id,
-      data.deviceName || 'Mobile Client',
-      data.phoneBtAddress || '',
-      data.phoneOsType || 'Android',
-      data.phoneIpAddress || '127.0.0.1',
-      data.sessionId
-    );
-
-    if (!session && tokenOrSessionId) {
-      const user = await validateToken(tokenOrSessionId);
-      if (user) {
-        targetTenantId = user.tenantId;
-        const tenantSessions = Array.from(getSessions().values()).filter((s: any) => s.tenantId === user.tenantId);
-        const active = tenantSessions.length > 0 ? tenantSessions[0] : reclaimOrCreateSession('laptop_mobile_host', undefined, user.tenantId);
-        session = await pairPhone(
-          active.token,
-          socket.id,
-          data.deviceName || 'Mobile Client',
-          data.phoneBtAddress || '',
-          data.phoneOsType || 'Android',
-          data.phoneIpAddress || '127.0.0.1',
-          active.id
-        );
-      }
-    }
-
-    if (!session) {
-      console.warn(`[Socket Pairing Warning] Phone failed to pair with key: ${tokenOrSessionId}`);
-      socket.emit('error', { code: 'INVALID_TOKEN', message: 'Token is invalid or expired.' });
+    if (!data || typeof data.token !== 'string') {
+      socket.emit('error', { code: 'INVALID_TOKEN', message: 'A valid pairing token is required.' });
       return;
     }
+    const user = data.authToken ? await validateToken(data.authToken) : socket.data.user;
+    if (data.authToken && !user) {
+      socket.emit('error', { code: 'UNAUTHORIZED', message: 'Login token is invalid.' });
+      return;
+    }
+    const session = await pairPhone(data.token, socket.id, data.deviceName || 'Mobile Client',
+      data.phoneBtAddress || '', data.phoneOsType || 'Android', data.phoneIpAddress || '',
+      data.sessionId, user ? { tenantId: user.tenantId, userId: user.id } : undefined);
+    if (!session) {
+      socket.emit('error', { code: 'INVALID_TOKEN', message: 'Pairing denied. Refresh the QR code and retry.' });
+      return;
+    }
+    if (user) socket.data.user = user;
 
     socket.data.isPhone = true;
     socket.data.tenantId = session.tenantId;
     socket.data.sessionId = session.id;
-    if (data.deviceId || socket.data.deviceId) {
-      session.phoneDeviceId = data.deviceId || socket.data.deviceId;
-      socket.data.deviceId = session.phoneDeviceId;
-    }
+    socket.data.deviceId = session.phoneDeviceId;
 
     socket.join(session.id);
     console.log(`[Socket Success] Phone paired to session: ${session.id} | Tenant: ${session.tenantId} | Device: ${data.deviceName || 'Android'}`);
@@ -4210,6 +4020,12 @@ io.on('connection', (socket) => {
     }
 
     // 4. Route through Safety Controller & Atomic Lead Reservation (only AFTER authorization checks!)
+    if (pendingDialSessions.has(sessionId)) {
+      socket.emit('dial:blocked', { reason: 'DEVICE_BUSY', message: 'A dial request is already in progress.' });
+      return;
+    }
+    pendingDialSessions.add(sessionId);
+    try {
     const check = await checkCallAllowed({ sessionId, phone, leadId, campaignId, tenantId, allowCompleted: forceRedial === true });
 
     if (!check.allowed) {
@@ -4223,6 +4039,12 @@ io.on('connection', (socket) => {
       return;
     }
 
+    if (session.phoneSocketId !== phoneSocket.id || session.laptopSocketId !== socket.id || isEmergencyStopped(tenantId, campaignId)) {
+      if (leadId) await releaseLeadLock(leadId, sessionId);
+      if (check.commandId) await expireCommand(check.commandId);
+      socket.emit('dial:blocked', { reason: 'SESSION_CHANGED', message: 'Connection or safety state changed during dial preparation.' });
+      return;
+    }
     setSessionStatus(sessionId, 'CALLING');
 
     const effectiveSimSlot = simSlot !== undefined ? simSlot : (session.selectedSimSlot !== undefined ? session.selectedSimSlot : undefined);
@@ -4271,27 +4093,26 @@ io.on('connection', (socket) => {
       updateCallSessionState(callSession.callId, 'DIAL_FAILED', { endReason: 'SOCKET_DISPATCH_ERROR' });
       socket.emit('error', { code: 'DISPATCH_ERROR', message: 'Failed to dispatch call to phone socket.' });
     }
+    } catch (err) {
+      if (leadId) await releaseLeadLock(leadId, sessionId).catch(() => {});
+      socket.emit('error', { code: 'DIAL_FAILED', message: 'Dial preparation failed. Please retry.' });
+      console.error('[CallEngine] Dial preparation failed:', err);
+    } finally {
+      pendingDialSessions.delete(sessionId);
+    }
   });
 
   // Emergency stop from socket
   socket.on('campaign:emergency_stop', ({ sessionId, campaignId }: { sessionId?: string; campaignId?: string } = {}) => {
     const session = getSessionById(sessionId || socket.data.sessionId || '');
-    if (session?.phoneSocketId) {
-      const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
-      if (phoneSocket) phoneSocket.emit('phone:hangup');
-    }
-
-    const tenantId = socket.data.tenantId || session?.tenantId;
-    if (!tenantId) {
-      socket.emit('error', { code: 'UNAUTHORIZED', message: 'Missing tenant identity for emergency stop.' });
-      return;
-    }
-
-    // Verify session belongs to tenant if provided
-    if (session && session.tenantId && session.tenantId !== tenantId) {
-      console.warn(`[SafetyController Security] Rejected emergency stop from cross-tenant session`);
+    const user = socket.data.user;
+    const tenantId = user?.tenantId;
+    if (!user || !tenantId || !session || session.tenantId !== tenantId || session.laptopSocketId !== socket.id || session.userId !== user.id) {
       socket.emit('error', { code: 'UNAUTHORIZED', message: 'Unauthorized session.' });
       return;
+    }
+    if (session.phoneSocketId) {
+      io.sockets.sockets.get(session.phoneSocketId)?.emit('phone:hangup');
     }
 
     triggerEmergencyStop(tenantId, campaignId);
@@ -4313,7 +4134,7 @@ io.on('connection', (socket) => {
 
     // Role check: restricted agents cannot clear emergency stop
     const user = socket.data.user;
-    if (user && user.role === 'agent') {
+    if (!user || !['platform_admin', 'master_admin', 'admin', 'tenant_admin', 'supervisor'].includes(user.role)) {
       console.warn(`[SafetyController Security] Agent ${user.id} attempted to clear emergency stop without admin/supervisor rights.`);
       socket.emit('error', { code: 'FORBIDDEN', message: 'Only administrators or supervisors can clear emergency stops.' });
       return;
@@ -4331,7 +4152,8 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const cs = (callId ? getCallSession(callId) : null) || getCallSessionBySessionId(session.id);
+    const cs = callId ? getCallSession(callId) : getCallSessionBySessionId(session.id);
+    if (!cs || cs.sessionId !== session.id || cs.tenantId !== session.tenantId || cs.endedAt) return;
     if (cs) {
       updateCallSessionState(cs.callId, 'ENDING');
       io.to(session.id).emit('call:status-changed', { callId: cs.callId, state: 'ENDING' });
@@ -4374,16 +4196,18 @@ io.on('connection', (socket) => {
       if (cs.leadId) {
         await releaseLeadLock(cs.leadId, cs.sessionId);
       }
-      io.to(cs.sessionId).emit('call:finished', { reason: reason || 'DIAL_FAILED', duration: 0, leadId: cs.leadId, commandId: cs.commandId });
+      io.to(cs.sessionId).emit('call:finished', { callId: cs.callId, reason: reason || 'DIAL_FAILED', duration: 0, leadId: cs.leadId, commandId: cs.commandId });
       io.to(cs.sessionId).emit('call:status-changed', { callId: cs.callId, state: 'DIAL_FAILED', reason });
     }
   });
 
   socket.on('call:state-changed', ({ callId, commandId, state }: { callId?: string; commandId?: string; state: CallState }) => {
+    // Terminal outcomes must pass through the transactional call:ended handler.
+    if (!['COMMAND_RECEIVED', 'DIALING', 'RINGING', 'ACTIVE', 'ENDING'].includes(state)) return;
     const cs = (callId ? getCallSession(callId) : null) || (commandId ? getCallSessionByCommandId(commandId) : null);
     if (!cs || cs.phoneSocketId !== socket.id) return;
 
-    updateCallSessionState(cs.callId, state);
+    if (!updateCallSessionState(cs.callId, state)) return;
     io.to(cs.sessionId).emit('call:status-changed', {
       callId: cs.callId,
       state,
@@ -4470,9 +4294,10 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const cs = (callId ? getCallSession(callId) : null) || getCallSessionBySessionId(session.id);
+    const cs = callId ? getCallSession(callId) : getCallSessionBySessionId(session.id);
+    if (!cs || cs.sessionId !== session.id || cs.tenantId !== session.tenantId || cs.endedAt) return;
     if (cs) {
-      updateCallSessionState(cs.callId, 'ACTIVE');
+      if (!updateCallSessionState(cs.callId, 'ACTIVE')) return;
       io.to(session.id).emit('call:status-changed', {
         callId: cs.callId,
         state: 'ACTIVE',
@@ -4521,34 +4346,39 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const cs = (callId ? getCallSession(callId) : null) || (commandId ? getCallSessionByCommandId(commandId) : null) || getCallSessionBySessionId(session.id);
-    const targetCallId = cs?.callId || callId || `${session.id}_${leadId || phone || ''}_${commandId || ''}`;
-
-    // Idempotency guard: Prevent processing duplicate call:ended for the exact same call
-    if (processedCallEndings.has(targetCallId)) {
-      console.log(`[CallEngine Idempotency] Ignoring duplicate call:ended for key: ${targetCallId}`);
+    const cs = callId ? getCallSession(callId) : commandId ? getCallSessionByCommandId(commandId) : getCallSessionBySessionId(session.id);
+    if (!cs || cs.sessionId !== session.id || cs.tenantId !== tenantId || cs.phoneSocketId !== socket.id || cs.endedAt) return;
+    const targetCallId = cs.callId;
+    if (processedCallEndings.has(targetCallId)) return;
+    processedCallEndings.add(targetCallId);
+    leadId = cs.leadId;
+    commandId = cs.commandId;
+    phone = cs.phone;
+    name = cs.name;
+    reason = typeof reason === 'string' && reason.length <= 64 ? reason : 'UNKNOWN';
+    duration = typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, Math.min(86400, Math.floor(duration))) : 0;
+    try {
+      await db.withTransaction(async () => {
+        if (commandId) await expireCommand(commandId);
+        if (leadId) {
+          await releaseLeadLock(leadId, session.id);
+          await createLog(leadId, reason, duration, tenantId);
+          await updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
+        } else {
+          await createManualLog(cs.phone, cs.name || 'Manual Quick Dial', reason, duration, tenantId);
+        }
+      });
+    } catch (err) {
+      processedCallEndings.delete(targetCallId);
+      socket.emit('error', { code: 'CALL_FINALIZATION_FAILED', message: 'Call outcome was not saved. Retry the terminal event.' });
+      console.error('[CallEngine] Finalization failed:', err);
       return;
     }
-    processedCallEndings.add(targetCallId);
+    finalizeCallSession(cs.callId, reason, duration);
+    setSessionStatus(session.id, 'PAIRED');
     if (processedCallEndings.size > 2000) {
       const first = processedCallEndings.values().next().value;
       if (first) processedCallEndings.delete(first);
-    }
-
-    if (cs) {
-      finalizeCallSession(cs.callId, reason, duration);
-    }
-
-    setSessionStatus(session.id, 'PAIRED');
-    if (commandId) {
-      await expireCommand(commandId);
-    }
-    if (leadId) {
-      await releaseLeadLock(leadId, session.id);
-      await createLog(leadId, reason, duration, tenantId);
-      await updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
-    } else if (phone) {
-      await createManualLog(phone, name || 'Manual Quick Dial', reason, duration, tenantId);
     }
 
     // Include leadId and commandId in call:finished broadcast so web knows exact completed lead

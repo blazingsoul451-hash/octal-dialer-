@@ -48,6 +48,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   StreamSubscription<TelecomCallEvent>? _telecomSub;
   CallPhase _phase = CallPhase.ringing;
   bool _callEnded = false;
+  bool _cancelRequested = false;
   bool _hasEmittedPickedUp = false;
   bool _isMuted = false;
   bool _isSpeaker = false;
@@ -58,7 +59,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   void initState() {
     super.initState();
     _secondsLeft = widget.timeout > 0 ? widget.timeout : 30;
-    _startRingingTimer();
+
 
     _waveAnimController = AnimationController(
       vsync: this,
@@ -158,6 +159,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   }
 
   void _handleRemoteHangup() {
+    _cancelRequested = true;
     debugPrint('CallingScreen: Received remote hangup command');
     TelecomService.instance.disconnect().catchError((_) => false);
     _nativeChannel.invokeMethod('endCall').catchError((e) {
@@ -199,6 +201,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
           _secondsLeft--;
           if (_secondsLeft <= 0) {
             timer.cancel();
+            _cancelRequested = true;
             _nativeChannel.invokeMethod('endCall').catchError((_) {});
             Future.delayed(const Duration(milliseconds: 2000), () {
               if (mounted && !_callEnded) {
@@ -223,6 +226,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     try {
       // 1. Centralized Prerequisite Gate: Default Dialer role + Mandatory Permissions
       final bool prereqsPassed = await TelecomService.instance.ensureCallingPrerequisites();
+      if (!mounted || _callEnded || _cancelRequested) return;
       if (!prereqsPassed) {
         debugPrint('CallingScreen: Prerequisites not met (Default Dialer role or permissions denied).');
         _endCall(reason: 'PREREQUISITES_DENIED');
@@ -236,12 +240,14 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         callId: widget.callId,
       );
 
+      if (!mounted || _callEnded || _cancelRequested) return;
       if (!placed) {
         debugPrint('CallingScreen: Telecom placeCall returned false.');
         _endCall(reason: 'CALL_PLACE_FAILED');
         return;
       }
 
+      _startRingingTimer();
       widget.socket.emit('call:state-changed', {
         'callId': widget.callId,
         'commandId': widget.commandId,
@@ -529,6 +535,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                 height: 54,
                 child: ElevatedButton.icon(
                   onPressed: () {
+                    _cancelRequested = true;
                     TelecomService.instance.disconnect().catchError((_) => false);
                     _nativeChannel.invokeMethod('endCall').catchError((_) {});
                     Future.delayed(const Duration(milliseconds: 1500), () {

@@ -35,6 +35,7 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
   const [selectedSimSlot, setSelectedSimSlot] = useState<number | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
+  const activeCallIdRef = useRef<string | undefined>(undefined);
 
   // Standalone heartbeat ping effect
   useEffect(() => {
@@ -53,6 +54,17 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
   }, [isConnected, sessionId, phoneConnected]);
 
   useEffect(() => {
+    if (!authToken) {
+      socketRef.current = null;
+      setIsConnected(false);
+      setPhoneConnected(false);
+      setSessionId(null);
+      setCallState('IDLE');
+      setCallSessionData(null);
+      setLastCallFinished(null);
+      activeCallIdRef.current = undefined;
+      return;
+    }
     const socket = io(serverUrl, {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 5,
@@ -71,9 +83,14 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       });
     });
 
-    socket.on('disconnect', () => {
+    const markDisconnected = () => {
       setIsConnected(false);
-    });
+      setPhoneConnected(false);
+      setGranularCallState('RECOVERY_REQUIRED');
+      socket.sendBuffer = [];
+    };
+    socket.on('disconnect', markDisconnected);
+    socket.on('connect_error', markDisconnected);
 
     socket.on('session:created', (data: {
       sessionId: string;
@@ -81,6 +98,10 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       laptopBtAddress: string;
       qrPayload: any;
     }) => {
+      activeCallIdRef.current = undefined;
+      setCallState('IDLE');
+      setGranularCallState('IDLE');
+      setCallSessionData(null);
       setSessionId(data.sessionId);
       setToken(data.token);
       setLaptopBtAddress(data.laptopBtAddress);
@@ -136,14 +157,11 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
 
     socket.on('device:error', (data: { error: string }) => {
       setDeviceError(data.error);
-      setCallState('IDLE');
-      setGranularCallState('IDLE');
       setTimeout(() => setDeviceError(null), 6000);
     });
 
     socket.on('error', (err: any) => {
-      setCallState('IDLE');
-      setGranularCallState('IDLE');
+      setDeviceError(err?.message || 'Connection or command failed.');
       console.warn('[Socket Error]:', err);
     });
 
@@ -164,6 +182,8 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       duration?: number;
       timestamp?: string;
     }) => {
+      if (data.callId && activeCallIdRef.current && data.callId !== activeCallIdRef.current && data.state !== 'COMMAND_SENT') return;
+      if (data.callId) activeCallIdRef.current = data.callId;
       setGranularCallState(data.state);
       setCallSessionData(data);
       if (['COMMAND_SENT', 'COMMAND_RECEIVED', 'DIALING', 'RINGING'].includes(data.state)) {
@@ -184,7 +204,8 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       setIncomingCall(null);
     });
 
-    socket.on('call:finished', (data: { reason: string; duration: number; leadId?: string; commandId?: string }) => {
+    socket.on('call:finished', (data: { reason: string; duration: number; leadId?: string; commandId?: string; callId?: string }) => {
+      if (data.callId && activeCallIdRef.current && data.callId !== activeCallIdRef.current) return;
       setCallState('IDLE');
       setGranularCallState('ENDED');
       setIncomingCall(null);
@@ -230,12 +251,15 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     });
 
     return () => {
+      socket.sendBuffer = [];
+      socket.removeAllListeners();
       socket.disconnect();
+      if (socketRef.current === socket) socketRef.current = null;
     };
   }, [serverUrl, authToken]);
 
   const revokePhone = () => {
-    if (socketRef.current && sessionId) {
+    if (socketRef.current?.connected && sessionId) {
       socketRef.current.emit('laptop:revoke-phone', { sessionId });
       setPhoneConnected(false);
       setPhoneDeviceName(null);
@@ -274,6 +298,8 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
     options?: { forceRedial?: boolean; simSlot?: number | null }
   ) => {
     if (socketRef.current && sessionId) {
+      if (!phoneConnected || callState !== 'IDLE') return;
+      activeCallIdRef.current = undefined;
       setCallState('CALLING');
       setGranularCallState('COMMAND_SENT');
       setLastBlockedReason(null);
@@ -293,7 +319,7 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
 
   const hangupCall = () => {
     if (socketRef.current && sessionId) {
-      socketRef.current.emit('dial:hangup', { sessionId });
+      socketRef.current.emit('dial:hangup', { sessionId, callId: activeCallIdRef.current });
       setIncomingCall(null);
     }
   };

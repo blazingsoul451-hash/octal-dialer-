@@ -1029,6 +1029,9 @@ export async function createTeam(data: {
   tenantId: string;
   status?: string;
 }): Promise<TeamRecord> {
+  return db.withTransaction(async () => {
+    if (data.leaderId) await assertTenantRecords('users', [data.leaderId], data.tenantId);
+
   const id = data.id || `team_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const now = new Date().toISOString();
   await db.execute(`
@@ -1060,6 +1063,7 @@ export async function createTeam(data: {
 
   const team = await getTeamById(id, data.tenantId);
   return team!;
+  });
 }
 
 export async function updateTeam(
@@ -1067,6 +1071,10 @@ export async function updateTeam(
   tenantId: string,
   data: { name?: string; description?: string; leaderId?: string; status?: string }
 ): Promise<boolean> {
+  return db.withTransaction(async () => {
+    await assertTenantRecords('teams', [id], tenantId);
+    if (data.leaderId) await assertTenantRecords('users', [data.leaderId], tenantId);
+
   const updates: string[] = [];
   const params: any[] = [];
   let idx = 1;
@@ -1114,13 +1122,27 @@ export async function updateTeam(
   }
 
   return result.rowCount > 0;
+  });
 }
 
 export async function deleteTeam(id: string, tenantId: string): Promise<boolean> {
+  return db.withTransaction(async () => {
+    await assertTenantRecords('teams', [id], tenantId);
+
   await db.execute(`DELETE FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2`, [id, tenantId]);
   await db.execute(`DELETE FROM campaign_teams WHERE "teamId" = $1 AND "tenantId" = $2`, [id, tenantId]);
   const result = await db.execute(`DELETE FROM teams WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
   return result.rowCount > 0;
+  });
+}
+
+async function assertTenantRecords(table: 'teams' | 'users' | 'campaigns', ids: string[], tenantId: string): Promise<void> {
+  if (!tenantId) throw new Error('Tenant identity is required.');
+  for (const id of new Set(ids)) {
+    if (typeof id !== 'string' || !id) throw new Error('Invalid record ID.');
+    const row = await db.queryOne(`SELECT id FROM "${table}" WHERE id = $1 AND "tenantId" = $2 FOR UPDATE`, [id, tenantId]);
+    if (!row) throw new Error('Record not found in your tenant.');
+  }
 }
 
 export async function getTeamMembers(teamId: string, tenantId: string): Promise<TeamMemberRecord[]> {
@@ -1128,13 +1150,18 @@ export async function getTeamMembers(teamId: string, tenantId: string): Promise<
     SELECT tm."teamId", tm."userId", tm."roleInTeam", tm."joinedAt", tm."tenantId",
            u.username, u."displayName", u.email, u.role
     FROM team_members tm
-    JOIN users u ON u.id = tm."userId"
+    JOIN users u ON u.id = tm."userId" AND u."tenantId" = tm."tenantId"
+    JOIN teams t ON t.id = tm."teamId" AND t."tenantId" = tm."tenantId"
     WHERE tm."teamId" = $1 AND tm."tenantId" = $2
     ORDER BY CASE WHEN tm."roleInTeam" = 'leader' THEN 0 ELSE 1 END, u.username ASC
   `, [teamId, tenantId]);
 }
 
 export async function setTeamMembers(teamId: string, tenantId: string, userIds: string[], leaderId?: string): Promise<void> {
+  return db.withTransaction(async () => {
+    await assertTenantRecords('teams', [teamId], tenantId);
+    await assertTenantRecords('users', [...userIds, ...(leaderId ? [leaderId] : [])], tenantId);
+
   const now = new Date().toISOString();
   await db.execute(`DELETE FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2`, [teamId, tenantId]);
 
@@ -1155,19 +1182,25 @@ export async function setTeamMembers(teamId: string, tenantId: string, userIds: 
       VALUES ($1, $2, $3, $4, 'leader', $5)
     `, [leadMemId, teamId, leaderId, tenantId, now]);
   }
+  });
 }
 
 export async function getTeamCampaigns(teamId: string, tenantId: string): Promise<any[]> {
   return db.queryAll(`
     SELECT c.id, c.name, c.status, c."fileName", c."leadCount", ct."assignedAt"
     FROM campaign_teams ct
-    JOIN campaigns c ON c.id = ct."campaignId"
+    JOIN campaigns c ON c.id = ct."campaignId" AND c."tenantId" = ct."tenantId"
+    JOIN teams t ON t.id = ct."teamId" AND t."tenantId" = ct."tenantId"
     WHERE ct."teamId" = $1 AND ct."tenantId" = $2
     ORDER BY c."createdAt" DESC
   `, [teamId, tenantId]);
 }
 
 export async function setTeamCampaigns(teamId: string, tenantId: string, campaignIds: string[]): Promise<void> {
+  return db.withTransaction(async () => {
+    await assertTenantRecords('teams', [teamId], tenantId);
+    await assertTenantRecords('campaigns', campaignIds, tenantId);
+
   const now = new Date().toISOString();
   await db.execute(`DELETE FROM campaign_teams WHERE "teamId" = $1 AND "tenantId" = $2`, [teamId, tenantId]);
 
@@ -1179,6 +1212,7 @@ export async function setTeamCampaigns(teamId: string, tenantId: string, campaig
       VALUES ($1, $2, $3, $4, $5)
     `, [ctId, cid, teamId, tenantId, now]);
   }
+  });
 }
 
 export async function getUserTeamIds(userId: string, tenantId: string): Promise<string[]> {

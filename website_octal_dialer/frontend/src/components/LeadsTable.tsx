@@ -106,7 +106,8 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
         })
       );
 
-      await Promise.all(updatePromises);
+      const results = await Promise.all(updatePromises);
+      if (results.some(result => !result.ok)) throw new Error('One or more lead updates failed.');
       setSelectedLeads(new Set());
       fetchLeads();
     } catch {

@@ -14,6 +14,7 @@ import { ImportPanel } from './components/ImportPanel';
 import { LeadQueue } from './components/LeadQueue';
 import { CallLog } from './components/CallLog';
 import { DispositionModal } from './components/DispositionModal';
+import type { DispositionResult } from './components/DispositionModal';
 import { LoginScreen } from './components/LoginScreen';
 import { DncPanel } from './components/DncPanel';
 import { AutoEmailer } from './components/AutoEmailer';
@@ -1412,8 +1413,7 @@ export default function App() {
                 isLight={isLight}
                 serverUrl={lanServerUrl}
                 authToken={authToken || ''}
-                onSelectCampaign={() => {}}
-                onNavigateTab={(tab) => setActiveTab(tab)}
+
               />
             ) : (
               <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
@@ -1431,6 +1431,7 @@ export default function App() {
           <LeadQueue
               isLight={isLight}
               phoneConnected={socketData.phoneConnected}
+              isConnected={socketData.isConnected}
               campaigns={campaigns}
               serverUrl={SERVER_URL}
               authToken={authToken || ''}
@@ -1595,6 +1596,7 @@ export default function App() {
         serverUrl={SERVER_URL}
         authToken={authToken || ''}
         onSaveSuccess={(result) => {
+          if (!result?.success) return;
           showToast('Call disposition logged successfully.', 'success');
           fetchCampaigns();
           if (result) {

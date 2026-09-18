@@ -19,6 +19,7 @@
 import crypto from 'crypto';
 import express from 'express';
 import * as jwt from 'jsonwebtoken';
+import { OAuth2Client } from 'google-auth-library';
 import { db } from './databaseManager';
 import {
   isValidEmailFormat,
@@ -125,31 +126,18 @@ export async function verifyCaptcha(token?: string, remoteIp?: string): Promise<
 }
 
 // ─── Google OAuth & Account Linking ──────────────────────────────────────────
+const googleVerifier = new OAuth2Client();
 export async function verifyGoogleIdToken(idToken: string): Promise<{ googleId: string; email: string; name?: string; picture?: string; verified: boolean }> {
-  if (!idToken) throw new Error('Missing Google ID token.');
-
-  const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
-  if (!res.ok) {
-    throw new Error('Invalid or expired Google ID token.');
+  if (typeof idToken !== 'string' || !idToken) throw new Error('Missing Google ID token.');
+  const audience = process.env.GOOGLE_CLIENT_ID?.trim();
+  if (!audience) throw new Error('Google authentication is not configured.');
+  const ticket = await googleVerifier.verifyIdToken({ idToken, audience });
+  const payload = ticket.getPayload();
+  if (!payload?.sub || !payload.email || payload.email_verified !== true) {
+    throw new Error('Google identity must include a verified email.');
   }
-
-  const payload = await res.json() as any;
-  if (!payload.sub || !payload.email) {
-    throw new Error('Google token response missing sub or email claims.');
-  }
-
-  const expectedClientId = process.env.GOOGLE_CLIENT_ID;
-  if (expectedClientId && payload.aud && payload.aud !== expectedClientId) {
-    throw new Error('Google token client mismatch.');
-  }
-
-  return {
-    googleId: payload.sub,
-    email: payload.email.toLowerCase().trim(),
-    name: payload.name || payload.given_name || 'Google User',
-    picture: payload.picture,
-    verified: payload.email_verified === 'true' || payload.email_verified === true
-  };
+  return { googleId: payload.sub, email: payload.email.toLowerCase().trim(),
+    name: payload.name || 'Google User', picture: payload.picture, verified: true };
 }
 
 /** Link or create user via Google OAuth */
@@ -165,6 +153,7 @@ export async function authenticateGoogleSignIn(profile: { googleId: string; emai
   if (!user) {
     user = await db.queryOne<any>(`SELECT * FROM users WHERE email = $1 OR username = $2`, [email, email]);
     if (user) {
+      if (user.googleId && user.googleId !== googleId) throw new Error('Google account does not match the linked identity.');
       const updateDisplayName = (!user.displayName && profile.name) ? profile.name : user.displayName;
       await db.execute(`
         UPDATE users 
@@ -669,42 +658,22 @@ export async function registerPublicUser(params: { username: string; email?: str
 
 // ─── Default admin bootstrap ──────────────────────────────────────────────────
 export async function ensureDefaultAdmin(): Promise<void> {
+  const existing = await db.queryOne("SELECT id FROM users WHERE role IN ('platform_admin', 'master_admin') LIMIT 1");
+  if (existing) return;
+  const username = process.env.BOOTSTRAP_ADMIN_USERNAME?.trim().toLowerCase();
+  const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
+  const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+  if (!username || !email || !password || password.length < 16) {
+    throw new Error('No platform administrator exists. Provision BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_EMAIL and a password of at least 16 characters.');
+  }
+  const collision = await db.queryOne('SELECT id FROM users WHERE username = $1 OR email = $2', [username, email]);
+  if (collision) throw new Error('Bootstrap identity already exists. Explicit administrator recovery is required.');
   const now = new Date().toISOString();
-  const primaryOwner = await db.queryOne<any>(`SELECT * FROM users WHERE username = 'mohsin1' OR email = 'blazingsoul451@gmail.com'`);
-  if (primaryOwner) {
-    if (primaryOwner.role !== 'platform_admin') {
-      await db.execute(`UPDATE users SET role = 'platform_admin' WHERE id = $1`, [primaryOwner.id]);
-    }
-  } else {
-    const { hash: ownerHash } = hashPassword('octal123');
-    await db.execute(`
-      INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
-      VALUES ('user_mohsin1', 'mohsin1', 'Mohsin Babar', 'blazingsoul451@gmail.com', $1, 'platform_admin', 'tenant_default', 'google_linked', 1, $2, $3)
-    `, [ownerHash, now, now]);
-    console.log('[Auth Bootstrap] Primary owner mohsin1 (blazingsoul451@gmail.com) seeded as platform_admin.');
-  }
-
-  const existingAdmin = await db.queryOne<any>(`SELECT id FROM users WHERE username = 'admin'`);
-  if (!existingAdmin) {
-    const defaultPassword = 'octal' + crypto.randomBytes(6).toString('hex').toUpperCase();
-    const { hash } = hashPassword(defaultPassword);
-
-    await db.execute(`
-      INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "createdAt", "updatedAt")
-      VALUES ($1, $2, 'admin@octaldialer.local', $3, 'platform_admin', 'tenant_default', 'local', $4, $5)
-    `, ['user_admin_' + crypto.randomBytes(4).toString('hex'), 'admin', hash, now, now]);
-
-    console.log('');
-    console.log('╔══════════════════════════════════════════════╗');
-    console.log('║       OCTAL DIALER — FIRST BOOT AUTH         ║');
-    console.log('╠══════════════════════════════════════════════╣');
-    console.log(`║  Username : admin                            ║`);
-    console.log(`║  Role     : platform_admin                   ║`);
-    console.log(`║  Password : ${defaultPassword.padEnd(32)} ║`);
-    console.log('║  Change this after first login!              ║');
-    console.log('╚══════════════════════════════════════════════╝');
-    console.log('');
-  }
+  const { hash } = hashPassword(password);
+  await db.execute(`INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, 'platform_admin', 'tenant_default', 'local', 1, $5, $5)`,
+    ['user_' + crypto.randomUUID(), username, email, hash, now]);
+  console.log('[Auth Bootstrap] Provisioned administrator. Remove bootstrap credentials from the environment.');
 }
 
 // ─── Auth operations ──────────────────────────────────────────────────────────

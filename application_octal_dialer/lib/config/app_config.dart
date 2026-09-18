@@ -51,19 +51,14 @@ class AppConfig {
     String trimmed = rawUrl.trim().replaceAll(RegExp(r'/+$'), '');
     if (trimmed.isEmpty) return null;
 
-    final lower = trimmed.toLowerCase();
-    if (lower.contains('api.trycloudflare.com') || lower.contains('.trycloudflare.com') || lower.contains('.loca.lt') || lower.contains('ngrok')) {
-      return defaultBaseUrl;
+    if (!trimmed.contains('://')) trimmed = 'http://$trimmed';
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null || !['http', 'https'].contains(uri.scheme) ||
+        uri.host.isEmpty || uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment ||
+        (uri.path.isNotEmpty && uri.path != '/')) {
+      return null;
     }
-
-    // Strip internal port 5000 so app always connects via public port 80 / Nginx reverse proxy
-    if (trimmed.contains(':5000')) {
-      trimmed = trimmed.replaceAll(':5000', '');
-    }
-
-    if (!trimmed.toLowerCase().startsWith('http://') && !trimmed.toLowerCase().startsWith('https://')) {
-      return 'http://$trimmed';
-    }
+    // Preserve explicit origin/port; silently rewriting it can send credentials to another service.
 
     return trimmed;
   }
