@@ -30,28 +30,49 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
   const [location, setLocation] = useState('Lahore');
   const [maxLeads, setMaxLeads] = useState<number>(50);
   const [requirePhone, setRequirePhone] = useState(true);
-  const requireEmail = false;
+  const [enrichWebsite, setEnrichWebsite] = useState(false);
+  const [requireEmail, setRequireEmail] = useState(false);
 
   // Status & Logs
-  const [scraperStatus, setScraperStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle');
+  const [activeJobId, setActiveJobId] = useState<string>('');
+  const [scraperStatus, setScraperStatus] = useState<
+    'idle' | 'queued' | 'running' | 'paused_challenge' | 'completed' | 'completed_partial' | 'stopping' | 'stopped' | 'failed'
+  >('idle');
   const [scraperLogs, setScraperLogs] = useState<string[]>([]);
-  const [extractedCount, setExtractedCount] = useState<number>(0);
+  const [counters, setCounters] = useState({
+    discovered: 0,
+    extracted: 0,
+    enriched: 0,
+    skippedPhone: 0,
+    skippedEmail: 0,
+    failed: 0
+  });
   const [actionLoading, setActionLoading] = useState(false);
 
   const logsContainerRef = useRef<HTMLDivElement>(null);
+  const pollSeqRef = useRef<number>(0);
 
   const fetchScraperStatus = async () => {
+    const currentSeq = ++pollSeqRef.current;
     try {
       const headers: Record<string, string> = {};
       if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-      const res = await fetch(`${serverUrl}/api/scraper/status`, { headers });
+      const queryParam = activeJobId ? `?jobId=${encodeURIComponent(activeJobId)}` : '';
+      const res = await fetch(`${serverUrl}/api/scraper/status${queryParam}`, { headers });
       if (res.ok) {
+        // Prevent stale responses from overwriting newer polls
+        if (currentSeq !== pollSeqRef.current) return;
         const data = await res.json();
-        setScraperStatus(data.status);
+        if (data.jobId) setActiveJobId(data.jobId);
+        setScraperStatus(data.status || 'idle');
         setScraperLogs(data.logs || []);
-        setExtractedCount(data.extractedCount || 0);
+        if (data.counters) {
+          setCounters(data.counters);
+        } else if (data.extractedCount !== undefined) {
+          setCounters(prev => ({ ...prev, extracted: data.extractedCount }));
+        }
 
-        if (data.status === 'completed' || data.status === 'failed') {
+        if (['completed', 'completed_partial', 'failed', 'stopped'].includes(data.status)) {
           fetchFiles();
         }
       }
@@ -63,15 +84,15 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
   useEffect(() => {
     fetchScraperStatus();
     let interval: any = null;
-    if (scraperStatus === 'running') {
-      interval = setInterval(fetchScraperStatus, 1200);
+    if (scraperStatus === 'running' || scraperStatus === 'queued') {
+      interval = setInterval(fetchScraperStatus, 1500);
     } else {
-      interval = setInterval(fetchScraperStatus, 5000);
+      interval = setInterval(fetchScraperStatus, 6000);
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [scraperStatus, serverUrl, authToken]);
+  }, [scraperStatus, serverUrl, authToken, activeJobId]);
 
   useEffect(() => {
     if (logsContainerRef.current) {
@@ -98,13 +119,15 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
           location: location.trim(),
           maxLeads,
           requirePhone,
-          requireEmail
+          requireEmail: enrichWebsite && requireEmail,
+          enrichWebsite
         })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to start scraper');
-      setScraperStatus('running');
-      setSuccessMsg(`Scraper started for "${keyword}" in "${location || 'any'}" (Target: ${maxLeads} leads).`);
+      if (data.jobId) setActiveJobId(data.jobId);
+      setScraperStatus(data.status || 'running');
+      setSuccessMsg(`Scraper job ${data.jobId || ''} submitted for "${keyword}" (Target: ${maxLeads} leads).`);
       fetchScraperStatus();
     } catch (err: any) {
       setError(err.message || 'Error starting scraper.');
@@ -116,11 +139,15 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
   const handleStopScraper = async () => {
     setActionLoading(true);
     try {
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-      const res = await fetch(`${serverUrl}/api/scraper/stop`, { method: 'POST', headers });
+      const res = await fetch(`${serverUrl}/api/scraper/stop`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ jobId: activeJobId })
+      });
       if (res.ok) {
-        setScraperStatus('failed');
+        setScraperStatus('stopped');
         fetchScraperStatus();
       }
     } catch (err) {
@@ -259,17 +286,34 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
             isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-950 border-slate-850 shadow-inner'
           }`}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className={`text-xs font-black font-mono uppercase tracking-wider ${isLight ? 'text-slate-800' : 'text-amber-400'}`}>
-                🎯 Launch New Scraping Job
-              </h3>
+              <div>
+                <h3 className={`text-xs font-black font-mono uppercase tracking-wider ${isLight ? 'text-slate-800' : 'text-amber-400'}`}>
+                  🎯 Launch New Scraping Job
+                </h3>
+                {activeJobId && (
+                  <span className="text-[10px] font-mono text-slate-500 block mt-0.5">
+                    Job ID: {activeJobId}
+                  </span>
+                )}
+              </div>
               <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border ${
                 scraperStatus === 'running'
                   ? 'bg-amber-500/20 border-amber-500 text-amber-300 animate-pulse'
+                  : scraperStatus === 'queued'
+                  ? 'bg-sky-500/20 border-sky-500 text-sky-300 animate-pulse'
+                  : scraperStatus === 'paused_challenge'
+                  ? 'bg-orange-500/20 border-orange-500 text-orange-300'
                   : scraperStatus === 'completed'
                   ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                  : scraperStatus === 'completed_partial'
+                  ? 'bg-teal-500/20 border-teal-500 text-teal-300'
+                  : scraperStatus === 'failed'
+                  ? 'bg-rose-500/20 border-rose-500 text-rose-300'
+                  : scraperStatus === 'stopped' || scraperStatus === 'stopping'
+                  ? 'bg-slate-800 border-slate-700 text-slate-300'
                   : 'bg-slate-900 border-slate-800 text-slate-400'
               }`}>
-                ● {scraperStatus.toUpperCase()}
+                ● {scraperStatus.replace('_', ' ').toUpperCase()}
               </span>
             </div>
 
@@ -283,7 +327,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
                     type="text"
                     value={keyword}
                     onChange={(e) => setKeyword(e.target.value)}
-                    disabled={scraperStatus === 'running'}
+                    disabled={scraperStatus === 'running' || scraperStatus === 'queued'}
                     placeholder="E.g., Dentists, Restaurants, Lawyers"
                     className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-500/30 transition"
                     required
@@ -298,7 +342,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
                     type="text"
                     value={location}
                     onChange={(e) => setLocation(e.target.value)}
-                    disabled={scraperStatus === 'running'}
+                    disabled={scraperStatus === 'running' || scraperStatus === 'queued'}
                     placeholder="E.g., Lahore, New York, London"
                     className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-500/30 transition"
                   />
@@ -313,7 +357,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
                   <select
                     value={maxLeads}
                     onChange={(e) => setMaxLeads(Number(e.target.value))}
-                    disabled={scraperStatus === 'running'}
+                    disabled={scraperStatus === 'running' || scraperStatus === 'queued'}
                     className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-amber-500/30 transition"
                   >
                     <option value={25}>25 Leads (Fast Test)</option>
@@ -324,22 +368,71 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
                   </select>
                 </div>
 
-                <div className="flex flex-col justify-end gap-2 pb-1">
+                <div className="space-y-2 pt-1">
                   <label className="flex items-center gap-2 cursor-pointer text-xs font-mono text-slate-300">
                     <input
                       type="checkbox"
                       checked={requirePhone}
                       onChange={(e) => setRequirePhone(e.target.checked)}
-                      disabled={scraperStatus === 'running'}
+                      disabled={scraperStatus === 'running' || scraperStatus === 'queued'}
                       className="w-4 h-4 rounded text-amber-500 bg-slate-900 border-slate-700 focus:ring-amber-500 cursor-pointer"
                     />
                     <span>Require Phone Number</span>
                   </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer text-xs font-mono text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={enrichWebsite}
+                      onChange={(e) => {
+                        setEnrichWebsite(e.target.checked);
+                        if (!e.target.checked) setRequireEmail(false);
+                      }}
+                      disabled={scraperStatus === 'running' || scraperStatus === 'queued'}
+                      className="w-4 h-4 rounded text-amber-500 bg-slate-900 border-slate-700 focus:ring-amber-500 cursor-pointer"
+                    />
+                    <span>Enrich Websites (Emails & Socials)</span>
+                  </label>
+
+                  {enrichWebsite && (
+                    <label className="flex items-center gap-2 cursor-pointer text-xs font-mono text-slate-400 pl-6">
+                      <input
+                        type="checkbox"
+                        checked={requireEmail}
+                        onChange={(e) => setRequireEmail(e.target.checked)}
+                        disabled={scraperStatus === 'running' || scraperStatus === 'queued'}
+                        className="w-3.5 h-3.5 rounded text-amber-500 bg-slate-900 border-slate-700 focus:ring-amber-500 cursor-pointer"
+                      />
+                      <span>Require Email Address</span>
+                    </label>
+                  )}
                 </div>
               </div>
 
+              {/* Progress Counters Bar */}
+              {(scraperStatus !== 'idle' || counters.extracted > 0) && (
+                <div className="grid grid-cols-4 gap-2 p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl text-center font-mono text-[10px]">
+                  <div>
+                    <span className="text-slate-500 block">Discovered</span>
+                    <span className="font-bold text-white text-xs">{counters.discovered}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Extracted</span>
+                    <span className="font-bold text-amber-400 text-xs">{counters.extracted} / {maxLeads}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Enriched</span>
+                    <span className="font-bold text-emerald-400 text-xs">{counters.enriched}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Skipped</span>
+                    <span className="font-bold text-slate-400 text-xs">{counters.skippedPhone + counters.skippedEmail}</span>
+                  </div>
+                </div>
+              )}
+
               <div className="pt-2 flex items-center gap-3">
-                {scraperStatus === 'running' ? (
+                {scraperStatus === 'running' || scraperStatus === 'queued' ? (
                   <button
                     type="button"
                     onClick={handleStopScraper}
@@ -356,7 +449,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
                     className="px-6 py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs font-mono uppercase tracking-wider rounded-xl transition-all duration-200 cursor-pointer flex items-center gap-2 shadow-lg shadow-amber-500/20"
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
-                    <span>{actionLoading ? 'Initializing Browser...' : 'Start Extraction'}</span>
+                    <span>{actionLoading ? 'Initializing Worker...' : 'Start Extraction'}</span>
                   </button>
                 )}
               </div>
@@ -367,7 +460,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
               <div className="flex items-center justify-between">
                 <label className="text-[10px] font-mono text-slate-400 block uppercase font-bold flex items-center gap-1.5">
                   <span>⚡ Real-Time Terminal Stream</span>
-                  {extractedCount > 0 && <span className="text-amber-400">({extractedCount} Extracted)</span>}
+                  {counters.extracted > 0 && <span className="text-amber-400">({counters.extracted} Extracted)</span>}
                 </label>
               </div>
               <div

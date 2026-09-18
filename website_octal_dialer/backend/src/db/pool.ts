@@ -225,7 +225,7 @@ export function initializeSchema(schemaFilePath?: string): Promise<void> {
       } catch (e: any) {
         console.error('[PostgreSQL] Failed to acquire advisory lock for schema migration:', e.message);
         if (dedicatedClient) {
-          try { dedicatedClient.release(); } catch (_) {}
+          try { dedicatedClient.release(true); } catch (_) {}
           dedicatedClient = null;
         }
         throw new Error(`Migration advisory lock acquisition failed: ${e.message}`);
@@ -313,38 +313,40 @@ export function initializeSchema(schemaFilePath?: string): Promise<void> {
           }
         }
 
-        if (migrationsDir) {
-          const appliedRows = await runStmt<{ id: string }>('SELECT id FROM schema_migrations');
-          const appliedSet = new Set(appliedRows.rows.map(r => r.id));
+        if (!migrationsDir) {
+          throw new Error('[PostgreSQL Migrations Fatal] Migration directory not found in any expected paths: ' + migrationsDirCandidates.join(', '));
+        }
 
-          const files = fs.readdirSync(migrationsDir)
-            .filter(f => f.endsWith('.sql'))
-            .sort();
+        const appliedRows = await runStmt<{ id: string }>('SELECT id FROM schema_migrations');
+        const appliedSet = new Set(appliedRows.rows.map(r => r.id));
 
-          for (const file of files) {
-            const migrationId = file.replace(/\.sql$/, '');
-            if (appliedSet.has(migrationId)) {
-              continue;
-            }
+        const files = fs.readdirSync(migrationsDir)
+          .filter(f => f.endsWith('.sql'))
+          .sort();
 
-            const sqlFile = path.join(migrationsDir, file);
-            const migrationSql = fs.readFileSync(sqlFile, 'utf-8');
+        for (const file of files) {
+          const migrationId = file.replace(/\.sql$/, '');
+          if (appliedSet.has(migrationId)) {
+            continue;
+          }
 
-            // Wrap each transactional migration and its applied-marker insertion in the same transaction
-            await runStmt('BEGIN');
-            try {
-              await runStmt(migrationSql);
-              await runStmt(
-                'INSERT INTO schema_migrations (id, name, appliedAt) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
-                [migrationId, file, new Date().toISOString()]
-              );
-              await runStmt('COMMIT');
-              console.log(`[PostgreSQL Migrations] Applied: ${file}`);
-            } catch (migErr: any) {
-              await runStmt('ROLLBACK');
-              console.error(`[PostgreSQL Migrations] Failed applying migration ${file}:`, migErr.message);
-              throw migErr;
-            }
+          const sqlFile = path.join(migrationsDir, file);
+          const migrationSql = fs.readFileSync(sqlFile, 'utf-8');
+
+          // Wrap each transactional migration and its applied-marker insertion in the same transaction
+          await runStmt('BEGIN');
+          try {
+            await runStmt(migrationSql);
+            await runStmt(
+              'INSERT INTO schema_migrations (id, name, appliedAt) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
+              [migrationId, file, new Date().toISOString()]
+            );
+            await runStmt('COMMIT');
+            console.log(`[PostgreSQL Migrations] Applied: ${file}`);
+          } catch (migErr: any) {
+            await runStmt('ROLLBACK');
+            console.error(`[PostgreSQL Migrations] Failed applying migration ${file}:`, migErr.message);
+            throw migErr;
           }
         }
       }
@@ -352,15 +354,34 @@ export function initializeSchema(schemaFilePath?: string): Promise<void> {
       console.log('[PostgreSQL] Schema initialized successfully (all tables ready).');
     } finally {
       if (dedicatedClient) {
+        let discardConnection = false;
         if (lockAcquired) {
           try {
-            await dedicatedClient.query('SELECT pg_advisory_unlock($1)', [ADVISORY_LOCK_ID]);
+            const unlockRes = await dedicatedClient.query('SELECT pg_advisory_unlock($1)', [ADVISORY_LOCK_ID]);
+            const unlocked = unlockRes.rows[0]?.pg_advisory_unlock;
+            if (unlocked !== true) {
+              console.warn('[PostgreSQL] Advisory unlock returned false or lock not held. Connection lock ownership uncertain.');
+              discardConnection = true;
+            }
           } catch (e: any) {
             console.warn('[PostgreSQL] Advisory lock release warning:', e.message);
+            discardConnection = true;
           }
         }
         try {
-          dedicatedClient.release();
+          await dedicatedClient.query('RESET statement_timeout; RESET lock_timeout;');
+        } catch (resetErr: any) {
+          console.warn('[PostgreSQL] Reset session timeouts warning:', resetErr.message);
+          discardConnection = true;
+        }
+
+        try {
+          if (discardConnection) {
+            console.warn('[PostgreSQL] Discarding migration connection from pool due to uncertain lock state or reset failure.');
+            dedicatedClient.release(true);
+          } else {
+            dedicatedClient.release();
+          }
         } catch (releaseErr: any) {
           console.warn('[PostgreSQL] Dedicated client release warning:', releaseErr.message);
         }

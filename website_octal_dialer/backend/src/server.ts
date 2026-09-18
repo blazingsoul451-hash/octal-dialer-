@@ -118,15 +118,20 @@ import {
   requirePermission,
   validateRoleBelongsToTenant,
   getTenantId,
-  signupTenant
+  signupTenant,
+  RevocationStorageUnavailableError,
+  registerTokenRevocationHandler
 } from './authManager';
 
 import {
-  runGoogleMapsScraper,
-  getScraperStatus,
-  stopScraperJob,
-  listScraperOutputFiles,
-  importScraperFileToCampaign
+  submitScraperJob,
+  getTenantScraperStatus,
+  stopTenantScraperJob,
+  listTenantScraperFiles,
+  importScraperFileToCampaign,
+  setScraperSocketBroadcaster,
+  getTenantOutputDir,
+  validateTenantFileAccess
 } from './googleMapsScraperService';
 
 import {
@@ -231,13 +236,22 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
   if (!token && typeof req.query?.token === 'string') {
     token = req.query.token;
   }
-  const user = await validateToken(token);
-  if (!user) {
-    res.status(401).json({ error: 'Unauthorized. Please log in.' });
-    return;
+  try {
+    const user = await validateToken(token);
+    if (!user) {
+      res.status(401).json({ error: 'Unauthorized. Please log in.' });
+      return;
+    }
+    (req as any).user = user;
+    next();
+  } catch (err: any) {
+    if (err instanceof RevocationStorageUnavailableError) {
+      res.status(503).json({ error: 'Authentication service temporarily unavailable.', code: 'REVOCATION_STORAGE_UNAVAILABLE' });
+      return;
+    }
+    console.error('[Auth Middleware Error]:', err);
+    res.status(500).json({ error: 'Internal authentication error.' });
   }
-  (req as any).user = user;
-  next();
 }
 
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
@@ -297,6 +311,8 @@ io.use(async (socket, next) => {
   socket.data.tenantId = null;
   next();
 });
+
+setScraperSocketBroadcaster(io);
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 5000;
 const SCRAPER_PATHS = [
@@ -789,12 +805,25 @@ app.get('/api/user/quota', requireAuth, (req, res) => {
   });
 });
 
-// POST /auth/logout
-app.post('/auth/logout', async (req, res) => {
+// POST /auth/logout & /api/auth/logout
+app.post(['/auth/logout', '/api/auth/logout'], async (req, res) => {
   const authHeader = req.headers['authorization'] || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (token) await logout(token);
-  res.json({ success: true });
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (req.body?.token || '');
+  if (!token) {
+    res.status(400).json({ error: 'No token provided for logout.' });
+    return;
+  }
+  try {
+    await logout(token);
+    res.json({ success: true, message: 'Logged out successfully.' });
+  } catch (err: any) {
+    console.error('[Auth Logout Error]:', err);
+    res.status(503).json({
+      success: false,
+      error: 'Logout could not be durably recorded due to database storage unavailability.',
+      code: 'REVOCATION_STORAGE_UNAVAILABLE'
+    });
+  }
 });
 
 // POST /auth/change-password  (requires auth)
@@ -1856,57 +1885,59 @@ app.get('/api/campaigns/:id/next-lead', requireAuth, async (req, res) => {
   });
 });
 
-// REST: Scan sibling scraper folders (protected)
+// REST: Scan tenant scraper output files (protected & tenant-scoped)
 app.get('/api/scraper-files', requireAuth, (req, res) => {
-  const list: { name: string; path: string; sizeBytes: number; lastModified: string }[] = [];
+  const user = (req as any).user;
+  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const tenantFiles = listTenantScraperFiles(user.tenantId);
+  const list: { name: string; path: string; sizeBytes: number; lastModified: string }[] = tenantFiles.map(tf => ({
+    name: tf.name,
+    path: tf.path,
+    sizeBytes: tf.sizeBytes,
+    lastModified: tf.lastModified
+  }));
 
-  // 1. Check generated output files from built-in scraper service
-  const generatedFiles = listScraperOutputFiles();
-  for (const gf of generatedFiles) {
-    list.push({
-      name: gf.name,
-      path: gf.path,
-      sizeBytes: gf.size,
-      lastModified: gf.mtime.toISOString()
-    });
-  }
-
-  // 2. Also check external legacy scraper folders
-  for (const folder of SCRAPER_PATHS) {
-    if (fs.existsSync(folder)) {
-      try {
-        const files = fs.readdirSync(folder);
-        for (const file of files) {
-          if ((file.endsWith('.xlsx') || file.endsWith('.xls') || file.endsWith('.csv')) && !list.some(item => item.name === file)) {
-            const filePath = path.join(folder, file);
-            const stats = fs.statSync(filePath);
-            list.push({
-              name: file,
-              path: filePath,
-              sizeBytes: stats.size,
-              lastModified: stats.mtime.toISOString()
-            });
+  // Platform admin can see legacy shared folders if desired; regular tenants NEVER see them
+  if (isPlatform) {
+    for (const folder of SCRAPER_PATHS) {
+      if (fs.existsSync(folder)) {
+        try {
+          const files = fs.readdirSync(folder);
+          for (const file of files) {
+            if ((file.endsWith('.xlsx') || file.endsWith('.xls') || file.endsWith('.csv')) && !list.some(item => item.name === file)) {
+              const filePath = path.join(folder, file);
+              const stats = fs.statSync(filePath);
+              list.push({
+                name: file,
+                path: filePath,
+                sizeBytes: stats.size,
+                lastModified: stats.mtime.toISOString()
+              });
+            }
           }
-        }
-      } catch (err) {
-        console.error(`Error scanning folder ${folder}:`, err);
+        } catch (_) {}
       }
     }
   }
+
   res.json(list);
 });
 
-// REST: Download scraped file
+// REST: Download scraped file (protected & tenant-scoped)
 app.get('/api/scraper-files/download/:filename', requireAuth, (req, res) => {
+  const user = (req as any).user;
   const filename = path.basename(req.params.filename);
   if (!filename || filename.includes('..') || filename === '.' || filename === '/') {
     res.status(400).json({ error: 'Invalid filename.' });
     return;
   }
-  const candidateDirs = [
-    path.resolve(__dirname, '../data/scraper_output'),
-    ...SCRAPER_PATHS.map(p => path.resolve(p))
-  ];
+
+  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const tenantDir = getTenantOutputDir(user.tenantId);
+  const candidateDirs = [tenantDir];
+  if (isPlatform) {
+    candidateDirs.push(...SCRAPER_PATHS.map(p => path.resolve(p)));
+  }
 
   for (const dir of candidateDirs) {
     const filePath = path.resolve(dir, filename);
@@ -1919,13 +1950,14 @@ app.get('/api/scraper-files/download/:filename', requireAuth, (req, res) => {
       return;
     }
   }
-  res.status(404).json({ error: 'File not found.' });
+  res.status(404).json({ error: 'File not found or access denied.' });
 });
 
-// REST: Import leads from scraped file (protected)
+// REST: Import leads from scraped file (protected & tenant-scoped)
 app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId;
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
@@ -1937,10 +1969,12 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
     }
 
     const resolvedFilePath = path.resolve(filePath);
-    const candidateDirs = [
-      path.resolve(__dirname, '../data/scraper_output'),
-      ...SCRAPER_PATHS.map(p => path.resolve(p))
-    ];
+    const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+    const tenantDir = path.resolve(__dirname, '../data/scraper_output', String(tenantId).replace(/[^a-zA-Z0-9_-]/g, '_'));
+    const candidateDirs = [tenantDir];
+    if (isPlatform) {
+      candidateDirs.push(...SCRAPER_PATHS.map(p => path.resolve(p)));
+    }
 
     const isPathAllowed = candidateDirs.some(dir => {
       const rel = path.relative(dir, resolvedFilePath);
@@ -1952,110 +1986,39 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
       return;
     }
 
-    if (!fs.existsSync(resolvedFilePath) || !fs.statSync(resolvedFilePath).isFile()) {
-      res.status(404).json({ error: 'File not found on system.' });
-      return;
-    }
-
-    const fileName = path.basename(filePath);
-    const rawName = fileName.replace(/\.[^.]+$/, '').trim();
-    const finalCampaignName = campaignName || rawName || 'Imported Scraper List';
-
-    const leads: { name: string; phone: string }[] = [];
-
-    if (filePath.endsWith('.xlsx') || filePath.endsWith('.xls')) {
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(filePath);
-      const worksheet = workbook.getWorksheet('Doctors') || workbook.worksheets[0];
-
-      if (!worksheet) {
-        res.status(400).json({ error: 'Sheet is empty or invalid.' });
-        return;
-      }
-
-      let nameColIndex = -1;
-      let phoneColIndex = -1;
-
-      const headerRow = worksheet.getRow(1);
-      headerRow.eachCell((cell, colNumber) => {
-        const val = cell.text.toLowerCase().trim();
-        if (val.includes('name') || val.includes('clinic') || val.includes('doctor')) {
-          nameColIndex = colNumber;
-        } else if (val.includes('phone') || val.includes('number') || val.includes('contact')) {
-          phoneColIndex = colNumber;
-        }
-      });
-
-      if (nameColIndex === -1) nameColIndex = 2; // column 2 default
-      if (phoneColIndex === -1) phoneColIndex = 4; // column 4 default
-
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber === 1) return; // skip header
-        const nameVal = row.getCell(nameColIndex).text.trim();
-        const phoneVal = row.getCell(phoneColIndex).text.trim();
-
-        if (phoneVal && phoneVal !== 'N/A') {
-          leads.push({
-            name: nameVal || 'Unnamed Scraped Entry',
-            phone: phoneVal
-          });
-        }
-      });
-
-    } else if (filePath.endsWith('.csv')) {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const lines = content.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (i === 0) continue;
-        const parts = lines[i].split(',');
-        if (parts.length >= 2) {
-          const name = parts[0].trim().replace(/^["']|["']$/g, '');
-          const phone = parts[1].trim().replace(/^["']|["']$/g, '');
-          if (phone) {
-            leads.push({ name, phone });
-          }
-        }
-      }
-    }
-
-    if (leads.length === 0) {
-      res.status(400).json({ error: 'No valid phone numbers extracted from file.' });
-      return;
-    }
-
-    const result = await createCampaign(finalCampaignName, fileName, leads, tenantId);
+    const result = await importScraperFileToCampaign(resolvedFilePath, campaignName || '', tenantId, user.id || user.username);
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     io.to(`tenant_${tenantId}`).emit('campaigns:updated');
-    res.json({
-      success: true,
-      campaignId: result.campaign.id,
-      count: result.finalCount,
-      name: result.campaign.name,
-      totalRaw: result.totalRaw,
-      dedupedCount: result.dedupedCount,
-      dncSkippedCount: result.dncSkippedCount
-    });
+    res.json(result);
 
   } catch (err: any) {
-    console.error('Import error:', err);
-    res.status(500).json({ error: err.message });
+    console.error('Scraper import error:', err.message);
+    res.status(400).json({ error: err.message });
   }
 });
 
-// REST: Run Scraper (protected)
+// REST: Run Scraper (protected & tenant-scoped)
 app.post('/api/scraper/run', requireAuth, async (req, res) => {
-  const currentStatus = getScraperStatus();
-  if (currentStatus.status === 'running') {
-    res.status(400).json({ error: 'A scraper job is already running.' });
+  const user = (req as any).user;
+  const tenantId = user.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
 
-  const user = (req as any).user;
-  const { keyword, location = '', requirePhone = false, requireEmail = false, maxLeads = 50 } = req.body as {
+  const {
+    keyword,
+    location = '',
+    requirePhone = false,
+    requireEmail = false,
+    enrichWebsite = false,
+    maxLeads = 50
+  } = req.body as {
     keyword: string;
     location?: string;
     requirePhone?: boolean;
     requireEmail?: boolean;
+    enrichWebsite?: boolean;
     maxLeads?: number | string;
   };
 
@@ -2064,50 +2027,66 @@ app.post('/api/scraper/run', requireAuth, async (req, res) => {
     return;
   }
 
-  const parsedLimit = parseInt(String(maxLeads || '50'), 10) || 50;
-  const tenantId = user.tenantId;
-  if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-    return;
+  const parsedLimit = Math.max(1, Math.min(parseInt(String(maxLeads || '50'), 10) || 50, 1000));
+
+  try {
+    const result = await submitScraperJob({
+      keyword: keyword.trim(),
+      location: location ? location.trim() : '',
+      maxLeads: parsedLimit,
+      requirePhone: !!requirePhone,
+      requireEmail: !!requireEmail,
+      enrichWebsite: !!enrichWebsite,
+      tenantId,
+      username: user.username || 'admin'
+    });
+
+    res.json({
+      success: result.success,
+      jobId: result.jobId,
+      status: result.status,
+      message: result.message,
+      keyword: keyword.trim(),
+      location: location.trim(),
+      targetLimit: parsedLimit
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
   }
-
-  // Run asynchronously so the REST request responds immediately
-  runGoogleMapsScraper({
-    keyword: keyword.trim(),
-    location: location ? location.trim() : '',
-    maxLeads: parsedLimit,
-    requirePhone: !!requirePhone,
-    requireEmail: !!requireEmail,
-    tenantId,
-    username: user.username || 'admin'
-  }).then(result => {
-    io.to(`tenant_${tenantId}`).emit('scraper:completed', result);
-  }).catch(err => {
-    console.error('[Scraper Job Error]:', err);
-    io.to(`tenant_${tenantId}`).emit('scraper:failed', { error: err.message });
-  });
-
-  res.json({
-    success: true,
-    message: 'Google Maps Scraper engine started successfully.',
-    keyword,
-    location,
-    targetLimit: parsedLimit
-  });
 });
 
-// REST: Scraper Status (protected)
+// REST: Scraper Status (protected & tenant-scoped)
 app.get('/api/scraper/status', requireAuth, (req, res) => {
-  res.json(getScraperStatus());
+  const user = (req as any).user;
+  const jobId = req.query.jobId as string | undefined;
+  const status = getTenantScraperStatus(user.tenantId, jobId);
+  if (status) {
+    res.json(status);
+  } else {
+    res.json({
+      status: 'idle',
+      keyword: '',
+      location: '',
+      counters: { discovered: 0, extracted: 0, enriched: 0, skippedPhone: 0, skippedEmail: 0, failed: 0 },
+      maxLimit: 0,
+      logs: []
+    });
+  }
 });
 
-// REST: Stop Scraper (protected)
+// REST: Stop Scraper (protected & tenant-scoped)
 app.post('/api/scraper/stop', requireAuth, async (req, res) => {
-  const stopped = await stopScraperJob();
-  if (stopped) {
-    res.json({ success: true, message: 'Scraper task stopped.' });
-  } else {
-    res.status(400).json({ error: 'No active scraper task is running.' });
+  const user = (req as any).user;
+  const jobId = req.body?.jobId as string | undefined;
+  try {
+    const stopped = await stopTenantScraperJob(user.tenantId, jobId);
+    if (stopped) {
+      res.json({ success: true, message: 'Scraper task stopped.' });
+    } else {
+      res.status(400).json({ error: 'No active or queued scraper task found to stop.' });
+    }
+  } catch (err: any) {
+    res.status(403).json({ error: err.message });
   }
 });
 
@@ -2154,7 +2133,7 @@ app.get(['/api/admin/overview', '/admin/platform/overview', '/admin/overview'], 
   res.json({
     metrics,
     ...metrics,
-    activeScraper: getScraperStatus(),
+    activeScraper: getTenantScraperStatus(tenantId),
     systemUptimeSeconds: Math.floor(process.uptime())
   });
 });
@@ -3011,7 +2990,10 @@ app.post('/api/campaigns/:id/activity/heartbeat', requireAuth, async (req, res) 
 
 // POST /api/admin/scraper/force-stop
 app.post('/api/admin/scraper/force-stop', requireAuth, requireAdmin, async (req, res) => {
-  await stopScraperJob();
+  const user = (req as any).user;
+  const targetTenantId = req.body?.tenantId || user?.tenantId;
+  const targetJobId = req.body?.jobId;
+  await stopTenantScraperJob(targetTenantId, targetJobId);
   res.json({ success: true, message: 'Scraper terminated by admin.' });
 });
 
@@ -3342,9 +3324,26 @@ io.use(async (socket, next) => {
     if (user) {
       socket.data.user = user;
       socket.data.tenantId = user.tenantId;
+      socket.data.token = token;
     }
   }
   next();
+});
+
+registerTokenRevocationHandler((revokedToken: string) => {
+  try {
+    for (const [id, s] of io.sockets.sockets.entries()) {
+      const socketToken = s.data?.token || s.handshake.auth?.token ||
+        (s.handshake.headers?.authorization ? s.handshake.headers.authorization.replace('Bearer ', '') : undefined);
+      if (socketToken === revokedToken) {
+        s.emit('auth:revoked', { reason: 'Session ended or token revoked.' });
+        s.disconnect(true);
+        console.log(`[Socket Security] Terminated socket ${id} due to token revocation.`);
+      }
+    }
+  } catch (err: any) {
+    console.error('[Socket Security] Error disconnecting sockets for revoked token:', err.message);
+  }
 });
 
 // WebSocket Event Handlers
@@ -4359,7 +4358,7 @@ io.on('connection', (socket) => {
     console.log(`[CallEngine] Verified Phone ${socket.id} ACTIVE in session ${session.id} (Call: ${cs?.callId || 'active'})`);
   });
 
-  socket.on('call:ended', async ({ sessionId, callId, leadId, phone, name, reason, duration, commandId }: {
+  socket.on('call:ended', async ({ sessionId, callId, leadId, phone, name, reason, duration, commandId, answered }: {
     sessionId: string;
     callId?: string;
     leadId?: string;
@@ -4368,50 +4367,87 @@ io.on('connection', (socket) => {
     reason: string;
     duration: number;
     commandId?: string;
+    answered?: boolean;
   }) => {
+    const targetCallId = callId || commandId || (sessionId ? `call_${sessionId}` : '');
+    if (!targetCallId) {
+      console.warn('[Socket Security] Rejected call:ended: Missing callId/commandId/sessionId');
+      return;
+    }
+
+    // 1. Check durable PostgreSQL call_outcomes ledger for committed outcome
+    const existingDbOutcome = await db.queryOne<{ id: string; tenantId: string; leadId?: string }>(
+      'SELECT id, "tenantId", "leadId" FROM call_outcomes WHERE "callId" = $1 LIMIT 1',
+      [targetCallId]
+    ).catch(() => null);
+
+    if (existingDbOutcome) {
+      if (!socket.data.tenantId || socket.data.tenantId === existingDbOutcome.tenantId) {
+        socket.emit('call:ended-ack', { callId: targetCallId, leadId: existingDbOutcome.leadId });
+        return;
+      }
+    }
+
+    // 2. Authorize socket against session ownership or authenticated tenant/device reconnect binding
     const session = getSessionById(sessionId || socket.data.sessionId || '');
-    if (!session) {
-      console.warn(`[Socket] Rejected call:ended: Session ${sessionId} not found`);
+    const cs = callId ? getCallSession(callId) : commandId ? getCallSessionByCommandId(commandId) : (session ? getCallSessionBySessionId(session.id) : undefined);
+
+    let recoveredTenantId: string | null = null;
+    let recoveredLeadId: string | null = null;
+    let recoveredSessionId: string | null = null;
+
+    if (commandId) {
+      const dbCmd = await db.queryOne<{ id: string; tenantId: string; leadId: string; sessionId: string }>(
+        'SELECT id, "tenantId", "leadId", "sessionId" FROM commands WHERE id = $1 LIMIT 1',
+        [commandId]
+      ).catch(() => null);
+      if (dbCmd) {
+        recoveredTenantId = dbCmd.tenantId;
+        recoveredLeadId = dbCmd.leadId;
+        recoveredSessionId = dbCmd.sessionId;
+      }
+    }
+
+    const effectiveTenantId = session?.tenantId || cs?.tenantId || recoveredTenantId || socket.data.tenantId;
+    if (!effectiveTenantId) {
+      console.warn(`[Socket Security] Rejected call:ended: Cannot resolve tenantId for callId=${targetCallId}`);
       return;
     }
 
-    // Strict ownership validation: Only the authoritative paired phone socket may emit call:ended
-    if (session.phoneSocketId !== socket.id) {
-      console.warn(`[Socket Security] Rejected call:ended from non-authoritative socket ${socket.id} (owner: ${session.phoneSocketId})`);
-      return;
-    }
-
-    const tenantId = session.tenantId;
-    if (!tenantId) {
-      console.warn(`[Socket] Session ${session.id} missing tenantId on call:ended`);
-      return;
-    }
-
-    if (socket.data.tenantId && socket.data.tenantId !== tenantId) {
+    if (socket.data.tenantId && socket.data.tenantId !== effectiveTenantId) {
       console.warn(`[Socket Security] Rejected call:ended: Tenant mismatch`);
       return;
     }
 
-    const cs = callId ? getCallSession(callId) : commandId ? getCallSessionByCommandId(commandId) : getCallSessionBySessionId(session.id);
-    if (!cs || cs.sessionId !== session.id || cs.tenantId !== tenantId || cs.phoneSocketId !== socket.id) {
-      console.warn(`[Socket Security] Rejected call:ended: Ownership validation failed for callId=${callId}`);
+    if (cs && session && (cs.sessionId !== session.id || cs.tenantId !== effectiveTenantId)) {
+      console.warn(`[Socket Security] Rejected call:ended: Session ownership validation failed for callId=${targetCallId}`);
       return;
     }
 
-    const targetCallId = cs.callId;
+    const isAuthorizedSocket = !session || session.phoneSocketId === socket.id ||
+      (socket.data.tenantId === effectiveTenantId && (!session.phoneDeviceId || socket.data.phoneDeviceId === session.phoneDeviceId || socket.data.deviceId === session.phoneDeviceId));
 
-    if (cs.endedAt || committedCallEndings.has(targetCallId)) {
-      socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs.leadId });
+    if (!isAuthorizedSocket) {
+      console.warn(`[Socket Security] Rejected call:ended from non-authoritative socket ${socket.id}`);
       return;
     }
 
-    // In-flight deduplication: Await ongoing transaction rather than prematurely acknowledging or double-committing
+    if (session && session.phoneSocketId !== socket.id) {
+      session.phoneSocketId = socket.id;
+    }
+
+    // 3. In-flight and in-memory deduplication
+    if ((cs && cs.endedAt) || committedCallEndings.has(targetCallId)) {
+      socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs?.leadId || recoveredLeadId });
+      return;
+    }
+
     const existingInFlight = inFlightCallFinalizations.get(targetCallId);
     if (existingInFlight) {
       try {
         const ok = await existingInFlight;
         if (ok) {
-          socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs.leadId });
+          socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs?.leadId || recoveredLeadId });
         } else {
           socket.emit('error', { code: 'CALL_FINALIZATION_FAILED', message: 'In-flight transaction failed' });
         }
@@ -4421,26 +4457,54 @@ io.on('connection', (socket) => {
       return;
     }
 
-    leadId = cs.leadId;
-    commandId = cs.commandId;
-    phone = cs.phone;
-    name = cs.name;
-    reason = typeof reason === 'string' && reason.length <= 64 ? reason : 'UNKNOWN';
-    duration = typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, Math.min(86400, Math.floor(duration))) : 0;
+    const effectiveLeadId = leadId || cs?.leadId || recoveredLeadId;
+    const effectiveCommandId = commandId || cs?.commandId;
+    const effectivePhone = phone || cs?.phone || '';
+    const effectiveName = name || cs?.name || '';
+    const effectiveReason = typeof reason === 'string' && reason.length <= 64 ? reason : 'UNKNOWN';
+    const effectiveDuration = typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, Math.min(86400, Math.floor(duration))) : 0;
+    const effectiveAnswered = (answered === true || effectiveReason === 'ANSWERED') ? 1 : 0;
+    const effectiveSessionId = sessionId || session?.id || cs?.sessionId || recoveredSessionId || '';
+    const outcomeId = `co_${targetCallId}_${Date.now()}`;
+    const finalizedAt = new Date().toISOString();
+    const phoneDeviceId = session?.phoneDeviceId || socket.data.deviceId || socket.data.phoneDeviceId || null;
+    const userId = session?.userId || socket.data.user?.id || null;
 
     const finalizationTask = (async () => {
       try {
         await db.withTransaction(async () => {
-          if (commandId) await expireCommand(commandId);
-          if (leadId) {
-            await releaseLeadLock(leadId, session.id);
-            await createLog(leadId, reason, duration, tenantId);
-            await updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
+          await db.execute(
+            `INSERT INTO call_outcomes ("id", "tenantId", "callId", "commandId", "leadId", "phone", "name", "reason", "duration", "answered", "finalizedAt", "phoneDeviceId", "userId")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             ON CONFLICT ("tenantId", "callId") DO NOTHING;`,
+            [
+              outcomeId,
+              effectiveTenantId,
+              targetCallId,
+              effectiveCommandId || null,
+              effectiveLeadId || null,
+              effectivePhone,
+              effectiveName || null,
+              effectiveReason,
+              effectiveDuration,
+              effectiveAnswered,
+              finalizedAt,
+              phoneDeviceId,
+              userId
+            ]
+          );
+
+          if (effectiveCommandId) await expireCommand(effectiveCommandId);
+          if (effectiveLeadId) {
+            await releaseLeadLock(effectiveLeadId, effectiveSessionId);
+            await createLog(effectiveLeadId, effectiveReason, effectiveDuration, effectiveTenantId);
+            await updateLeadStatus(effectiveLeadId, 'COMPLETED', effectiveReason, effectiveDuration, effectiveTenantId);
           } else {
-            await createManualLog(cs.phone, cs.name || 'Manual Quick Dial', reason, duration, tenantId);
+            await createManualLog(effectivePhone, effectiveName || 'Manual Quick Dial', effectiveReason, effectiveDuration, effectiveTenantId);
           }
         });
-        finalizeCallSession(cs.callId, reason, duration);
+
+        if (cs) finalizeCallSession(cs.callId, effectiveReason, effectiveDuration);
         committedCallEndings.add(targetCallId);
         if (committedCallEndings.size > 2000) {
           const first = committedCallEndings.values().next().value;
@@ -4463,24 +4527,26 @@ io.on('connection', (socket) => {
       return;
     }
 
-    setSessionStatus(session.id, 'PAIRED');
+    if (session) setSessionStatus(session.id, 'PAIRED');
 
+    leadId = effectiveLeadId || undefined;
     // Acknowledge durable persistence to phone socket for terminal outbox clearing
     socket.emit('call:ended-ack', { callId: targetCallId, leadId });
 
-    // Include leadId and commandId in call:finished broadcast so web knows exact completed lead
-    socket.to(session.id).emit('call:finished', { reason, duration, leadId, commandId, callId: cs?.callId });
-    io.to(session.id).emit('call:status-changed', {
-      callId: cs?.callId || targetCallId,
-      state: 'ENDED',
-      reason,
-      duration,
-      leadId,
-      commandId,
-      timestamp: new Date().toISOString()
-    });
-    io.to(`tenant_${tenantId}`).emit('leads:updated');
-    console.log(`[CallEngine] Call finalized in session ${session.id} | CallId: ${cs?.callId || targetCallId} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
+    if (effectiveSessionId) {
+      socket.to(effectiveSessionId).emit('call:finished', { reason: effectiveReason, duration: effectiveDuration, leadId: effectiveLeadId, commandId: effectiveCommandId, callId: targetCallId });
+      io.to(effectiveSessionId).emit('call:status-changed', {
+        callId: targetCallId,
+        state: 'ENDED',
+        reason: effectiveReason,
+        duration: effectiveDuration,
+        leadId: effectiveLeadId,
+        commandId: effectiveCommandId,
+        timestamp: finalizedAt
+      });
+    }
+    io.to(`tenant_${effectiveTenantId}`).emit('leads:updated');
+    console.log(`[CallEngine] Call finalized in session ${effectiveSessionId} | CallId: ${targetCallId} | Lead: ${effectiveLeadId || effectivePhone} | Reason: ${effectiveReason} | Duration: ${effectiveDuration}s`);
   });
 
   socket.on('disconnect', async () => {

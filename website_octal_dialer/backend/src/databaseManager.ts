@@ -105,9 +105,9 @@ export async function createCampaign(
   const dncRows = await db.queryAll<{ phone: string }>(`SELECT phone FROM suppression_list WHERE "tenantId" = $1`, [tId]);
   const dncSet = new Set<string>(dncRows.map(r => r.phone));
 
-  // Get existing lead phones across all campaigns in this tenant to avoid cross-campaign duplicates
-  const existingRows = await db.queryAll<{ phone: string }>(`SELECT phone FROM leads WHERE "tenantId" = $1`, [tId]);
-  const existingSet = new Set<string>(existingRows.map(r => r.phone));
+  // Get existing leads across all campaigns in this tenant to avoid cross-campaign duplicates while preserving distinct businesses sharing a phone
+  const existingRows = await db.queryAll<{ name: string; phone: string }>(`SELECT name, phone FROM leads WHERE "tenantId" = $1`, [tId]);
+  const existingSet = new Set<string>(existingRows.map(r => `${(r.name || '').trim().toLowerCase()}:::${r.phone}`));
 
   let dedupedCount = 0;
   let dncSkippedCount = 0;
@@ -125,14 +125,17 @@ export async function createCampaign(
       continue;
     }
 
-    // Check batch or global duplicate
-    if (batchSeen.has(norm) || existingSet.has(norm)) {
+    const leadName = (lead.name || 'Unknown Lead').trim();
+    const leadKey = `${leadName.toLowerCase()}:::${norm}`;
+
+    // Check batch or global duplicate for identical business + phone
+    if (batchSeen.has(leadKey) || existingSet.has(leadKey)) {
       dedupedCount++;
       continue;
     }
 
-    batchSeen.add(norm);
-    validLeads.push({ name: lead.name || 'Unknown Lead', phone: norm });
+    batchSeen.add(leadKey);
+    validLeads.push({ name: leadName, phone: norm });
   }
 
   const newCampaign: Campaign & { tenantId: string } = {

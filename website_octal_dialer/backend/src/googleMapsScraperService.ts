@@ -1,427 +1,710 @@
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import { fork, ChildProcess } from 'child_process';
+import crypto from 'crypto';
 import ExcelJS from 'exceljs';
 import fs from 'fs';
 import path from 'path';
-import { db } from './databaseManager';
+import { db, createCampaign } from './databaseManager';
+import {
+  ScraperJobOptions,
+  ScraperJobRecord,
+  ScraperJobStatus,
+  ScrapedLead,
+  WorkerChildMessage,
+  WorkerParentMessage
+} from './scraperTypes';
 
-export interface ScraperJobOptions {
-  keyword: string;
-  location?: string;
-  maxLeads?: number;
-  requirePhone?: boolean;
-  requireEmail?: boolean;
-  tenantId: string;
-  username: string;
-}
-
-export interface ScrapedLead {
-  businessName: string;
-  phone: string;
-  address: string;
-  website: string;
-  rating?: string;
-  reviewsCount?: string;
-  category?: string;
-  mapsUrl: string;
-  city?: string;
-}
-
-export interface ScraperJobStatus {
-  status: 'idle' | 'running' | 'completed' | 'failed';
-  keyword: string;
-  location: string;
-  totalFound: number;
-  extractedCount: number;
-  maxLimit: number;
-  outputFile?: string;
-  logs: string[];
-  startedAt?: string;
-  completedAt?: string;
-  error?: string;
-}
-
+const JOBS_DIR = path.resolve(__dirname, '../data/scraper_jobs');
 const OUTPUT_DIR = path.resolve(__dirname, '../data/scraper_output');
-if (!fs.existsSync(OUTPUT_DIR)) {
-  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
+if (!fs.existsSync(JOBS_DIR)) fs.mkdirSync(JOBS_DIR, { recursive: true });
+if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
+// Global Concurrency Governor: Maximum active browser workers across entire system (Telephony safety)
+const MAX_GLOBAL_CONCURRENT_SCRAPERS = Math.max(1, parseInt(process.env.MAX_ACTIVE_SCRAPERS || '1', 10));
+
+interface ActiveJobRuntime {
+  jobId: string;
+  tenantId: string;
+  executionId: number;
+  workerProcess: ChildProcess | null;
+  abortController: AbortController;
+  record: ScraperJobRecord;
+  hasReceivedDone?: boolean;
+  isShuttingDown?: boolean;
+  shutdownPromise?: Promise<void>;
+  exitCode?: number | null;
 }
 
-let activeBrowser: Browser | null = null;
-let isStopRequested = false;
+// In-memory runtime state (not serialized to disk)
+const activeRuntimes = new Map<string, ActiveJobRuntime>();
+const jobQueue: ScraperJobOptions[] = [];
 
-let activeStatus: ScraperJobStatus = {
-  status: 'idle',
-  keyword: '',
-  location: '',
-  totalFound: 0,
-  extractedCount: 0,
-  maxLimit: 0,
-  logs: []
-};
+// Optional socket.io broadcaster instance
+let ioBroadcaster: any = null;
 
-function addLog(msg: string) {
-  const timestamp = new Date().toLocaleTimeString();
-  const entry = `[${timestamp}] ${msg}`;
-  activeStatus.logs.push(entry);
-  if (activeStatus.logs.length > 500) {
-    activeStatus.logs.shift();
+export function setScraperSocketBroadcaster(io: any) {
+  ioBroadcaster = io;
+}
+
+function broadcastToTenant(tenantId: string, event: string, payload: any) {
+  if (ioBroadcaster) {
+    ioBroadcaster.to(`tenant_${tenantId}`).emit(event, payload);
   }
-  console.log(`[GoogleMapsScraper] ${entry}`);
 }
 
-export function getScraperStatus(): ScraperJobStatus {
-  return { ...activeStatus };
+// ─── FILE PATH SECURITY HELPERS ──────────────────────────────────────────────
+
+export function getTenantOutputDir(tenantId: string): string {
+  const safeTenant = tenantId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const dir = path.resolve(OUTPUT_DIR, safeTenant);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
-export async function stopScraperJob(): Promise<boolean> {
-  if (activeStatus.status !== 'running') return false;
-  isStopRequested = true;
-  addLog('🛑 Stop requested by user. Closing browser session...');
-  if (activeBrowser) {
-    try {
-      await activeBrowser.close();
-    } catch (_) {}
-    activeBrowser = null;
-  }
-  activeStatus.status = 'failed';
-  activeStatus.error = 'Stopped by user';
-  activeStatus.completedAt = new Date().toISOString();
-  return true;
+export function getTenantJobsDir(tenantId: string): string {
+  const safeTenant = tenantId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const dir = path.resolve(JOBS_DIR, safeTenant);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
-export async function runGoogleMapsScraper(
-  options: ScraperJobOptions,
-  onProgress?: (lead: ScrapedLead, count: number) => void
-): Promise<{ success: boolean; count: number; filePath: string; fileName: string }> {
-  if (activeStatus.status === 'running') {
-    throw new Error('A scraping task is already actively running.');
+export function validateTenantFileAccess(tenantId: string, targetPath: string): string {
+  const resolved = path.resolve(targetPath);
+  const tenantDir = getTenantOutputDir(tenantId);
+  const rel = path.relative(tenantDir, resolved);
+
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('Forbidden: Path traversal or unauthorized cross-tenant file access detected.');
   }
 
-  const { keyword, location = '', maxLeads = 50, requirePhone = false, tenantId, username } = options;
-  const targetLimit = Math.max(1, Math.min(maxLeads, 1000));
-  const query = location ? `${keyword} in ${location}` : keyword;
+  if (!fs.existsSync(resolved)) {
+    throw new Error('Requested scraper file not found.');
+  }
 
-  const safeKeyword = keyword.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-  const safeLocation = (location || 'general').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-  const timestamp = Date.now();
-  const fileName = `leads_${safeKeyword}_${safeLocation}_${timestamp}.xlsx`;
-  const filePath = path.join(OUTPUT_DIR, fileName);
+  return resolved;
+}
 
-  isStopRequested = false;
-  activeStatus = {
-    status: 'running',
-    keyword,
-    location,
-    totalFound: 0,
-    extractedCount: 0,
-    maxLimit: targetLimit,
-    outputFile: fileName,
-    logs: [],
-    startedAt: new Date().toISOString()
-  };
+// ─── PERSISTENCE HELPERS ─────────────────────────────────────────────────────
 
-  addLog(`🚀 Starting Google Maps Lead Extractor for: "${query}"`);
-  addLog(`🎯 Target Limit: ${targetLimit} leads | Tenant: ${tenantId}`);
+function saveJobRecord(record: ScraperJobRecord): void {
+  try {
+    const dir = getTenantJobsDir(record.tenantId);
+    const filePath = path.join(dir, `${record.jobId}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(record, null, 2), 'utf8');
+  } catch (err: any) {
+    console.error(`[ScraperService] Failed to save job record ${record.jobId}:`, err.message);
+  }
+}
 
-  const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet('Scraped Leads');
-
-  worksheet.columns = [
-    { header: 'Business Name', key: 'businessName', width: 35 },
-    { header: 'Phone Number', key: 'phone', width: 22 },
-    { header: 'Category', key: 'category', width: 25 },
-    { header: 'Address', key: 'address', width: 45 },
-    { header: 'Website', key: 'website', width: 30 },
-    { header: 'Rating', key: 'rating', width: 10 },
-    { header: 'Reviews Count', key: 'reviewsCount', width: 15 },
-    { header: 'City', key: 'city', width: 20 },
-    { header: 'Maps URL', key: 'mapsUrl', width: 50 }
-  ];
-
-  // Style header row
-  worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  worksheet.getRow(1).fill = {
-    type: 'pattern',
-    pattern: 'solid',
-    fgColor: { argb: 'FFD97706' } // Amber-600
-  };
-
-  const seenUrls = new Set<string>();
-  const seenPhones = new Set<string>();
-  let extractedCount = 0;
+export function loadJobRecord(tenantId: string, jobId: string): ScraperJobRecord | null {
+  const safeJobId = path.basename(jobId);
+  const dir = getTenantJobsDir(tenantId);
+  const filePath = path.join(dir, `${safeJobId}.json`);
+  if (!fs.existsSync(filePath)) return null;
 
   try {
-    activeBrowser = await chromium.launch({
-      headless: true,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu'
-      ]
-    });
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
-    const context = await activeBrowser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 800 },
-      locale: 'en-US'
-    });
+export function listTenantJobs(tenantId: string): ScraperJobRecord[] {
+  const dir = getTenantJobsDir(tenantId);
+  if (!fs.existsSync(dir)) return [];
 
-    const page = await context.newPage();
-    page.setDefaultNavigationTimeout(30000);
-    page.setDefaultTimeout(15000);
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+  const jobs: ScraperJobRecord[] = [];
 
-    const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}?hl=en`;
-    addLog(`🌐 Navigating to Google Maps search...`);
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
-
-    // Handle Google Consent Dialog if present
+  for (const file of files) {
     try {
-      const consentBtn = await page.$('button[aria-label*="Accept all"], form[action*="consent"] button');
-      if (consentBtn) {
-        await consentBtn.click();
-        await page.waitForTimeout(1000);
+      const raw = fs.readFileSync(path.join(dir, file), 'utf8');
+      jobs.push(JSON.parse(raw));
+    } catch (_) {}
+  }
+
+  return jobs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+// ─── QUEUE & WORKER LIFECYCLE MANAGEMENT ─────────────────────────────────────
+
+function drainQueue(): void {
+  if (activeRuntimes.size >= MAX_GLOBAL_CONCURRENT_SCRAPERS) {
+    return; // System is at maximum concurrency capacity
+  }
+
+  if (jobQueue.length === 0) {
+    return;
+  }
+
+  const nextOptions = jobQueue.shift();
+  if (!nextOptions) return;
+
+  const existingRecord = listTenantJobs(nextOptions.tenantId).find(
+    j => j.status === 'queued' && j.options.keyword === nextOptions.keyword
+  );
+
+  const jobId = existingRecord ? existingRecord.jobId : generateJobId(nextOptions.tenantId);
+  launchWorkerJob(jobId, nextOptions);
+}
+
+function generateJobId(tenantId: string): string {
+  const safeTenant = tenantId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
+  const randomSuffix = crypto.randomBytes(3).toString('hex');
+  return `job_${safeTenant}_${Date.now()}_${randomSuffix}`;
+}
+
+function launchWorkerJob(jobId: string, options: ScraperJobOptions): void {
+  const tenantDir = getTenantOutputDir(options.tenantId);
+  const safeKeyword = options.keyword.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+  const safeLocation = (options.location || 'general').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+  const outputFileName = `leads_${safeKeyword}_${safeLocation}_${jobId}.xlsx`;
+  const checkpointFileName = `checkpoint_${jobId}.jsonl`;
+
+  const outputPath = path.join(tenantDir, outputFileName);
+  const checkpointPath = path.join(tenantDir, checkpointFileName);
+
+  const executionId = Date.now();
+  const abortController = new AbortController();
+
+  const record: ScraperJobRecord = {
+    jobId,
+    tenantId: options.tenantId,
+    requestedBy: options.username,
+    options,
+    status: 'running',
+    createdAt: new Date().toISOString(),
+    startedAt: new Date().toISOString(),
+    counters: {
+      discovered: 0,
+      extracted: 0,
+      enriched: 0,
+      skippedPhone: 0,
+      skippedEmail: 0,
+      failed: 0
+    },
+    maxLimit: Math.max(1, Math.min(options.maxLeads || 50, 1000)),
+    outputFile: outputFileName,
+    checkpointFile: checkpointFileName,
+    logs: [`🚀 Scraper job started for: "${options.keyword}" in "${options.location || 'Any'}"`],
+    executionId
+  };
+
+  saveJobRecord(record);
+
+  // Spawn isolated worker process
+  const workerTs = path.resolve(__dirname, 'scraperWorker.ts');
+  const workerJs = path.resolve(__dirname, 'scraperWorker.js');
+  const isTsx = !fs.existsSync(workerJs);
+
+  let worker: ChildProcess;
+  if (isTsx) {
+    // Development mode via tsx
+    worker = fork(workerTs, [], {
+      execArgv: ['--import', 'tsx'],
+      env: { ...process.env, FORCE_COLOR: '0' }
+    });
+  } else {
+    // Production compiled javascript
+    worker = fork(workerJs, [], {
+      env: { ...process.env, FORCE_COLOR: '0' }
+    });
+  }
+
+  const runtime: ActiveJobRuntime = {
+    jobId,
+    tenantId: options.tenantId,
+    executionId,
+    workerProcess: worker,
+    abortController,
+    record,
+    hasReceivedDone: false,
+    isShuttingDown: false
+  };
+
+  activeRuntimes.set(jobId, runtime);
+
+  broadcastToTenant(options.tenantId, 'scraper:started', {
+    jobId,
+    keyword: options.keyword,
+    location: options.location,
+    targetLimit: record.maxLimit
+  });
+
+  const startMsg: WorkerParentMessage = {
+    type: 'START',
+    jobId,
+    executionId,
+    options,
+    checkpointPath,
+    outputPath
+  };
+
+  worker.send(startMsg);
+
+  worker.on('message', async (msg: WorkerChildMessage) => {
+    // 1. Generation check: verify executionId matches current generation to prevent stale events
+    if (msg.executionId !== runtime.executionId) return;
+
+    // 2. Terminal state guard: once a job enters stopped, failed, or paused_challenge,
+    // subsequent messages from the worker process cannot resurrect or overwrite terminal status!
+    const currentStatus = runtime.record.status;
+    if (currentStatus === 'stopped' || currentStatus === 'failed' || currentStatus === 'paused_challenge') {
+      return;
+    }
+
+    if (msg.type === 'LOG') {
+      runtime.record.logs.push(msg.message);
+      if (runtime.record.logs.length > 300) runtime.record.logs.shift();
+      saveJobRecord(runtime.record);
+      broadcastToTenant(runtime.tenantId, 'scraper:log', { jobId, message: msg.message });
+    } else if (msg.type === 'PROGRESS') {
+      runtime.record.counters = msg.counters;
+      saveJobRecord(runtime.record);
+      broadcastToTenant(runtime.tenantId, 'scraper:progress', {
+        jobId,
+        lead: msg.lead,
+        counters: msg.counters
+      });
+    } else if (msg.type === 'CHALLENGE') {
+      runtime.record.status = 'paused_challenge';
+      runtime.record.counters = msg.counters;
+      runtime.record.errorMessage = msg.reason;
+      saveJobRecord(runtime.record);
+      broadcastToTenant(runtime.tenantId, 'scraper:challenge', {
+        jobId,
+        reason: msg.reason,
+        counters: msg.counters
+      });
+      await shutdownWorker(jobId, 'challenge');
+    } else if (msg.type === 'DONE') {
+      // Require explicit valid DONE confirmation
+      runtime.hasReceivedDone = true;
+      runtime.record.status = msg.status;
+      runtime.record.counters = msg.counters;
+      runtime.record.completedAt = new Date().toISOString();
+      saveJobRecord(runtime.record);
+      broadcastToTenant(runtime.tenantId, 'scraper:completed', {
+        jobId,
+        status: msg.status,
+        counters: msg.counters,
+        outputFile: runtime.record.outputFile
+      });
+      await shutdownWorker(jobId, 'done');
+    } else if (msg.type === 'ERROR') {
+      runtime.record.status = 'failed';
+      runtime.record.errorMessage = msg.error;
+      runtime.record.completedAt = new Date().toISOString();
+      saveJobRecord(runtime.record);
+      broadcastToTenant(runtime.tenantId, 'scraper:failed', {
+        jobId,
+        error: msg.error
+      });
+      await shutdownWorker(jobId, 'error');
+    }
+  });
+
+  worker.on('error', async (err) => {
+    console.error(`[ScraperWorker Process Error for ${jobId}]:`, err.message);
+    if (runtime.record.status === 'running') {
+      runtime.record.status = 'failed';
+      runtime.record.errorMessage = `Worker process error: ${err.message}`;
+      runtime.record.completedAt = new Date().toISOString();
+      saveJobRecord(runtime.record);
+      broadcastToTenant(runtime.tenantId, 'scraper:failed', { jobId, error: err.message });
+    }
+    await shutdownWorker(jobId, 'process_error');
+  });
+
+  worker.on('exit', async (code, signal) => {
+    if (activeRuntimes.has(jobId)) {
+      const active = activeRuntimes.get(jobId);
+      if (active) {
+        active.exitCode = code;
+        // P1 Requirement 3: Exit code is NOT a completion acknowledgement.
+        // Exit without DONE must be marked interrupted/failed/partial, never automatically successful.
+        if (!active.hasReceivedDone && active.record.status === 'running') {
+          if (active.record.counters.extracted > 0) {
+            active.record.status = 'completed_partial';
+            active.record.errorMessage = `Worker process exited (code: ${code}, signal: ${signal}) without explicit DONE acknowledgment; preserved ${active.record.counters.extracted} checkpointed leads.`;
+          } else {
+            active.record.status = 'failed';
+            active.record.errorMessage = `Worker process terminated unexpectedly (code: ${code}, signal: ${signal}) without completion acknowledgment`;
+          }
+          active.record.completedAt = new Date().toISOString();
+          saveJobRecord(active.record);
+        }
+      }
+      await shutdownWorker(jobId, 'exit');
+    }
+  });
+}
+
+/**
+ * Awaited, idempotent shutdown:
+ * 1. Request graceful cancellation via IPC / AbortController
+ * 2. Observe worker exit
+ * 3. Bounded escalation (SIGTERM, then process tree termination)
+ * 4. Only release execution slot and trigger drainQueue after worker has fully terminated.
+ */
+export async function shutdownWorker(jobId: string, reason: string = 'shutdown'): Promise<void> {
+  const runtime = activeRuntimes.get(jobId);
+  if (!runtime) return;
+
+  if (runtime.isShuttingDown && runtime.shutdownPromise) {
+    return runtime.shutdownPromise;
+  }
+
+  runtime.isShuttingDown = true;
+
+  runtime.shutdownPromise = (async () => {
+    const worker = runtime.workerProcess;
+    if (!worker || worker.killed || worker.exitCode !== null) {
+      activeRuntimes.delete(jobId);
+      drainQueue();
+      return;
+    }
+
+    const workerPid = worker.pid;
+
+    // Phase 1: Graceful cancellation request via IPC
+    try {
+      if (worker.connected) {
+        worker.send({ type: 'STOP', jobId, executionId: runtime.executionId });
       }
     } catch (_) {}
 
-    // Wait for feed container
     try {
-      await page.waitForSelector('div[role="feed"], div[role="main"]', { timeout: 10000 });
-    } catch (e) {
-      addLog('⚠️ Search feed did not appear within 10s, inspecting page content...');
-    }
+      runtime.abortController.abort();
+    } catch (_) {}
 
-    addLog('🔍 Feed detected. Beginning intelligent scrolling & lead extraction...');
-
-    let scrollAttempts = 0;
-    const maxScrollAttempts = 30;
-
-    while (extractedCount < targetLimit && scrollAttempts < maxScrollAttempts && !isStopRequested) {
-      // Find all place items
-      const placeLinks = await page.$$('a[href*="/maps/place/"]');
-      addLog(`📊 Feed scan found ${placeLinks.length} potential listings...`);
-
-      for (let i = 0; i < placeLinks.length; i++) {
-        if (isStopRequested || extractedCount >= targetLimit) break;
-
-        try {
-          const link = placeLinks[i];
-          const href = await link.getAttribute('href');
-          if (!href || seenUrls.has(href)) continue;
-          seenUrls.add(href);
-
-          // Click on the listing to load detail panel
-          await link.scrollIntoViewIfNeeded();
-          await link.click({ timeout: 4000 });
-          await page.waitForTimeout(1200);
-
-          // Extract Details
-          let businessName = '';
-          const nameEl = await page.$('h1.DUwDvf, h1[class*="header"], h1');
-          if (nameEl) {
-            businessName = (await nameEl.innerText()).trim();
-          }
-
-          if (!businessName) continue;
-
-          // Extract Phone
-          let phone = '';
-          const phoneBtn = await page.$('button[data-tooltip*="phone" i], button[aria-label*="Phone" i], button[data-item-id*="phone:tel:"]');
-          if (phoneBtn) {
-            phone = (await phoneBtn.innerText()).replace(/[^0-9+\s\-()]/g, '').trim();
-          }
-
-          // Fallback Phone extraction via text content
-          if (!phone) {
-            const pageText = await page.content();
-            const phoneMatch = pageText.match(/(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/);
-            if (phoneMatch && phoneMatch[0].length >= 7) {
-              phone = phoneMatch[0].trim();
-            }
-          }
-
-          if (requirePhone && !phone) {
-            continue;
-          }
-
-          if (phone && seenPhones.has(phone)) {
-            continue; // Deduplicate identical numbers
-          }
-          if (phone) seenPhones.add(phone);
-
-          // Extract Category
-          let category = '';
-          const catEl = await page.$('button.DkEaL, span[class*="category"], button[jsaction*="category"]');
-          if (catEl) {
-            category = (await catEl.innerText()).trim();
-          }
-
-          // Extract Address
-          let address = '';
-          const addressBtn = await page.$('button[data-item-id*="address"], button[aria-label*="Address" i]');
-          if (addressBtn) {
-            address = (await addressBtn.innerText()).trim();
-          }
-
-          // Extract Website
-          let website = '';
-          const webBtn = await page.$('a[data-item-id*="authority"], a[aria-label*="Website" i]');
-          if (webBtn) {
-            website = (await webBtn.getAttribute('href')) || '';
-          }
-
-          // Extract Rating & Reviews
-          let rating = '';
-          let reviewsCount = '';
-          const ratingEl = await page.$('div.F7nice span[aria-hidden="true"]');
-          if (ratingEl) {
-            rating = (await ratingEl.innerText()).trim();
-          }
-          const reviewsEl = await page.$('div.F7nice span[aria-label*="reviews"]');
-          if (reviewsEl) {
-            reviewsCount = (await reviewsEl.innerText()).replace(/[^0-9]/g, '').trim();
-          }
-
-          const lead: ScrapedLead = {
-            businessName,
-            phone: phone || 'N/A',
-            category: category || keyword,
-            address: address || location,
-            website: website || 'N/A',
-            rating: rating || 'N/A',
-            reviewsCount: reviewsCount || '0',
-            city: location || 'General',
-            mapsUrl: href
-          };
-
-          worksheet.addRow(lead);
-          extractedCount++;
-          activeStatus.extractedCount = extractedCount;
-
-          addLog(`✅ [#${extractedCount}/${targetLimit}] ${businessName} | 📞 ${lead.phone} | 📍 ${lead.city}`);
-          if (onProgress) onProgress(lead, extractedCount);
-
-        } catch (itemErr: any) {
-          // Continue to next listing
-        }
+    // Helper to await process exit with timeout
+    const waitForExit = (timeoutMs: number): Promise<boolean> => {
+      if (!runtime.workerProcess || runtime.workerProcess.exitCode !== null || runtime.workerProcess.killed) {
+        return Promise.resolve(true);
       }
+      return new Promise<boolean>(resolve => {
+        let timer: NodeJS.Timeout | null = null;
+        const onExit = () => {
+          if (timer) clearTimeout(timer);
+          resolve(true);
+        };
+        timer = setTimeout(() => {
+          if (runtime.workerProcess) {
+            runtime.workerProcess.removeListener('exit', onExit);
+          }
+          resolve(false);
+        }, timeoutMs);
 
-      // Scroll the results feed downward
-      try {
-        const feed = await page.$('div[role="feed"]');
-        if (feed) {
-          await feed.evaluate(el => el.scrollBy(0, 1500));
+        if (runtime.workerProcess) {
+          runtime.workerProcess.once('exit', onExit);
         } else {
-          await page.mouse.wheel(0, 1500);
+          if (timer) clearTimeout(timer);
+          resolve(true);
         }
-        await page.waitForTimeout(1800);
-        scrollAttempts++;
-      } catch (scrollErr) {
-        break;
-      }
+      });
+    };
+
+    // Wait up to 2500 ms for graceful exit
+    let exited = await waitForExit(2500);
+
+    // Phase 2: Escalation to SIGTERM
+    if (!exited && worker && !worker.killed && worker.exitCode === null) {
+      try {
+        worker.kill('SIGTERM');
+      } catch (_) {}
+      exited = await waitForExit(1500);
     }
 
-    await workbook.xlsx.writeFile(filePath);
-    addLog(`💾 Successfully saved ${extractedCount} leads to Excel: ${fileName}`);
-
-    if (activeBrowser) {
-      await activeBrowser.close();
-      activeBrowser = null;
+    // Phase 3: Hard termination via process tree kill
+    if (!exited && workerPid) {
+      try {
+        if (process.platform === 'win32') {
+          const { exec } = require('child_process');
+          exec(`taskkill /pid ${workerPid} /T /F`, () => {});
+        } else {
+          worker.kill('SIGKILL');
+        }
+      } catch (_) {}
+      await waitForExit(1000);
     }
 
-    activeStatus.status = 'completed';
-    activeStatus.completedAt = new Date().toISOString();
-    addLog(`🎉 Scraping finished! Extracted ${extractedCount} verified business leads.`);
+    runtime.workerProcess = null;
+    activeRuntimes.delete(jobId);
+
+    // Only release capacity and drain queue after actual shutdown completes
+    drainQueue();
+  })();
+
+  return runtime.shutdownPromise;
+}
+
+export function getActiveScraperCount(): number {
+  return activeRuntimes.size;
+}
+
+export function registerRuntimeForTesting(runtime: any): void {
+  activeRuntimes.set(runtime.jobId, runtime);
+}
+
+export function getActiveJobRuntime(jobId: string): ActiveJobRuntime | undefined {
+  return activeRuntimes.get(jobId);
+}
+
+// ─── PUBLIC API METHODS ──────────────────────────────────────────────────────
+
+export async function submitScraperJob(options: ScraperJobOptions): Promise<{
+  success: boolean;
+  jobId: string;
+  status: ScraperJobStatus;
+  message: string;
+}> {
+  const { tenantId, keyword } = options;
+  if (!keyword || !keyword.trim()) {
+    throw new Error('Search keyword is required.');
+  }
+
+  // Check if tenant already has an active or queued job
+  const existingActive = Array.from(activeRuntimes.values()).find(r => r.tenantId === tenantId);
+  if (existingActive) {
+    return {
+      success: false,
+      jobId: existingActive.jobId,
+      status: existingActive.record.status,
+      message: 'Your organization already has an active scraper job in progress.'
+    };
+  }
+
+  const jobId = generateJobId(tenantId);
+  const isSlotAvailable = activeRuntimes.size < MAX_GLOBAL_CONCURRENT_SCRAPERS;
+
+  if (isSlotAvailable) {
+    launchWorkerJob(jobId, options);
+    return {
+      success: true,
+      jobId,
+      status: 'running',
+      message: 'Scraper engine launched successfully.'
+    };
+  } else {
+    // Queue job
+    const queuedRecord: ScraperJobRecord = {
+      jobId,
+      tenantId,
+      requestedBy: options.username,
+      options,
+      status: 'queued',
+      createdAt: new Date().toISOString(),
+      counters: { discovered: 0, extracted: 0, enriched: 0, skippedPhone: 0, skippedEmail: 0, failed: 0 },
+      maxLimit: Math.max(1, Math.min(options.maxLeads || 50, 1000)),
+      logs: ['Job placed in global concurrency queue. Waiting for available worker slot...'],
+      executionId: 0
+    };
+    saveJobRecord(queuedRecord);
+    jobQueue.push(options);
 
     return {
       success: true,
-      count: extractedCount,
-      filePath,
-      fileName
+      jobId,
+      status: 'queued',
+      message: 'Global scraper worker limit reached. Job queued safely.'
     };
-
-  } catch (err: any) {
-    console.error('[GoogleMapsScraper Error]:', err);
-    if (activeBrowser) {
-      try { await activeBrowser.close(); } catch (_) {}
-      activeBrowser = null;
-    }
-    activeStatus.status = 'failed';
-    activeStatus.error = err.message || 'Scraping failed unexpectedly';
-    activeStatus.completedAt = new Date().toISOString();
-    addLog(`❌ Scraper encountered an error: ${err.message}`);
-    throw err;
   }
 }
 
-export function listScraperOutputFiles(): Array<{ name: string; path: string; size: number; mtime: Date; countEstimate: number }> {
-  if (!fs.existsSync(OUTPUT_DIR)) return [];
+export function getTenantScraperStatus(tenantId: string, jobId?: string): ScraperJobRecord | null {
+  if (jobId) {
+    const record = loadJobRecord(tenantId, jobId);
+    if (record) return record;
+  }
 
-  const fileNames = fs.readdirSync(OUTPUT_DIR).filter(f => f.endsWith('.xlsx') || f.endsWith('.csv'));
-  return fileNames.map(name => {
-    const fullPath = path.join(OUTPUT_DIR, name);
+  // If no jobId specified, return current active runtime or most recent job
+  for (const runtime of activeRuntimes.values()) {
+    if (runtime.tenantId === tenantId) {
+      return runtime.record;
+    }
+  }
+
+  const jobs = listTenantJobs(tenantId);
+  return jobs.length > 0 ? jobs[0] : null;
+}
+
+export async function stopTenantScraperJob(tenantId: string, jobId?: string): Promise<boolean> {
+  let targetRuntime: ActiveJobRuntime | undefined;
+
+  if (jobId) {
+    targetRuntime = activeRuntimes.get(jobId);
+    if (targetRuntime && targetRuntime.tenantId !== tenantId) {
+      throw new Error('Unauthorized: You cannot stop another tenant’s job.');
+    }
+  } else {
+    targetRuntime = Array.from(activeRuntimes.values()).find(r => r.tenantId === tenantId);
+  }
+
+  // Case 1: Job is actively running
+  if (targetRuntime) {
+    const id = targetRuntime.jobId;
+    targetRuntime.record.status = 'stopped';
+    targetRuntime.record.completedAt = new Date().toISOString();
+    targetRuntime.record.logs.push('🛑 Job stopped by user request.');
+    saveJobRecord(targetRuntime.record);
+
+    broadcastToTenant(tenantId, 'scraper:stopped', { jobId: id });
+
+    // Await actual worker process termination and release of execution slot
+    await shutdownWorker(id, 'user_stopped');
+    return true;
+  }
+
+  // Case 2: Job is in the pending queue
+  if (jobId) {
+    const queuedIdx = jobQueue.findIndex(opt => opt.tenantId === tenantId);
+    if (queuedIdx !== -1) {
+      jobQueue.splice(queuedIdx, 1);
+      const record = loadJobRecord(tenantId, jobId);
+      if (record && record.status === 'queued') {
+        record.status = 'stopped';
+        record.completedAt = new Date().toISOString();
+        record.logs.push('🛑 Queued job cancelled before execution.');
+        saveJobRecord(record);
+      }
+      broadcastToTenant(tenantId, 'scraper:stopped', { jobId });
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function listTenantScraperFiles(tenantId: string): Array<{
+  name: string;
+  path: string;
+  sizeBytes: number;
+  lastModified: string;
+  countEstimate: number;
+}> {
+  const dir = getTenantOutputDir(tenantId);
+  if (!fs.existsSync(dir)) return [];
+
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.xlsx') || f.endsWith('.csv'));
+  return files.map(name => {
+    const fullPath = path.join(dir, name);
     const stats = fs.statSync(fullPath);
     return {
       name,
       path: fullPath,
-      size: stats.size,
-      mtime: stats.mtime,
+      sizeBytes: stats.size,
+      lastModified: stats.mtime.toISOString(),
       countEstimate: Math.max(1, Math.round(stats.size / 450))
     };
-  }).sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+  }).sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
 }
 
-import { createCampaign } from './databaseManager';
-
+/**
+ * Imports leads from a completed scraper Excel file into a Campaign.
+ * Enforces:
+ * 1. Strict tenant scoping.
+ * 2. Skipping nondialable records (less than 7 digits), NO 0000000000 substitution.
+ * 3. Sanitizing inputs.
+ */
 export async function importScraperFileToCampaign(
   filePath: string,
   campaignName: string,
-  tenantId: string = 'tenant_default',
+  tenantId: string,
   assignedUserId: string = 'admin'
-): Promise<{ success: boolean; campaignId: string; importedCount: number }> {
-  if (!fs.existsSync(filePath)) {
-    throw new Error('Scraper file does not exist.');
-  }
+): Promise<{
+  success: boolean;
+  campaignId: string;
+  importedCount: number;
+  skippedCount: number;
+  dedupedCount: number;
+}> {
+  const safeFilePath = validateTenantFileAccess(tenantId, filePath);
 
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(filePath);
+  await workbook.xlsx.readFile(safeFilePath);
   const worksheet = workbook.worksheets[0];
   if (!worksheet) {
-    throw new Error('Excel workbook contains no valid sheets.');
+    throw new Error('Workbook contains no valid sheets.');
   }
 
-  const fileName = path.basename(filePath);
-  const finalName = campaignName.trim() || `Scraped Campaign ${new Date().toLocaleDateString()}`;
-  const leads: { name: string; phone: string }[] = [];
+  const fileName = path.basename(safeFilePath);
+  const finalCampaignName = campaignName.trim() || `Scraped Campaign ${new Date().toLocaleDateString()}`;
+  const validLeads: { name: string; phone: string }[] = [];
+  let skippedCount = 0;
 
   worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return; // skip header
+    if (rowNumber === 1) return; // skip header row
 
     const rowValues: any = row.values;
-    const name = String(rowValues[1] || rowValues['businessName'] || '').trim();
-    let phone = String(rowValues[2] || rowValues['phone'] || '').replace(/[^0-9+]/g, '').trim();
+    const name = String(rowValues[1] || rowValues['businessName'] || 'Scraped Business').trim();
+    const rawPhone = String(rowValues[2] || rowValues['phone'] || '').trim();
 
-    if (!name && !phone) return;
-    if (!phone) phone = '0000000000';
+    // Digits validation: require at least 7 dialable digits
+    const digitsOnly = rawPhone.replace(/\D/g, '');
+    if (digitsOnly.length < 7) {
+      skippedCount++;
+      return;
+    }
 
-    leads.push({
+    const cleanPhone = rawPhone.replace(/[^0-9+]/g, '').trim();
+    validLeads.push({
       name: name || 'Scraped Business',
-      phone
+      phone: cleanPhone
     });
   });
 
-  if (leads.length === 0) {
-    throw new Error('No valid business leads with phone numbers were found in the file.');
+  if (validLeads.length === 0) {
+    throw new Error(`No dialable business leads found in file (Skipped ${skippedCount} nondialable records).`);
   }
 
-  const result = await createCampaign(finalName, fileName, leads, tenantId);
+  const result = await createCampaign(finalCampaignName, fileName, validLeads, tenantId);
 
   return {
     success: true,
     campaignId: result.campaign.id,
-    importedCount: result.finalCount
+    importedCount: result.finalCount,
+    skippedCount,
+    dedupedCount: result.dedupedCount
   };
 }
+
+/**
+ * Server startup reconciliation:
+ * Scans all tenant job files. Any job left in 'running' or 'queued' or 'stopping'
+ * is honestly updated to 'failed' (or 'completed_partial') with a clear explanation.
+ */
+export function reconcileInterruptedJobs(): void {
+  if (!fs.existsSync(JOBS_DIR)) return;
+
+  try {
+    const tenantFolders = fs.readdirSync(JOBS_DIR);
+    for (const folder of tenantFolders) {
+      const folderPath = path.join(JOBS_DIR, folder);
+      if (!fs.statSync(folderPath).isDirectory()) continue;
+
+      const jobFiles = fs.readdirSync(folderPath).filter(f => f.endsWith('.json'));
+      for (const jf of jobFiles) {
+        const fullPath = path.join(folderPath, jf);
+        try {
+          const raw = fs.readFileSync(fullPath, 'utf8');
+          const job: ScraperJobRecord = JSON.parse(raw);
+          if (job.status === 'running' || job.status === 'queued' || job.status === 'stopping') {
+            job.status = job.counters && job.counters.extracted > 0 ? 'completed_partial' : 'failed';
+            job.errorMessage = 'Server restarted while job was in flight.';
+            job.completedAt = new Date().toISOString();
+            job.logs.push('⚠️ Job reconciled as interrupted due to server restart.');
+            fs.writeFileSync(fullPath, JSON.stringify(job, null, 2), 'utf8');
+            console.log(`[ScraperService] Reconciled interrupted job ${job.jobId} -> ${job.status}`);
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (err: any) {
+    console.error('[ScraperService] Error during startup job reconciliation:', err.message);
+  }
+}
+
+// Automatically run reconciliation on module load
+reconcileInterruptedJobs();

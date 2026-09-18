@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../config/app_config.dart';
 import 'telecom_service.dart';
+import 'call_outbox_service.dart';
 
 enum PairingMode {
   authenticated,
@@ -294,6 +295,14 @@ class PhoneBridgeService extends ChangeNotifier {
     _socket!.onConnect((_) {
       debugPrint('[PhoneBridge] Socket connected. Emitting phone:join...');
       emitJoin();
+      CallOutboxService.instance.flush(_socket);
+    });
+
+    _socket!.on('call:ended-ack', (data) {
+      debugPrint('[PhoneBridge] Received call:ended-ack: $data');
+      if (data != null && data['callId'] != null) {
+        CallOutboxService.instance.acknowledgeOutcome(data['callId'].toString());
+      }
     });
 
     _socket!.on('phone:paired', (data) {
@@ -452,6 +461,14 @@ class PhoneBridgeService extends ChangeNotifier {
       } else {
         debugPrint('[PhoneBridge] Connected to server in QR / unauthenticated mode.');
         _setStatus(BridgeStatus.online, '● Connected to Octal Bridge');
+      }
+      CallOutboxService.instance.flush(_socket);
+    });
+
+    _socket!.on('call:ended-ack', (data) {
+      debugPrint('[PhoneBridge] Received call:ended-ack: $data');
+      if (data != null && data['callId'] != null) {
+        CallOutboxService.instance.acknowledgeOutcome(data['callId'].toString());
       }
     });
 

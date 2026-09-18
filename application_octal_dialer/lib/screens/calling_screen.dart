@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../widgets/octal_logo.dart';
 import '../services/telecom_service.dart';
+import '../services/call_outbox_service.dart';
 
 class CallingScreen extends StatefulWidget {
   final String phone;
@@ -285,17 +286,37 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     final effectiveDuration = duration > 0 ? duration : _talkSeconds;
     final effectiveAnswered = answered || reason == 'ANSWERED' || _hasEmittedPickedUp || _phase == CallPhase.connected;
     final effectiveReason = effectiveAnswered ? 'ANSWERED' : reason;
+    final effectiveCallId = widget.callId ?? widget.commandId ?? 'call_${DateTime.now().millisecondsSinceEpoch}';
 
-    widget.socket.emit('call:ended', {
-      'sessionId': widget.sessionId,
-      'callId': widget.callId,
-      'leadId': widget.leadId,
-      'phone': widget.phone,
-      'name': widget.name,
-      'commandId': widget.commandId,
-      'reason': effectiveReason,
-      'duration': effectiveDuration,
-      'answered': effectiveAnswered,
+    final outboxEntry = CallOutboxEntry(
+      outboxId: 'outbox_${DateTime.now().millisecondsSinceEpoch}_${math.Random().nextInt(10000)}',
+      callId: effectiveCallId,
+      sessionId: widget.sessionId,
+      leadId: widget.leadId.isNotEmpty ? widget.leadId : null,
+      commandId: widget.commandId,
+      phone: widget.phone,
+      name: widget.name,
+      reason: effectiveReason,
+      duration: effectiveDuration,
+      answered: effectiveAnswered,
+      createdAtMs: DateTime.now().millisecondsSinceEpoch,
+    );
+
+    // Persist to durable handset outbox BEFORE emitting
+    CallOutboxService.instance.enqueueOutcome(outboxEntry).then((_) {
+      CallOutboxService.instance.flush(widget.socket);
+    }).catchError((_) {
+      widget.socket.emit('call:ended', {
+        'sessionId': widget.sessionId,
+        'callId': effectiveCallId,
+        'leadId': widget.leadId,
+        'phone': widget.phone,
+        'name': widget.name,
+        'commandId': widget.commandId,
+        'reason': effectiveReason,
+        'duration': effectiveDuration,
+        'answered': effectiveAnswered,
+      });
     });
 
     try {
