@@ -2069,7 +2069,7 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
 // REST: Run Scraper (protected)
 app.post('/api/scraper/run', requireAuth, async (req, res) => {
   const currentStatus = getScraperStatus();
-  if (currentStatus.status === 'running') {
+  if (currentStatus && currentStatus.status === 'running') {
     res.status(400).json({ error: 'A scraper job is already running.' });
     return;
   }

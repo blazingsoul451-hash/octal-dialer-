@@ -43,6 +43,8 @@ export interface Lead {
   status: 'PENDING' | 'CALLING' | 'COMPLETED';
   outcome?: string;
   duration?: number;
+  address?: string;
+  listingId?: string;
 }
 
 export interface CallLog {
@@ -88,11 +90,17 @@ export interface CampaignImportResult {
   finalCount: number;
 }
 
+export interface CreateCampaignOptions {
+  allowSharedPhoneBranches?: boolean;
+  idempotencyKey?: string;
+}
+
 export async function createCampaign(
   name: string,
   fileName: string,
-  rawLeads: { name: string; phone: string }[],
-  tenantId: string
+  rawLeads: { name: string; phone: string; address?: string; listingId?: string }[],
+  tenantId: string,
+  options?: CreateCampaignOptions
 ): Promise<CampaignImportResult> {
   if (!tenantId) {
     throw new Error('Tenant ID is required to create a campaign (fail-closed).');
@@ -101,19 +109,49 @@ export async function createCampaign(
   const campaignId = 'camp_' + Math.random().toString(36).substring(2, 11);
   const now = new Date().toISOString();
 
+  // Idempotency check: if an identical campaign for this fileName/intent already exists, return it
+  if (options?.idempotencyKey || fileName) {
+    const existingCampaign = await db.queryOne<Campaign>(`
+      SELECT * FROM campaigns 
+      WHERE "fileName" = $1 AND "tenantId" = $2 AND name = $3
+      ORDER BY "createdAt" DESC LIMIT 1
+    `, [fileName, tId, name]);
+
+    if (existingCampaign && existingCampaign.leadCount > 0) {
+      return {
+        campaign: existingCampaign,
+        totalRaw: rawLeads.length,
+        dedupedCount: rawLeads.length,
+        dncSkippedCount: 0,
+        finalCount: existingCampaign.leadCount
+      };
+    }
+  }
+
   // Get current DNC list numbers for fast lookup within this tenant
   const dncRows = await db.queryAll<{ phone: string }>(`SELECT phone FROM suppression_list WHERE "tenantId" = $1`, [tId]);
   const dncSet = new Set<string>(dncRows.map(r => r.phone));
 
-  // Get existing lead phones across all campaigns in this tenant to avoid cross-campaign duplicates
-  const existingRows = await db.queryAll<{ phone: string }>(`SELECT phone FROM leads WHERE "tenantId" = $1`, [tId]);
-  const existingSet = new Set<string>(existingRows.map(r => r.phone));
+  // Get existing leads across all campaigns in this tenant to avoid cross-campaign duplicates while preserving distinct businesses sharing a phone
+  const existingRows = await db.queryAll<{ name: string; phone: string; address?: string; listingId?: string }>(
+    `SELECT name, phone, address, "listingId" FROM leads WHERE "tenantId" = $1`,
+    [tId]
+  );
+  const existingSet = new Set<string>(
+    existingRows.map(r => {
+      if (options?.allowSharedPhoneBranches) {
+        const branchId = r.listingId || (r.address && r.address !== 'N/A' ? `${(r.name || '').trim()} [${r.address}]` : (r.name || '').trim());
+        return `${branchId.toLowerCase()}:::${r.phone}`;
+      }
+      return `${(r.name || '').trim().toLowerCase()}:::${r.phone}`;
+    })
+  );
 
   let dedupedCount = 0;
   let dncSkippedCount = 0;
 
   const batchSeen = new Set<string>();
-  const validLeads: { name: string; phone: string }[] = [];
+  const validLeads: { name: string; phone: string; address?: string; listingId?: string }[] = [];
 
   for (const lead of rawLeads) {
     const norm = normalizePhone(lead.phone);
@@ -125,14 +163,32 @@ export async function createCampaign(
       continue;
     }
 
-    // Check batch or global duplicate
-    if (batchSeen.has(norm) || existingSet.has(norm)) {
+    const leadName = (lead.name || 'Unknown Lead').trim();
+    let leadKey: string;
+
+    if (options?.allowSharedPhoneBranches) {
+      // Disambiguate same-name, same-phone branches by listingId or physical address
+      const branchId = lead.listingId || (lead.address && lead.address !== 'N/A' ? `${leadName} [${lead.address}]` : leadName);
+      leadKey = `${branchId.toLowerCase()}:::${norm}`;
+    } else {
+      // Default CRM duplicate policy: deduplicate by name + phone
+      leadKey = `${leadName.toLowerCase()}:::${norm}`;
+    }
+
+    // Check batch duplicate
+    if (batchSeen.has(leadKey)) {
       dedupedCount++;
       continue;
     }
 
-    batchSeen.add(norm);
-    validLeads.push({ name: lead.name || 'Unknown Lead', phone: norm });
+    // Enforce cross-campaign deduplication
+    if (existingSet.has(leadKey)) {
+      dedupedCount++;
+      continue;
+    }
+
+    batchSeen.add(leadKey);
+    validLeads.push({ name: leadName, phone: norm, address: lead.address, listingId: lead.listingId });
   }
 
   const newCampaign: Campaign & { tenantId: string } = {
@@ -166,10 +222,10 @@ export async function createCampaign(
     for (let i = 0; i < validLeads.length; i++) {
       const leadId = `lead_${campaignId}_${i}_${Math.random().toString(36).substring(2, 6)}`;
       await db.execute(`
-        INSERT INTO leads (id, "campaignId", name, phone, status, "tenantId", "createdAt")
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO leads (id, "campaignId", name, phone, status, "tenantId", "createdAt", address, "listingId")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT ("id") DO NOTHING
-      `, [leadId, campaignId, validLeads[i].name, validLeads[i].phone, 'PENDING', tId, now]);
+      `, [leadId, campaignId, validLeads[i].name, validLeads[i].phone, 'PENDING', tId, now, validLeads[i].address || null, validLeads[i].listingId || null]);
     }
 
     const countRow = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2`, [campaignId, tId]);

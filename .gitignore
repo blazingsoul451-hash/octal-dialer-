@@ -34,6 +34,7 @@ supabase_credentials
 *.tar.gz
 FOR_GPT_REVIEW/
 website_octal_dialer/backend/data/scraper_output/
+website_octal_dialer/backend/data/scraper_jobs/
 
 # Secrets & Scratch
 IMPORTANT_SECRETS/

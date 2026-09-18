@@ -7,7 +7,9 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc && node -e \"const fs=require('fs'); fs.mkdirSync('dist/db/migrations', {recursive:true}); fs.copyFileSync('src/db/schema.sql', 'dist/db/schema.sql'); for(const f of fs.readdirSync('src/db/migrations')) fs.copyFileSync('src/db/migrations/'+f, 'dist/db/migrations/'+f);\"",
     "start": "node dist/server.js",
-    "test:security": "node tests/security_regressions.cjs"
+    "test:security": "node tests/security_regressions.cjs",
+    "test:scraper": "node tests/scraper_hardening_tests.cjs",
+    "profile:scraper": "node tests/profile_scraper_processes.cjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
