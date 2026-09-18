@@ -100,6 +100,18 @@ export function getSessionBySocketId(socketId: string): Session | undefined {
   );
 }
 
+export function refreshSessionToken(sessionId: string, userId?: string, tenantId?: string): Session | undefined {
+  const session = sessions.get(sessionId);
+  if (!session) return undefined;
+  if (tenantId && session.tenantId !== tenantId) return undefined;
+  if (userId && session.userId !== userId) return undefined;
+
+  session.token = generateToken();
+  session.tokenExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
+  session.updatedAt = new Date();
+  return session;
+}
+
 export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId?: string, tenantId?: string): Session;
 export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId?: string, tenantId?: string, userId?: string): Session;
 export function reclaimOrCreateSession(laptopSocketId: string, previousSessionId?: string, tenantId?: string, userId?: string): Session {

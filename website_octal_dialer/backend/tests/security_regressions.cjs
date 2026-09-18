@@ -4,9 +4,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const ts = require('typescript');
+const jwt = require('jsonwebtoken');
 const root = path.join(__dirname, '../src');
 const quiet = { log() {}, error() {}, warn() {} };
-const env = { NODE_ENV: 'test', GOOGLE_CLIENT_ID: 'test-client' };
+const env = { NODE_ENV: 'test', GOOGLE_CLIENT_ID: 'test-client', JWT_SECRET: 'mock-jwt-secret-for-testing-purposes-123456' };
 function load(file, imports, extra = {}) {
   const code = fs.readFileSync(path.join(root, file), 'utf8');
   const js = ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
@@ -100,10 +101,54 @@ async function main() {
       return { getPayload: () => ({ sub: 'subject', email: 'test@example.invalid', email_verified: true }) };
     }
   }
-  const auth = load('authManager.ts', { './databaseManager': { db }, express: {}, jsonwebtoken: {}, 'google-auth-library': { OAuth2Client }, './emailVerificationService': {} });
+  const auth = load('authManager.ts', { './databaseManager': { db }, express: {}, jsonwebtoken: jwt, 'google-auth-library': { OAuth2Client }, './emailVerificationService': {} });
   await check('Google verification rejects missing/forged credentials', async () => {
     await assert.rejects(auth.verifyGoogleIdToken(undefined)); await assert.rejects(auth.verifyGoogleIdToken('forged'));
     assert.equal((await auth.verifyGoogleIdToken('verified-token')).googleId, 'subject');
+  });
+  await check('unlinked local password account rejects Google takeover without password challenge', async () => {
+    const localUser = { id: 'u1', username: 'local_user', email: 'test@example.invalid', role: 'user', tenantId: 't1', authProvider: 'local', googleId: null };
+    db.queryOne = async (sql, params) => {
+      if (sql.includes('users WHERE "googleId" = $1')) return null;
+      if (sql.includes('email = $1 OR username = $2')) return localUser;
+      return null;
+    };
+    await assert.rejects(
+      auth.authenticateGoogleSignIn({ googleId: 'attacker-sub', email: 'test@example.invalid' }),
+      err => err.code === 'ACCOUNT_LINK_REQUIRED'
+    );
+  });
+  await check('suspended user or revoked token is rejected by validateToken', async () => {
+    let mockUser = { id: 'u1', username: 'alice', role: 'user', tenantId: 't1', status: 'suspended' };
+    db.queryOne = async (sql) => {
+      if (sql.includes('FROM users')) return mockUser;
+      if (sql.includes('FROM tenants')) return { status: 'active' };
+      return null;
+    };
+    const validJwt = jwt.sign({ sub: 'u1', username: 'alice', role: 'user', tenantId: 't1' }, 'mock-jwt-secret-for-testing-purposes-123456');
+    // Suspended user check
+    assert.equal(await auth.validateToken(validJwt), null);
+
+    // Active user check
+    mockUser.status = 'active';
+    const active = await auth.validateToken(validJwt);
+    assert.equal(active?.id, 'u1');
+
+    // Revoked on logout check
+    await auth.logout(validJwt);
+    assert.equal(await auth.validateToken(validJwt), null);
+  });
+  await check('expired QR token can be safely refreshed with fresh expiration', async () => {
+    const s = session.createSession('laptop', 'tenant', 'owner');
+    const oldToken = s.token;
+    s.tokenExpiresAt = new Date(0); // Expired
+    assert.equal(await pair(s), null);
+
+    const refreshed = session.refreshSessionToken(s.id, 'owner', 'tenant');
+    assert.ok(refreshed);
+    assert.notEqual(refreshed.token, oldToken);
+    assert.ok(refreshed.tokenExpiresAt.getTime() > Date.now());
+    assert.equal((await pair(s)).id, s.id);
   });
   await check('all Google JSON aliases invoke verification before account lookup', async () => {
     const source = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');

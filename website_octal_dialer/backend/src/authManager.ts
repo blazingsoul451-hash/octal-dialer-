@@ -127,11 +127,26 @@ export async function verifyCaptcha(token?: string, remoteIp?: string): Promise<
 
 // ─── Google OAuth & Account Linking ──────────────────────────────────────────
 const googleVerifier = new OAuth2Client();
+
+export function getAllowedGoogleClientIds(): string[] {
+  const primary = process.env.GOOGLE_CLIENT_ID?.trim();
+  const mobile = process.env.GOOGLE_CLIENT_ID_MOBILE?.trim();
+  const list = process.env.GOOGLE_ALLOWED_CLIENT_IDS?.split(',').map(s => s.trim()).filter(Boolean) || [];
+  const set = new Set<string>();
+  if (primary) set.add(primary);
+  if (mobile) set.add(mobile);
+  for (const id of list) set.add(id);
+  return Array.from(set);
+}
+
 export async function verifyGoogleIdToken(idToken: string): Promise<{ googleId: string; email: string; name?: string; picture?: string; verified: boolean }> {
   if (typeof idToken !== 'string' || !idToken) throw new Error('Missing Google ID token.');
-  const audience = process.env.GOOGLE_CLIENT_ID?.trim();
-  if (!audience) throw new Error('Google authentication is not configured.');
-  const ticket = await googleVerifier.verifyIdToken({ idToken, audience });
+  const allowedAudiences = getAllowedGoogleClientIds();
+  if (allowedAudiences.length === 0) throw new Error('Google authentication is not configured.');
+  const ticket = await googleVerifier.verifyIdToken({
+    idToken,
+    audience: allowedAudiences.length === 1 ? allowedAudiences[0] : allowedAudiences
+  });
   const payload = ticket.getPayload();
   if (!payload?.sub || !payload.email || payload.email_verified !== true) {
     throw new Error('Google identity must include a verified email.');
@@ -154,6 +169,13 @@ export async function authenticateGoogleSignIn(profile: { googleId: string; emai
     user = await db.queryOne<any>(`SELECT * FROM users WHERE email = $1 OR username = $2`, [email, email]);
     if (user) {
       if (user.googleId && user.googleId !== googleId) throw new Error('Google account does not match the linked identity.');
+      // Prevent unauthenticated account takeover of existing password accounts
+      if (!user.googleId && user.authProvider === 'local') {
+        const err: any = new Error('An account with this email already exists with password authentication. Please sign in with your password to link your Google account.');
+        err.code = 'ACCOUNT_LINK_REQUIRED';
+        err.email = email;
+        throw err;
+      }
       const updateDisplayName = (!user.displayName && profile.name) ? profile.name : user.displayName;
       await db.execute(`
         UPDATE users 
@@ -704,9 +726,38 @@ export async function login(identifier: string, password: string): Promise<strin
   return token;
 }
 
+// ─── Token Revocation / Blacklist ─────────────────────────────────────────────
+const revokedTokens = new Set<string>();
+
+export async function revokeToken(token: string): Promise<void> {
+  if (!token) return;
+  revokedTokens.add(token);
+  try {
+    const decoded = jwt.decode(token) as any;
+    const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : new Date(Date.now() + 86400000).toISOString();
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS revoked_tokens (
+        token TEXT PRIMARY KEY,
+        "revokedAt" TEXT NOT NULL,
+        "expiresAt" TEXT NOT NULL
+      );
+      INSERT INTO revoked_tokens (token, "revokedAt", "expiresAt")
+      VALUES ($1, $2, $3)
+      ON CONFLICT (token) DO NOTHING;
+    `, [token, new Date().toISOString(), expiresAt]);
+  } catch (err) {
+    // Non-blocking fallback
+  }
+}
+
+export function isTokenRevoked(token: string): boolean {
+  if (!token) return true;
+  return revokedTokens.has(token);
+}
+
 /** Validate a token → return user or null */
 export async function validateToken(token: string): Promise<AuthUser | null> {
-  if (!token) return null;
+  if (!token || isTokenRevoked(token)) return null;
 
   try {
     const decoded = jwt.verify(token, getJWTSecret(), { algorithms: ['HS256'] }) as any;
@@ -714,6 +765,11 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
     if (decoded.sub && decoded.username && decoded.role && decoded.tenantId) {
       const dbUser = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [decoded.sub]);
       if (!dbUser || !dbUser.tenantId || dbUser.tenantId !== decoded.tenantId) {
+        return null;
+      }
+
+      // Check user suspension
+      if (dbUser.status === 'suspended') {
         return null;
       }
 
@@ -749,7 +805,7 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
   }
 
   const user = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [session.userId]);
-  if (!user || !user.tenantId) {
+  if (!user || !user.tenantId || user.status === 'suspended') {
     return null;
   }
 
@@ -765,6 +821,7 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
 
 /** Destroy a session (logout) */
 export async function logout(token: string): Promise<void> {
+  await revokeToken(token);
   await db.execute(`DELETE FROM sessions_store WHERE token = $1`, [token]);
 }
 
