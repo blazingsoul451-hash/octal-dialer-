@@ -118,7 +118,9 @@ import {
   requirePermission,
   validateRoleBelongsToTenant,
   getTenantId,
-  signupTenant
+  signupTenant,
+  RevocationStorageUnavailableError,
+  registerTokenRevocationHandler
 } from './authManager';
 
 import {
@@ -231,13 +233,22 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
   if (!token && typeof req.query?.token === 'string') {
     token = req.query.token;
   }
-  const user = await validateToken(token);
-  if (!user) {
-    res.status(401).json({ error: 'Unauthorized. Please log in.' });
-    return;
+  try {
+    const user = await validateToken(token);
+    if (!user) {
+      res.status(401).json({ error: 'Unauthorized. Please log in.' });
+      return;
+    }
+    (req as any).user = user;
+    next();
+  } catch (err: any) {
+    if (err instanceof RevocationStorageUnavailableError) {
+      res.status(503).json({ error: 'Authentication service temporarily unavailable.', code: 'REVOCATION_STORAGE_UNAVAILABLE' });
+      return;
+    }
+    console.error('[Auth Middleware Error]:', err);
+    res.status(500).json({ error: 'Internal authentication error.' });
   }
-  (req as any).user = user;
-  next();
 }
 
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
@@ -789,12 +800,25 @@ app.get('/api/user/quota', requireAuth, (req, res) => {
   });
 });
 
-// POST /auth/logout
-app.post('/auth/logout', async (req, res) => {
+// POST /auth/logout & /api/auth/logout
+app.post(['/auth/logout', '/api/auth/logout'], async (req, res) => {
   const authHeader = req.headers['authorization'] || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (token) await logout(token);
-  res.json({ success: true });
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (req.body?.token || '');
+  if (!token) {
+    res.status(400).json({ error: 'No token provided for logout.' });
+    return;
+  }
+  try {
+    await logout(token);
+    res.json({ success: true, message: 'Logged out successfully.' });
+  } catch (err: any) {
+    console.error('[Auth Logout Error]:', err);
+    res.status(503).json({
+      success: false,
+      error: 'Logout could not be durably recorded due to database storage unavailability.',
+      code: 'REVOCATION_STORAGE_UNAVAILABLE'
+    });
+  }
 });
 
 // POST /auth/change-password  (requires auth)
@@ -3342,9 +3366,26 @@ io.use(async (socket, next) => {
     if (user) {
       socket.data.user = user;
       socket.data.tenantId = user.tenantId;
+      socket.data.token = token;
     }
   }
   next();
+});
+
+registerTokenRevocationHandler((revokedToken: string) => {
+  try {
+    for (const [id, s] of io.sockets.sockets.entries()) {
+      const socketToken = s.data?.token || s.handshake.auth?.token ||
+        (s.handshake.headers?.authorization ? s.handshake.headers.authorization.replace('Bearer ', '') : undefined);
+      if (socketToken === revokedToken) {
+        s.emit('auth:revoked', { reason: 'Session ended or token revoked.' });
+        s.disconnect(true);
+        console.log(`[Socket Security] Terminated socket ${id} due to token revocation.`);
+      }
+    }
+  } catch (err: any) {
+    console.error('[Socket Security] Error disconnecting sockets for revoked token:', err.message);
+  }
 });
 
 // WebSocket Event Handlers
@@ -4359,7 +4400,7 @@ io.on('connection', (socket) => {
     console.log(`[CallEngine] Verified Phone ${socket.id} ACTIVE in session ${session.id} (Call: ${cs?.callId || 'active'})`);
   });
 
-  socket.on('call:ended', async ({ sessionId, callId, leadId, phone, name, reason, duration, commandId }: {
+  socket.on('call:ended', async ({ sessionId, callId, leadId, phone, name, reason, duration, commandId, answered }: {
     sessionId: string;
     callId?: string;
     leadId?: string;
@@ -4368,50 +4409,87 @@ io.on('connection', (socket) => {
     reason: string;
     duration: number;
     commandId?: string;
+    answered?: boolean;
   }) => {
+    const targetCallId = callId || commandId || (sessionId ? `call_${sessionId}` : '');
+    if (!targetCallId) {
+      console.warn('[Socket Security] Rejected call:ended: Missing callId/commandId/sessionId');
+      return;
+    }
+
+    // 1. Check durable PostgreSQL call_outcomes ledger for committed outcome
+    const existingDbOutcome = await db.queryOne<{ id: string; tenantId: string; leadId?: string }>(
+      'SELECT id, "tenantId", "leadId" FROM call_outcomes WHERE "callId" = $1 LIMIT 1',
+      [targetCallId]
+    ).catch(() => null);
+
+    if (existingDbOutcome) {
+      if (!socket.data.tenantId || socket.data.tenantId === existingDbOutcome.tenantId) {
+        socket.emit('call:ended-ack', { callId: targetCallId, leadId: existingDbOutcome.leadId });
+        return;
+      }
+    }
+
+    // 2. Authorize socket against session ownership or authenticated tenant/device reconnect binding
     const session = getSessionById(sessionId || socket.data.sessionId || '');
-    if (!session) {
-      console.warn(`[Socket] Rejected call:ended: Session ${sessionId} not found`);
+    const cs = callId ? getCallSession(callId) : commandId ? getCallSessionByCommandId(commandId) : (session ? getCallSessionBySessionId(session.id) : undefined);
+
+    let recoveredTenantId: string | null = null;
+    let recoveredLeadId: string | null = null;
+    let recoveredSessionId: string | null = null;
+
+    if (commandId) {
+      const dbCmd = await db.queryOne<{ id: string; tenantId: string; leadId: string; sessionId: string }>(
+        'SELECT id, "tenantId", "leadId", "sessionId" FROM commands WHERE id = $1 LIMIT 1',
+        [commandId]
+      ).catch(() => null);
+      if (dbCmd) {
+        recoveredTenantId = dbCmd.tenantId;
+        recoveredLeadId = dbCmd.leadId;
+        recoveredSessionId = dbCmd.sessionId;
+      }
+    }
+
+    const effectiveTenantId = session?.tenantId || cs?.tenantId || recoveredTenantId || socket.data.tenantId;
+    if (!effectiveTenantId) {
+      console.warn(`[Socket Security] Rejected call:ended: Cannot resolve tenantId for callId=${targetCallId}`);
       return;
     }
 
-    // Strict ownership validation: Only the authoritative paired phone socket may emit call:ended
-    if (session.phoneSocketId !== socket.id) {
-      console.warn(`[Socket Security] Rejected call:ended from non-authoritative socket ${socket.id} (owner: ${session.phoneSocketId})`);
-      return;
-    }
-
-    const tenantId = session.tenantId;
-    if (!tenantId) {
-      console.warn(`[Socket] Session ${session.id} missing tenantId on call:ended`);
-      return;
-    }
-
-    if (socket.data.tenantId && socket.data.tenantId !== tenantId) {
+    if (socket.data.tenantId && socket.data.tenantId !== effectiveTenantId) {
       console.warn(`[Socket Security] Rejected call:ended: Tenant mismatch`);
       return;
     }
 
-    const cs = callId ? getCallSession(callId) : commandId ? getCallSessionByCommandId(commandId) : getCallSessionBySessionId(session.id);
-    if (!cs || cs.sessionId !== session.id || cs.tenantId !== tenantId || cs.phoneSocketId !== socket.id) {
-      console.warn(`[Socket Security] Rejected call:ended: Ownership validation failed for callId=${callId}`);
+    if (cs && session && (cs.sessionId !== session.id || cs.tenantId !== effectiveTenantId)) {
+      console.warn(`[Socket Security] Rejected call:ended: Session ownership validation failed for callId=${targetCallId}`);
       return;
     }
 
-    const targetCallId = cs.callId;
+    const isAuthorizedSocket = !session || session.phoneSocketId === socket.id ||
+      (socket.data.tenantId === effectiveTenantId && (!session.phoneDeviceId || socket.data.phoneDeviceId === session.phoneDeviceId || socket.data.deviceId === session.phoneDeviceId));
 
-    if (cs.endedAt || committedCallEndings.has(targetCallId)) {
-      socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs.leadId });
+    if (!isAuthorizedSocket) {
+      console.warn(`[Socket Security] Rejected call:ended from non-authoritative socket ${socket.id}`);
       return;
     }
 
-    // In-flight deduplication: Await ongoing transaction rather than prematurely acknowledging or double-committing
+    if (session && session.phoneSocketId !== socket.id) {
+      session.phoneSocketId = socket.id;
+    }
+
+    // 3. In-flight and in-memory deduplication
+    if ((cs && cs.endedAt) || committedCallEndings.has(targetCallId)) {
+      socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs?.leadId || recoveredLeadId });
+      return;
+    }
+
     const existingInFlight = inFlightCallFinalizations.get(targetCallId);
     if (existingInFlight) {
       try {
         const ok = await existingInFlight;
         if (ok) {
-          socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs.leadId });
+          socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs?.leadId || recoveredLeadId });
         } else {
           socket.emit('error', { code: 'CALL_FINALIZATION_FAILED', message: 'In-flight transaction failed' });
         }
@@ -4421,26 +4499,54 @@ io.on('connection', (socket) => {
       return;
     }
 
-    leadId = cs.leadId;
-    commandId = cs.commandId;
-    phone = cs.phone;
-    name = cs.name;
-    reason = typeof reason === 'string' && reason.length <= 64 ? reason : 'UNKNOWN';
-    duration = typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, Math.min(86400, Math.floor(duration))) : 0;
+    const effectiveLeadId = leadId || cs?.leadId || recoveredLeadId;
+    const effectiveCommandId = commandId || cs?.commandId;
+    const effectivePhone = phone || cs?.phone || '';
+    const effectiveName = name || cs?.name || '';
+    const effectiveReason = typeof reason === 'string' && reason.length <= 64 ? reason : 'UNKNOWN';
+    const effectiveDuration = typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, Math.min(86400, Math.floor(duration))) : 0;
+    const effectiveAnswered = (answered === true || effectiveReason === 'ANSWERED') ? 1 : 0;
+    const effectiveSessionId = sessionId || session?.id || cs?.sessionId || recoveredSessionId || '';
+    const outcomeId = `co_${targetCallId}_${Date.now()}`;
+    const finalizedAt = new Date().toISOString();
+    const phoneDeviceId = session?.phoneDeviceId || socket.data.deviceId || socket.data.phoneDeviceId || null;
+    const userId = session?.userId || socket.data.user?.id || null;
 
     const finalizationTask = (async () => {
       try {
         await db.withTransaction(async () => {
-          if (commandId) await expireCommand(commandId);
-          if (leadId) {
-            await releaseLeadLock(leadId, session.id);
-            await createLog(leadId, reason, duration, tenantId);
-            await updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
+          await db.execute(
+            `INSERT INTO call_outcomes ("id", "tenantId", "callId", "commandId", "leadId", "phone", "name", "reason", "duration", "answered", "finalizedAt", "phoneDeviceId", "userId")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             ON CONFLICT ("tenantId", "callId") DO NOTHING;`,
+            [
+              outcomeId,
+              effectiveTenantId,
+              targetCallId,
+              effectiveCommandId || null,
+              effectiveLeadId || null,
+              effectivePhone,
+              effectiveName || null,
+              effectiveReason,
+              effectiveDuration,
+              effectiveAnswered,
+              finalizedAt,
+              phoneDeviceId,
+              userId
+            ]
+          );
+
+          if (effectiveCommandId) await expireCommand(effectiveCommandId);
+          if (effectiveLeadId) {
+            await releaseLeadLock(effectiveLeadId, effectiveSessionId);
+            await createLog(effectiveLeadId, effectiveReason, effectiveDuration, effectiveTenantId);
+            await updateLeadStatus(effectiveLeadId, 'COMPLETED', effectiveReason, effectiveDuration, effectiveTenantId);
           } else {
-            await createManualLog(cs.phone, cs.name || 'Manual Quick Dial', reason, duration, tenantId);
+            await createManualLog(effectivePhone, effectiveName || 'Manual Quick Dial', effectiveReason, effectiveDuration, effectiveTenantId);
           }
         });
-        finalizeCallSession(cs.callId, reason, duration);
+
+        if (cs) finalizeCallSession(cs.callId, effectiveReason, effectiveDuration);
         committedCallEndings.add(targetCallId);
         if (committedCallEndings.size > 2000) {
           const first = committedCallEndings.values().next().value;
@@ -4463,24 +4569,26 @@ io.on('connection', (socket) => {
       return;
     }
 
-    setSessionStatus(session.id, 'PAIRED');
+    if (session) setSessionStatus(session.id, 'PAIRED');
 
+    leadId = effectiveLeadId || undefined;
     // Acknowledge durable persistence to phone socket for terminal outbox clearing
     socket.emit('call:ended-ack', { callId: targetCallId, leadId });
 
-    // Include leadId and commandId in call:finished broadcast so web knows exact completed lead
-    socket.to(session.id).emit('call:finished', { reason, duration, leadId, commandId, callId: cs?.callId });
-    io.to(session.id).emit('call:status-changed', {
-      callId: cs?.callId || targetCallId,
-      state: 'ENDED',
-      reason,
-      duration,
-      leadId,
-      commandId,
-      timestamp: new Date().toISOString()
-    });
-    io.to(`tenant_${tenantId}`).emit('leads:updated');
-    console.log(`[CallEngine] Call finalized in session ${session.id} | CallId: ${cs?.callId || targetCallId} | Lead: ${leadId || phone} | Reason: ${reason} | Duration: ${duration}s`);
+    if (effectiveSessionId) {
+      socket.to(effectiveSessionId).emit('call:finished', { reason: effectiveReason, duration: effectiveDuration, leadId: effectiveLeadId, commandId: effectiveCommandId, callId: targetCallId });
+      io.to(effectiveSessionId).emit('call:status-changed', {
+        callId: targetCallId,
+        state: 'ENDED',
+        reason: effectiveReason,
+        duration: effectiveDuration,
+        leadId: effectiveLeadId,
+        commandId: effectiveCommandId,
+        timestamp: finalizedAt
+      });
+    }
+    io.to(`tenant_${effectiveTenantId}`).emit('leads:updated');
+    console.log(`[CallEngine] Call finalized in session ${effectiveSessionId} | CallId: ${targetCallId} | Lead: ${effectiveLeadId || effectivePhone} | Reason: ${effectiveReason} | Duration: ${effectiveDuration}s`);
   });
 
   socket.on('disconnect', async () => {

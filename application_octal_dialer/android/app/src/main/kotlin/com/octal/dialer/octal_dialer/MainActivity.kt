@@ -350,6 +350,11 @@ class MainActivity: FlutterActivity() {
                         result.error("INVALID_PHONE", "Phone number is empty", null)
                     }
                 }
+                "cancelPendingPlacement" -> {
+                    val commandId = call.argument<String>("commandId")
+                    OctalCallManager.cancelPendingPlacement(commandId)
+                    result.success(true)
+                }
                 "getDeviceContacts" -> {
                     getDeviceContacts(result)
                 }
@@ -658,7 +663,12 @@ class MainActivity: FlutterActivity() {
             if (!callId.isNullOrEmpty()) {
                 putExtra("com.octal.dialer.extra.CALL_ID", callId)
                 putExtra("callId", callId)
-                OctalCallManager.registerPendingCallId(callId)
+                OctalCallManager.registerPendingPlacement(
+                    commandId = callId,
+                    destination = cleanPhone,
+                    accountHandleId = matchedHandle?.id,
+                    ttlMs = 15000L
+                )
             }
         }
 
@@ -667,10 +677,12 @@ class MainActivity: FlutterActivity() {
             startActivity(intent)
             result.success(true)
         } catch (e: SecurityException) {
+            OctalCallManager.cancelPendingPlacement(callId)
             synchronized(callLock) { currentCall = null }
             Log.e(TAG, "[OctalCall] SecurityException on ACTION_CALL: ${e.message}")
             result.error("SECURITY_EXCEPTION", "Permission denied by system: ${e.message}", null)
         } catch (e: Exception) {
+            OctalCallManager.cancelPendingPlacement(callId)
             synchronized(callLock) { currentCall = null }
             Log.e(TAG, "[OctalCall] ACTION_CALL failed: ${e.message}")
             result.error("CALL_FAILED", "Direct call failed: ${e.message}", null)
@@ -754,7 +766,12 @@ class MainActivity: FlutterActivity() {
             if (!requestedCallId.isNullOrEmpty()) {
                 extras.putString("com.octal.dialer.extra.CALL_ID", requestedCallId)
                 extras.putString("callId", requestedCallId)
-                OctalCallManager.registerPendingCallId(requestedCallId)
+                OctalCallManager.registerPendingPlacement(
+                    commandId = requestedCallId,
+                    destination = cleanPhone,
+                    accountHandleId = matchedHandle?.id,
+                    ttlMs = 15000L
+                )
                 synchronized(callLock) {
                     currentCall = ActiveCallSession(
                         callId = requestedCallId,
@@ -771,10 +788,12 @@ class MainActivity: FlutterActivity() {
             telecomManager.placeCall(uri, extras)
             result.success(true)
         } catch (e: SecurityException) {
+            OctalCallManager.cancelPendingPlacement(requestedCallId)
             synchronized(callLock) { currentCall = null }
             Log.e(TAG, "[Telecom] SecurityException on telecomPlaceCall: ${e.message}")
             result.error("SECURITY_EXCEPTION", "Permission denied: ${e.message}", null)
         } catch (e: Exception) {
+            OctalCallManager.cancelPendingPlacement(requestedCallId)
             synchronized(callLock) { currentCall = null }
             Log.e(TAG, "[Telecom] telecomPlaceCall failed: ${e.message}")
             result.error("PLACE_CALL_FAILED", e.message, null)

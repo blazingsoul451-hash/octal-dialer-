@@ -727,43 +727,122 @@ export async function login(identifier: string, password: string): Promise<strin
 }
 
 // ─── Token Revocation / Blacklist ─────────────────────────────────────────────
-const revokedTokenHashes = new Set<string>();
+
+export class RevocationStorageUnavailableError extends Error {
+  constructor(message: string, public readonly cause?: unknown) {
+    super(message);
+    this.name = 'RevocationStorageUnavailableError';
+  }
+}
+
+interface CachedRevocation {
+  expiresAtMs: number;
+}
+const MAX_REVOCATION_CACHE_SIZE = 5000;
+const revokedTokenHashes = new Map<string, CachedRevocation>();
+
+type TokenRevocationCallback = (token: string) => void;
+const revocationCallbacks = new Set<TokenRevocationCallback>();
+
+export function registerTokenRevocationHandler(cb: TokenRevocationCallback): () => void {
+  revocationCallbacks.add(cb);
+  return () => { revocationCallbacks.delete(cb); };
+}
 
 function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+export function pruneRevocationCache(): void {
+  const now = Date.now();
+  for (const [hash, entry] of revokedTokenHashes.entries()) {
+    if (entry.expiresAtMs <= now) {
+      revokedTokenHashes.delete(hash);
+    }
+  }
+  if (revokedTokenHashes.size > MAX_REVOCATION_CACHE_SIZE) {
+    const toRemove = revokedTokenHashes.size - MAX_REVOCATION_CACHE_SIZE;
+    let count = 0;
+    for (const key of revokedTokenHashes.keys()) {
+      revokedTokenHashes.delete(key);
+      count++;
+      if (count >= toRemove) break;
+    }
+  }
+}
+
+export async function pruneExpiredRevocationsInDb(): Promise<void> {
+  try {
+    await db.execute('DELETE FROM revoked_tokens WHERE "expiresAt" < $1', [new Date().toISOString()]);
+  } catch (err) {
+    console.error('[Auth] Error pruning expired database revocations:', err);
+  }
+}
+
+if (typeof setInterval !== 'undefined') {
+  const pruneInterval = setInterval(() => {
+    pruneRevocationCache();
+    pruneExpiredRevocationsInDb().catch(() => {});
+  }, 30 * 60 * 1000);
+  if (pruneInterval && typeof pruneInterval.unref === 'function') {
+    pruneInterval.unref();
+  }
+}
+
 export async function revokeToken(token: string): Promise<void> {
   if (!token) return;
   const tokenHash = hashToken(token);
-  revokedTokenHashes.add(tokenHash);
+  let expiresAtMs = Date.now() + 86400000;
   try {
     const decoded = jwt.decode(token) as any;
-    const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : new Date(Date.now() + 86400000).toISOString();
+    if (decoded?.exp && typeof decoded.exp === 'number') {
+      expiresAtMs = decoded.exp * 1000;
+    }
+  } catch {}
+
+  pruneRevocationCache();
+  revokedTokenHashes.set(tokenHash, { expiresAtMs });
+
+  revocationCallbacks.forEach(cb => {
+    try { cb(token); } catch (_) {}
+  });
+
+  try {
+    const expiresAt = new Date(expiresAtMs).toISOString();
     await db.execute(
       'INSERT INTO revoked_tokens (token, "revokedAt", "expiresAt") VALUES ($1, $2, $3) ON CONFLICT (token) DO NOTHING;',
       [tokenHash, new Date().toISOString(), expiresAt]
     );
-  } catch (err) {
-    console.error('[Auth] Error persisting token revocation:', err);
+  } catch (err: any) {
+    console.error('[Auth] Error persisting token revocation to database:', err);
+    throw new RevocationStorageUnavailableError('Failed to persist token revocation; storage unavailable', err);
   }
 }
 
 export async function isTokenRevoked(token: string): Promise<boolean> {
   if (!token) return true;
   const tokenHash = hashToken(token);
-  if (revokedTokenHashes.has(tokenHash)) return true;
+  const cached = revokedTokenHashes.get(tokenHash);
+  if (cached) {
+    if (cached.expiresAtMs > Date.now()) {
+      return true;
+    }
+    revokedTokenHashes.delete(tokenHash);
+  }
+
   try {
-    const found = await db.queryOne<{ token: string }>(
-      'SELECT token FROM revoked_tokens WHERE token = $1 LIMIT 1',
+    const found = await db.queryOne<{ token: string; expiresAt: string }>(
+      'SELECT token, "expiresAt" FROM revoked_tokens WHERE token = $1 LIMIT 1',
       [tokenHash]
     );
     if (found) {
-      revokedTokenHashes.add(tokenHash);
+      const expMs = new Date(found.expiresAt).getTime() || (Date.now() + 86400000);
+      revokedTokenHashes.set(tokenHash, { expiresAtMs: expMs });
       return true;
     }
-  } catch {
-    // Database query fallback
+  } catch (err: any) {
+    console.error('[Auth] Database error checking token revocation:', err.message);
+    throw new RevocationStorageUnavailableError('Cannot verify token revocation status: storage unavailable', err);
   }
   return false;
 }
@@ -774,7 +853,18 @@ export function clearRevocationCacheForTesting(): void {
 
 /** Validate a token → return user or null */
 export async function validateToken(token: string): Promise<AuthUser | null> {
-  if (!token || (await isTokenRevoked(token))) return null;
+  if (!token) return null;
+
+  try {
+    const isRevoked = await isTokenRevoked(token);
+    if (isRevoked) return null;
+  } catch (err) {
+    if (err instanceof RevocationStorageUnavailableError) {
+      console.warn('[Auth Security] Fail closed: rejecting token validation because revocation storage is unavailable.');
+      return null;
+    }
+    throw err;
+  }
 
   try {
     const decoded = jwt.verify(token, getJWTSecret(), { algorithms: ['HS256'] }) as any;
@@ -813,33 +903,43 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
     // Fall through to legacy session check
   }
 
-  const session = await db.queryOne<any>(`SELECT * FROM sessions_store WHERE token = $1`, [token]);
-  if (!session) return null;
+  try {
+    const session = await db.queryOne<any>(`SELECT * FROM sessions_store WHERE token = $1`, [token]);
+    if (!session) return null;
 
-  if (new Date(session.expiresAt) < new Date()) {
-    await db.execute(`DELETE FROM sessions_store WHERE token = $1`, [token]);
+    if (new Date(session.expiresAt) < new Date()) {
+      await db.execute(`DELETE FROM sessions_store WHERE token = $1`, [token]);
+      return null;
+    }
+
+    const user = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [session.userId]);
+    if (!user || !user.tenantId || user.status === 'suspended') {
+      return null;
+    }
+
+    return {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      tenantId: user.tenantId,
+      email: user.email,
+      roleId: user.roleId || null
+    };
+  } catch (err) {
+    console.error('[Auth] Error in legacy session verification (failing closed):', err);
     return null;
   }
-
-  const user = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [session.userId]);
-  if (!user || !user.tenantId || user.status === 'suspended') {
-    return null;
-  }
-
-  return {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    tenantId: user.tenantId,
-    email: user.email,
-    roleId: user.roleId || null
-  };
 }
 
 /** Destroy a session (logout) */
 export async function logout(token: string): Promise<void> {
   await revokeToken(token);
-  await db.execute(`DELETE FROM sessions_store WHERE token = $1`, [token]);
+  try {
+    await db.execute(`DELETE FROM sessions_store WHERE token = $1`, [token]);
+  } catch (err) {
+    console.error('[Auth] Error deleting session from sessions_store during logout:', err);
+    throw new RevocationStorageUnavailableError('Failed to remove legacy session store record during logout', err);
+  }
 }
 
 /** Verify password for a user against stored PBKDF2 hash */
