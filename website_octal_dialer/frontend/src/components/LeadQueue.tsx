@@ -330,14 +330,21 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     setLogs(prev => [...prev, `[Auto Dialer] Auto-dialing paused by user.`]);
   };
 
-  // Fetch leads of campaign
+  // Fetch leads of campaign with generation tracking to prevent race conditions
+  const fetchGenerationRef = useRef(0);
+
   const fetchLeads = async (campId: string, isInitialLoad: boolean = false) => {
+    const generation = ++fetchGenerationRef.current;
     try {
       const res = await fetch(`${serverUrl}/campaigns/${campId}/leads`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
       if (res.ok) {
         const data: Lead[] = await res.json();
+        // Guard against stale responses if campaign changed while fetch was in-flight
+        if (generation !== fetchGenerationRef.current || selectedCampIdRef.current !== campId) {
+          return;
+        }
         setLeads(data);
         if (isInitialLoad) {
           const firstPending = data.findIndex((l: Lead) => l.status === 'PENDING');
@@ -353,7 +360,9 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         }
       }
     } catch (err) {
-      console.error('Error fetching leads:', err);
+      if (generation === fetchGenerationRef.current) {
+        console.error('Error fetching leads:', err);
+      }
     }
   };
 
