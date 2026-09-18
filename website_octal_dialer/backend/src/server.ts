@@ -4391,9 +4391,17 @@ io.on('connection', (socket) => {
     }
 
     const cs = callId ? getCallSession(callId) : commandId ? getCallSessionByCommandId(commandId) : getCallSessionBySessionId(session.id);
-    if (!cs || cs.sessionId !== session.id || cs.tenantId !== tenantId || cs.phoneSocketId !== socket.id || cs.endedAt) return;
+    if (!cs || cs.sessionId !== session.id || cs.tenantId !== tenantId || cs.phoneSocketId !== socket.id || cs.endedAt) {
+      if (cs && cs.endedAt) {
+        socket.emit('call:ended-ack', { callId: cs.callId, leadId: cs.leadId });
+      }
+      return;
+    }
     const targetCallId = cs.callId;
-    if (processedCallEndings.has(targetCallId)) return;
+    if (processedCallEndings.has(targetCallId)) {
+      socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs.leadId });
+      return;
+    }
     processedCallEndings.add(targetCallId);
     leadId = cs.leadId;
     commandId = cs.commandId;
@@ -4424,6 +4432,9 @@ io.on('connection', (socket) => {
       const first = processedCallEndings.values().next().value;
       if (first) processedCallEndings.delete(first);
     }
+
+    // Acknowledge durable persistence to phone socket for terminal outbox clearing
+    socket.emit('call:ended-ack', { callId: targetCallId, leadId });
 
     // Include leadId and commandId in call:finished broadcast so web knows exact completed lead
     socket.to(session.id).emit('call:finished', { reason, duration, leadId, commandId, callId: cs?.callId });
@@ -4467,34 +4478,24 @@ io.on('connection', (socket) => {
     const session = getSessionBySocketId(socket.id);
     if (!session) return;
 
-    // Release any lead locks reserved by this session
-    await unlockLeadsForSession(session.id);
+    const activeCs = getCallSessionBySessionId(session.id);
+    const hasActiveCall = activeCs && activeCs.state !== 'ENDED';
+
+    // Only release idle lead leases if there is no active call in progress
+    if (!hasActiveCall) {
+      await unlockLeadsForSession(session.id);
+    }
 
     if (session.laptopSocketId === socket.id) {
       // Do NOT send session:ended to phone — laptop socket reclaims session instantly on reconnect!
       console.log(`[Socket Disconnect] Laptop socket ${socket.id} disconnected from session ${session.id} (reclaimable)`);
       handleLaptopDisconnect(socket.id);
     } else if (session.phoneSocketId === socket.id) {
-      const activeCs = getCallSessionBySessionId(session.id);
-      if (activeCs && activeCs.state !== 'ENDED') {
-        finalizeCallSession(activeCs.callId, 'PHONE_DISCONNECTED', 0);
-        if (activeCs.leadId) {
-          await releaseLeadLock(activeCs.leadId, session.id);
-        }
-        if (session.laptopSocketId) {
-          io.to(session.laptopSocketId).emit('call:finished', {
-            reason: 'PHONE_DISCONNECTED',
-            duration: 0,
-            leadId: activeCs.leadId,
-            commandId: activeCs.commandId,
-            callId: activeCs.callId
-          });
-          io.to(session.laptopSocketId).emit('call:status-changed', {
-            callId: activeCs.callId,
-            state: 'ENDED',
-            reason: 'PHONE_DISCONNECTED'
-          });
-        }
+      // CRITICAL ARCHITECTURE RULE: Transport disconnect does NOT mean GSM call ended!
+      // Carrier GSM call remains live on the mobile radio.
+      // Preserve active CallSession and LeadLock so subsequent reconnect / outbox replay can record truthful duration.
+      if (hasActiveCall) {
+        console.log(`[Socket Disconnect] Phone socket ${socket.id} transport disconnected from session ${session.id} — preserving live GSM call ${activeCs.callId}`);
       }
       if (session.laptopSocketId) {
         io.to(session.laptopSocketId).emit('phone:disconnected');

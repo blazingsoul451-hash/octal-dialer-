@@ -79,6 +79,14 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     // Register Telecom call event listener (primary source of truth for GSM calls)
     _telecomSub = TelecomService.instance.callEvents.listen((event) {
       if (!mounted || _callEnded) return;
+
+      // Uncorrelated event guard: If event specifies a callId and it does NOT match our callId, ignore it.
+      // This prevents call waiting or foreign calls from terminating the active campaign call.
+      if (event.callId.isNotEmpty && widget.callId.isNotEmpty && event.callId != widget.callId) {
+        debugPrint('CallingScreen: Ignored event for different callId ${event.callId} (current: ${widget.callId})');
+        return;
+      }
+
       if (event.type == 'state_changed') {
         final st = event.state.toUpperCase();
         debugPrint('CallingScreen: Telecom state_changed -> $st');
@@ -106,7 +114,8 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         }
       } else if (event.type == 'removed') {
         final int dur = (event.duration != null && event.duration! > 0) ? event.duration! : _talkSeconds;
-        final bool answered = dur >= 10 || event.reason == 'ANSWERED' || (_phase == CallPhase.connected && _talkSeconds >= 10);
+        // Authoritative: Native ACTIVE transition is evidence of an answered call. No 10-second heuristic.
+        final bool answered = _hasEmittedPickedUp || _phase == CallPhase.connected || event.reason == 'ANSWERED' || (event.answered == true);
         final String reason = answered ? 'ANSWERED' : (dur > 0 && event.reason != 'CANCELLED' ? 'COMPLETED' : (event.reason ?? 'NO_ANSWER'));
         _endCall(
           reason: reason,
@@ -121,10 +130,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       } else if (event.type == 'legacy_ended') {
         // Legacy call ended event (routed through TelecomService)
         if (mounted) {
+          final bool answered = _hasEmittedPickedUp || _phase == CallPhase.connected || event.answered == true || event.reason == 'ANSWERED';
           _endCall(
-            reason: event.reason ?? 'NO_ANSWER',
-            duration: event.duration ?? 0,
-            answered: event.answered == true,
+            reason: answered ? 'ANSWERED' : (event.reason ?? 'NO_ANSWER'),
+            duration: event.duration ?? _talkSeconds,
+            answered: answered,
           );
         }
       }
@@ -135,12 +145,14 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       'status': 'Calling ${widget.name.isNotEmpty ? widget.name : widget.phone}...'
     }).catchError((_) {});
 
-    // Listen for remote hangup commands from web dashboard
-    widget.socket.on('phone:hangup', (_) => _handleRemoteHangup());
-    widget.socket.on('phone:hangup-call', (_) => _handleRemoteHangup());
+    // Listen for remote hangup commands using named reference to avoid stripping service handlers
+    widget.socket.on('phone:hangup', _onRemoteHangup);
+    widget.socket.on('phone:hangup-call', _onRemoteHangup);
 
     _placeGsmCall();
   }
+
+  void _onRemoteHangup(dynamic _) => _handleRemoteHangup();
 
   void _startTalkTimer() {
     _ringingTimer?.cancel();
@@ -161,7 +173,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   void _handleRemoteHangup() {
     _cancelRequested = true;
     debugPrint('CallingScreen: Received remote hangup command');
-    TelecomService.instance.disconnect().catchError((_) => false);
+    TelecomService.instance.disconnect(callId: widget.callId).catchError((_) => false);
     _nativeChannel.invokeMethod('endCall').catchError((e) {
       debugPrint('CallingScreen: Native endCall ignored: $e');
     });
@@ -271,7 +283,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     } catch (_) {}
 
     final effectiveDuration = duration > 0 ? duration : _talkSeconds;
-    final effectiveAnswered = answered || effectiveDuration >= 10 || reason == 'ANSWERED';
+    final effectiveAnswered = answered || reason == 'ANSWERED' || _hasEmittedPickedUp || _phase == CallPhase.connected;
     final effectiveReason = effectiveAnswered ? 'ANSWERED' : reason;
 
     widget.socket.emit('call:ended', {
@@ -304,8 +316,8 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _ringingTimer?.cancel();
     _talkTimer?.cancel();
     _telecomSub?.cancel();
-    widget.socket.off('phone:hangup');
-    widget.socket.off('phone:hangup-call');
+    widget.socket.off('phone:hangup', _onRemoteHangup);
+    widget.socket.off('phone:hangup-call', _onRemoteHangup);
     // Clear auto dialer active flag so normal in-call UI operates
     TelecomService.instance.isAutoDialerCallActive = false;
     // Defensively ensure TelecomService handler is active
@@ -536,7 +548,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                 child: ElevatedButton.icon(
                   onPressed: () {
                     _cancelRequested = true;
-                    TelecomService.instance.disconnect().catchError((_) => false);
+                    TelecomService.instance.disconnect(callId: widget.callId).catchError((_) => false);
                     _nativeChannel.invokeMethod('endCall').catchError((_) {});
                     Future.delayed(const Duration(milliseconds: 1500), () {
                       if (mounted && !_callEnded) {

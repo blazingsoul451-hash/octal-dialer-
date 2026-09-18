@@ -187,13 +187,15 @@ object OctalCallManager {
 
         val duration = maxOf(activeDuration, telecomDuration)
 
-        // If the call was actively connected and sustained for >= 10s, it is authoritative ANSWERED
-        val reason = if (duration >= 10) {
+        // Native ACTIVE state is the authoritative indicator of an answered call.
+        // If the call ever transitioned to STATE_ACTIVE (activeStart > 0L), connectTime > 0L, or duration > 0, it was ANSWERED.
+        val wasActive = activeStart > 0L || connectTime > 0L || duration > 0
+        val reason = if (wasActive) {
             "ANSWERED"
-        } else if (duration > 0 && rawDisconnectReason != "CANCELLED") {
-            "COMPLETED"
-        } else {
+        } else if (rawDisconnectReason != "DISCONNECTED") {
             rawDisconnectReason
+        } else {
+            "NO_ANSWER"
         }
 
         Log.d(TAG, "[Telecom] onCallRemoved id=$callId rawReason=$rawDisconnectReason finalReason=$reason duration=${duration}s (active=${activeDuration}s, telecom=${telecomDuration}s)")
@@ -252,19 +254,23 @@ object OctalCallManager {
         }
     }
 
-    fun disconnect(): Boolean {
-        val call = getPrimaryCall()
+    fun disconnect(targetCallId: String? = null): Boolean {
+        val call = if (targetCallId != null && activeCalls.containsKey(targetCallId)) {
+            activeCalls[targetCallId]
+        } else {
+            getPrimaryCall()
+        }
         return if (call != null) {
             try {
                 call.disconnect()
-                Log.d(TAG, "[Telecom] Call disconnected successfully")
+                Log.d(TAG, "[Telecom] Call disconnected successfully: ${getCallId(call)}")
                 true
             } catch (e: Exception) {
                 Log.e(TAG, "[Telecom] Failed to disconnect call: ${e.message}")
                 false
             }
         } else {
-            Log.w(TAG, "[Telecom] disconnect: No active call to disconnect")
+            Log.w(TAG, "[Telecom] disconnect: No active call to disconnect (target=$targetCallId)")
             false
         }
     }

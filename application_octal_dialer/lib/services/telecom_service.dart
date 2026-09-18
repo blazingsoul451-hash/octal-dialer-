@@ -254,9 +254,11 @@ class TelecomService {
   }
 
   /// Genuine hardware call disconnect via Android Telecom Call object.
-  Future<bool> disconnect() async {
+  Future<bool> disconnect({String? callId}) async {
     try {
-      final bool? res = await _channel.invokeMethod<bool>('telecomDisconnect');
+      final bool? res = await _channel.invokeMethod<bool>('telecomDisconnect', {
+        if (callId != null) 'callId': callId,
+      });
       return res ?? false;
     } catch (e) {
       debugPrint('[TelecomService] disconnect error: $e');

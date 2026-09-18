@@ -270,6 +270,16 @@ async function main() {
     assert.equal(called, true);
   });
 
+  await check('socket disconnect preserves active GSM call and does not prematurely unlock active lead', async () => {
+    const rawSource = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    const source = rawSource.replace(/\r\n/g, '\n');
+    // Verify disconnect handler does not finalize call session or unlock leads if active call exists
+    assert.ok(source.includes("const hasActiveCall = activeCs && activeCs.state !== 'ENDED'"));
+    assert.ok(source.includes("if (!hasActiveCall) {\n      await unlockLeadsForSession(session.id);\n    }"));
+    assert.ok(!source.includes("finalizeCallSession(activeCs.callId, 'PHONE_DISCONNECTED'"));
+    assert.ok(source.includes("socket.emit('call:ended-ack', { callId: targetCallId, leadId })"));
+  });
+
   console.log(`${count} isolated regression groups passed. Real PostgreSQL and handset tests remain required.`);
 }
 main().catch(err => { console.error(err); process.exitCode = 1; });

@@ -300,7 +300,8 @@ class MainActivity: FlutterActivity() {
                     result.success(OctalCallManager.answer())
                 }
                 "telecomDisconnect" -> {
-                    result.success(OctalCallManager.disconnect())
+                    val callId = call.argument<String>("callId")
+                    result.success(OctalCallManager.disconnect(callId))
                 }
                 "telecomSetMuted" -> {
                     val muted = call.argument<Boolean>("muted") ?: false
@@ -739,9 +740,11 @@ class MainActivity: FlutterActivity() {
             telecomManager.placeCall(uri, extras)
             result.success(true)
         } catch (e: SecurityException) {
+            synchronized(callLock) { currentCall = null }
             Log.e(TAG, "[Telecom] SecurityException on telecomPlaceCall: ${e.message}")
             result.error("SECURITY_EXCEPTION", "Permission denied: ${e.message}", null)
         } catch (e: Exception) {
+            synchronized(callLock) { currentCall = null }
             Log.e(TAG, "[Telecom] telecomPlaceCall failed: ${e.message}")
             result.error("PLACE_CALL_FAILED", e.message, null)
         }
