@@ -4593,7 +4593,7 @@ io.on('connection', (socket) => {
         callId: resolvedCallId,
         commandId: effectiveCommandId,
         outboxId: outboxId || null,
-        leadId: existingDbOutcome.leadId
+        leadId: existingDbOutcome.leadId,
       });
       return;
     }
@@ -4643,7 +4643,10 @@ io.on('connection', (socket) => {
     const phoneDeviceId = authoritativeDeviceId || socketDeviceId || null;
     const userId = journalRecord?.userId || cs?.userId || legacyCmd?.userId || session?.userId || socketUserId || null;
 
-    const finalizationTask = (async () => {
+    let wonClaim = false;
+    let canonicalOutcome: any = null;
+
+    const finalizationTask: Promise<boolean> = (async () => {
       try {
         await db.withTransaction(async () => {
           // P1: Atomic transactional claim: only the winning insert executes associated side-effects
@@ -4669,7 +4672,7 @@ io.on('connection', (socket) => {
             ]
           );
 
-          const wonClaim = Boolean(insertResult.rows && insertResult.rows.length > 0 && insertResult.rows[0].id === outcomeId);
+          wonClaim = Boolean(insertResult.rows && insertResult.rows.length > 0 && insertResult.rows[0].id === outcomeId);
 
           if (wonClaim) {
             if (effectiveCommandId) await expireCommand(effectiveCommandId);
@@ -4681,18 +4684,20 @@ io.on('connection', (socket) => {
               await createManualLog(effectivePhone, effectiveName || 'Manual Quick Dial', effectiveReason, effectiveDuration, effectiveTenantId);
             }
           } else {
-            // Conflict / already committed: verify existing record within transaction; do not repeat mutations
-            const existingRecord = await db.queryOne<{ id: string }>(
-              'SELECT id FROM call_outcomes WHERE "tenantId" = $1 AND "callId" = $2 LIMIT 1',
+            // Conflict / already committed: query full canonical record within transaction; do not repeat mutations
+            canonicalOutcome = await db.queryOne<{ id: string; reason: string; duration: number; leadId?: string; commandId?: string }>(
+              'SELECT id, "reason", "duration", "leadId", "commandId" FROM call_outcomes WHERE "tenantId" = $1 AND "callId" = $2 LIMIT 1',
               [effectiveTenantId, resolvedCallId]
             );
-            if (!existingRecord) {
+            if (!canonicalOutcome) {
               throw new Error('Concurrent outcome insertion could not be confirmed');
             }
           }
         });
 
-        if (cs) finalizeCallSession(cs.callId, effectiveReason, effectiveDuration);
+        if (wonClaim) {
+          if (cs) finalizeCallSession(cs.callId, effectiveReason, effectiveDuration);
+        }
         committedCallEndings.add(dedupeKey);
         if (committedCallEndings.size > 2000) {
           const first = committedCallEndings.values().next().value;
@@ -4715,11 +4720,13 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (session && cs && cs.sessionId === session.id) {
-      setSessionStatus(session.id, 'PAIRED');
+    if (wonClaim) {
+      if (session && cs && cs.sessionId === session.id) {
+        setSessionStatus(session.id, 'PAIRED');
+      }
     }
 
-    // Acknowledge durable persistence to phone socket for terminal outbox clearing
+    // Acknowledge durable persistence to phone socket for terminal outbox clearing with canonical outcome
     socket.emit('call:ended-ack', {
       ack: true,
       protocolVersion: '1.0',
@@ -4727,29 +4734,36 @@ io.on('connection', (socket) => {
       callId: resolvedCallId,
       commandId: effectiveCommandId,
       outboxId: outboxId || null,
-      leadId: effectiveLeadId
+      leadId: wonClaim ? effectiveLeadId : (canonicalOutcome?.leadId || effectiveLeadId),
+      reason: wonClaim ? effectiveReason : (canonicalOutcome?.reason || effectiveReason),
+      duration: wonClaim ? effectiveDuration : (canonicalOutcome?.duration ?? effectiveDuration),
     });
 
-    if (effectiveSessionId && (!cs || cs.sessionId === effectiveSessionId)) {
-      socket.to(effectiveSessionId).emit('call:finished', {
-        reason: effectiveReason,
-        duration: effectiveDuration,
-        leadId: effectiveLeadId,
-        commandId: effectiveCommandId,
-        callId: resolvedCallId
-      });
-      io.to(effectiveSessionId).emit('call:status-changed', {
-        callId: resolvedCallId,
-        state: 'ENDED',
-        reason: effectiveReason,
-        duration: effectiveDuration,
-        leadId: effectiveLeadId,
-        commandId: effectiveCommandId,
-        timestamp: finalizedAt
-      });
+    // Only broadcast call:finished, call:status-changed, and leads:updated if this request won the authoritative insert claim!
+    if (wonClaim) {
+      if (effectiveSessionId && (!cs || cs.sessionId === effectiveSessionId)) {
+        socket.to(effectiveSessionId).emit('call:finished', {
+          reason: effectiveReason,
+          duration: effectiveDuration,
+          leadId: effectiveLeadId,
+          commandId: effectiveCommandId,
+          callId: resolvedCallId
+        });
+        io.to(effectiveSessionId).emit('call:status-changed', {
+          callId: resolvedCallId,
+          state: 'ENDED',
+          reason: effectiveReason,
+          duration: effectiveDuration,
+          leadId: effectiveLeadId,
+          commandId: effectiveCommandId,
+          timestamp: finalizedAt
+        });
+      }
+      io.to(`tenant_${effectiveTenantId}`).emit('leads:updated');
+      console.log(`[CallEngine] Call finalized in session ${effectiveSessionId} | CallId: ${resolvedCallId} | Lead: ${effectiveLeadId || effectivePhone} | Reason: ${effectiveReason} | Duration: ${effectiveDuration}s`);
+    } else {
+      console.log(`[CallEngine] Call outcome deduplicated on conflict for CallId: ${resolvedCallId} | Canonical Reason: ${canonicalOutcome?.reason || effectiveReason} | Canonical Duration: ${canonicalOutcome?.duration ?? effectiveDuration}s`);
     }
-    io.to(`tenant_${effectiveTenantId}`).emit('leads:updated');
-    console.log(`[CallEngine] Call finalized in session ${effectiveSessionId} | CallId: ${resolvedCallId} | Lead: ${effectiveLeadId || effectivePhone} | Reason: ${effectiveReason} | Duration: ${effectiveDuration}s`);
   });
 
   socket.on('disconnect', async () => {

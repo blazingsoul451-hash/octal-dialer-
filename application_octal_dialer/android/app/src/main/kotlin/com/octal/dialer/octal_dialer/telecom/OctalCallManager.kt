@@ -35,9 +35,11 @@ object OctalCallManager {
         val destination: String,
         val accountHandleId: String? = null,
         val generation: Long = 0L,
-        val expiresAtMs: Long,
+        val expiresAtElapsedRealtimeMs: Long,
         @Volatile var isCancelled: Boolean = false
-    )
+    ) {
+        val expiresAtMs: Long get() = expiresAtElapsedRealtimeMs
+    }
 
     @Volatile private var pendingPlacement: PendingPlacementRecord? = null
     private val placementGeneration = java.util.concurrent.atomic.AtomicLong(0L)
@@ -50,15 +52,16 @@ object OctalCallManager {
     ): Long {
         val gen = placementGeneration.incrementAndGet()
         val cleanDest = destination.filter { it.isDigit() }
+        val nowElapsed = android.os.SystemClock.elapsedRealtime()
         pendingPlacement = PendingPlacementRecord(
             commandId = commandId,
             destination = cleanDest,
             accountHandleId = accountHandleId,
             generation = gen,
-            expiresAtMs = System.currentTimeMillis() + ttlMs,
+            expiresAtElapsedRealtimeMs = nowElapsed + ttlMs,
             isCancelled = false
         )
-        Log.d(TAG, "[Telecom] Registered pending placement gen=$gen cmd=$commandId dest=$cleanDest ttl=${ttlMs}ms")
+        Log.d(TAG, "[Telecom] Registered pending placement gen=$gen cmd=$commandId dest=$cleanDest ttl=${ttlMs}ms (monotonic)")
         return gen
     }
 
@@ -179,6 +182,56 @@ object OctalCallManager {
         }
     }
 
+    private fun validateAndBindCall(call: Call, isIncoming: Boolean, cleanCallNumber: String, explicitExtraId: String?): String? {
+        if (isIncoming) {
+            Log.d(TAG, "[Telecom] Incoming call detected. Pending outgoing placement will not be consumed.")
+            return null
+        }
+
+        val pending = pendingPlacement ?: return null
+        val nowElapsed = android.os.SystemClock.elapsedRealtime()
+
+        if (pending.isCancelled || nowElapsed > pending.expiresAtElapsedRealtimeMs) {
+            Log.w(TAG, "[Telecom] Pending placement expired/cancelled (cmd=${pending.commandId}, now=$nowElapsed, exp=${pending.expiresAtElapsedRealtimeMs}, cancelled=${pending.isCancelled})")
+            pendingPlacement = null
+            return null
+        }
+
+        // Explicit extra ID validation: if provided, must match pending command
+        if (!explicitExtraId.isNullOrEmpty() && explicitExtraId != pending.commandId) {
+            Log.w(TAG, "[Telecom] Explicit extra '$explicitExtraId' does not match pending command '${pending.commandId}'")
+            return null
+        }
+
+        // Destination matching: exact match or 10+ digit E.164 suffix match
+        val destMatches = when {
+            pending.destination.isEmpty() -> false
+            cleanCallNumber.isEmpty() -> false
+            cleanCallNumber == pending.destination -> true
+            cleanCallNumber.length >= 10 && pending.destination.length >= 10 &&
+                (cleanCallNumber.endsWith(pending.destination) || pending.destination.endsWith(cleanCallNumber)) -> true
+            else -> false
+        }
+        if (!destMatches) {
+            Log.w(TAG, "[Telecom] Destination mismatch: call=$cleanCallNumber vs pending=${pending.destination}")
+            return null
+        }
+
+        // Strict SIM / Account Handle matching:
+        // Missing account details MUST NOT count as a match when a SIM was specified!
+        if (pending.accountHandleId != null) {
+            val callHandleId = call.details?.accountHandle?.id
+            if (callHandleId == null || callHandleId != pending.accountHandleId) {
+                Log.w(TAG, "[Telecom] AccountHandle mismatch: callHandleId=$callHandleId vs required=${pending.accountHandleId}")
+                return null
+            }
+        }
+
+        pendingPlacement = null
+        Log.d(TAG, "[Telecom] Validated and bound outgoing call: cmd=${pending.commandId} gen=${pending.generation} dest=$cleanCallNumber")
+        return pending.commandId
+    }
+
     fun onCallAdded(call: Call) {
         val explicitExtraId = call.details?.extras?.getString("com.octal.dialer.extra.CALL_ID")
             ?: call.details?.intentExtras?.getString("com.octal.dialer.extra.CALL_ID")
@@ -188,53 +241,7 @@ object OctalCallManager {
         val isIncoming = call.state == Call.STATE_RINGING ||
             (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && call.details?.callDirection == Call.Details.DIRECTION_INCOMING)
 
-        var externalId: String? = null
-
-        if (!explicitExtraId.isNullOrEmpty()) {
-            val pending = pendingPlacement
-            if (pending != null && !pending.isCancelled && pending.commandId == explicitExtraId) {
-                externalId = explicitExtraId
-                pendingPlacement = null
-                Log.d(TAG, "[Telecom] Validated explicitExtraId matching pending placement: $explicitExtraId")
-            } else {
-                Log.w(TAG, "[Telecom] Ignored unverified explicitExtraId '$explicitExtraId' (does not match pending placement)")
-            }
-        } else if (!isIncoming) {
-            val pending = pendingPlacement
-            if (pending != null) {
-                val now = System.currentTimeMillis()
-                if (pending.isCancelled || now > pending.expiresAtMs) {
-                    Log.w(TAG, "[Telecom] Pending placement expired/cancelled (cmd=${pending.commandId}, now=$now, exp=${pending.expiresAtMs}, cancelled=${pending.isCancelled})")
-                    pendingPlacement = null
-                } else {
-                    val destMatches = when {
-                        pending.destination.isEmpty() -> false
-                        cleanCallNumber.isEmpty() -> false
-                        cleanCallNumber == pending.destination -> true
-                        cleanCallNumber.length >= 10 && pending.destination.length >= 10 &&
-                            (cleanCallNumber.endsWith(pending.destination) || pending.destination.endsWith(cleanCallNumber)) -> true
-                        else -> false
-                    }
-
-                    val handleMatches = if (pending.accountHandleId != null) {
-                        val callHandleId = call.details?.accountHandle?.id
-                        callHandleId == null || callHandleId == pending.accountHandleId
-                    } else {
-                        true
-                    }
-
-                    if (destMatches && handleMatches) {
-                        externalId = pending.commandId
-                        pendingPlacement = null
-                        Log.d(TAG, "[Telecom] Validated and bound outgoing call: cmd=$externalId dest=$cleanCallNumber")
-                    } else {
-                        Log.w(TAG, "[Telecom] Ambiguous or mismatched call in onCallAdded (destMatches=$destMatches, handleMatches=$handleMatches). Failing safely to unmapped ID.")
-                    }
-                }
-            }
-        } else {
-            Log.d(TAG, "[Telecom] Incoming call detected. Pending outgoing placement will not be consumed.")
-        }
+        val externalId = validateAndBindCall(call, isIncoming, cleanCallNumber, explicitExtraId)
 
         val callId = if (!externalId.isNullOrEmpty()) {
             callToExternalIdMap[call] = externalId
@@ -263,8 +270,8 @@ object OctalCallManager {
         val stateStr = getStateString(state)
 
         if (state == Call.STATE_ACTIVE && !activeStartTimes.containsKey(callId)) {
-            activeStartTimes[callId] = System.currentTimeMillis()
-            Log.d(TAG, "[Telecom] Active talk started for call $callId at ${activeStartTimes[callId]}")
+            activeStartTimes[callId] = android.os.SystemClock.elapsedRealtime()
+            Log.d(TAG, "[Telecom] Active talk started for call $callId at monotonic elapsed=${activeStartTimes[callId]}")
         }
 
         Log.d(TAG, "[Telecom] onCallStateChanged id=$callId state=$stateStr ($state)")
@@ -287,9 +294,10 @@ object OctalCallManager {
         }
         val number = getPhoneNumber(call)
 
-        val activeStart = activeStartTimes.remove(callId) ?: 0L
-        val activeDuration = if (activeStart > 0L) {
-            ((System.currentTimeMillis() - activeStart) / 1000L).toInt().coerceAtLeast(0)
+        val activeStartElapsed = activeStartTimes.remove(callId) ?: 0L
+        val activeDuration = if (activeStartElapsed > 0L) {
+            val nowElapsed = android.os.SystemClock.elapsedRealtime()
+            ((nowElapsed - activeStartElapsed) / 1000L).toInt().coerceAtLeast(0)
         } else 0
 
         val details = call.details
@@ -304,16 +312,14 @@ object OctalCallManager {
             else -> "DISCONNECTED"
         }
 
-        val connectTime = details?.connectTimeMillis ?: 0L
-        val telecomDuration = if (connectTime > 0L) {
-            ((System.currentTimeMillis() - connectTime) / 1000L).toInt().coerceAtLeast(0)
+        val connectTimeMillis = details?.connectTimeMillis ?: 0L
+        val telecomDuration = if (connectTimeMillis > 0L) {
+            ((System.currentTimeMillis() - connectTimeMillis) / 1000L).toInt().coerceAtLeast(0)
         } else 0
 
         val duration = maxOf(activeDuration, telecomDuration)
 
-        // Native ACTIVE state is the authoritative indicator of an answered call.
-        // If the call ever transitioned to STATE_ACTIVE (activeStart > 0L), connectTime > 0L, or duration > 0, it was ANSWERED.
-        val wasActive = activeStart > 0L || connectTime > 0L || duration > 0
+        val wasActive = activeStartElapsed > 0L || connectTimeMillis > 0L || duration > 0
         val reason = if (wasActive) {
             "ANSWERED"
         } else if (rawDisconnectReason != "DISCONNECTED") {

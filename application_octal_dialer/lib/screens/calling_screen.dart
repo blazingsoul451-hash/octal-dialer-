@@ -6,6 +6,7 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../widgets/octal_logo.dart';
 import '../services/telecom_service.dart';
 import '../services/call_outbox_service.dart';
+import '../services/phone_bridge_service.dart';
 
 class CallingScreen extends StatefulWidget {
   final String phone;
@@ -287,6 +288,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     final effectiveAnswered = answered || reason == 'ANSWERED' || _hasEmittedPickedUp || _phase == CallPhase.connected;
     final effectiveReason = effectiveAnswered ? 'ANSWERED' : reason;
     final effectiveCallId = widget.callId ?? widget.commandId ?? 'call_${DateTime.now().millisecondsSinceEpoch}';
+    PhoneBridgeService.instance.markCallEnqueued(effectiveCallId);
 
     final outboxEntry = CallOutboxEntry(
       outboxId: 'ob_${DateTime.now().millisecondsSinceEpoch}_$effectiveCallId',

@@ -22,10 +22,38 @@ enum BridgeStatus {
   error,
 }
 
+class ActivePlacementSnapshot {
+  final String callId;
+  final String? commandId;
+  final String? leadId;
+  final String phone;
+  final String? name;
+  final String? sessionId;
+  final int dialedAtMs;
+  final String tenantId;
+  final String deviceId;
+  final String serverOrigin;
+
+  ActivePlacementSnapshot({
+    required this.callId,
+    this.commandId,
+    this.leadId,
+    required this.phone,
+    this.name,
+    this.sessionId,
+    required this.dialedAtMs,
+    required this.tenantId,
+    required this.deviceId,
+    required this.serverOrigin,
+  });
+}
+
 class PhoneBridgeService extends ChangeNotifier {
   static final PhoneBridgeService _instance = PhoneBridgeService._internal();
   static PhoneBridgeService get instance => _instance;
-  PhoneBridgeService._internal();
+  PhoneBridgeService._internal() {
+    _initTelecomCapture();
+  }
 
   io.Socket? _socket;
   io.Socket? get socket => _socket;
@@ -44,6 +72,8 @@ class PhoneBridgeService extends ChangeNotifier {
 
   String _serverUrl = AppConfig.defaultBaseUrl;
   String get serverUrl => _serverUrl;
+  String get serverUri => _serverUrl;
+  String get _serverUri => _serverUrl;
 
   String _authToken = '';
   String get authToken => _authToken;
@@ -102,6 +132,139 @@ class PhoneBridgeService extends ChangeNotifier {
 
   bool get isConnected => _socket != null && _socket!.connected;
   bool get isPaired => _status == BridgeStatus.paired || _currentSessionId != null;
+
+  // Active placement and terminal capture state
+  ActivePlacementSnapshot? _activePlacement;
+  ActivePlacementSnapshot? get activePlacement => _activePlacement;
+  final Set<String> _enqueuedCallIds = <String>{};
+  StreamSubscription<TelecomCallEvent>? _telecomCallSub;
+
+  void _initTelecomCapture() {
+    _telecomCallSub?.cancel();
+    _telecomCallSub = TelecomService.instance.callEvents.listen((event) {
+      if (event.type == 'removed' || event.type == 'legacy_ended') {
+        _handleTerminalTelecomEvent(event);
+      }
+    });
+  }
+
+  void recordActivePlacement({
+    required String callId,
+    String? commandId,
+    String? leadId,
+    required String phone,
+    String? name,
+    String? sessionId,
+  }) {
+    _activePlacement = ActivePlacementSnapshot(
+      callId: callId,
+      commandId: commandId,
+      leadId: leadId,
+      phone: phone,
+      name: name,
+      sessionId: sessionId ?? _currentSessionId,
+      dialedAtMs: DateTime.now().millisecondsSinceEpoch,
+      tenantId: _tenantId,
+      deviceId: _deviceId,
+      serverOrigin: _serverUrl,
+    );
+    debugPrint('[PhoneBridge] Recorded active placement snapshot: callId=$callId cmd=$commandId phone=$phone');
+  }
+
+  void markCallEnqueued(String callId) {
+    if (callId.isNotEmpty) {
+      _enqueuedCallIds.add(callId);
+      if (_enqueuedCallIds.length > 200) {
+        _enqueuedCallIds.remove(_enqueuedCallIds.first);
+      }
+    }
+  }
+
+  bool isCallEnqueued(String callId) => _enqueuedCallIds.contains(callId);
+
+  void _handleTerminalTelecomEvent(TelecomCallEvent event) {
+    debugPrint('[PhoneBridge] Terminal Telecom event received: type=${event.type} callId=${event.callId} phone=${event.phoneNumber} reason=${event.reason} dur=${event.duration}');
+
+    final placement = _activePlacement;
+    final eventCallId = event.callId.trim();
+
+    bool isMatch = false;
+    if (placement != null) {
+      if (eventCallId.isNotEmpty && (placement.callId == eventCallId || placement.commandId == eventCallId)) {
+        isMatch = true;
+      } else if (event.phoneNumber.isNotEmpty) {
+        final cleanEventPhone = event.phoneNumber.replaceAll(RegExp(r'\D'), '');
+        final cleanPlacementPhone = placement.phone.replaceAll(RegExp(r'\D'), '');
+        if (cleanEventPhone.isNotEmpty && cleanPlacementPhone.isNotEmpty &&
+            (cleanEventPhone == cleanPlacementPhone ||
+             (cleanEventPhone.length >= 10 && cleanPlacementPhone.length >= 10 &&
+              (cleanEventPhone.endsWith(cleanPlacementPhone) || cleanPlacementPhone.endsWith(cleanEventPhone))))) {
+          isMatch = true;
+        }
+      } else if (eventCallId.isEmpty && DateTime.now().millisecondsSinceEpoch - placement.dialedAtMs < 30 * 60 * 1000) {
+        isMatch = true;
+      }
+    }
+
+    final targetCallId = isMatch ? placement!.callId : eventCallId;
+    if (targetCallId.isEmpty) {
+      debugPrint('[PhoneBridge] Cannot correlate terminal telecom event to valid call identity; ignoring.');
+      return;
+    }
+
+    if (_enqueuedCallIds.contains(targetCallId)) {
+      debugPrint('[PhoneBridge] Terminal outcome for $targetCallId already enqueued; skipping duplicate app-level capture.');
+      return;
+    }
+
+    markCallEnqueued(targetCallId);
+
+    final effectiveReason = event.reason ?? (event.answered == true ? 'ANSWERED' : 'UNKNOWN');
+    final effectiveDuration = event.duration ?? 0;
+    final effectiveAnswered = event.answered ?? (effectiveReason == 'ANSWERED' || effectiveDuration > 0);
+
+    final effectiveTenantId = _tenantId.isNotEmpty ? _tenantId : (placement?.tenantId ?? '');
+    final effectiveDeviceId = _deviceId.isNotEmpty ? _deviceId : (placement?.deviceId ?? '');
+    final effectiveOrigin = _serverUrl.isNotEmpty ? _serverUrl : (placement?.serverOrigin ?? '');
+
+    if (effectiveTenantId.isEmpty || effectiveDeviceId.isEmpty || effectiveOrigin.isEmpty) {
+      debugPrint('[PhoneBridge] Cannot enqueue app-level terminal outcome: missing tenant ($effectiveTenantId), device ($effectiveDeviceId), or origin ($effectiveOrigin)');
+      return;
+    }
+
+    final outboxEntry = CallOutboxEntry(
+      outboxId: 'ob_${DateTime.now().millisecondsSinceEpoch}_$targetCallId',
+      callId: targetCallId,
+      sessionId: placement?.sessionId ?? _currentSessionId,
+      leadId: placement?.leadId,
+      commandId: placement?.commandId,
+      phone: placement?.phone ?? event.phoneNumber,
+      name: placement?.name,
+      reason: effectiveReason,
+      duration: effectiveDuration,
+      answered: effectiveAnswered,
+      createdAtMs: DateTime.now().millisecondsSinceEpoch,
+      serverOrigin: effectiveOrigin,
+      tenantId: effectiveTenantId,
+      deviceId: effectiveDeviceId,
+    );
+
+    debugPrint('[PhoneBridge] Application-owned terminal capture enqueuing outcome for callId=$targetCallId reason=$effectiveReason dur=${effectiveDuration}s');
+    CallOutboxService.instance.enqueueOutcome(outboxEntry).then((_) {
+      CallOutboxService.instance.flush(
+        _socket,
+        currentOrigin: effectiveOrigin,
+        currentTenantId: effectiveTenantId,
+        currentDeviceId: effectiveDeviceId,
+      );
+    }).catchError((err) {
+      debugPrint('[PhoneBridge] App-level outbox enqueue error: $err');
+    });
+
+    if (isMatch) {
+      _activePlacement = null;
+    }
+  }
 
   // SIM management state
   List<Map<String, dynamic>> _sims = [];
@@ -300,13 +463,18 @@ class PhoneBridgeService extends ChangeNotifier {
     _socket!.on('call:ended-ack', (data) {
       debugPrint('[PhoneBridge] Received call:ended-ack: $data');
       if (data != null && data['callId'] != null) {
-        CallOutboxService.instance.acknowledgeOutcome(
-          data['callId'].toString(),
-          tenantId: data['tenantId']?.toString() ?? (_tenantId.isNotEmpty ? _tenantId : null),
-          deviceId: _deviceId.isNotEmpty ? _deviceId : null,
-          serverOrigin: _serverUri.isNotEmpty ? _serverUri : null,
-          outboxId: data['outboxId']?.toString(),
-        );
+        final ackTenant = data['tenantId']?.toString() ?? (_tenantId.isNotEmpty ? _tenantId : '');
+        final ackDev = _deviceId.isNotEmpty ? _deviceId : (data['deviceId']?.toString() ?? '');
+        final ackOrigin = _serverUrl.isNotEmpty ? _serverUrl : '';
+        if (ackTenant.isNotEmpty && ackDev.isNotEmpty && ackOrigin.isNotEmpty) {
+          CallOutboxService.instance.acknowledgeOutcome(
+            data['callId'].toString(),
+            tenantId: ackTenant,
+            deviceId: ackDev,
+            serverOrigin: ackOrigin,
+            outboxId: data['outboxId']?.toString(),
+          );
+        }
       }
     });
 
@@ -334,8 +502,22 @@ class PhoneBridgeService extends ChangeNotifier {
 
     _socket!.on('phone:dial', (data) {
       debugPrint('[PhoneBridge] phone:dial received: $data');
-      if (onPhoneDial != null && data != null) {
-        onPhoneDial!(Map<String, dynamic>.from(data));
+      if (data != null) {
+        final map = Map<String, dynamic>.from(data);
+        final callId = (map['callId'] ?? map['commandId'])?.toString() ?? '';
+        if (callId.isNotEmpty) {
+          recordActivePlacement(
+            callId: callId,
+            commandId: map['commandId']?.toString(),
+            leadId: map['leadId']?.toString(),
+            phone: (map['phoneNumber'] ?? map['phone'] ?? '').toString(),
+            name: (map['leadName'] ?? map['name'])?.toString(),
+            sessionId: (map['sessionId'] ?? _currentSessionId)?.toString(),
+          );
+        }
+        if (onPhoneDial != null) {
+          onPhoneDial!(map);
+        }
       }
     });
 
@@ -472,13 +654,18 @@ class PhoneBridgeService extends ChangeNotifier {
     _socket!.on('call:ended-ack', (data) {
       debugPrint('[PhoneBridge] Received call:ended-ack: $data');
       if (data != null && data['callId'] != null) {
-        CallOutboxService.instance.acknowledgeOutcome(
-          data['callId'].toString(),
-          tenantId: data['tenantId']?.toString() ?? (_tenantId.isNotEmpty ? _tenantId : null),
-          deviceId: _deviceId.isNotEmpty ? _deviceId : null,
-          serverOrigin: _serverUri.isNotEmpty ? _serverUri : null,
-          outboxId: data['outboxId']?.toString(),
-        );
+        final ackTenant = data['tenantId']?.toString() ?? (_tenantId.isNotEmpty ? _tenantId : '');
+        final ackDev = _deviceId.isNotEmpty ? _deviceId : (data['deviceId']?.toString() ?? '');
+        final ackOrigin = _serverUrl.isNotEmpty ? _serverUrl : '';
+        if (ackTenant.isNotEmpty && ackDev.isNotEmpty && ackOrigin.isNotEmpty) {
+          CallOutboxService.instance.acknowledgeOutcome(
+            data['callId'].toString(),
+            tenantId: ackTenant,
+            deviceId: ackDev,
+            serverOrigin: ackOrigin,
+            outboxId: data['outboxId']?.toString(),
+          );
+        }
       }
     });
 
@@ -551,8 +738,22 @@ class PhoneBridgeService extends ChangeNotifier {
 
     _socket!.on('phone:dial', (data) {
       debugPrint('[PhoneBridge] phone:dial received: $data');
-      if (onPhoneDial != null && data != null) {
-        onPhoneDial!(Map<String, dynamic>.from(data));
+      if (data != null) {
+        final map = Map<String, dynamic>.from(data);
+        final callId = (map['callId'] ?? map['commandId'])?.toString() ?? '';
+        if (callId.isNotEmpty) {
+          recordActivePlacement(
+            callId: callId,
+            commandId: map['commandId']?.toString(),
+            leadId: map['leadId']?.toString(),
+            phone: (map['phoneNumber'] ?? map['phone'] ?? '').toString(),
+            name: (map['leadName'] ?? map['name'])?.toString(),
+            sessionId: (map['sessionId'] ?? _currentSessionId)?.toString(),
+          );
+        }
+        if (onPhoneDial != null) {
+          onPhoneDial!(map);
+        }
       }
     });
 
@@ -735,6 +936,8 @@ class PhoneBridgeService extends ChangeNotifier {
     _currentLaptopName = null;
     _currentLaptopBtAddress = null;
     _sessionToken = null;
+    _activePlacement = null;
+    _enqueuedCallIds.clear();
     _setStatus(BridgeStatus.disconnected, 'Logged out');
 
     final prefs = await SharedPreferences.getInstance();
@@ -751,5 +954,12 @@ class PhoneBridgeService extends ChangeNotifier {
     if (_socket != null && _socket!.connected) {
       _socket!.emit(event, data);
     }
+  }
+
+  @override
+  void dispose() {
+    _telecomCallSub?.cancel();
+    _telecomCallSub = null;
+    super.dispose();
   }
 }

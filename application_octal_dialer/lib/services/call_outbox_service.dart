@@ -90,6 +90,11 @@ class CallOutboxService {
   Future<void> _lock = Future.value();
   Timer? _periodicRetryTimer;
 
+  // In-memory retention for failed disk writes so memory never loses the outcome
+  final List<CallOutboxEntry> _unpersistedQueue = [];
+  bool get hasUnpersistedOutcomes => _unpersistedQueue.isNotEmpty;
+  int get unpersistedCount => _unpersistedQueue.length;
+
   Future<T> _runSerialized<T>(Future<T> Function() task) {
     final prev = _lock;
     final completer = Completer<void>();
@@ -103,9 +108,10 @@ class CallOutboxService {
     final raw = prefs.getString(_storageKey);
     if (raw == null || raw.isEmpty) return [];
 
+    List<CallOutboxEntry> decodedEntries;
     try {
       final List<dynamic> decoded = jsonDecode(raw);
-      return decoded
+      decodedEntries = decoded
           .map((e) => CallOutboxEntry.fromJson(Map<String, dynamic>.from(e)))
           .toList();
     } catch (e) {
@@ -119,6 +125,30 @@ class CallOutboxService {
       }
       throw StateError('Outbox storage was corrupt and quarantined to $quarantineKey: $e');
     }
+
+    // Quarantine legacy entries with missing required scopes (never transmit unscoped entries)
+    final validEntries = <CallOutboxEntry>[];
+    final legacyQuarantine = <CallOutboxEntry>[];
+
+    for (final entry in decodedEntries) {
+      if (entry.tenantId == null || entry.tenantId!.isEmpty ||
+          entry.deviceId == null || entry.deviceId!.isEmpty ||
+          entry.serverOrigin == null || entry.serverOrigin!.isEmpty ||
+          entry.callId.isEmpty || entry.outboxId.isEmpty) {
+        legacyQuarantine.add(entry);
+      } else {
+        validEntries.add(entry);
+      }
+    }
+
+    if (legacyQuarantine.isNotEmpty) {
+      debugPrint('[CallOutbox] Found ${legacyQuarantine.length} unscoped legacy entries. Quarantining...');
+      final qKey = '${_storageKey}_legacy_unscoped_${DateTime.now().millisecondsSinceEpoch}';
+      await prefs.setString(qKey, jsonEncode(legacyQuarantine.map((e) => e.toJson()).toList()));
+      await prefs.setString(_storageKey, jsonEncode(validEntries.map((e) => e.toJson()).toList()));
+    }
+
+    return validEntries;
   }
 
   Future<List<CallOutboxEntry>> getPendingEntries() async {
@@ -133,7 +163,15 @@ class CallOutboxService {
     });
   }
 
-  Future<void> enqueueOutcome(CallOutboxEntry entry) async {
+  Future<bool> enqueueOutcome(CallOutboxEntry entry) async {
+    // Validate mandatory scopes for new entries: origin, tenant, device, call, event
+    if (entry.tenantId == null || entry.tenantId!.isEmpty ||
+        entry.deviceId == null || entry.deviceId!.isEmpty ||
+        entry.serverOrigin == null || entry.serverOrigin!.isEmpty ||
+        entry.callId.isEmpty || entry.outboxId.isEmpty) {
+      throw ArgumentError('CallOutboxEntry missing mandatory scope: origin, tenant, device, call, or outbox identity');
+    }
+
     return _runSerialized(() async {
       final prefs = await SharedPreferences.getInstance();
       List<CallOutboxEntry> entries;
@@ -143,20 +181,40 @@ class CallOutboxService {
         entries = [];
       }
 
-      entries.removeWhere((e) => (entry.tenantId == null || e.tenantId == entry.tenantId) && e.callId == entry.callId);
+      entries.removeWhere((e) => e.tenantId == entry.tenantId && e.callId == entry.callId);
       entries.add(entry);
+
+      // Re-attempt persisting any previously unpersisted entries
+      for (final unpersisted in _unpersistedQueue) {
+        entries.removeWhere((e) => e.tenantId == unpersisted.tenantId && e.callId == unpersisted.callId);
+        entries.add(unpersisted);
+      }
 
       final raw = jsonEncode(entries.map((e) => e.toJson()).toList());
       final ok = await prefs.setString(_storageKey, raw);
       if (!ok) {
-        throw StateError('Failed to persist call outbox entry to durable storage');
+        if (!_unpersistedQueue.any((e) => e.outboxId == entry.outboxId)) {
+          _unpersistedQueue.add(entry);
+        }
+        debugPrint('[CallOutbox] DISK PERSISTENCE FAILED for callId=${entry.callId}. Retained in explicit pending-persistence queue.');
+        return false;
       }
+
+      _unpersistedQueue.clear();
       debugPrint('[CallOutbox] Serialized terminal outcome for callId=${entry.callId} to durable journal');
+      return true;
     });
   }
 
-  Future<bool> acknowledgeOutcome(String callId, {String? tenantId, String? deviceId, String? serverOrigin, String? outboxId}) async {
+  Future<bool> acknowledgeOutcome(String callId, {required String tenantId, required String deviceId, required String serverOrigin, String? outboxId}) async {
     return _runSerialized(() async {
+      // Remove from memory unpersisted queue if present
+      _unpersistedQueue.removeWhere((e) =>
+          e.callId == callId &&
+          e.tenantId == tenantId &&
+          e.deviceId == deviceId &&
+          (outboxId == null || e.outboxId == outboxId));
+
       final prefs = await SharedPreferences.getInstance();
       List<CallOutboxEntry> entries;
       try {
@@ -167,12 +225,13 @@ class CallOutboxService {
       }
 
       final initialCount = entries.length;
+      // Strict exact matching: no null-as-wildcards
       entries.removeWhere((e) =>
           e.callId == callId &&
-          (tenantId == null || e.tenantId == null || e.tenantId == tenantId) &&
-          (deviceId == null || e.deviceId == null || e.deviceId == deviceId) &&
-          (outboxId == null || e.outboxId == outboxId) &&
-          (serverOrigin == null || e.serverOrigin == null || e.serverOrigin == serverOrigin));
+          e.tenantId == tenantId &&
+          e.deviceId == deviceId &&
+          e.serverOrigin == serverOrigin &&
+          (outboxId == null || e.outboxId == outboxId));
 
       if (entries.length != initialCount) {
         final raw = jsonEncode(entries.map((e) => e.toJson()).toList());
@@ -209,14 +268,14 @@ class CallOutboxService {
       int flushedCount = 0;
 
       for (final entry in entries) {
-        // Multi-tenant, device, and origin scoping: never transmit to mismatched scopes
-        if (currentTenantId != null && entry.tenantId != null && entry.tenantId != currentTenantId) {
+        // Multi-tenant, device, and origin scoping: strict exact matching without null wildcards
+        if (currentTenantId == null || entry.tenantId != currentTenantId) {
           continue;
         }
-        if (currentDeviceId != null && entry.deviceId != null && entry.deviceId != currentDeviceId) {
+        if (currentDeviceId == null || entry.deviceId != currentDeviceId) {
           continue;
         }
-        if (currentOrigin != null && entry.serverOrigin != null && entry.serverOrigin != currentOrigin) {
+        if (currentOrigin == null || entry.serverOrigin != currentOrigin) {
           continue;
         }
 
