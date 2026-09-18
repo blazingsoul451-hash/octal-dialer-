@@ -4153,6 +4153,13 @@ io.on('connection', (socket) => {
       simSlot: effectiveSimSlot
     });
 
+    if (check.commandId) {
+      await db.execute(
+        `UPDATE commands SET "callId" = $1, "deviceId" = $2, "userId" = $3, "phone" = $4, "name" = $5 WHERE id = $6 AND "tenantId" = $7`,
+        [callSession.callId, callSession.phoneDeviceId || null, callSession.userId || null, phone, name || null, check.commandId, tenantId]
+      ).catch(() => {});
+    }
+
     const dialPayload = {
       callId: callSession.callId,
       phone,
@@ -4417,36 +4424,38 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // 1. Check durable PostgreSQL call_outcomes ledger for committed outcome
-    const existingDbOutcome = await db.queryOne<{ id: string; tenantId: string; leadId?: string }>(
-      'SELECT id, "tenantId", "leadId" FROM call_outcomes WHERE "callId" = $1 LIMIT 1',
-      [targetCallId]
-    ).catch(() => null);
-
-    if (existingDbOutcome) {
-      if (!socket.data.tenantId || socket.data.tenantId === existingDbOutcome.tenantId) {
-        socket.emit('call:ended-ack', { callId: targetCallId, leadId: existingDbOutcome.leadId });
-        return;
-      }
-    }
-
-    // 2. Authorize socket against session ownership or authenticated tenant/device reconnect binding
     const session = getSessionById(sessionId || socket.data.sessionId || '');
     const cs = callId ? getCallSession(callId) : commandId ? getCallSessionByCommandId(commandId) : (session ? getCallSessionBySessionId(session.id) : undefined);
 
     let recoveredTenantId: string | null = null;
     let recoveredLeadId: string | null = null;
     let recoveredSessionId: string | null = null;
+    let recoveredCommandId: string | null = null;
+    let recoveredDeviceId: string | null = null;
+    let recoveredUserId: string | null = null;
+    let recoveredPhone: string | null = null;
+    let recoveredName: string | null = null;
 
     if (commandId) {
-      const dbCmd = await db.queryOne<{ id: string; tenantId: string; leadId: string; sessionId: string }>(
-        'SELECT id, "tenantId", "leadId", "sessionId" FROM commands WHERE id = $1 LIMIT 1',
-        [commandId]
-      ).catch(() => null);
-      if (dbCmd) {
-        recoveredTenantId = dbCmd.tenantId;
-        recoveredLeadId = dbCmd.leadId;
-        recoveredSessionId = dbCmd.sessionId;
+      try {
+        const dbCmd = await db.queryOne<{ id: string; tenantId: string; leadId: string; sessionId: string; deviceId?: string; userId?: string; phone?: string; name?: string }>(
+          'SELECT id, "tenantId", "leadId", "sessionId", "deviceId", "userId", "phone", "name" FROM commands WHERE id = $1 LIMIT 1',
+          [commandId]
+        );
+        if (dbCmd) {
+          recoveredTenantId = dbCmd.tenantId;
+          recoveredLeadId = dbCmd.leadId;
+          recoveredSessionId = dbCmd.sessionId;
+          recoveredCommandId = dbCmd.id;
+          recoveredDeviceId = dbCmd.deviceId || null;
+          recoveredUserId = dbCmd.userId || null;
+          recoveredPhone = dbCmd.phone || null;
+          recoveredName = dbCmd.name || null;
+        }
+      } catch (dbErr) {
+        console.error('[CallEngine] Database error looking up command for recovery:', dbErr);
+        socket.emit('error', { code: 'CALL_OUTCOME_PERSISTENCE_FAILED', message: 'Storage unavailable during recovery check. Retry terminal event.' });
+        return;
       }
     }
 
@@ -4466,20 +4475,49 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const isAuthorizedSocket = !session || session.phoneSocketId === socket.id ||
-      (socket.data.tenantId === effectiveTenantId && (!session.phoneDeviceId || socket.data.phoneDeviceId === session.phoneDeviceId || socket.data.deviceId === session.phoneDeviceId));
+    // P1: Strict Authorization - Remove !session shortcut; require authenticated device/user binding
+    const socketDeviceId = socket.data.deviceId || socket.data.phoneDeviceId;
+    const socketUserId = socket.data.user?.id;
+
+    let isAuthorizedSocket = false;
+    if (session) {
+      isAuthorizedSocket = (session.phoneSocketId === socket.id) ||
+        (socket.data.tenantId === effectiveTenantId && Boolean(session.phoneDeviceId && socketDeviceId === session.phoneDeviceId));
+    } else {
+      // Explicit recovery validation when in-memory session state is missing:
+      // Require authenticated socket matching tenant and recovered command device/user
+      const hasAuthTenant = Boolean(socket.data.tenantId && socket.data.tenantId === effectiveTenantId);
+      const matchesCommandUser = recoveredUserId ? (socketUserId === recoveredUserId) : true;
+      const matchesCommandDevice = recoveredDeviceId ? (socketDeviceId === recoveredDeviceId) : true;
+      const hasEvidence = Boolean(recoveredCommandId || cs);
+      isAuthorizedSocket = Boolean(hasAuthTenant && hasEvidence && matchesCommandUser && matchesCommandDevice);
+    }
 
     if (!isAuthorizedSocket) {
       console.warn(`[Socket Security] Rejected call:ended from non-authoritative socket ${socket.id}`);
       return;
     }
 
-    if (session && session.phoneSocketId !== socket.id) {
-      session.phoneSocketId = socket.id;
+    // Check durable PostgreSQL call_outcomes ledger for committed outcome (strictly scoped by tenant)
+    let existingDbOutcome = null;
+    try {
+      existingDbOutcome = await db.queryOne<{ id: string; tenantId: string; leadId?: string }>(
+        'SELECT id, "tenantId", "leadId" FROM call_outcomes WHERE "callId" = $1 AND "tenantId" = $2 LIMIT 1',
+        [targetCallId, effectiveTenantId]
+      );
+    } catch (dbErr) {
+      console.error('[CallEngine] Database error checking existing call_outcomes:', dbErr);
+      socket.emit('error', { code: 'CALL_OUTCOME_PERSISTENCE_FAILED', message: 'Storage unavailable during outcome check. Retry terminal event.' });
+      return;
     }
 
-    // 3. In-flight and in-memory deduplication
-    if ((cs && cs.endedAt) || committedCallEndings.has(targetCallId)) {
+    if (existingDbOutcome) {
+      socket.emit('call:ended-ack', { callId: targetCallId, leadId: existingDbOutcome.leadId });
+      return;
+    }
+
+    // In-flight and in-memory deduplication
+    if (committedCallEndings.has(targetCallId)) {
       socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs?.leadId || recoveredLeadId });
       return;
     }
@@ -4499,26 +4537,29 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const effectiveLeadId = leadId || cs?.leadId || recoveredLeadId;
-    const effectiveCommandId = commandId || cs?.commandId;
-    const effectivePhone = phone || cs?.phone || '';
-    const effectiveName = name || cs?.name || '';
+    // P1: Never prioritize client leadId/commandId/phone over canonical ownership data
+    const effectiveLeadId = cs?.leadId || recoveredLeadId || leadId;
+    const effectiveCommandId = cs?.commandId || recoveredCommandId || commandId;
+    const effectivePhone = cs?.phone || recoveredPhone || phone || '';
+    const effectiveName = cs?.name || recoveredName || name || '';
     const effectiveReason = typeof reason === 'string' && reason.length <= 64 ? reason : 'UNKNOWN';
     const effectiveDuration = typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, Math.min(86400, Math.floor(duration))) : 0;
     const effectiveAnswered = (answered === true || effectiveReason === 'ANSWERED') ? 1 : 0;
     const effectiveSessionId = sessionId || session?.id || cs?.sessionId || recoveredSessionId || '';
     const outcomeId = `co_${targetCallId}_${Date.now()}`;
     const finalizedAt = new Date().toISOString();
-    const phoneDeviceId = session?.phoneDeviceId || socket.data.deviceId || socket.data.phoneDeviceId || null;
-    const userId = session?.userId || socket.data.user?.id || null;
+    const phoneDeviceId = session?.phoneDeviceId || socketDeviceId || recoveredDeviceId || null;
+    const userId = session?.userId || socketUserId || recoveredUserId || null;
 
     const finalizationTask = (async () => {
       try {
         await db.withTransaction(async () => {
-          await db.execute(
+          // P1: Atomic transactional claim: only the winning insert executes associated side-effects
+          const insertResult = await db.query(
             `INSERT INTO call_outcomes ("id", "tenantId", "callId", "commandId", "leadId", "phone", "name", "reason", "duration", "answered", "finalizedAt", "phoneDeviceId", "userId")
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-             ON CONFLICT ("tenantId", "callId") DO NOTHING;`,
+             ON CONFLICT ("tenantId", "callId") DO NOTHING
+             RETURNING id;`,
             [
               outcomeId,
               effectiveTenantId,
@@ -4536,13 +4577,26 @@ io.on('connection', (socket) => {
             ]
           );
 
-          if (effectiveCommandId) await expireCommand(effectiveCommandId);
-          if (effectiveLeadId) {
-            await releaseLeadLock(effectiveLeadId, effectiveSessionId);
-            await createLog(effectiveLeadId, effectiveReason, effectiveDuration, effectiveTenantId);
-            await updateLeadStatus(effectiveLeadId, 'COMPLETED', effectiveReason, effectiveDuration, effectiveTenantId);
+          const wonClaim = Boolean(insertResult.rows && insertResult.rows.length > 0 && insertResult.rows[0].id === outcomeId);
+
+          if (wonClaim) {
+            if (effectiveCommandId) await expireCommand(effectiveCommandId);
+            if (effectiveLeadId) {
+              await releaseLeadLock(effectiveLeadId, effectiveSessionId);
+              await createLog(effectiveLeadId, effectiveReason, effectiveDuration, effectiveTenantId);
+              await updateLeadStatus(effectiveLeadId, 'COMPLETED', effectiveReason, effectiveDuration, effectiveTenantId);
+            } else {
+              await createManualLog(effectivePhone, effectiveName || 'Manual Quick Dial', effectiveReason, effectiveDuration, effectiveTenantId);
+            }
           } else {
-            await createManualLog(effectivePhone, effectiveName || 'Manual Quick Dial', effectiveReason, effectiveDuration, effectiveTenantId);
+            // Conflict / already committed: verify existing record within transaction; do not repeat mutations
+            const existingRecord = await db.queryOne<{ id: string }>(
+              'SELECT id FROM call_outcomes WHERE "tenantId" = $1 AND "callId" = $2 LIMIT 1',
+              [effectiveTenantId, targetCallId]
+            );
+            if (!existingRecord) {
+              throw new Error('Concurrent outcome insertion could not be confirmed');
+            }
           }
         });
 

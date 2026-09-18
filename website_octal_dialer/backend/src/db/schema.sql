@@ -296,7 +296,12 @@ CREATE TABLE IF NOT EXISTS "commands" (
   "sessionId" TEXT NOT NULL,
   "issuedAt" TEXT NOT NULL DEFAULT '',
   "expiresAt" TEXT NOT NULL,
-  "tenantId" TEXT
+  "tenantId" TEXT,
+  "callId" TEXT,
+  "deviceId" TEXT,
+  "userId" TEXT,
+  "phone" TEXT,
+  "name" TEXT
 );
 
 -- Table: suppression_list

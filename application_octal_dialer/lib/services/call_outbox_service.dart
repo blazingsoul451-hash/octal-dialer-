@@ -1,5 +1,6 @@
 ﻿import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
@@ -16,7 +17,11 @@ class CallOutboxEntry {
   final int duration;
   final bool answered;
   final int createdAtMs;
+  final String? serverOrigin;
+  final String? tenantId;
+  final String? deviceId;
   int retryCount;
+  int lastAttemptMs;
 
   CallOutboxEntry({
     required this.outboxId,
@@ -30,7 +35,11 @@ class CallOutboxEntry {
     required this.duration,
     required this.answered,
     required this.createdAtMs,
+    this.serverOrigin,
+    this.tenantId,
+    this.deviceId,
     this.retryCount = 0,
+    this.lastAttemptMs = 0,
   });
 
   Map<String, dynamic> toJson() => {
@@ -45,7 +54,11 @@ class CallOutboxEntry {
     'duration': duration,
     'answered': answered,
     'createdAtMs': createdAtMs,
+    'serverOrigin': serverOrigin,
+    'tenantId': tenantId,
+    'deviceId': deviceId,
     'retryCount': retryCount,
+    'lastAttemptMs': lastAttemptMs,
   };
 
   factory CallOutboxEntry.fromJson(Map<String, dynamic> json) => CallOutboxEntry(
@@ -60,7 +73,11 @@ class CallOutboxEntry {
     duration: (json['duration'] as num?)?.toInt() ?? 0,
     answered: json['answered'] as bool? ?? false,
     createdAtMs: (json['createdAtMs'] as num?)?.toInt() ?? 0,
+    serverOrigin: json['serverOrigin'] as String?,
+    tenantId: json['tenantId'] as String?,
+    deviceId: json['deviceId'] as String?,
     retryCount: (json['retryCount'] as num?)?.toInt() ?? 0,
+    lastAttemptMs: (json['lastAttemptMs'] as num?)?.toInt() ?? 0,
   );
 }
 
@@ -70,68 +87,137 @@ class CallOutboxService {
   CallOutboxService._internal();
 
   static const String _storageKey = 'octal_call_outbox_queue';
-  bool _isFlushing = false;
+  Future<void> _lock = Future.value();
+  Timer? _periodicRetryTimer;
 
-  Future<List<CallOutboxEntry>> getPendingEntries() async {
+  Future<T> _runSerialized<T>(Future<T> Function() task) {
+    final prev = _lock;
+    final completer = Completer<void>();
+    _lock = completer.future;
+    return prev.then((_) => task()).whenComplete(() {
+      completer.complete();
+    });
+  }
+
+  Future<List<CallOutboxEntry>> _readEntriesInternal(SharedPreferences prefs) async {
+    final raw = prefs.getString(_storageKey);
+    if (raw == null || raw.isEmpty) return [];
+
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_storageKey);
-      if (raw == null || raw.isEmpty) return [];
       final List<dynamic> decoded = jsonDecode(raw);
       return decoded
           .map((e) => CallOutboxEntry.fromJson(Map<String, dynamic>.from(e)))
           .toList();
     } catch (e) {
-      debugPrint('[CallOutbox] Error reading outbox: $e');
-      return [];
+      debugPrint('[CallOutbox] Corrupt storage detected: $e. Quarantining...');
+      final quarantineKey = '${_storageKey}_corrupt_${DateTime.now().millisecondsSinceEpoch}';
+      await prefs.setString(quarantineKey, raw);
+      await prefs.remove(_storageKey);
+      throw StateError('Outbox storage was corrupt and quarantined to $quarantineKey: $e');
     }
+  }
+
+  Future<List<CallOutboxEntry>> getPendingEntries() async {
+    return _runSerialized(() async {
+      final prefs = await SharedPreferences.getInstance();
+      try {
+        return await _readEntriesInternal(prefs);
+      } catch (e) {
+        debugPrint('[CallOutbox] Error reading outbox: $e');
+        return [];
+      }
+    });
   }
 
   Future<void> enqueueOutcome(CallOutboxEntry entry) async {
-    try {
+    return _runSerialized(() async {
       final prefs = await SharedPreferences.getInstance();
-      final entries = await getPendingEntries();
-      // Remove any duplicate callId if present before adding the latest
+      List<CallOutboxEntry> entries;
+      try {
+        entries = await _readEntriesInternal(prefs);
+      } catch (_) {
+        entries = [];
+      }
+
       entries.removeWhere((e) => e.callId == entry.callId);
       entries.add(entry);
+
       final raw = jsonEncode(entries.map((e) => e.toJson()).toList());
-      await prefs.setString(_storageKey, raw);
-      debugPrint('[CallOutbox] Persisted terminal outcome for callId=${entry.callId} to durable storage');
-    } catch (e) {
-      debugPrint('[CallOutbox] Error saving outbox entry: $e');
-    }
+      final ok = await prefs.setString(_storageKey, raw);
+      if (!ok) {
+        throw StateError('Failed to persist call outbox entry to durable storage');
+      }
+      debugPrint('[CallOutbox] Serialized terminal outcome for callId=${entry.callId} to durable journal');
+    });
   }
 
-  Future<void> acknowledgeOutcome(String callId) async {
-    try {
+  Future<bool> acknowledgeOutcome(String callId, {String? tenantId}) async {
+    return _runSerialized(() async {
       final prefs = await SharedPreferences.getInstance();
-      final entries = await getPendingEntries();
+      List<CallOutboxEntry> entries;
+      try {
+        entries = await _readEntriesInternal(prefs);
+      } catch (e) {
+        debugPrint('[CallOutbox] Error reading outbox on ack: $e');
+        return false;
+      }
+
       final initialCount = entries.length;
-      entries.removeWhere((e) => e.callId == callId);
+      entries.removeWhere((e) =>
+          e.callId == callId &&
+          (tenantId == null || e.tenantId == null || e.tenantId == tenantId));
+
       if (entries.length != initialCount) {
         final raw = jsonEncode(entries.map((e) => e.toJson()).toList());
-        await prefs.setString(_storageKey, raw);
-        debugPrint('[CallOutbox] Acknowledged and cleared outcome for callId=$callId (remaining: ${entries.length})');
+        final ok = await prefs.setString(_storageKey, raw);
+        if (!ok) {
+          throw StateError('Failed to persist outbox acknowledgement to durable storage');
+        }
+        debugPrint('[CallOutbox] Acknowledged and removed outcome for callId=$callId (remaining: ${entries.length})');
+        return true;
       }
-    } catch (e) {
-      debugPrint('[CallOutbox] Error acknowledging outbox entry: $e');
-    }
+      return false;
+    });
   }
 
-  Future<void> flush(io.Socket? socket) async {
-    if (_isFlushing) return;
+  Future<void> flush(io.Socket? socket, {String? currentOrigin, String? currentTenantId, String? currentDeviceId}) async {
     if (socket == null || !socket.connected) {
       debugPrint('[CallOutbox] Cannot flush: socket is disconnected');
       return;
     }
 
-    _isFlushing = true;
-    try {
-      final entries = await getPendingEntries();
+    return _runSerialized(() async {
+      final prefs = await SharedPreferences.getInstance();
+      List<CallOutboxEntry> entries;
+      try {
+        entries = await _readEntriesInternal(prefs);
+      } catch (e) {
+        debugPrint('[CallOutbox] Flush abort: could not read entries: $e');
+        return;
+      }
+
       if (entries.isEmpty) return;
 
-      debugPrint('[CallOutbox] Flushing ${entries.length} pending terminal event(s)...');
+      final now = DateTime.now().millisecondsSinceEpoch;
+      int flushedCount = 0;
+
       for (final entry in entries) {
+        // Multi-tenant and origin scoping: never transmit to mismatched tenant
+        if (currentTenantId != null && entry.tenantId != null && entry.tenantId != currentTenantId) {
+          continue;
+        }
+        if (currentOrigin != null && entry.serverOrigin != null && entry.serverOrigin != currentOrigin) {
+          continue;
+        }
+
+        // Bounded backoff retry: min(60s, 2s * 2^retryCount)
+        if (entry.retryCount > 0 && entry.lastAttemptMs > 0) {
+          final backoffMs = math.min(60000, 2000 * math.pow(2, math.min(entry.retryCount, 5))).toInt();
+          if (now - entry.lastAttemptMs < backoffMs) {
+            continue;
+          }
+        }
+
         socket.emit('call:ended', {
           'sessionId': entry.sessionId,
           'callId': entry.callId,
@@ -144,17 +230,39 @@ class CallOutboxService {
           'answered': entry.answered,
           'outboxId': entry.outboxId,
           'retryCount': entry.retryCount,
+          'deviceId': entry.deviceId ?? currentDeviceId,
         });
+
         entry.retryCount++;
+        entry.lastAttemptMs = now;
+        flushedCount++;
       }
 
-      final prefs = await SharedPreferences.getInstance();
-      final raw = jsonEncode(entries.map((e) => e.toJson()).toList());
-      await prefs.setString(_storageKey, raw);
-    } catch (e) {
-      debugPrint('[CallOutbox] Error flushing outbox: $e');
-    } finally {
-      _isFlushing = false;
-    }
+      if (flushedCount > 0) {
+        final raw = jsonEncode(entries.map((e) => e.toJson()).toList());
+        await prefs.setString(_storageKey, raw);
+        debugPrint('[CallOutbox] Flushed $flushedCount pending terminal event(s) to server');
+      }
+    });
+  }
+
+  void startPeriodicRetry(io.Socket? Function() getSocket, {String? Function()? getTenantId, String? Function()? getDeviceId, String? Function()? getOrigin}) {
+    stopPeriodicRetry();
+    _periodicRetryTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      final s = getSocket();
+      if (s != null && s.connected) {
+        flush(
+          s,
+          currentTenantId: getTenantId?.call(),
+          currentDeviceId: getDeviceId?.call(),
+          currentOrigin: getOrigin?.call(),
+        );
+      }
+    });
+  }
+
+  void stopPeriodicRetry() {
+    _periodicRetryTimer?.cancel();
+    _periodicRetryTimer = null;
   }
 }

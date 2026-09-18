@@ -289,7 +289,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     final effectiveCallId = widget.callId ?? widget.commandId ?? 'call_${DateTime.now().millisecondsSinceEpoch}';
 
     final outboxEntry = CallOutboxEntry(
-      outboxId: 'outbox_${DateTime.now().millisecondsSinceEpoch}_${math.Random().nextInt(10000)}',
+      outboxId: 'ob_${DateTime.now().millisecondsSinceEpoch}_$effectiveCallId',
       callId: effectiveCallId,
       sessionId: widget.sessionId,
       leadId: widget.leadId.isNotEmpty ? widget.leadId : null,
@@ -300,12 +300,21 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
       duration: effectiveDuration,
       answered: effectiveAnswered,
       createdAtMs: DateTime.now().millisecondsSinceEpoch,
+      serverOrigin: PhoneBridgeService.instance.serverUri,
+      tenantId: PhoneBridgeService.instance.tenantId.isNotEmpty ? PhoneBridgeService.instance.tenantId : null,
+      deviceId: PhoneBridgeService.instance.deviceId.isNotEmpty ? PhoneBridgeService.instance.deviceId : null,
     );
 
     // Persist to durable handset outbox BEFORE emitting
     CallOutboxService.instance.enqueueOutcome(outboxEntry).then((_) {
-      CallOutboxService.instance.flush(widget.socket);
-    }).catchError((_) {
+      CallOutboxService.instance.flush(
+        widget.socket,
+        currentOrigin: PhoneBridgeService.instance.serverUri,
+        currentTenantId: PhoneBridgeService.instance.tenantId.isNotEmpty ? PhoneBridgeService.instance.tenantId : null,
+        currentDeviceId: PhoneBridgeService.instance.deviceId.isNotEmpty ? PhoneBridgeService.instance.deviceId : null,
+      );
+    }).catchError((err) {
+      debugPrint('[CallingScreen] Outbox enqueue failed: $err. Falling back to direct socket emit');
       widget.socket.emit('call:ended', {
         'sessionId': widget.sessionId,
         'callId': effectiveCallId,
@@ -316,6 +325,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         'reason': effectiveReason,
         'duration': effectiveDuration,
         'answered': effectiveAnswered,
+        'deviceId': PhoneBridgeService.instance.deviceId.isNotEmpty ? PhoneBridgeService.instance.deviceId : null,
       });
     });
 
