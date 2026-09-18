@@ -191,10 +191,13 @@ object OctalCallManager {
         var externalId: String? = null
 
         if (!explicitExtraId.isNullOrEmpty()) {
-            externalId = explicitExtraId
-            // If the explicit ID matches current pending placement, clear the pending slot
-            if (pendingPlacement?.commandId == explicitExtraId) {
+            val pending = pendingPlacement
+            if (pending != null && !pending.isCancelled && pending.commandId == explicitExtraId) {
+                externalId = explicitExtraId
                 pendingPlacement = null
+                Log.d(TAG, "[Telecom] Validated explicitExtraId matching pending placement: $explicitExtraId")
+            } else {
+                Log.w(TAG, "[Telecom] Ignored unverified explicitExtraId '$explicitExtraId' (does not match pending placement)")
             }
         } else if (!isIncoming) {
             val pending = pendingPlacement
@@ -205,10 +208,10 @@ object OctalCallManager {
                     pendingPlacement = null
                 } else {
                     val destMatches = when {
-                        pending.destination.isEmpty() -> true
+                        pending.destination.isEmpty() -> false
                         cleanCallNumber.isEmpty() -> false
                         cleanCallNumber == pending.destination -> true
-                        cleanCallNumber.length >= 7 && pending.destination.length >= 7 &&
+                        cleanCallNumber.length >= 10 && pending.destination.length >= 10 &&
                             (cleanCallNumber.endsWith(pending.destination) || pending.destination.endsWith(cleanCallNumber)) -> true
                         else -> false
                     }

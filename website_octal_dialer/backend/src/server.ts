@@ -4153,11 +4153,74 @@ io.on('connection', (socket) => {
       simSlot: effectiveSimSlot
     });
 
+    // P1: Define and commit immutable durable call record BEFORE dispatch
+    const dispatchedAt = new Date().toISOString();
+    const replayExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const bindingGen = (session as any).generation || 1;
+
+    try {
+      const journalRes = await db.execute(
+        `INSERT INTO call_dispatch_journal (
+          "callId", "tenantId", "userId", "deviceId", "sessionId", "bindingGeneration",
+          "destination", "name", "commandId", "leadId", "campaignId", "simSlot",
+          "protocolVersion", "dispatchedAt", "replayExpiresAt", "status"
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'DISPATCHED')`,
+        [
+          callSession.callId,
+          tenantId,
+          callSession.userId,
+          callSession.phoneDeviceId,
+          sessionId,
+          bindingGen,
+          phone,
+          name || null,
+          check.commandId || null,
+          leadId || null,
+          campaignId || null,
+          effectiveSimSlot ?? null,
+          '1.0',
+          dispatchedAt,
+          replayExpiresAt
+        ]
+      );
+
+      if (!journalRes || journalRes.rowCount === 0) {
+        if (leadId) await releaseLeadLock(leadId, sessionId).catch(() => {});
+        if (check.commandId) await expireCommand(check.commandId).catch(() => {});
+        setSessionStatus(sessionId, 'PAIRED');
+        socket.emit('error', { code: 'PERSISTENCE_FAILED', message: 'Failed to record durable call dispatch in journal.' });
+        return;
+      }
+    } catch (jErr) {
+      console.error('[CallEngine] Failed to write call_dispatch_journal:', jErr);
+      if (leadId) await releaseLeadLock(leadId, sessionId).catch(() => {});
+      if (check.commandId) await expireCommand(check.commandId).catch(() => {});
+      setSessionStatus(sessionId, 'PAIRED');
+      socket.emit('error', { code: 'PERSISTENCE_FAILED', message: 'Database error writing call dispatch journal.' });
+      return;
+    }
+
     if (check.commandId) {
-      await db.execute(
-        `UPDATE commands SET "callId" = $1, "deviceId" = $2, "userId" = $3, "phone" = $4, "name" = $5 WHERE id = $6 AND "tenantId" = $7`,
-        [callSession.callId, callSession.phoneDeviceId || null, callSession.userId || null, phone, name || null, check.commandId, tenantId]
-      ).catch(() => {});
+      try {
+        const cmdRes = await db.execute(
+          `UPDATE commands SET "callId" = $1, "deviceId" = $2, "userId" = $3, "phone" = $4, "name" = $5 WHERE id = $6 AND "tenantId" = $7`,
+          [callSession.callId, callSession.phoneDeviceId, callSession.userId, phone, name || null, check.commandId, tenantId]
+        );
+        if (!cmdRes || cmdRes.rowCount === 0) {
+          if (leadId) await releaseLeadLock(leadId, sessionId).catch(() => {});
+          await expireCommand(check.commandId).catch(() => {});
+          setSessionStatus(sessionId, 'PAIRED');
+          socket.emit('error', { code: 'COMMAND_BIND_FAILED', message: 'Failed to bind command to call dispatch.' });
+          return;
+        }
+      } catch (cErr) {
+        console.error('[CallEngine] Failed to update command ownership:', cErr);
+        if (leadId) await releaseLeadLock(leadId, sessionId).catch(() => {});
+        await expireCommand(check.commandId).catch(() => {});
+        setSessionStatus(sessionId, 'PAIRED');
+        socket.emit('error', { code: 'COMMAND_BIND_FAILED', message: 'Database error binding command to call.' });
+        return;
+      }
     }
 
     const dialPayload = {
@@ -4407,7 +4470,7 @@ io.on('connection', (socket) => {
     console.log(`[CallEngine] Verified Phone ${socket.id} ACTIVE in session ${session.id} (Call: ${cs?.callId || 'active'})`);
   });
 
-  socket.on('call:ended', async ({ sessionId, callId, leadId, phone, name, reason, duration, commandId, answered }: {
+  socket.on('call:ended', async ({ sessionId, callId, leadId, phone, name, reason, duration, commandId, answered, outboxId }: {
     sessionId: string;
     callId?: string;
     leadId?: string;
@@ -4417,93 +4480,98 @@ io.on('connection', (socket) => {
     duration: number;
     commandId?: string;
     answered?: boolean;
+    outboxId?: string;
   }) => {
-    const targetCallId = callId || commandId || (sessionId ? `call_${sessionId}` : '');
+    const authTenantId = socket.data.tenantId;
+    const socketDeviceId = socket.data.deviceId || socket.data.phoneDeviceId;
+    const socketUserId = socket.data.user?.id;
+
+    if (!authTenantId || !socketDeviceId) {
+      console.warn(`[Socket Security] Rejected call:ended: Missing authenticated tenant or device principal (${socket.id})`);
+      socket.emit('error', { code: 'UNAUTHORIZED_SOCKET', message: 'Socket requires authenticated tenant and device registration' });
+      return;
+    }
+
+    const rawCallId = typeof callId === 'string' ? callId.trim() : '';
+    const rawCmdId = typeof commandId === 'string' ? commandId.trim() : '';
+    const targetCallId = rawCallId || rawCmdId;
     if (!targetCallId) {
-      console.warn('[Socket Security] Rejected call:ended: Missing callId/commandId/sessionId');
+      console.warn('[Socket Security] Rejected call:ended: Missing callId/commandId');
+      socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'Missing callId or commandId' });
+      return;
+    }
+
+    // Step 1: Query canonical pre-dispatch journal (strictly scoped to authenticated tenant)
+    let journalRecord: any = null;
+    try {
+      journalRecord = await db.queryOne(
+        'SELECT * FROM call_dispatch_journal WHERE "tenantId" = $1 AND ("callId" = $2 OR "commandId" = $3) LIMIT 1',
+        [authTenantId, targetCallId, rawCmdId || targetCallId]
+      );
+    } catch (dbErr) {
+      console.error('[CallEngine] Database error querying call_dispatch_journal:', dbErr);
+      socket.emit('error', { code: 'CALL_OUTCOME_PERSISTENCE_FAILED', message: 'Storage unavailable during recovery check. Retry terminal event.' });
       return;
     }
 
     const session = getSessionById(sessionId || socket.data.sessionId || '');
-    const cs = callId ? getCallSession(callId) : commandId ? getCallSessionByCommandId(commandId) : (session ? getCallSessionBySessionId(session.id) : undefined);
+    const cs = rawCallId ? getCallSession(rawCallId) : rawCmdId ? getCallSessionByCommandId(rawCmdId) : (session ? getCallSessionBySessionId(session.id) : undefined);
 
-    let recoveredTenantId: string | null = null;
-    let recoveredLeadId: string | null = null;
-    let recoveredSessionId: string | null = null;
-    let recoveredCommandId: string | null = null;
-    let recoveredDeviceId: string | null = null;
-    let recoveredUserId: string | null = null;
-    let recoveredPhone: string | null = null;
-    let recoveredName: string | null = null;
-
-    if (commandId) {
+    // Fallback query to legacy commands table if journal does not have it yet
+    let legacyCmd: any = null;
+    if (!journalRecord && rawCmdId) {
       try {
-        const dbCmd = await db.queryOne<{ id: string; tenantId: string; leadId: string; sessionId: string; deviceId?: string; userId?: string; phone?: string; name?: string }>(
-          'SELECT id, "tenantId", "leadId", "sessionId", "deviceId", "userId", "phone", "name" FROM commands WHERE id = $1 LIMIT 1',
-          [commandId]
+        legacyCmd = await db.queryOne(
+          'SELECT id, "tenantId", "leadId", "sessionId", "deviceId", "userId", "phone", "name", "callId" FROM commands WHERE id = $1 AND "tenantId" = $2 LIMIT 1',
+          [rawCmdId, authTenantId]
         );
-        if (dbCmd) {
-          recoveredTenantId = dbCmd.tenantId;
-          recoveredLeadId = dbCmd.leadId;
-          recoveredSessionId = dbCmd.sessionId;
-          recoveredCommandId = dbCmd.id;
-          recoveredDeviceId = dbCmd.deviceId || null;
-          recoveredUserId = dbCmd.userId || null;
-          recoveredPhone = dbCmd.phone || null;
-          recoveredName = dbCmd.name || null;
-        }
       } catch (dbErr) {
-        console.error('[CallEngine] Database error looking up command for recovery:', dbErr);
-        socket.emit('error', { code: 'CALL_OUTCOME_PERSISTENCE_FAILED', message: 'Storage unavailable during recovery check. Retry terminal event.' });
+        console.error('[CallEngine] Database error querying legacy command:', dbErr);
+        socket.emit('error', { code: 'CALL_OUTCOME_PERSISTENCE_FAILED', message: 'Storage unavailable during legacy check. Retry terminal event.' });
         return;
       }
     }
 
-    const effectiveTenantId = session?.tenantId || cs?.tenantId || recoveredTenantId || socket.data.tenantId;
-    if (!effectiveTenantId) {
-      console.warn(`[Socket Security] Rejected call:ended: Cannot resolve tenantId for callId=${targetCallId}`);
+    // Fail closed if call cannot be authoritatively identified
+    if (!journalRecord && !cs && !legacyCmd) {
+      console.warn(`[Socket Security] Rejected call:ended: Unknown call ${targetCallId} on tenant ${authTenantId}`);
+      socket.emit('error', { code: 'UNKNOWN_CALL', message: 'Call not found in authoritative dispatch ledger' });
       return;
     }
 
-    if (socket.data.tenantId && socket.data.tenantId !== effectiveTenantId) {
-      console.warn(`[Socket Security] Rejected call:ended: Tenant mismatch`);
+    const effectiveTenantId = journalRecord?.tenantId || cs?.tenantId || legacyCmd?.tenantId || authTenantId;
+    if (effectiveTenantId !== authTenantId) {
+      console.warn(`[Socket Security] Rejected call:ended: Tenant mismatch (${effectiveTenantId} !== ${authTenantId})`);
+      socket.emit('error', { code: 'TENANT_MISMATCH', message: 'Tenant ownership mismatch' });
       return;
     }
 
-    if (cs && session && (cs.sessionId !== session.id || cs.tenantId !== effectiveTenantId)) {
-      console.warn(`[Socket Security] Rejected call:ended: Session ownership validation failed for callId=${targetCallId}`);
+    // Step 2: Verify Device Ownership
+    const authoritativeDeviceId = journalRecord?.deviceId || cs?.phoneDeviceId || legacyCmd?.deviceId || session?.phoneDeviceId;
+    if (authoritativeDeviceId && authoritativeDeviceId !== socketDeviceId) {
+      console.warn(`[Socket Security] Rejected call:ended: Device mismatch (owned by ${authoritativeDeviceId}, socket is ${socketDeviceId})`);
+      socket.emit('error', { code: 'DEVICE_MISMATCH', message: 'Device ownership mismatch' });
       return;
     }
 
-    // P1: Strict Authorization - Remove !session shortcut; require authenticated device/user binding
-    const socketDeviceId = socket.data.deviceId || socket.data.phoneDeviceId;
-    const socketUserId = socket.data.user?.id;
-
-    let isAuthorizedSocket = false;
-    if (session) {
-      isAuthorizedSocket = (session.phoneSocketId === socket.id) ||
-        (socket.data.tenantId === effectiveTenantId && Boolean(session.phoneDeviceId && socketDeviceId === session.phoneDeviceId));
-    } else {
-      // Explicit recovery validation when in-memory session state is missing:
-      // Require authenticated socket matching tenant and recovered command device/user
-      const hasAuthTenant = Boolean(socket.data.tenantId && socket.data.tenantId === effectiveTenantId);
-      const matchesCommandUser = recoveredUserId ? (socketUserId === recoveredUserId) : true;
-      const matchesCommandDevice = recoveredDeviceId ? (socketDeviceId === recoveredDeviceId) : true;
-      const hasEvidence = Boolean(recoveredCommandId || cs);
-      isAuthorizedSocket = Boolean(hasAuthTenant && hasEvidence && matchesCommandUser && matchesCommandDevice);
+    // Step 3: Verify Replay Expiry
+    if (journalRecord && journalRecord.replayExpiresAt) {
+      if (new Date() > new Date(journalRecord.replayExpiresAt)) {
+        console.warn(`[Socket Security] Rejected call:ended: Replay authorization expired for call ${targetCallId}`);
+        socket.emit('error', { code: 'REPLAY_EXPIRED', message: 'Replay authorization window expired' });
+        return;
+      }
     }
 
-    if (!isAuthorizedSocket) {
-      console.warn(`[Socket Security] Rejected call:ended from non-authoritative socket ${socket.id}`);
-      return;
-    }
+    const resolvedCallId = journalRecord?.callId || cs?.callId || legacyCmd?.callId || targetCallId;
+    const dedupeKey = `${effectiveTenantId}:${resolvedCallId}`;
 
-    // Check durable PostgreSQL call_outcomes ledger for committed outcome (strictly scoped by tenant)
+    // Step 4: Check durable PostgreSQL call_outcomes ledger (strictly scoped by tenant AND callId)
     let existingDbOutcome = null;
     try {
       existingDbOutcome = await db.queryOne<{ id: string; tenantId: string; leadId?: string }>(
         'SELECT id, "tenantId", "leadId" FROM call_outcomes WHERE "callId" = $1 AND "tenantId" = $2 LIMIT 1',
-        [targetCallId, effectiveTenantId]
+        [resolvedCallId, effectiveTenantId]
       );
     } catch (dbErr) {
       console.error('[CallEngine] Database error checking existing call_outcomes:', dbErr);
@@ -4511,23 +4579,53 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const effectiveCommandId = journalRecord?.commandId || cs?.commandId || legacyCmd?.id || null;
+    const effectiveLeadId = journalRecord ? journalRecord.leadId : (cs ? cs.leadId : (legacyCmd ? legacyCmd.leadId : null));
+    const effectivePhone = journalRecord?.destination || cs?.phone || legacyCmd?.phone || phone || '';
+    const effectiveName = journalRecord?.name || cs?.name || legacyCmd?.name || name || null;
+    const effectiveSessionId = journalRecord?.sessionId || cs?.sessionId || legacyCmd?.sessionId || session?.id || '';
+
     if (existingDbOutcome) {
-      socket.emit('call:ended-ack', { callId: targetCallId, leadId: existingDbOutcome.leadId });
+      socket.emit('call:ended-ack', {
+        ack: true,
+        protocolVersion: '1.0',
+        tenantId: effectiveTenantId,
+        callId: resolvedCallId,
+        commandId: effectiveCommandId,
+        outboxId: outboxId || null,
+        leadId: existingDbOutcome.leadId
+      });
       return;
     }
 
-    // In-flight and in-memory deduplication
-    if (committedCallEndings.has(targetCallId)) {
-      socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs?.leadId || recoveredLeadId });
+    // In-flight and in-memory deduplication scoped by tenant:callId
+    if (committedCallEndings.has(dedupeKey)) {
+      socket.emit('call:ended-ack', {
+        ack: true,
+        protocolVersion: '1.0',
+        tenantId: effectiveTenantId,
+        callId: resolvedCallId,
+        commandId: effectiveCommandId,
+        outboxId: outboxId || null,
+        leadId: effectiveLeadId
+      });
       return;
     }
 
-    const existingInFlight = inFlightCallFinalizations.get(targetCallId);
+    const existingInFlight = inFlightCallFinalizations.get(dedupeKey);
     if (existingInFlight) {
       try {
         const ok = await existingInFlight;
         if (ok) {
-          socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs?.leadId || recoveredLeadId });
+          socket.emit('call:ended-ack', {
+            ack: true,
+            protocolVersion: '1.0',
+            tenantId: effectiveTenantId,
+            callId: resolvedCallId,
+            commandId: effectiveCommandId,
+            outboxId: outboxId || null,
+            leadId: effectiveLeadId
+          });
         } else {
           socket.emit('error', { code: 'CALL_FINALIZATION_FAILED', message: 'In-flight transaction failed' });
         }
@@ -4537,19 +4635,13 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // P1: Never prioritize client leadId/commandId/phone over canonical ownership data
-    const effectiveLeadId = cs?.leadId || recoveredLeadId || leadId;
-    const effectiveCommandId = cs?.commandId || recoveredCommandId || commandId;
-    const effectivePhone = cs?.phone || recoveredPhone || phone || '';
-    const effectiveName = cs?.name || recoveredName || name || '';
     const effectiveReason = typeof reason === 'string' && reason.length <= 64 ? reason : 'UNKNOWN';
     const effectiveDuration = typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, Math.min(86400, Math.floor(duration))) : 0;
     const effectiveAnswered = (answered === true || effectiveReason === 'ANSWERED') ? 1 : 0;
-    const effectiveSessionId = sessionId || session?.id || cs?.sessionId || recoveredSessionId || '';
-    const outcomeId = `co_${targetCallId}_${Date.now()}`;
+    const outcomeId = `co_${resolvedCallId}_${Date.now()}`;
     const finalizedAt = new Date().toISOString();
-    const phoneDeviceId = session?.phoneDeviceId || socketDeviceId || recoveredDeviceId || null;
-    const userId = session?.userId || socketUserId || recoveredUserId || null;
+    const phoneDeviceId = authoritativeDeviceId || socketDeviceId || null;
+    const userId = journalRecord?.userId || cs?.userId || legacyCmd?.userId || session?.userId || socketUserId || null;
 
     const finalizationTask = (async () => {
       try {
@@ -4563,11 +4655,11 @@ io.on('connection', (socket) => {
             [
               outcomeId,
               effectiveTenantId,
-              targetCallId,
-              effectiveCommandId || null,
-              effectiveLeadId || null,
+              resolvedCallId,
+              effectiveCommandId,
+              effectiveLeadId,
               effectivePhone,
-              effectiveName || null,
+              effectiveName,
               effectiveReason,
               effectiveDuration,
               effectiveAnswered,
@@ -4592,7 +4684,7 @@ io.on('connection', (socket) => {
             // Conflict / already committed: verify existing record within transaction; do not repeat mutations
             const existingRecord = await db.queryOne<{ id: string }>(
               'SELECT id FROM call_outcomes WHERE "tenantId" = $1 AND "callId" = $2 LIMIT 1',
-              [effectiveTenantId, targetCallId]
+              [effectiveTenantId, resolvedCallId]
             );
             if (!existingRecord) {
               throw new Error('Concurrent outcome insertion could not be confirmed');
@@ -4601,7 +4693,7 @@ io.on('connection', (socket) => {
         });
 
         if (cs) finalizeCallSession(cs.callId, effectiveReason, effectiveDuration);
-        committedCallEndings.add(targetCallId);
+        committedCallEndings.add(dedupeKey);
         if (committedCallEndings.size > 2000) {
           const first = committedCallEndings.values().next().value;
           if (first) committedCallEndings.delete(first);
@@ -4611,11 +4703,11 @@ io.on('connection', (socket) => {
         console.error('[CallEngine] Finalization transaction failed:', err);
         return false;
       } finally {
-        inFlightCallFinalizations.delete(targetCallId);
+        inFlightCallFinalizations.delete(dedupeKey);
       }
     })();
 
-    inFlightCallFinalizations.set(targetCallId, finalizationTask);
+    inFlightCallFinalizations.set(dedupeKey, finalizationTask);
     const success = await finalizationTask;
 
     if (!success) {
@@ -4623,16 +4715,31 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (session) setSessionStatus(session.id, 'PAIRED');
+    if (session && cs && cs.sessionId === session.id) {
+      setSessionStatus(session.id, 'PAIRED');
+    }
 
-    leadId = effectiveLeadId || undefined;
     // Acknowledge durable persistence to phone socket for terminal outbox clearing
-    socket.emit('call:ended-ack', { callId: targetCallId, leadId });
+    socket.emit('call:ended-ack', {
+      ack: true,
+      protocolVersion: '1.0',
+      tenantId: effectiveTenantId,
+      callId: resolvedCallId,
+      commandId: effectiveCommandId,
+      outboxId: outboxId || null,
+      leadId: effectiveLeadId
+    });
 
-    if (effectiveSessionId) {
-      socket.to(effectiveSessionId).emit('call:finished', { reason: effectiveReason, duration: effectiveDuration, leadId: effectiveLeadId, commandId: effectiveCommandId, callId: targetCallId });
+    if (effectiveSessionId && (!cs || cs.sessionId === effectiveSessionId)) {
+      socket.to(effectiveSessionId).emit('call:finished', {
+        reason: effectiveReason,
+        duration: effectiveDuration,
+        leadId: effectiveLeadId,
+        commandId: effectiveCommandId,
+        callId: resolvedCallId
+      });
       io.to(effectiveSessionId).emit('call:status-changed', {
-        callId: targetCallId,
+        callId: resolvedCallId,
         state: 'ENDED',
         reason: effectiveReason,
         duration: effectiveDuration,
@@ -4642,7 +4749,7 @@ io.on('connection', (socket) => {
       });
     }
     io.to(`tenant_${effectiveTenantId}`).emit('leads:updated');
-    console.log(`[CallEngine] Call finalized in session ${effectiveSessionId} | CallId: ${targetCallId} | Lead: ${effectiveLeadId || effectivePhone} | Reason: ${effectiveReason} | Duration: ${effectiveDuration}s`);
+    console.log(`[CallEngine] Call finalized in session ${effectiveSessionId} | CallId: ${resolvedCallId} | Lead: ${effectiveLeadId || effectivePhone} | Reason: ${effectiveReason} | Duration: ${effectiveDuration}s`);
   });
 
   socket.on('disconnect', async () => {

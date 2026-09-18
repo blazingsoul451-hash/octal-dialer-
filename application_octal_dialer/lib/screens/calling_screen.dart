@@ -314,19 +314,8 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         currentDeviceId: PhoneBridgeService.instance.deviceId.isNotEmpty ? PhoneBridgeService.instance.deviceId : null,
       );
     }).catchError((err) {
-      debugPrint('[CallingScreen] Outbox enqueue failed: $err. Falling back to direct socket emit');
-      widget.socket.emit('call:ended', {
-        'sessionId': widget.sessionId,
-        'callId': effectiveCallId,
-        'leadId': widget.leadId,
-        'phone': widget.phone,
-        'name': widget.name,
-        'commandId': widget.commandId,
-        'reason': effectiveReason,
-        'duration': effectiveDuration,
-        'answered': effectiveAnswered,
-        'deviceId': PhoneBridgeService.instance.deviceId.isNotEmpty ? PhoneBridgeService.instance.deviceId : null,
-      });
+      debugPrint('[CallingScreen] Outbox enqueue failed: $err. Surface failure and schedule retry without unjournaled bypass.');
+      // Persist failure is retained visibly; outbox service periodic retry will re-attempt persistence
     });
 
     try {

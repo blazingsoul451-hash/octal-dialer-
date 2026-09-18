@@ -215,8 +215,10 @@ async function runTests() {
     const handlerBody = source.slice(handlerStart, handlerEnd);
 
     assert(!handlerBody.includes('!session || session.phoneSocketId'), 'Must NOT use !session as authorization shortcut');
-    assert(handlerBody.includes('isAuthorizedSocket = (session.phoneSocketId === socket.id)'), 'Must check authorized socket ID when session exists');
-    assert(handlerBody.includes('hasAuthTenant && hasEvidence'), 'Missing session state must trigger explicit recovery validation with evidence');
+    assert(handlerBody.includes('UNAUTHORIZED_SOCKET'), 'Must require authenticated tenant and device principal');
+    assert(handlerBody.includes('call_dispatch_journal'), 'Must query canonical pre-dispatch journal for recovery');
+    assert(handlerBody.includes('UNKNOWN_CALL'), 'Must fail closed on unknown calls without session fallback');
+    assert(handlerBody.includes('DEVICE_MISMATCH'), 'Must verify device ownership');
     assert(!handlerBody.includes('session.phoneSocketId = socket.id'), 'Must NOT reassign phoneSocketId from outcome event');
     assert(handlerBody.includes('SELECT id, "tenantId", "leadId" FROM call_outcomes WHERE "callId" = $1 AND "tenantId" = $2'), 'call_outcomes lookup must be scoped by authenticated tenant');
     assert(handlerBody.includes('CALL_OUTCOME_PERSISTENCE_FAILED'), 'Database storage failures must return retryable error rather than record absent');

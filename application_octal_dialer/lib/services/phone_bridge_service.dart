@@ -302,7 +302,10 @@ class PhoneBridgeService extends ChangeNotifier {
       if (data != null && data['callId'] != null) {
         CallOutboxService.instance.acknowledgeOutcome(
           data['callId'].toString(),
-          tenantId: _tenantId.isNotEmpty ? _tenantId : null,
+          tenantId: data['tenantId']?.toString() ?? (_tenantId.isNotEmpty ? _tenantId : null),
+          deviceId: _deviceId.isNotEmpty ? _deviceId : null,
+          serverOrigin: _serverUri.isNotEmpty ? _serverUri : null,
+          outboxId: data['outboxId']?.toString(),
         );
       }
     });
@@ -471,7 +474,10 @@ class PhoneBridgeService extends ChangeNotifier {
       if (data != null && data['callId'] != null) {
         CallOutboxService.instance.acknowledgeOutcome(
           data['callId'].toString(),
-          tenantId: _tenantId.isNotEmpty ? _tenantId : null,
+          tenantId: data['tenantId']?.toString() ?? (_tenantId.isNotEmpty ? _tenantId : null),
+          deviceId: _deviceId.isNotEmpty ? _deviceId : null,
+          serverOrigin: _serverUri.isNotEmpty ? _serverUri : null,
+          outboxId: data['outboxId']?.toString(),
         );
       }
     });

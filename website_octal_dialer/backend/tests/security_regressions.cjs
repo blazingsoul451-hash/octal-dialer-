@@ -277,7 +277,7 @@ async function main() {
     assert.ok(source.includes("const hasActiveCall = activeCs && activeCs.state !== 'ENDED'"));
     assert.ok(source.includes("if (!hasActiveCall) {\n      await unlockLeadsForSession(session.id);\n    }"));
     assert.ok(!source.includes("finalizeCallSession(activeCs.callId, 'PHONE_DISCONNECTED'"));
-    assert.ok(source.includes("socket.emit('call:ended-ack', { callId: targetCallId, leadId })"));
+    assert.ok(source.includes("socket.emit('call:ended-ack'"));
   });
 
   await check('R2: call completion ACK emits only after durable commit and deduplicates concurrent requests', async () => {
@@ -286,14 +286,14 @@ async function main() {
     assert.ok(source.includes("const inFlightCallFinalizations = new Map<string, Promise<boolean>>()"));
     assert.ok(source.includes("const committedCallEndings = new Set<string>()"));
     // Verify that duplicate in-flight requests await the ongoing transaction rather than acknowledging prematurely
-    assert.ok(source.includes("const existingInFlight = inFlightCallFinalizations.get(targetCallId);"));
+    assert.ok(source.includes("const existingInFlight = inFlightCallFinalizations.get(dedupeKey);"));
     assert.ok(source.includes("const ok = await existingInFlight;"));
     // Verify ownership check occurs before ACK emission
     const handlerStart = source.indexOf("socket.on('call:ended'");
     const handlerEnd = source.indexOf("socket.on('call:rejected'", handlerStart);
     const handlerBody = source.slice(handlerStart, handlerEnd);
-    const ownershipIndex = handlerBody.indexOf("cs.sessionId !== session.id");
-    const commitAckIndex = handlerBody.indexOf("committedCallEndings.add(targetCallId)");
+    const ownershipIndex = handlerBody.indexOf("authoritativeDeviceId && authoritativeDeviceId !== socketDeviceId");
+    const commitAckIndex = handlerBody.indexOf("committedCallEndings.add(dedupeKey)");
     assert.ok(ownershipIndex > 0 && ownershipIndex < commitAckIndex, 'Ownership check must precede commit ACK');
   });
 

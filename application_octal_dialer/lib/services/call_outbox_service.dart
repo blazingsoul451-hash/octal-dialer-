@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
@@ -111,8 +111,12 @@ class CallOutboxService {
     } catch (e) {
       debugPrint('[CallOutbox] Corrupt storage detected: $e. Quarantining...');
       final quarantineKey = '${_storageKey}_corrupt_${DateTime.now().millisecondsSinceEpoch}';
-      await prefs.setString(quarantineKey, raw);
-      await prefs.remove(_storageKey);
+      final backupOk = await prefs.setString(quarantineKey, raw);
+      if (backupOk) {
+        await prefs.remove(_storageKey);
+      } else {
+        debugPrint('[CallOutbox] Failed to write quarantine backup; keeping primary intact');
+      }
       throw StateError('Outbox storage was corrupt and quarantined to $quarantineKey: $e');
     }
   }
@@ -139,7 +143,7 @@ class CallOutboxService {
         entries = [];
       }
 
-      entries.removeWhere((e) => e.callId == entry.callId);
+      entries.removeWhere((e) => (entry.tenantId == null || e.tenantId == entry.tenantId) && e.callId == entry.callId);
       entries.add(entry);
 
       final raw = jsonEncode(entries.map((e) => e.toJson()).toList());
@@ -151,7 +155,7 @@ class CallOutboxService {
     });
   }
 
-  Future<bool> acknowledgeOutcome(String callId, {String? tenantId}) async {
+  Future<bool> acknowledgeOutcome(String callId, {String? tenantId, String? deviceId, String? serverOrigin, String? outboxId}) async {
     return _runSerialized(() async {
       final prefs = await SharedPreferences.getInstance();
       List<CallOutboxEntry> entries;
@@ -165,7 +169,10 @@ class CallOutboxService {
       final initialCount = entries.length;
       entries.removeWhere((e) =>
           e.callId == callId &&
-          (tenantId == null || e.tenantId == null || e.tenantId == tenantId));
+          (tenantId == null || e.tenantId == null || e.tenantId == tenantId) &&
+          (deviceId == null || e.deviceId == null || e.deviceId == deviceId) &&
+          (outboxId == null || e.outboxId == outboxId) &&
+          (serverOrigin == null || e.serverOrigin == null || e.serverOrigin == serverOrigin));
 
       if (entries.length != initialCount) {
         final raw = jsonEncode(entries.map((e) => e.toJson()).toList());
@@ -202,17 +209,22 @@ class CallOutboxService {
       int flushedCount = 0;
 
       for (final entry in entries) {
-        // Multi-tenant and origin scoping: never transmit to mismatched tenant
+        // Multi-tenant, device, and origin scoping: never transmit to mismatched scopes
         if (currentTenantId != null && entry.tenantId != null && entry.tenantId != currentTenantId) {
+          continue;
+        }
+        if (currentDeviceId != null && entry.deviceId != null && entry.deviceId != currentDeviceId) {
           continue;
         }
         if (currentOrigin != null && entry.serverOrigin != null && entry.serverOrigin != currentOrigin) {
           continue;
         }
 
-        // Bounded backoff retry: min(60s, 2s * 2^retryCount)
+        // Bounded backoff retry with jitter: min(60s, 2s * 2^retryCount) + jitter
         if (entry.retryCount > 0 && entry.lastAttemptMs > 0) {
-          final backoffMs = math.min(60000, 2000 * math.pow(2, math.min(entry.retryCount, 5))).toInt();
+          final baseBackoff = math.min(60000, 2000 * math.pow(2, math.min(entry.retryCount, 5))).toInt();
+          final jitter = math.Random().nextInt(1000);
+          final backoffMs = baseBackoff + jitter;
           if (now - entry.lastAttemptMs < backoffMs) {
             continue;
           }
