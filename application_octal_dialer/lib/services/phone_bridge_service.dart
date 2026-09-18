@@ -235,7 +235,7 @@ class PhoneBridgeService extends ChangeNotifier {
     final outboxEntry = CallOutboxEntry(
       outboxId: 'ob_${DateTime.now().millisecondsSinceEpoch}_$targetCallId',
       callId: targetCallId,
-      sessionId: placement?.sessionId ?? _currentSessionId,
+      sessionId: placement?.sessionId ?? _currentSessionId ?? '',
       leadId: placement?.leadId,
       commandId: placement?.commandId,
       phone: placement?.phone ?? event.phoneNumber,
