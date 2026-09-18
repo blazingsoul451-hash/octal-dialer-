@@ -655,6 +655,11 @@ class MainActivity: FlutterActivity() {
                 putExtra("subscription_id", targetSubId)
                 putExtra("phone_subscription", targetSubId)
             }
+            if (!callId.isNullOrEmpty()) {
+                putExtra("com.octal.dialer.extra.CALL_ID", callId)
+                putExtra("callId", callId)
+                OctalCallManager.registerPendingCallId(callId)
+            }
         }
 
         try {
@@ -747,6 +752,9 @@ class MainActivity: FlutterActivity() {
             }
 
             if (!requestedCallId.isNullOrEmpty()) {
+                extras.putString("com.octal.dialer.extra.CALL_ID", requestedCallId)
+                extras.putString("callId", requestedCallId)
+                OctalCallManager.registerPendingCallId(requestedCallId)
                 synchronized(callLock) {
                     currentCall = ActiveCallSession(
                         callId = requestedCallId,

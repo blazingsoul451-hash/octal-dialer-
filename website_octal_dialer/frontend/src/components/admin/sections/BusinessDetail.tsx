@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Building2, Users, Smartphone, CreditCard, Activity, Shield, ArrowLeft,
-  CheckCircle2, AlertCircle, RefreshCw, Layers, Key, PhoneCall, Globe, Mail, Clock, Lock
+  AlertCircle, RefreshCw, Globe, Clock
 } from 'lucide-react';
 
 interface BusinessDetailProps {
@@ -105,7 +105,7 @@ export const BusinessDetail: React.FC<BusinessDetailProps> = ({
     );
   }
 
-  const { tenant, users, devices, subscriptions, usage, entitlements, auditLogs } = data;
+  const { tenant, users, devices, subscriptions, usage, auditLogs } = data;
   const currentSub = subscriptions?.[0] || null;
 
   return (

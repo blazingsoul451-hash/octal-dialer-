@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Lock, Eye, EyeOff, Shield, ArrowRight, Check, X, Sparkles } from 'lucide-react';
+import { User, Lock, Eye, EyeOff, ArrowRight, Sparkles } from 'lucide-react';
 
 interface GoogleProfileSetupModalProps {
   serverUrl: string;
@@ -13,7 +13,7 @@ export function GoogleProfileSetupModal({
   serverUrl,
   authToken,
   currentUsername,
-  userEmail,
+  userEmail: _userEmail,
   onComplete
 }: GoogleProfileSetupModalProps) {
   const suggestedUsername = currentUsername.includes('_')

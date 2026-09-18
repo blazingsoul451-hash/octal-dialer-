@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, Database, Download, RefreshCw, Facebook, MapPin, Eye, Link } from 'lucide-react';
+import { Play, Square, Database, Download, RefreshCw, Facebook, MapPin, Link } from 'lucide-react';
 
 interface FacebookScraperProps {
   isLight?: boolean;

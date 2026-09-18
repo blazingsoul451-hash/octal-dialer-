@@ -80,9 +80,9 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     _telecomSub = TelecomService.instance.callEvents.listen((event) {
       if (!mounted || _callEnded) return;
 
-      // Uncorrelated event guard: If event specifies a callId and it does NOT match our callId, ignore it.
+      // Uncorrelated event guard: If event specifies a callId and our widget has a callId, and they don't match, ignore it.
       // This prevents call waiting or foreign calls from terminating the active campaign call.
-      if (event.callId.isNotEmpty && widget.callId.isNotEmpty && event.callId != widget.callId) {
+      if (event.callId.isNotEmpty && widget.callId != null && widget.callId!.isNotEmpty && event.callId != widget.callId) {
         debugPrint('CallingScreen: Ignored event for different callId ${event.callId} (current: ${widget.callId})');
         return;
       }

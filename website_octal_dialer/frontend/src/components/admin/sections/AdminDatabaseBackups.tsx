@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Database, Shield, CheckCircle2, AlertCircle, RefreshCw, HardDrive, Lock, FileCheck, ArrowDownToLine, Info, ChevronDown, ChevronRight
+  Database, CheckCircle2, AlertCircle, HardDrive, Lock, FileCheck, Info, ChevronDown, ChevronRight
 } from 'lucide-react';
 
 interface AdminDatabaseBackupsProps {

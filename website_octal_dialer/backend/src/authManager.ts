@@ -727,37 +727,54 @@ export async function login(identifier: string, password: string): Promise<strin
 }
 
 // ─── Token Revocation / Blacklist ─────────────────────────────────────────────
-const revokedTokens = new Set<string>();
+const revokedTokenHashes = new Set<string>();
+
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
 
 export async function revokeToken(token: string): Promise<void> {
   if (!token) return;
-  revokedTokens.add(token);
+  const tokenHash = hashToken(token);
+  revokedTokenHashes.add(tokenHash);
   try {
     const decoded = jwt.decode(token) as any;
     const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : new Date(Date.now() + 86400000).toISOString();
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS revoked_tokens (
-        token TEXT PRIMARY KEY,
-        "revokedAt" TEXT NOT NULL,
-        "expiresAt" TEXT NOT NULL
-      );
-      INSERT INTO revoked_tokens (token, "revokedAt", "expiresAt")
-      VALUES ($1, $2, $3)
-      ON CONFLICT (token) DO NOTHING;
-    `, [token, new Date().toISOString(), expiresAt]);
+    await db.execute(
+      'INSERT INTO revoked_tokens (token, "revokedAt", "expiresAt") VALUES ($1, $2, $3) ON CONFLICT (token) DO NOTHING;',
+      [tokenHash, new Date().toISOString(), expiresAt]
+    );
   } catch (err) {
-    // Non-blocking fallback
+    console.error('[Auth] Error persisting token revocation:', err);
   }
 }
 
-export function isTokenRevoked(token: string): boolean {
+export async function isTokenRevoked(token: string): Promise<boolean> {
   if (!token) return true;
-  return revokedTokens.has(token);
+  const tokenHash = hashToken(token);
+  if (revokedTokenHashes.has(tokenHash)) return true;
+  try {
+    const found = await db.queryOne<{ token: string }>(
+      'SELECT token FROM revoked_tokens WHERE token = $1 LIMIT 1',
+      [tokenHash]
+    );
+    if (found) {
+      revokedTokenHashes.add(tokenHash);
+      return true;
+    }
+  } catch {
+    // Database query fallback
+  }
+  return false;
+}
+
+export function clearRevocationCacheForTesting(): void {
+  revokedTokenHashes.clear();
 }
 
 /** Validate a token → return user or null */
 export async function validateToken(token: string): Promise<AuthUser | null> {
-  if (!token || isTokenRevoked(token)) return null;
+  if (!token || (await isTokenRevoked(token))) return null;
 
   try {
     const decoded = jwt.verify(token, getJWTSecret(), { algorithms: ['HS256'] }) as any;

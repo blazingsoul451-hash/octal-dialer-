@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Smartphone, CheckCircle, ShieldAlert, Cpu, Laptop, RefreshCw, Copy, Check, Download, QrCode, Power, Trash2, AlertCircle, Wifi, WifiOff, Radio, Headphones } from 'lucide-react';
+import { Smartphone, CheckCircle, RefreshCw, Copy, Check, Download, QrCode, Power, Trash2, AlertCircle, Wifi, WifiOff, Radio, Headphones } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
 interface DeviceItem {
@@ -50,7 +50,7 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   phoneConnected,
   phoneDeviceName,
   phoneBtAddress,
-  phoneOsType,
+  phoneOsType: _phoneOsType,
   phoneIpAddress,
   phoneDeviceId,
   laptopBtAddress,
@@ -69,7 +69,6 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   const [deviceActionLoading, setDeviceActionLoading] = useState<string | null>(null);
   const [qrMode, setQrMode] = useState<'download' | 'pair'>('download');
   const [copied, setCopied] = useState(false);
-  const [showApkQr, setShowApkQr] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [dynamicTunnelUrl, setDynamicTunnelUrl] = useState<string | null>(null);
 

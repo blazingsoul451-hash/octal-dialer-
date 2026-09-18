@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import {
-  PhoneCall, QrCode, Database, Upload, History,
-  Bluetooth, PlaySquare, Sun, Moon, LogOut, ShieldOff, ShieldAlert, LayoutDashboard, Menu, Mail,
-  Play, Filter, Layers, Eye, Settings, Download, FileInput, Users, FileText,
+  PhoneCall, Database, Upload, History,
+  Bluetooth, PlaySquare, Sun, Moon, LogOut, ShieldAlert, LayoutDashboard, Menu, Mail,
+  Play, Layers, Settings, Users, FileText,
   Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp
 } from 'lucide-react';
 import { useSocket } from './hooks/useSocket';
@@ -22,10 +22,8 @@ import { FacebookScraper } from './components/FacebookScraper';
 import { FacebookAutoPoster } from './components/FacebookAutoPoster';
 import { AdminPanel } from './components/AdminPanel';
 import { LeadsTable } from './components/LeadsTable';
-import { AdminInterface } from './components/admin/AdminInterface';
 import { BillingPage } from './components/BillingPage';
 import { CampaignWorkspacePage } from './components/crm/CampaignWorkspacePage';
-import { FollowUpsPage } from './components/crm/FollowUpsPage';
 import { CRMWorkspacePage } from './components/crm/CRMWorkspacePage';
 import { GoogleProfileSetupModal } from './components/GoogleProfileSetupModal';
 import type { Campaign } from './types';

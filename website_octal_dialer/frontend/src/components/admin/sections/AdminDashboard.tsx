@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Phone, Database, TrendingUp } from 'lucide-react';
+import { Users, Phone, Database } from 'lucide-react';
 
 interface AdminDashboardProps {
   isLight: boolean;

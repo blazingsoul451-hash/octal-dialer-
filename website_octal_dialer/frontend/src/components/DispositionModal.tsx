@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ShieldCheck, MessageSquare, X, Clock } from 'lucide-react';
+import { ShieldCheck, X, Clock } from 'lucide-react';
 
 export interface DispositionResult {
   success: boolean;

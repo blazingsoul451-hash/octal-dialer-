@@ -24,11 +24,6 @@ export class ErrorBoundary extends Component<Props, State> {
     console.error('Uncaught error in React Component:', error, errorInfo);
   }
 
-  private handleReset = () => {
-    localStorage.clear();
-    window.location.reload();
-  };
-
   public render() {
     if (this.state.hasError) {
       return (

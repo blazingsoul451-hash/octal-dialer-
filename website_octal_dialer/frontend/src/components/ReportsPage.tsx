@@ -4,14 +4,10 @@ import {
   PhoneCall,
   CheckCircle2,
   Clock,
-  Calendar,
   Download,
   RefreshCw,
   Search,
   Filter,
-  BarChart2,
-  PieChart,
-  Layers,
   AlertCircle
 } from 'lucide-react';
 import type { Campaign, CallLog } from '../types';

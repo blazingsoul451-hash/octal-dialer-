@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CreditCard, CheckCircle2, AlertTriangle, ArrowUpRight, Clock, ShieldCheck, RefreshCw, XCircle, ChevronRight, Zap } from 'lucide-react';
+import { CreditCard, CheckCircle2, AlertTriangle, ArrowUpRight, Clock, ShieldCheck, RefreshCw, XCircle, Zap } from 'lucide-react';
 
 interface BillingProps {
   isLight?: boolean;
@@ -55,7 +55,7 @@ interface BillingState {
   overLimit?: Record<string, UsageMetric> | null;
 }
 
-export const BillingPage: React.FC<BillingProps> = ({ isLight, serverUrl, authToken, userRole }) => {
+export const BillingPage: React.FC<BillingProps> = ({ isLight, serverUrl, authToken, userRole: _userRole }) => {
   const [billingState, setBillingState] = useState<BillingState | null>(null);
   const [availablePlans, setAvailablePlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);

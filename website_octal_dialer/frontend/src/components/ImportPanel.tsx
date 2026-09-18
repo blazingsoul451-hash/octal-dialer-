@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Upload, FileSpreadsheet, AlertCircle, ChevronRight, Check } from 'lucide-react';
+import { Upload, FileSpreadsheet, AlertCircle, ChevronRight } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface ImportPanelProps {

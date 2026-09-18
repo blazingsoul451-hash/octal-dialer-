@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Layers, Play, Upload, Download, PhoneCall, CheckCircle2,
-  Clock, Filter, Search, Plus, BarChart3, RefreshCw, AlertCircle, Users, ArrowRight
+  Layers, Play, Upload, PhoneCall, CheckCircle2,
+  Search, BarChart3, AlertCircle, Users
 } from 'lucide-react';
 import { LeadProfileDrawer } from './LeadProfileDrawer';
 import type { Campaign } from '../../types';

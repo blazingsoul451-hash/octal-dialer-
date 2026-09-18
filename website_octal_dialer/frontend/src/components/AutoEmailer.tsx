@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Mail, Plus, Trash2, Play, Square, RefreshCw, Upload,
-  Users, Settings, FileText, CheckCircle, AlertCircle,
-  Eye, EyeOff, Inbox, ShieldCheck, Server, Building2,
-  ExternalLink, Check, Sparkles, Filter, CheckSquare, Square as SquareOutline,
-  Key, ChevronDown, ChevronUp, Zap, HelpCircle, ArrowRight
+  FileText, CheckCircle, AlertCircle,
+  Eye, EyeOff, Inbox, Server, Building2,
+  ExternalLink, Check, CheckSquare, Square as SquareOutline,
+  ChevronDown, ChevronUp, Zap
 } from 'lucide-react';
 
 interface EmailLead {
@@ -46,7 +46,6 @@ interface Props {
 type ProviderType = 'google' | 'business' | 'outlook' | 'yahoo';
 
 export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'emailer-gmail' }: Props) {
-  const [tab, setTab] = useState<'leads' | 'accounts' | 'templates' | 'campaign'>('accounts');
   const [leads, setLeads] = useState<EmailLead[]>([]);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
@@ -55,19 +54,6 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
-
-  // Active subtab sync
-  useEffect(() => {
-    if (activeSubTab === 'emailer-gmail') {
-      setTab('accounts');
-    } else if (activeSubTab === 'emailer-campaign') {
-      setTab('campaign');
-    } else if (activeSubTab === 'emailer-templates') {
-      setTab('templates');
-    } else if (activeSubTab === 'emailer-leads') {
-      setTab('leads');
-    }
-  }, [activeSubTab]);
 
   // Check URL query parameters for OAuth returns
   useEffect(() => {

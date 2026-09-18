@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Database, FileSpreadsheet, RefreshCw, ChevronRight, Check, Download, Play, Square, Sparkles, MapPin, Search, Filter, ShieldCheck } from 'lucide-react';
+import { FileSpreadsheet, RefreshCw, ChevronRight, Download, Play, Square, Search } from 'lucide-react';
 import type { ScraperFile } from '../types';
 
 interface ScraperFilesPanelProps {
@@ -15,7 +15,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
   serverUrl,
   authToken,
   isLight,
-  activeSubTab = 'scraper'
+  activeSubTab: _activeSubTab = 'scraper'
 }) => {
   const [files, setFiles] = useState<ScraperFile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -30,7 +30,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
   const [location, setLocation] = useState('Lahore');
   const [maxLeads, setMaxLeads] = useState<number>(50);
   const [requirePhone, setRequirePhone] = useState(true);
-  const [requireEmail, setRequireEmail] = useState(false);
+  const requireEmail = false;
 
   // Status & Logs
   const [scraperStatus, setScraperStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle');

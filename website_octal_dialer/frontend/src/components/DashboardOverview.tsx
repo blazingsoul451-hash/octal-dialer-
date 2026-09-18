@@ -1,10 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
-  BarChart3, 
   TrendingUp, 
   PhoneCall, 
   CheckCircle2, 
-  XCircle, 
   Clock, 
   PhoneMissed, 
   Voicemail, 

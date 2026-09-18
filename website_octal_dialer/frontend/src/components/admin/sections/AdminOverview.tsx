@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Building2, Users, CreditCard, Smartphone, PhoneCall, Layers, ShieldCheck,
-  TrendingUp, AlertTriangle, CheckCircle2, ArrowRight, RefreshCw, Activity, PauseCircle, PlayCircle
+  Building2, Users, CreditCard, Smartphone, PhoneCall,
+  AlertTriangle, CheckCircle2, ArrowRight, RefreshCw, Activity
 } from 'lucide-react';
 
 interface AdminOverviewProps {
@@ -117,6 +117,13 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="flex items-center gap-2 text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 p-3 rounded-xl font-mono">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       {/* ── KPI Cards Grid ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

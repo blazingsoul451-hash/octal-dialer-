@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, SkipForward, AlertTriangle, ShieldCheck, PhoneCall, ListRestart, Trash2, Clock, FastForward, Pause, Radio, Headphones } from 'lucide-react';
+import { Play, Square, SkipForward, AlertTriangle, PhoneCall, ListRestart, Trash2, Clock, FastForward, Pause, Radio, Headphones } from 'lucide-react';
 import type { Campaign, Lead } from '../types';
 import type { DispositionResult } from './DispositionModal';
 
@@ -55,7 +55,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   dialLead,
   hangupCall,
   emergencyStop,
-  clearEmergencyStop,
+  clearEmergencyStop: _clearEmergencyStop,
   callState,
   lastCallFinished,
   lastBlockedReason,
@@ -67,7 +67,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   lastDispositionSaved,
   sessionId,
   granularCallState,
-  callSessionData,
+  callSessionData: _callSessionData,
   availableSims = [],
   selectedSimSlot = null,
   setSelectedSimSlot,

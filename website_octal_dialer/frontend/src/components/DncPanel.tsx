@@ -18,7 +18,6 @@ interface DncPanelProps {
 export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToken }) => {
   const [entries, setEntries] = useState<DncEntry[]>([]);
   const [search, setSearch] = useState('');
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
@@ -32,19 +31,17 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
   const [bulkReason, setBulkReason] = useState('Bulk DNC List Import');
 
   const fetchDncList = async () => {
-    setLoading(true);
+    setError(null);
     try {
-      const res = await fetch(`${serverUrl}/api/suppression-list`, {
+      const res = await fetch(`${serverUrl}/api/dnc`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
       if (res.ok) {
-        const data = await res.json();
-        setEntries(data);
+        const json = await res.json();
+        setEntries(json.dncList || []);
       }
-    } catch (err) {
-      console.error('Error fetching DNC list:', err);
-    } finally {
-      setLoading(false);
+    } catch {
+      setError('Failed to fetch DNC list');
     }
   };
 

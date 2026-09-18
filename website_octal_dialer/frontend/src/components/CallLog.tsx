@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { History, RefreshCw, AlertCircle, Download } from 'lucide-react';
+import { RefreshCw, AlertCircle, Download } from 'lucide-react';
 import type { CallLog as CallLogType } from '../types';
 
 interface CallLogProps {

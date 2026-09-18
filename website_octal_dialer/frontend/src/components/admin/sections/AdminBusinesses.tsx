@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Building2, Search, Filter, RefreshCw, Eye, AlertCircle, Globe, Users,
-  Smartphone, CreditCard, CheckCircle2, ShieldAlert
+  Search, RefreshCw, Eye, AlertCircle, Globe
 } from 'lucide-react';
 import { BusinessDetail } from './BusinessDetail';
 
@@ -26,7 +25,6 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
   const [search, setSearch] = useState('');
   const [countryFilter, setCountryFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
-  const [planFilter, setPlanFilter] = useState('ALL');
 
   // Selected Business for Detail Workspace
   const [selectedBusinessId, setSelectedBusinessId] = useState<string | null>(initialBusinessId || null);
@@ -39,7 +37,6 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
       if (search.trim()) params.append('search', search.trim());
       if (countryFilter !== 'ALL') params.append('country', countryFilter);
       if (statusFilter !== 'ALL') params.append('status', statusFilter);
-      if (planFilter !== 'ALL') params.append('plan', planFilter);
 
       const res = await fetch(`${serverUrl}/admin/tenants?${params.toString()}`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
@@ -61,7 +58,7 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
 
   useEffect(() => {
     fetchTenants();
-  }, [search, countryFilter, statusFilter, planFilter, serverUrl, authToken]);
+  }, [search, countryFilter, statusFilter, serverUrl, authToken]);
 
   if (selectedBusinessId) {
     return (
@@ -103,6 +100,13 @@ export const AdminBusinesses: React.FC<AdminBusinessesProps> = ({
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="flex items-center gap-2 text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 p-3 rounded-xl font-mono">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       {/* ── Search & Filter Controls ── */}
       <div className="flex flex-wrap items-center gap-3">

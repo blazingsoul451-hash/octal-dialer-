@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
-  X, User, Phone, Mail, Building, MapPin, Calendar, Clock,
-  CheckCircle2, AlertCircle, Plus, PhoneCall, ShieldAlert, FileText, Send, Activity, Tag, Sparkles
+  X, User, Calendar,
+  AlertCircle, Plus, PhoneCall, Send, Activity, Tag
 } from 'lucide-react';
 
 interface LeadProfileDrawerProps {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Calendar, Clock, CheckCircle2, XCircle, Search, Filter, RefreshCw,
-  AlertCircle, PhoneCall, User, ArrowRight, Check, X, Plus
+  Calendar, Clock, Search, RefreshCw,
+  AlertCircle, PhoneCall, Check
 } from 'lucide-react';
 import { LeadProfileDrawer } from './LeadProfileDrawer';
 

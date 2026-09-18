@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  FileText, Search, Filter, RefreshCw, AlertCircle, Eye, ChevronLeft, ChevronRight,
-  Shield, Clock, User, Activity, CheckCircle2, Lock
+  Search, Filter, RefreshCw, AlertCircle, Eye, ChevronLeft, ChevronRight,
+  Shield
 } from 'lucide-react';
 
 interface AuditLogEntry {

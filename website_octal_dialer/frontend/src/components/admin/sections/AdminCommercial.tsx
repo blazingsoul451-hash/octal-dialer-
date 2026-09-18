@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  CreditCard, CheckCircle2, AlertCircle, RefreshCw, Layers, ShieldCheck,
-  Building2, Users, Activity, Play, Pause, ChevronRight
+  CheckCircle2, AlertCircle, RefreshCw, Building2
 } from 'lucide-react';
 
 interface AdminCommercialProps {
@@ -114,6 +113,13 @@ export const AdminCommercial: React.FC<AdminCommercialProps> = ({
         }`}>
           <CheckCircle2 className="w-4 h-4" />
           <span>{actionSuccess}</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-center gap-2 text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 p-3 rounded-xl font-mono">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
         </div>
       )}
 

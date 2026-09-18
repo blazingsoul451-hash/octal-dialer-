@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Layers, CheckCircle2, XCircle, AlertCircle, RefreshCw, Shield, Sliders
+  AlertCircle, RefreshCw, Shield
 } from 'lucide-react';
 
 interface AdminModuleControlProps {
@@ -96,6 +96,13 @@ export const AdminModuleControl: React.FC<AdminModuleControlProps> = ({
           <strong>Hierarchy Note:</strong> Global Module State controls platform availability. A module must be globally enabled here before tenants and users can access it.
         </span>
       </div>
+
+      {error && (
+        <div className="flex items-center gap-2 text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 p-3 rounded-xl font-mono">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       {/* ── Modules Grid ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, RefreshCw, Plus, Trash2, Key, Save, List, Radio, Terminal, Settings, Users, Facebook, BookOpen } from 'lucide-react';
+import { Play, Square, RefreshCw, Plus, Trash2, Key, Save, Radio, Settings, Users } from 'lucide-react';
 
 interface FacebookAutoPosterProps {
   isLight?: boolean;
@@ -38,7 +38,6 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
 }) => {
   // Common states
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -68,7 +67,6 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
 
   // Fetch profiles
   const fetchAccounts = async () => {
-    setLoading(true);
     try {
       const headers: Record<string, string> = {};
       if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
@@ -81,7 +79,6 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
         }
       }
     } catch (_) {}
-    setLoading(false);
   };
 
   // Fetch campaigns config

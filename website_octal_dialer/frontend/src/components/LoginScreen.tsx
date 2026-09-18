@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Lock, User, Eye, EyeOff, Shield, LogIn, Mail, ArrowRight, KeyRound, CheckCircle2, AlertCircle, ArrowLeft, ShieldCheck, Sparkles } from 'lucide-react';
+import { Lock, User, Eye, EyeOff, Shield, LogIn, Mail, ArrowRight, KeyRound, CheckCircle2, AlertCircle, ShieldCheck, Sparkles } from 'lucide-react';
 
 interface LoginScreenProps {
   serverUrl: string;

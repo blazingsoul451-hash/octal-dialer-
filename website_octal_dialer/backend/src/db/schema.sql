@@ -528,4 +528,12 @@ CREATE TABLE IF NOT EXISTS "campaign_teams" (
 CREATE INDEX IF NOT EXISTS "idx_campaign_teams_tenant_team" ON "campaign_teams"("tenantId", "teamId");
 CREATE INDEX IF NOT EXISTS "idx_campaign_teams_tenant_camp" ON "campaign_teams"("tenantId", "campaignId");
 
+-- Table: revoked_tokens (Cryptographic token revocation for stateless JWTs)
+CREATE TABLE IF NOT EXISTS "revoked_tokens" (
+  "token" TEXT PRIMARY KEY,
+  "revokedAt" TEXT NOT NULL,
+  "expiresAt" TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "idx_revoked_tokens_expiresAt" ON "revoked_tokens"("expiresAt");
+
 

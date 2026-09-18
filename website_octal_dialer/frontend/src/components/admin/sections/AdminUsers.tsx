@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Users, Plus, Trash2, Shield, CheckCircle2, XCircle, ChevronDown, ChevronRight,
-  Search, Filter, AlertCircle, RefreshCw, Key, Lock, UserPlus, Edit, CheckSquare, Square
+  Trash2, Shield, CheckCircle2, ChevronDown, ChevronRight,
+  Search, Filter, AlertCircle, RefreshCw, UserPlus, Edit, CheckSquare, Square
 } from 'lucide-react';
 
 interface User {

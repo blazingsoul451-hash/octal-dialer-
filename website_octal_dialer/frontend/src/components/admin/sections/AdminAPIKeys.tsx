@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Key, Plus, Trash2, Copy, Check, AlertCircle, RefreshCw, ShieldCheck, Lock, Clock, CheckCircle2
+  Key, Plus, Trash2, Copy, Check, AlertCircle, CheckCircle2
 } from 'lucide-react';
 
 interface ApiKeyItem {

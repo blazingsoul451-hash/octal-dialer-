@@ -280,6 +280,70 @@ async function main() {
     assert.ok(source.includes("socket.emit('call:ended-ack', { callId: targetCallId, leadId })"));
   });
 
+  await check('R2: call completion ACK emits only after durable commit and deduplicates concurrent requests', async () => {
+    const source = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    // Verify separate inFlightCallFinalizations and committedCallEndings
+    assert.ok(source.includes("const inFlightCallFinalizations = new Map<string, Promise<boolean>>()"));
+    assert.ok(source.includes("const committedCallEndings = new Set<string>()"));
+    // Verify that duplicate in-flight requests await the ongoing transaction rather than acknowledging prematurely
+    assert.ok(source.includes("const existingInFlight = inFlightCallFinalizations.get(targetCallId);"));
+    assert.ok(source.includes("const ok = await existingInFlight;"));
+    // Verify ownership check occurs before ACK emission
+    const handlerStart = source.indexOf("socket.on('call:ended'");
+    const handlerEnd = source.indexOf("socket.on('call:rejected'", handlerStart);
+    const handlerBody = source.slice(handlerStart, handlerEnd);
+    const ownershipIndex = handlerBody.indexOf("cs.sessionId !== session.id");
+    const commitAckIndex = handlerBody.indexOf("committedCallEndings.add(targetCallId)");
+    assert.ok(ownershipIndex > 0 && ownershipIndex < commitAckIndex, 'Ownership check must precede commit ACK');
+  });
+
+  await check('R3: durable token revocation uses token hash and persists across worker restarts', async () => {
+    const testJwt = jwt.sign({ sub: 'user_worker_test', username: 'bob', role: 'agent', tenantId: 't1' }, env.JWT_SECRET);
+    const dbRows = new Map();
+    db.queryOne = async (sql, params) => {
+      if (sql.includes('FROM users')) return { id: 'user_worker_test', username: 'bob', role: 'agent', tenantId: 't1', status: 'active' };
+      if (sql.includes('FROM tenants')) return { status: 'active' };
+      if (sql.includes('FROM revoked_tokens')) {
+        return dbRows.has(params[0]) ? { token: params[0] } : null;
+      }
+      return null;
+    };
+    db.execute = async (sql, params) => {
+      if (sql.includes('INSERT INTO revoked_tokens')) {
+        dbRows.set(params[0], { token: params[0], revokedAt: params[1], expiresAt: params[2] });
+        return { rowCount: 1 };
+      }
+      return { rowCount: 0 };
+    };
+
+    // Before revocation: valid
+    const userBefore = await auth.validateToken(testJwt);
+    assert.ok(userBefore && userBefore.id === 'user_worker_test');
+
+    // Revoke token
+    await auth.revokeToken(testJwt);
+    assert.ok(dbRows.size > 0, 'Token hash must be inserted into revoked_tokens DB table');
+
+    // Clear local in-memory Set to simulate another worker instance or server restart
+    if (auth.clearRevocationCacheForTesting) {
+      auth.clearRevocationCacheForTesting();
+    }
+    // validateToken must check DB and reject the revoked token
+    const userAfter = await auth.validateToken(testJwt);
+    assert.equal(userAfter, null, 'Revoked token must be rejected even when memory cache was cleared');
+  });
+
+  await check('R4: schema initialization pins advisory lock to dedicated client and prevents concurrent runs', async () => {
+    const poolSource = fs.readFileSync(path.join(root, 'db/pool.ts'), 'utf8');
+    assert.ok(poolSource.includes("let dedicatedClient: PoolClient | null = null;"));
+    assert.ok(poolSource.includes("await dedicatedClient.query('SELECT pg_advisory_lock($1)', [ADVISORY_LOCK_ID]);"));
+    assert.ok(poolSource.includes("await dedicatedClient.query('SET statement_timeout = 60000');"));
+    assert.ok(poolSource.includes("await dedicatedClient.query('SET lock_timeout = 30000');"));
+    assert.ok(poolSource.includes("await dedicatedClient.query('SELECT pg_advisory_unlock($1)', [ADVISORY_LOCK_ID]);"));
+    assert.ok(poolSource.includes("dedicatedClient.release();"));
+    assert.ok(poolSource.includes("let schemaInitPromise: Promise<void> | null = null;"));
+  });
+
   console.log(`${count} isolated regression groups passed. Real PostgreSQL and handset tests remain required.`);
 }
 main().catch(err => { console.error(err); process.exitCode = 1; });

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Activity, CheckCircle2, AlertCircle, RefreshCw, Server, Cpu, HardDrive, ShieldCheck, Zap, Clock, ShieldAlert, Layers
+  AlertCircle, RefreshCw, Cpu, ShieldCheck, Zap, Clock, ShieldAlert
 } from 'lucide-react';
 
 interface AdminSystemHealthProps {
@@ -50,11 +50,11 @@ export const AdminSystemHealth: React.FC<AdminSystemHealthProps> = ({
       const headers = { 'Authorization': `Bearer ${authToken}` };
 
       // Fetch /health (liveness)
-      const healthPromise = fetch(`${serverUrl}/health`).then(r => r.ok ? r.json() : null);
+      const healthPromise = fetch(`${serverUrl}/health`, { headers }).then(r => r.ok ? r.json() : null);
       // Fetch /ready (database connectivity)
-      const readyPromise = fetch(`${serverUrl}/ready`).then(r => r.ok ? r.json() : null);
+      const readyPromise = fetch(`${serverUrl}/ready`, { headers }).then(r => r.ok ? r.json() : null);
       // Fetch /metrics (operational counters)
-      const metricsPromise = fetch(`${serverUrl}/metrics`).then(r => r.ok ? r.json() : null);
+      const metricsPromise = fetch(`${serverUrl}/metrics`, { headers }).then(r => r.ok ? r.json() : null);
 
       const [healthRes, readyRes, metricsRes] = await Promise.all([
         healthPromise,

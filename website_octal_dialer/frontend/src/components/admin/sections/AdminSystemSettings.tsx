@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Settings, Save, AlertCircle, CheckCircle2, RefreshCw, Shield, Phone, Mail, Bot, Sliders
+  Save, AlertCircle, CheckCircle2, RefreshCw, Phone, Sliders
 } from 'lucide-react';
 
 interface AdminSystemSettingsProps {

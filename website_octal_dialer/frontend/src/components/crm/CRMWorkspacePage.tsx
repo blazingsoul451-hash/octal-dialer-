@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Users, UserCheck, Building2, Calendar, Clock, PhoneCall,
-  Search, Filter, Plus, ArrowRight, CheckCircle2, AlertCircle,
-  Activity, Layers, RefreshCw, Send, Tag, Phone, Mail, MapPin, Eye
+  Users, Building2, Calendar, Clock, PhoneCall,
+  Search, ArrowRight, AlertCircle,
+  Activity, Layers, RefreshCw, Tag, Phone, MapPin, Eye
 } from 'lucide-react';
 import { LeadProfileDrawer } from './LeadProfileDrawer';
 import { FollowUpsPage } from './FollowUpsPage';
@@ -25,7 +25,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   campaigns,
   initialSubTab = 'overview',
   onDialLead,
-  onNavigateTab
+  onNavigateTab: _onNavigateTab
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'overview' | 'leads' | 'companies' | 'follow-ups' | 'activity'>(initialSubTab);
   const [loading, setLoading] = useState(false);
@@ -34,13 +34,11 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   // CRM Data State
   const [leads, setLeads] = useState<any[]>([]);
   const [followUps, setFollowUps] = useState<any[]>([]);
-  const [activities, setActivities] = useState<any[]>([]);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
 
   // Filters & Search
   const [searchQuery, setSearchQuery] = useState('');
   const [campaignFilter, setCampaignFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
 
   // Fetch CRM overview data
   const fetchCRMData = async () => {
@@ -83,7 +81,6 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
 
   // Derived metrics
   const totalLeads = leads.length;
-  const contactedLeads = leads.filter(l => l.status === 'contacted' || l.status === 'converted').length;
   const openFollowUps = followUps.filter(f => f.status === 'pending');
   const now = Date.now();
   const startOfToday = new Date(new Date().setHours(0, 0, 0, 0)).getTime();
@@ -125,7 +122,6 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   const filteredLeads = useMemo(() => {
     return leads.filter(l => {
       if (campaignFilter && l.campaignId !== campaignFilter) return false;
-      if (statusFilter && l.status !== statusFilter) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchName = (l.name || l.businessName || '').toLowerCase().includes(q);
@@ -135,7 +131,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
       }
       return true;
     });
-  }, [leads, campaignFilter, statusFilter, searchQuery]);
+  }, [leads, campaignFilter, searchQuery]);
 
   return (
     <div className="space-y-6 text-left select-none">

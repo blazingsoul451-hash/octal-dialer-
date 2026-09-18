@@ -5,7 +5,7 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('fs'); fs.mkdirSync('dist/db/migrations', {recursive:true}); fs.copyFileSync('src/db/schema.sql', 'dist/db/schema.sql'); for(const f of fs.readdirSync('src/db/migrations')) fs.copyFileSync('src/db/migrations/'+f, 'dist/db/migrations/'+f);\"",
     "start": "node dist/server.js",
     "test:security": "node tests/security_regressions.cjs"
   },

@@ -3331,6 +3331,8 @@ interface ActivePhoneSocket {
 }
 const authenticatedPhoneSockets = new Map<string, ActivePhoneSocket>();
 const pendingDialSessions = new Set<string>();
+const inFlightCallFinalizations = new Map<string, Promise<boolean>>();
+const committedCallEndings = new Set<string>();
 
 // Socket.IO Handshake Auth Middleware
 io.use(async (socket, next) => {
@@ -4391,47 +4393,77 @@ io.on('connection', (socket) => {
     }
 
     const cs = callId ? getCallSession(callId) : commandId ? getCallSessionByCommandId(commandId) : getCallSessionBySessionId(session.id);
-    if (!cs || cs.sessionId !== session.id || cs.tenantId !== tenantId || cs.phoneSocketId !== socket.id || cs.endedAt) {
-      if (cs && cs.endedAt) {
-        socket.emit('call:ended-ack', { callId: cs.callId, leadId: cs.leadId });
-      }
+    if (!cs || cs.sessionId !== session.id || cs.tenantId !== tenantId || cs.phoneSocketId !== socket.id) {
+      console.warn(`[Socket Security] Rejected call:ended: Ownership validation failed for callId=${callId}`);
       return;
     }
+
     const targetCallId = cs.callId;
-    if (processedCallEndings.has(targetCallId)) {
+
+    if (cs.endedAt || committedCallEndings.has(targetCallId)) {
       socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs.leadId });
       return;
     }
-    processedCallEndings.add(targetCallId);
+
+    // In-flight deduplication: Await ongoing transaction rather than prematurely acknowledging or double-committing
+    const existingInFlight = inFlightCallFinalizations.get(targetCallId);
+    if (existingInFlight) {
+      try {
+        const ok = await existingInFlight;
+        if (ok) {
+          socket.emit('call:ended-ack', { callId: targetCallId, leadId: cs.leadId });
+        } else {
+          socket.emit('error', { code: 'CALL_FINALIZATION_FAILED', message: 'In-flight transaction failed' });
+        }
+      } catch {
+        socket.emit('error', { code: 'CALL_FINALIZATION_FAILED', message: 'In-flight transaction failed' });
+      }
+      return;
+    }
+
     leadId = cs.leadId;
     commandId = cs.commandId;
     phone = cs.phone;
     name = cs.name;
     reason = typeof reason === 'string' && reason.length <= 64 ? reason : 'UNKNOWN';
     duration = typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, Math.min(86400, Math.floor(duration))) : 0;
-    try {
-      await db.withTransaction(async () => {
-        if (commandId) await expireCommand(commandId);
-        if (leadId) {
-          await releaseLeadLock(leadId, session.id);
-          await createLog(leadId, reason, duration, tenantId);
-          await updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
-        } else {
-          await createManualLog(cs.phone, cs.name || 'Manual Quick Dial', reason, duration, tenantId);
+
+    const finalizationTask = (async () => {
+      try {
+        await db.withTransaction(async () => {
+          if (commandId) await expireCommand(commandId);
+          if (leadId) {
+            await releaseLeadLock(leadId, session.id);
+            await createLog(leadId, reason, duration, tenantId);
+            await updateLeadStatus(leadId, 'COMPLETED', reason, duration, tenantId);
+          } else {
+            await createManualLog(cs.phone, cs.name || 'Manual Quick Dial', reason, duration, tenantId);
+          }
+        });
+        finalizeCallSession(cs.callId, reason, duration);
+        committedCallEndings.add(targetCallId);
+        if (committedCallEndings.size > 2000) {
+          const first = committedCallEndings.values().next().value;
+          if (first) committedCallEndings.delete(first);
         }
-      });
-    } catch (err) {
-      processedCallEndings.delete(targetCallId);
+        return true;
+      } catch (err) {
+        console.error('[CallEngine] Finalization transaction failed:', err);
+        return false;
+      } finally {
+        inFlightCallFinalizations.delete(targetCallId);
+      }
+    })();
+
+    inFlightCallFinalizations.set(targetCallId, finalizationTask);
+    const success = await finalizationTask;
+
+    if (!success) {
       socket.emit('error', { code: 'CALL_FINALIZATION_FAILED', message: 'Call outcome was not saved. Retry the terminal event.' });
-      console.error('[CallEngine] Finalization failed:', err);
       return;
     }
-    finalizeCallSession(cs.callId, reason, duration);
+
     setSessionStatus(session.id, 'PAIRED');
-    if (processedCallEndings.size > 2000) {
-      const first = processedCallEndings.values().next().value;
-      if (first) processedCallEndings.delete(first);
-    }
 
     // Acknowledge durable persistence to phone socket for terminal outbox clearing
     socket.emit('call:ended-ack', { callId: targetCallId, leadId });

@@ -23,8 +23,17 @@ object OctalCallManager {
     // Weak reference to the currently bound InCallService
     private var inCallServiceRef: WeakReference<OctalInCallService>? = null
 
-    // In-memory active calls map (keyed by unique Call hash/id)
+    // In-memory active calls map (keyed by unique Call hash/id or server callId)
     private val activeCalls = ConcurrentHashMap<String, Call>()
+
+    // Mapping between native Call instance and external/server callId
+    private val callToExternalIdMap = ConcurrentHashMap<Call, String>()
+    private val externalIdToCallMap = ConcurrentHashMap<String, Call>()
+    @Volatile private var pendingExternalCallId: String? = null
+
+    fun registerPendingCallId(externalCallId: String?) {
+        pendingExternalCallId = externalCallId
+    }
 
     // Track active talk start times for accurate duration measurement
     private val activeStartTimes = ConcurrentHashMap<String, Long>()
@@ -66,13 +75,15 @@ object OctalCallManager {
             inCallServiceRef = null
         }
         activeCalls.clear()
+        callToExternalIdMap.clear()
+        externalIdToCallMap.clear()
     }
 
     // ==========================================
     // CALL TRACKING & EVENTS
     // ==========================================
     fun getCallId(call: Call): String {
-        return "call_${System.identityHashCode(call)}"
+        return callToExternalIdMap[call] ?: "call_${System.identityHashCode(call)}"
     }
 
     fun getPhoneNumber(call: Call): String {
@@ -121,12 +132,24 @@ object OctalCallManager {
     }
 
     fun onCallAdded(call: Call) {
-        val callId = getCallId(call)
+        val explicitExtraId = call.details?.extras?.getString("com.octal.dialer.extra.CALL_ID")
+            ?: call.details?.intentExtras?.getString("com.octal.dialer.extra.CALL_ID")
+        val externalId = if (!explicitExtraId.isNullOrEmpty()) explicitExtraId else pendingExternalCallId
+        pendingExternalCallId = null
+
+        val callId = if (!externalId.isNullOrEmpty()) {
+            callToExternalIdMap[call] = externalId
+            externalIdToCallMap[externalId] = call
+            externalId
+        } else {
+            "call_${System.identityHashCode(call)}"
+        }
+
         activeCalls[callId] = call
         val number = getPhoneNumber(call)
         val isIncoming = call.state == Call.STATE_RINGING
 
-        Log.d(TAG, "[Telecom] onCallAdded id=$callId number=$number isIncoming=$isIncoming state=${getStateString(call.state)}")
+        Log.d(TAG, "[Telecom] onCallAdded id=$callId (external=$externalId) number=$number isIncoming=$isIncoming state=${getStateString(call.state)}")
 
         listeners.forEach { listener ->
             try {
@@ -161,6 +184,10 @@ object OctalCallManager {
     fun onCallRemoved(call: Call) {
         val callId = getCallId(call)
         activeCalls.remove(callId)
+        callToExternalIdMap.remove(call)?.let { extId ->
+            externalIdToCallMap.remove(extId)
+            activeCalls.remove(extId)
+        }
         val number = getPhoneNumber(call)
 
         val activeStart = activeStartTimes.remove(callId) ?: 0L
@@ -255,22 +282,21 @@ object OctalCallManager {
     }
 
     fun disconnect(targetCallId: String? = null): Boolean {
-        val call = if (targetCallId != null && activeCalls.containsKey(targetCallId)) {
-            activeCalls[targetCallId]
+        val call = if (targetCallId != null) {
+            activeCalls[targetCallId] ?: externalIdToCallMap[targetCallId]
         } else {
             getPrimaryCall()
         }
-        return if (call != null) {
-            try {
-                call.disconnect()
-                Log.d(TAG, "[Telecom] Call disconnected successfully: ${getCallId(call)}")
-                true
-            } catch (e: Exception) {
-                Log.e(TAG, "[Telecom] Failed to disconnect call: ${e.message}")
-                false
-            }
-        } else {
-            Log.w(TAG, "[Telecom] disconnect: No active call to disconnect (target=$targetCallId)")
+        if (call == null) {
+            Log.w(TAG, "[Telecom] disconnect: No active call found matching targetCallId=$targetCallId")
+            return false
+        }
+        return try {
+            call.disconnect()
+            Log.d(TAG, "[Telecom] Call disconnected successfully: ${getCallId(call)}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "[Telecom] Failed to disconnect call: ${e.message}")
             false
         }
     }
