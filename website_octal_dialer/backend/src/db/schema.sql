@@ -223,7 +223,9 @@ CREATE TABLE IF NOT EXISTS "leads" (
   "lockedBy" TEXT,
   "lockedAt" TEXT,
   "createdAt" TEXT NOT NULL DEFAULT '',
-  "tenantId" TEXT
+  "tenantId" TEXT,
+  "address" TEXT,
+  "listingId" TEXT
 );
 
 -- Table: call_attempts

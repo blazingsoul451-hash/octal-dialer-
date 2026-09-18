@@ -133,6 +133,7 @@ export interface WorkerDoneEvent {
   status: 'completed' | 'completed_partial' | 'stopped';
   counters: ScraperJobCounters;
   outputFile: string;
+  reachedEnd?: boolean;
 }
 
 export interface WorkerErrorEvent {

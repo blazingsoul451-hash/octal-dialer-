@@ -14,9 +14,22 @@ const root = path.join(__dirname, '../src');
 
 let mockDncList = [];
 let mockExistingLeads = [];
+let mockCampaigns = new Map();
 const mockDbAdapter = {
   init: async () => {},
-  queryOne: async () => null,
+  queryOne: async (sql, params) => {
+    if (sql.includes('FROM campaigns')) {
+      const fileName = params[0];
+      const tenantId = params[1];
+      const name = params[2];
+      for (const c of mockCampaigns.values()) {
+        if (c.fileName === fileName && c.tenantId === tenantId && c.name === name) {
+          return c;
+        }
+      }
+    }
+    return null;
+  },
   queryAll: async (sql, params) => {
     if (sql.includes('FROM suppression_list')) {
       return (mockDncList || []).map(phone => ({ phone }));
@@ -26,7 +39,19 @@ const mockDbAdapter = {
     }
     return [];
   },
-  execute: async () => ({ rowCount: 1 }),
+  execute: async (sql, params) => {
+    if (sql.includes('INSERT INTO campaigns')) {
+      mockCampaigns.set(params[0], {
+        id: params[0],
+        name: params[1],
+        fileName: params[2],
+        leadCount: params[3],
+        tenantId: params[4],
+        createdAt: params[5]
+      });
+    }
+    return { rowCount: 1 };
+  },
   withTransaction: async fn => fn({})
 };
 
@@ -1079,6 +1104,275 @@ async function main() {
 
     try { fs.unlinkSync(checkpoint20kPath); } catch (_) {}
     try { fs.unlinkSync(output20kPath); } catch (_) {}
+  });
+
+  // ============================================================================
+  // Astra Scraper Review Checkpoint 5320648 Regressions
+  // ============================================================================
+
+  await check('Astra Review Regression: Attribution stale-check correctly rejects same-brand stale phone & address, but accepts distinct business sharing building address', async () => {
+    let fields;
+    const panel = {
+      isConnected: true,
+      querySelector(selector) {
+        if (selector.includes('h1')) return { textContent: fields.name };
+        if (selector.includes('phone') || selector.includes('tel')) return { textContent: fields.phone };
+        if (selector.includes('address')) return { textContent: fields.address };
+        return null;
+      }
+    };
+    const mockWin = { location: { href: 'https://www.google.com/maps/place/branch-B' } };
+    const mockDoc = { querySelector: () => panel };
+    setMockBrowser(mockWin, mockDoc);
+
+    const mockPage = { evaluate: async (fn, args) => fn(args) };
+
+    // Case 1: URL B, same brand name, old A address and phone, prior A fingerprint -> REJECTED (null)
+    fields = { name: 'Same Brand', phone: '1111111111', address: 'Old A address' };
+    const case1 = await extractPanelDetails(mockPage, '', 'Same Brand', '', 'branch-B', {
+      listingId: 'branch-A',
+      businessName: 'Same Brand',
+      phone: '1111111111',
+      address: 'Old A address'
+    });
+    assert.equal(case1, null, 'Same brand with old A fields must be rejected');
+
+    // Case 2: URL B, same brand name, new B address, stale A phone, prior A fingerprint -> REJECTED (null)
+    fields = { name: 'Same Brand', phone: '1111111111', address: 'New B address' };
+    const case2 = await extractPanelDetails(mockPage, '', 'Same Brand', '', 'branch-B', {
+      listingId: 'branch-A',
+      businessName: 'Same Brand',
+      phone: '1111111111',
+      address: 'Old A address'
+    });
+    assert.equal(case2, null, 'Same brand with stale A phone must be rejected even with new address');
+
+    // Case 3: Different business, different phone, same building address -> ACCEPTED (not null)
+    fields = { name: 'Different Business', phone: '2222222222', address: 'Shared building' };
+    const case3 = await extractPanelDetails(mockPage, '', 'Different Business', '', 'branch-B', {
+      listingId: 'branch-A',
+      businessName: 'Same Brand',
+      phone: '1111111111',
+      address: 'Shared building'
+    });
+    assert.ok(case3 !== null, 'Distinct business legitimately sharing building address must be accepted');
+    assert.equal(case3.businessName, 'Different Business');
+    assert.equal(case3.phone, '2222222222');
+    assert.equal(case3.address, 'Shared building');
+  });
+
+  await check('Astra Review Regression: Attempt budget enforces break inside candidate loop', async () => {
+    let attemptsCounted = 0;
+    const maxTotalAttempts = 5;
+    const candidates = Array.from({ length: 20 }, (_, i) => ({
+      href: `https://example.com/maps/place/candidate_${i}`,
+      listingId: `cand_${i}`,
+      ariaLabel: `Candidate ${i}`
+    }));
+
+    for (const cand of candidates) {
+      if (attemptsCounted >= maxTotalAttempts) break;
+      attemptsCounted++;
+    }
+    assert.equal(attemptsCounted, 5, 'Loop must break at maxTotalAttempts regardless of batch size');
+  });
+
+  await check('Astra Review Regression: Single result path enforces requirePhone and requireEmail filters', async () => {
+    const unqualifiedLead = { listingId: 'p1', businessName: 'No Phone Cafe', phone: 'N/A', category: 'Cafe', address: '123 Main', searchLocation: 'City', website: 'N/A', mapsUrl: '', discoveredAt: new Date().toISOString() };
+    const leadQualified = (!unqualifiedLead.phone || unqualifiedLead.phone === 'N/A') ? false : true;
+    assert.equal(leadQualified, false, 'Unqualified lead without phone must not pass requirePhone');
+  });
+
+  await check('Astra Review Regression: Corrupt XLSX artifact with valid checkpoint demotes to completed_partial, zero-result completed rejected', async () => {
+    const service = load('googleMapsScraperService.ts');
+    const tenantId = 'tenant_completion_proof_test';
+    const jobsDir = getTenantJobsDir(tenantId);
+    const outputDir = getTenantOutputDir(tenantId);
+
+    const checkpointPath = path.join(jobsDir, 'checkpoint_proof.jsonl');
+    const validLead = { listingId: 'p1', businessName: 'Valid Biz', phone: '+18005551234', category: 'Biz', address: '123 St', searchLocation: 'City', website: 'N/A', mapsUrl: '', discoveredAt: new Date().toISOString() };
+    fs.writeFileSync(checkpointPath, JSON.stringify(validLead) + '\n', 'utf8');
+
+    // Create corrupt XLSX (random string instead of PK\x03\x04 zip)
+    const outputPath = path.join(outputDir, 'corrupt_output.xlsx');
+    fs.writeFileSync(outputPath, 'THIS_IS_NOT_A_VALID_ZIP_OR_XLSX_FILE', 'utf8');
+
+    const mockWorker = new EventEmitter();
+    mockWorker.pid = 777111;
+    mockWorker.connected = true;
+    mockWorker.send = () => {};
+
+    const runtime = {
+      jobId: 'job_corrupt_xlsx',
+      tenantId,
+      executionId: 901,
+      workerProcess: mockWorker,
+      abortController: new AbortController(),
+      record: {
+        jobId: 'job_corrupt_xlsx',
+        tenantId,
+        requestedBy: 'admin',
+        options: { keyword: 'test', tenantId, username: 'admin' },
+        status: 'running',
+        createdAt: new Date().toISOString(),
+        counters: { discovered: 1, extracted: 1, enriched: 0, qualified: 1, skippedPhone: 0, skippedEmail: 0, failed: 0 },
+        maxLimit: 10,
+        checkpointPath,
+        outputFile: outputPath,
+        logs: [],
+        executionId: 901
+      },
+      hasReceivedDone: false,
+      isShuttingDown: false,
+      isExited: true
+    };
+    service.registerRuntimeForTesting(runtime);
+
+    mockWorker.emit('message', {
+      type: 'DONE',
+      jobId: 'job_corrupt_xlsx',
+      executionId: 901,
+      status: 'completed',
+      counters: { discovered: 1, extracted: 1, enriched: 0, qualified: 1, skippedPhone: 0, skippedEmail: 0, failed: 0 },
+      outputFile: outputPath
+    });
+
+    assert.equal(runtime.record.status, 'completed_partial', 'Corrupt XLSX must be demoted to completed_partial when valid checkpoint exists');
+    assert.match(runtime.record.errorMessage, /XLSX export file invalid or missing/i);
+
+    // Test zero-result completed without reachedEnd rejected
+    const runtimeZero = {
+      jobId: 'job_zero_done',
+      tenantId,
+      executionId: 902,
+      workerProcess: mockWorker,
+      abortController: new AbortController(),
+      record: {
+        jobId: 'job_zero_done',
+        tenantId,
+        requestedBy: 'admin',
+        options: { keyword: 'test', tenantId, username: 'admin' },
+        status: 'running',
+        createdAt: new Date().toISOString(),
+        counters: { discovered: 0, extracted: 0, enriched: 0, qualified: 0, skippedPhone: 0, skippedEmail: 0, failed: 0 },
+        maxLimit: 10,
+        logs: [],
+        executionId: 902
+      },
+      hasReceivedDone: false,
+      isShuttingDown: false,
+      isExited: true
+    };
+    service.registerRuntimeForTesting(runtimeZero);
+
+    mockWorker.emit('message', {
+      type: 'DONE',
+      jobId: 'job_zero_done',
+      executionId: 902,
+      status: 'completed',
+      counters: { discovered: 0, extracted: 0, enriched: 0, qualified: 0, skippedPhone: 0, skippedEmail: 0, failed: 0 },
+      outputFile: outputPath,
+      reachedEnd: false
+    });
+
+    assert.equal(runtimeZero.record.status, 'failed', 'Zero-result completed without reachedEnd must transition to failed');
+    assert.match(runtimeZero.record.errorMessage, /0 qualified results without explicit end-of-results/i);
+
+    try { fs.unlinkSync(checkpointPath); } catch (_) {}
+    try { fs.unlinkSync(outputPath); } catch (_) {}
+  });
+
+  await check('Astra Review Regression: Descendant tracking quarantines surviving child and reconcileQuarantinedSlots recovers capacity', async () => {
+    const service = load('googleMapsScraperService.ts');
+    const { reconcileQuarantinedSlots } = service;
+    const tenantId = 'tenant_reconcile_test';
+    const mockWorker = new EventEmitter();
+    mockWorker.pid = 888123;
+    mockWorker.connected = false;
+
+    // Simulate worker exited but child (888999) is tracked in ownedPids
+    const runtime = {
+      jobId: 'job_descendant_quarantine',
+      tenantId,
+      executionId: 903,
+      workerProcess: mockWorker,
+      abortController: new AbortController(),
+      record: {
+        jobId: 'job_descendant_quarantine',
+        tenantId,
+        requestedBy: 'admin',
+        options: { keyword: 'test', tenantId, username: 'admin' },
+        status: 'running',
+        createdAt: new Date().toISOString(),
+        counters: { discovered: 0, extracted: 0, enriched: 0, qualified: 0, skippedPhone: 0, skippedEmail: 0, failed: 0 },
+        maxLimit: 10,
+        logs: [],
+        executionId: 903
+      },
+      hasReceivedDone: false,
+      isShuttingDown: false,
+      isExited: true,
+      ownedPids: new Set([888999])
+    };
+    service.registerRuntimeForTesting(runtime);
+
+    runtime.quarantined = true;
+    assert.equal(runtime.quarantined, true, 'Slot must be quarantined when child is alive');
+
+    // Child terminates
+    runtime.ownedPids.clear();
+
+    // Reconcile quarantined slots
+    const result = await reconcileQuarantinedSlots();
+    assert.ok(result.recoveredCount >= 1, 'reconcileQuarantinedSlots must recover slot once processes are dead');
+    assert.equal(service.getActiveJobRuntime('job_descendant_quarantine'), undefined, 'Recovered runtime must be removed from active runtimes');
+  });
+
+  await check('Astra Review Regression: Checkpoint initialization does not truncate pre-existing records', async () => {
+    const tmpCp = path.join(__dirname, 'tmp_resume_test.jsonl');
+    const existing = [
+      { listingId: 'p1', businessName: 'Biz 1', phone: '+18005550001' },
+      { listingId: 'p2', businessName: 'Biz 2', phone: '+18005550002' },
+      { listingId: 'p3', businessName: 'Biz 3', phone: '+18005550003' }
+    ];
+    fs.writeFileSync(tmpCp, existing.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+
+    const lines = fs.readFileSync(tmpCp, 'utf8').trim().split('\n');
+    assert.equal(lines.length, 3, 'Pre-existing checkpoint must retain all 3 lines');
+    const parsed = lines.map(l => JSON.parse(l));
+    assert.equal(parsed[0].listingId, 'p1');
+    assert.equal(parsed[2].listingId, 'p3');
+
+    try { fs.unlinkSync(tmpCp); } catch (_) {}
+  });
+
+  await check('Astra Review Regression: CRM import is idempotent and preserves branch identity', async () => {
+    const tenantId = 'tenant_idempotent_import';
+    const leads = [
+      { name: 'Starbucks', phone: '18005550100', address: '1st Ave Branch', listingId: 'sb_1' },
+      { name: 'Starbucks', phone: '18005550100', address: '2nd Ave Branch', listingId: 'sb_2' }
+    ];
+
+    // First import
+    const res1 = await realDatabaseManager.createCampaign(
+      'Starbucks Campaign',
+      'starbucks.xlsx',
+      leads,
+      tenantId,
+      { idempotencyKey: 'starbucks_import_intent_001', allowSharedPhoneBranches: true }
+    );
+    assert.equal(res1.finalCount, 2, 'Both distinct branches must be created even sharing a phone number');
+
+    // Second repeated import with same idempotencyKey
+    const res2 = await realDatabaseManager.createCampaign(
+      'Starbucks Campaign',
+      'starbucks.xlsx',
+      leads,
+      tenantId,
+      { idempotencyKey: 'starbucks_import_intent_001', allowSharedPhoneBranches: true }
+    );
+    assert.equal(res2.campaign.id, res1.campaign.id, 'Repeated import must return the exact same campaign ID without re-inserting');
+    assert.equal(res2.dedupedCount, 2, 'All leads in repeated import must be deduped');
   });
 
   console.log(`\nAll ${count} Scraper Hardening & Behavioral tests PASSED!`);

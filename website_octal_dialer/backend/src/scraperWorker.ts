@@ -119,12 +119,16 @@ export async function writeLeadsToExcel(leadsOrSource: ScrapedLead[] | string, t
     if (fs.existsSync(leadsOrSource)) {
       const fileStream = fs.createReadStream(leadsOrSource, { encoding: 'utf8' });
       const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+      let lineNum = 0;
       for await (const line of rl) {
+        lineNum++;
         if (!line.trim()) continue;
         try {
           const lead = JSON.parse(line);
           addLeadRow(lead);
-        } catch (_) {}
+        } catch (parseErr: any) {
+          throw new Error(`Corrupted checkpoint record at line ${lineNum} in ${leadsOrSource}: ${parseErr.message}`);
+        }
       }
     }
   } else {
@@ -170,6 +174,64 @@ async function cancelableSleep(ms: number): Promise<boolean> {
   return true;
 }
 
+async function processCandidateLead(
+  lead: ScrapedLead,
+  options: ScraperJobOptions,
+  counters: ScraperJobCounters,
+  checkpointPath: string,
+  targetLimit: number,
+  jobId: string,
+  executionId: number
+): Promise<boolean> {
+  const { requirePhone, requireEmail, enrichWebsite } = options;
+  counters.extracted++;
+
+  // Enforce requirePhone
+  if (requirePhone && (!lead.phone || lead.phone === 'N/A')) {
+    counters.skippedPhone++;
+    return false;
+  }
+
+  // Optional Website Enrichment
+  if (enrichWebsite && lead.website && lead.website !== 'N/A') {
+    log(`🌐 Enriching website contacts for: ${lead.businessName} (${lead.website})`);
+    try {
+      const enrichment = await enrichCompanyWebsite(lead.website);
+      lead.enrichmentStatus = enrichment.status;
+      if (enrichment.contactInfo.emails.length > 0) {
+        lead.email = enrichment.contactInfo.emails[0];
+        counters.enriched++;
+      }
+      lead.socialLinks = enrichment.contactInfo.socialLinks;
+    } catch (e: any) {
+      lead.enrichmentStatus = 'failed';
+    }
+  }
+
+  // Enforce requireEmail
+  if (requireEmail && (!lead.email || lead.email === 'N/A')) {
+    counters.skippedEmail++;
+    return false;
+  }
+
+  counters.qualified++;
+
+  // Durable incremental write line-by-line (O(1) memory)
+  fs.appendFileSync(checkpointPath, JSON.stringify(lead) + '\n', 'utf8');
+
+  log(`✅ [#${counters.qualified}/${targetLimit}] ${lead.businessName} | 📞 ${lead.phone} | ✉️ ${lead.email || 'None'}`);
+
+  sendToParent({
+    type: 'PROGRESS',
+    jobId,
+    executionId,
+    lead,
+    counters
+  });
+
+  return true;
+}
+
 export async function executeScraperRun(
   jobId: string,
   executionId: number,
@@ -195,7 +257,6 @@ export async function executeScraperRun(
     failed: 0
   };
 
-  const leads: ScrapedLead[] = [];
   const seenListingIds = new Set<string>();
 
   // Ensure directories exist
@@ -205,8 +266,32 @@ export async function executeScraperRun(
   const checkpointDir = path.dirname(checkpointPath);
   if (!fs.existsSync(checkpointDir)) fs.mkdirSync(checkpointDir, { recursive: true });
 
-  // Initialize empty checkpoint log
-  fs.writeFileSync(checkpointPath, '', 'utf8');
+  // Non-destructive checkpoint initialization / durable resume
+  if (fs.existsSync(checkpointPath) && fs.statSync(checkpointPath).size > 0) {
+    const rl = readline.createInterface({
+      input: fs.createReadStream(checkpointPath, { encoding: 'utf8' }),
+      crlfDelay: Infinity
+    });
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const existingLead: ScrapedLead = JSON.parse(line);
+        if (existingLead.listingId) {
+          seenListingIds.add(existingLead.listingId);
+        }
+        counters.extracted++;
+        const isPhoneValid = !requirePhone || (existingLead.phone && existingLead.phone !== 'N/A');
+        const isEmailValid = !requireEmail || (existingLead.email && existingLead.email !== 'N/A');
+        if (isPhoneValid && isEmailValid) {
+          counters.qualified++;
+        }
+      } catch (_) {}
+    }
+    counters.discovered = seenListingIds.size;
+    log(`🔄 Resumed from existing checkpoint: ${counters.qualified} qualified leads (${counters.extracted} extracted, ${seenListingIds.size} discovered).`);
+  } else {
+    fs.writeFileSync(checkpointPath, '', 'utf8');
+  }
 
   log(`🚀 Starting Google Maps scraper worker for: "${query}" (Target: ${targetLimit})`);
 
@@ -234,17 +319,6 @@ export async function executeScraperRun(
     const page = await context.newPage();
     page.setDefaultNavigationTimeout(30000);
     page.setDefaultTimeout(15000);
-
-    // Stealth injections to prevent bot identification
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      (window as any).chrome = {
-        runtime: {},
-        loadTimes: () => {},
-        csi: () => {},
-        app: {}
-      };
-    });
 
     // Block heavy fonts and media to save memory, while preserving scripts and XHR
     await page.route('**/*.{png,jpg,jpeg,gif,svg,webp,woff,woff2,ttf,mp4}', route => route.abort());
@@ -309,21 +383,13 @@ export async function executeScraperRun(
     }
 
     // Handle single business result directly
+    let reachedEnd = false;
     if (isSingleResult) {
       const singleListingId = extractListingId(page.url());
+      counters.discovered = 1;
       const singleLead = await extractPanelDetails(page, location, '', page.url(), singleListingId);
-      if (singleLead) {
-        counters.discovered = 1;
-        counters.extracted = 1;
-        leads.push(singleLead);
-        fs.appendFileSync(checkpointPath, JSON.stringify(singleLead) + '\n', 'utf8');
-        sendToParent({
-          type: 'PROGRESS',
-          jobId,
-          executionId,
-          lead: singleLead,
-          counters
-        });
+      if (singleLead && singleLead.businessName) {
+        await processCandidateLead(singleLead, options, counters, checkpointPath, targetLimit, jobId, executionId);
       }
     } else {
       // Feed iteration loop
@@ -332,6 +398,7 @@ export async function executeScraperRun(
       let consecutiveNoProgress = 0;
       const maxTotalAttempts = Math.max(targetLimit * 5, 100);
       let totalAttempts = 0;
+      let lastFingerprint: { listingId?: string; businessName?: string; address?: string; phone?: string } | null = null;
 
       while (
         (requirePhone || requireEmail ? counters.qualified : counters.extracted) < targetLimit &&
@@ -362,10 +429,8 @@ export async function executeScraperRun(
         counters.discovered = seenListingIds.size;
         log(`📊 Feed scan found ${newInThisBatch} new unvisited listings (${seenListingIds.size} total discovered)...`);
 
-        let lastFingerprint: { listingId?: string; address?: string; phone?: string } | null = null;
-
         for (const candidate of candidateItems) {
-          if (isStopRequested || (requirePhone || requireEmail ? counters.qualified : counters.extracted) >= targetLimit) break;
+          if (isStopRequested || totalAttempts >= maxTotalAttempts || (requirePhone || requireEmail ? counters.qualified : counters.extracted) >= targetLimit) break;
           totalAttempts++;
 
           try {
@@ -415,11 +480,17 @@ export async function executeScraperRun(
                   const currentAddress = panel.querySelector('button[data-item-id*="address"], button[aria-label*="Address" i]')?.textContent?.trim();
                   const currentPhone = panel.querySelector('button[data-tooltip*="phone" i], button[aria-label*="Phone" i], button[data-item-id*="phone:tel:"]')?.textContent?.trim();
 
-                  if (prevFingerprint.address && currentAddress && currentAddress === prevFingerprint.address) {
-                    return false; // panel still shows previous listing address
-                  }
-                  if (prevFingerprint.phone && currentPhone && currentPhone === prevFingerprint.phone && (!currentAddress || currentAddress === prevFingerprint.address)) {
+                  const prevName = prevFingerprint.businessName || '';
+                  const isSameName = (prevName && h1.toLowerCase() === prevName.toLowerCase()) ||
+                    (expectedName && h1.toLowerCase() === expectedName.toLowerCase() && prevName && prevName.toLowerCase() === expectedName.toLowerCase());
+
+                  // Reject if panel still shows previous listing phone
+                  if (prevFingerprint.phone && currentPhone && currentPhone === prevFingerprint.phone) {
                     return false; // panel still shows previous listing phone
+                  }
+                  // If same-name branch, reject if panel still shows previous branch address
+                  if (isSameName && prevFingerprint.address && currentAddress && currentAddress === prevFingerprint.address) {
+                    return false; // panel still shows previous listing address
                   }
                 }
 
@@ -446,55 +517,12 @@ export async function executeScraperRun(
             // Record verified fingerprint for subsequent stale-panel detection
             lastFingerprint = {
               listingId: lead.listingId,
+              businessName: lead.businessName,
               address: lead.address,
               phone: lead.phone
             };
 
-            counters.extracted++;
-
-            // Enforce requirePhone
-            if (requirePhone && (!lead.phone || lead.phone === 'N/A')) {
-              counters.skippedPhone++;
-              continue;
-            }
-
-            // Optional Website Enrichment (Phase 5)
-            if (enrichWebsite && lead.website && lead.website !== 'N/A') {
-              log(`🌐 Enriching website contacts for: ${lead.businessName} (${lead.website})`);
-              try {
-                const enrichment = await enrichCompanyWebsite(lead.website);
-                lead.enrichmentStatus = enrichment.status;
-                if (enrichment.contactInfo.emails.length > 0) {
-                  lead.email = enrichment.contactInfo.emails[0];
-                  counters.enriched++;
-                }
-                lead.socialLinks = enrichment.contactInfo.socialLinks;
-              } catch (e: any) {
-                lead.enrichmentStatus = 'failed';
-              }
-            }
-
-            // Enforce requireEmail
-            if (requireEmail && (!lead.email || lead.email === 'N/A')) {
-              counters.skippedEmail++;
-              continue;
-            }
-
-            leads.push(lead);
-            counters.qualified++;
-
-            // Durable incremental write (Phase 4)
-            fs.appendFileSync(checkpointPath, JSON.stringify(lead) + '\n', 'utf8');
-
-            log(`✅ [#${counters.qualified}/${targetLimit}] ${lead.businessName} | 📞 ${lead.phone} | ✉️ ${lead.email || 'None'}`);
-
-            sendToParent({
-              type: 'PROGRESS',
-              jobId,
-              executionId,
-              lead,
-              counters
-            });
+            await processCandidateLead(lead, options, counters, checkpointPath, targetLimit, jobId, executionId);
 
           } catch (cardErr: any) {
             counters.failed++;
@@ -509,12 +537,13 @@ export async function executeScraperRun(
         }
 
         // Check for "Reached the end of list"
-        const reachedEnd = await page.evaluate(() => {
+        const isEnd = await page.evaluate(() => {
           const body = document.body?.innerText || '';
           return body.includes("You've reached the end of the list") || body.includes("No more results");
         });
 
-        if (reachedEnd || consecutiveNoProgress >= 5) {
+        if (isEnd || consecutiveNoProgress >= 5) {
+          reachedEnd = isEnd;
           log('🏁 Reached end of Google Maps results feed.');
           break;
         }
@@ -548,9 +577,10 @@ export async function executeScraperRun(
       activeBrowser = null;
     }
 
+    const isQualifiedTargetMet = (requirePhone || requireEmail ? counters.qualified : counters.extracted) >= targetLimit;
     const finalStatus = isStopRequested
       ? 'stopped'
-      : (counters.extracted >= targetLimit ? 'completed' : 'completed_partial');
+      : (isQualifiedTargetMet ? 'completed' : 'completed_partial');
 
     sendToParent({
       type: 'DONE',
@@ -558,7 +588,8 @@ export async function executeScraperRun(
       executionId,
       status: finalStatus,
       counters,
-      outputFile: outputPath
+      outputFile: outputPath,
+      reachedEnd
     });
 
   } catch (err: any) {
@@ -583,7 +614,7 @@ export async function extractPanelDetails(
   expectedName: string = '',
   href: string = '',
   listingId: string = '',
-  previousFingerprint?: { listingId?: string; address?: string; phone?: string }
+  previousFingerprint?: { listingId?: string; businessName?: string; address?: string; phone?: string }
 ): Promise<ScrapedLead | null> {
   return await page.evaluate(({ searchLocation, expectedName, href, listingId, previousFingerprint }) => {
     // 1. Locate confirmed detail panel container
@@ -654,11 +685,24 @@ export async function extractPanelDetails(
     // 9. Stale panel rejection against previous listing fingerprint
     // (Prevents accepting Branch A's old address/phone under candidate B when both have identical names)
     if (previousFingerprint && listingId && previousFingerprint.listingId && previousFingerprint.listingId !== listingId) {
-      if (previousFingerprint.address && address && address === previousFingerprint.address) {
-        return null; // Stale address from previous branch/listing
+      const prevName = (previousFingerprint.businessName || '').trim().toLowerCase();
+      const currentName = h1Before.trim().toLowerCase();
+      const isSameName = prevName.length > 0 && prevName === currentName;
+
+      // Stale phone from previous listing
+      if (previousFingerprint.phone && validPhone !== 'N/A' && previousFingerprint.phone === validPhone) {
+        return null;
       }
-      if (previousFingerprint.phone && validPhone !== 'N/A' && previousFingerprint.phone === validPhone && (!address || address === 'N/A')) {
-        return null; // Stale phone from previous branch/listing
+
+      // If both address and phone are identical to previous listing
+      if (previousFingerprint.address && address && address === previousFingerprint.address &&
+          previousFingerprint.phone && validPhone !== 'N/A' && previousFingerprint.phone === validPhone) {
+        return null;
+      }
+
+      // If same-name branch and address is identical to previous branch
+      if (isSameName && previousFingerprint.address && address && address === previousFingerprint.address) {
+        return null;
       }
     }
 

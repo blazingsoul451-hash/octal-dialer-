@@ -1,4 +1,4 @@
-import { fork, ChildProcess, execFile } from 'child_process';
+import { fork, ChildProcess, execFile, execSync } from 'child_process';
 import crypto from 'crypto';
 import ExcelJS from 'exceljs';
 import fs from 'fs';
@@ -32,24 +32,72 @@ export function isPidAlive(pid?: number | null): boolean {
   }
 }
 
-export async function killProcessTree(pid: number): Promise<boolean> {
-  if (!pid || !isPidAlive(pid)) return true;
+export function getDescendantPids(parentPid?: number | null): number[] {
+  if (!parentPid || parentPid <= 0) return [];
   try {
     if (process.platform === 'win32') {
-      await new Promise<void>((resolve) => {
-        execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => resolve());
-      });
-    } else {
-      try {
-        process.kill(-pid, 'SIGKILL');
-      } catch (_) {
-        try {
-          process.kill(pid, 'SIGKILL');
-        } catch (_) {}
+      const out = execSync(
+        `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${parentPid}' | Select-Object -ExpandProperty ProcessId"`,
+        { encoding: 'utf8', timeout: 3000 }
+      );
+      const pids = out.split(/\r?\n/).map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0);
+      const all = [...pids];
+      for (const p of pids) {
+        all.push(...getDescendantPids(p));
       }
+      return all;
+    } else {
+      const out = execSync(`pgrep -P ${parentPid}`, { encoding: 'utf8', timeout: 3000 });
+      const pids = out.split(/\r?\n/).map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0);
+      const all = [...pids];
+      for (const p of pids) {
+        all.push(...getDescendantPids(p));
+      }
+      return all;
     }
-  } catch (_) {}
-  return !isPidAlive(pid);
+  } catch (_) {
+    return [];
+  }
+}
+
+export async function killProcessTree(pid: number, extraPids?: Set<number> | number[]): Promise<boolean> {
+  const targetPids = new Set<number>();
+  if (pid > 0) targetPids.add(pid);
+  if (extraPids) {
+    for (const p of extraPids) {
+      if (p > 0) targetPids.add(p);
+    }
+  }
+
+  // Discover OS descendants of all target PIDs
+  for (const p of Array.from(targetPids)) {
+    const children = getDescendantPids(p);
+    for (const c of children) targetPids.add(c);
+  }
+
+  for (const p of targetPids) {
+    if (!isPidAlive(p)) continue;
+    try {
+      if (process.platform === 'win32') {
+        await new Promise<void>((resolve) => {
+          execFile('taskkill', ['/pid', String(p), '/T', '/F'], () => resolve());
+        });
+      } else {
+        try {
+          process.kill(-p, 'SIGKILL');
+        } catch (_) {
+          try {
+            process.kill(p, 'SIGKILL');
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  for (const p of targetPids) {
+    if (isPidAlive(p)) return false;
+  }
+  return true;
 }
 
 interface ActiveJobRuntime {
@@ -65,6 +113,7 @@ interface ActiveJobRuntime {
   exitCode?: number | null;
   isExited?: boolean;
   quarantined?: boolean;
+  ownedPids?: Set<number>;
 }
 
 // In-memory runtime state (not serialized to disk)
@@ -245,6 +294,9 @@ function launchWorkerJob(jobId: string, options: ScraperJobOptions): void {
     });
   }
 
+  const ownedPids = new Set<number>();
+  if (worker.pid) ownedPids.add(worker.pid);
+
   const runtime: ActiveJobRuntime = {
     jobId,
     tenantId: options.tenantId,
@@ -253,7 +305,8 @@ function launchWorkerJob(jobId: string, options: ScraperJobOptions): void {
     abortController,
     record,
     hasReceivedDone: false,
-    isShuttingDown: false
+    isShuttingDown: false,
+    ownedPids
   };
 
   activeRuntimes.set(jobId, runtime);
@@ -335,49 +388,111 @@ export function attachWorkerEventHandlers(runtime: ActiveJobRuntime): void {
       });
       await shutdownWorker(jobId, 'challenge');
     } else if (msg.type === 'DONE') {
-      // Validate completion evidence on disk
-      const extractedCount = msg.counters?.extracted ?? 0;
-      let hasValidArtifact = false;
-
-      // Check final output file
-      if (runtime.record.outputFile && fs.existsSync(runtime.record.outputFile)) {
-        try {
-          const stats = fs.statSync(runtime.record.outputFile);
-          if (stats.size > 0) hasValidArtifact = true;
-        } catch (_) {}
+      // Validate execution provenance
+      if (msg.executionId !== runtime.executionId) {
+        console.warn(`[ScraperService] Ignoring DONE with mismatched executionId (got ${msg.executionId}, active ${runtime.executionId})`);
+        return;
       }
 
-      // Check durable checkpoint file fallback
-      if (!hasValidArtifact && runtime.record.checkpointPath && fs.existsSync(runtime.record.checkpointPath)) {
-        try {
-          const stats = fs.statSync(runtime.record.checkpointPath);
-          if (stats.size > 0) hasValidArtifact = true;
-        } catch (_) {}
-      }
-
-      // If extracted > 0 but NO output or checkpoint file exists on disk with size > 0:
-      // Completion evidence is invalid/unverified!
-      if (extractedCount > 0 && !hasValidArtifact) {
+      // Validate allowed terminal status
+      const allowedStatuses: ScraperJobStatus[] = ['completed', 'completed_partial', 'stopped'];
+      if (!allowedStatuses.includes(msg.status)) {
         runtime.record.status = 'failed';
-        runtime.record.errorMessage = `Worker reported ${extractedCount} extracted leads, but neither output artifact nor checkpoint file exists with valid data on disk.`;
+        runtime.record.errorMessage = `Worker reported invalid completion status: ${msg.status}`;
+        runtime.record.completedAt = new Date().toISOString();
+        saveJobRecord(runtime.record);
+        await shutdownWorker(jobId, 'invalid_status');
+        return;
+      }
+
+      const qualifiedCount = msg.counters?.qualified !== undefined
+        ? msg.counters.qualified
+        : (msg.counters?.extracted ?? 0);
+
+      // Reject zero-result completed unless reachedEnd is explicitly confirmed
+      if (msg.status === 'completed' && qualifiedCount === 0 && !msg.reachedEnd) {
+        runtime.record.status = 'failed';
+        runtime.record.errorMessage = 'Worker reported completed with 0 qualified results without explicit end-of-results evidence.';
         runtime.record.completedAt = new Date().toISOString();
         saveJobRecord(runtime.record);
         broadcastToTenant(runtime.tenantId, 'scraper:failed', {
           jobId,
           error: runtime.record.errorMessage
         });
-        await shutdownWorker(jobId, 'invalid_done_evidence');
+        await shutdownWorker(jobId, 'fabricated_zero_result');
         return;
       }
 
+      // Validate checkpoint JSONL on disk
+      let validCheckpointRecords = 0;
+      if (runtime.record.checkpointPath && fs.existsSync(runtime.record.checkpointPath)) {
+        try {
+          const content = fs.readFileSync(runtime.record.checkpointPath, 'utf8');
+          const lines = content.split('\n').filter(l => l.trim().length > 0);
+          for (const line of lines) {
+            try {
+              JSON.parse(line);
+              validCheckpointRecords++;
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+
+      // Validate XLSX artifact
+      let isValidXlsx = false;
+      if (runtime.record.outputFile && fs.existsSync(runtime.record.outputFile)) {
+        try {
+          const stat = fs.statSync(runtime.record.outputFile);
+          if (stat.size >= 4) {
+            const fd = fs.openSync(runtime.record.outputFile, 'r');
+            const buf = Buffer.alloc(4);
+            fs.readSync(fd, buf, 0, 4, 0);
+            fs.closeSync(fd);
+            // XLSX must be a valid zip archive starting with 'PK\x03\x04'
+            if (buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04) {
+              isValidXlsx = true;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Artifact and record integrity validation
+      if (qualifiedCount > 0) {
+        if (!isValidXlsx) {
+          if (validCheckpointRecords > 0) {
+            // Output XLSX failed or is corrupt, but recoverable checkpoint exists
+            runtime.record.status = 'completed_partial';
+            runtime.record.errorMessage = `XLSX export file invalid or missing; recovered ${validCheckpointRecords} valid checkpoint records.`;
+          } else {
+            runtime.record.status = 'failed';
+            runtime.record.errorMessage = `Worker reported ${qualifiedCount} extracted leads, but neither output artifact nor checkpoint file exists with valid data on disk.`;
+            runtime.record.completedAt = new Date().toISOString();
+            saveJobRecord(runtime.record);
+            broadcastToTenant(runtime.tenantId, 'scraper:failed', {
+              jobId,
+              error: runtime.record.errorMessage
+            });
+            await shutdownWorker(jobId, 'invalid_artifact');
+            return;
+          }
+        } else if (validCheckpointRecords < qualifiedCount) {
+          // Committed count mismatch
+          runtime.record.status = 'completed_partial';
+          runtime.record.errorMessage = `Committed record count mismatch (expected ${qualifiedCount}, found ${validCheckpointRecords} in checkpoint).`;
+        } else {
+          runtime.record.status = msg.status;
+        }
+      } else {
+        runtime.record.status = msg.status;
+      }
+
       runtime.hasReceivedDone = true;
-      runtime.record.status = msg.status;
       if (msg.counters) runtime.record.counters = msg.counters;
       runtime.record.completedAt = new Date().toISOString();
       saveJobRecord(runtime.record);
       broadcastToTenant(runtime.tenantId, 'scraper:completed', {
         jobId,
-        status: msg.status,
+        status: runtime.record.status,
         counters: msg.counters,
         outputFile: runtime.record.outputFile
       });
@@ -423,7 +538,12 @@ export function attachWorkerEventHandlers(runtime: ActiveJobRuntime): void {
               const stat = fs.statSync(active.record.checkpointPath);
               if (stat.size > 0) {
                 const lines = fs.readFileSync(active.record.checkpointPath, 'utf8').split('\n').filter(l => l.trim().length > 0);
-                flushedCount = lines.length;
+                for (const l of lines) {
+                  try {
+                    JSON.parse(l);
+                    flushedCount++;
+                  } catch (_) {}
+                }
               }
             } catch (_) {}
           }
@@ -448,10 +568,10 @@ export function attachWorkerEventHandlers(runtime: ActiveJobRuntime): void {
 /**
  * Awaited, idempotent shutdown:
  * 1. Request graceful cancellation via IPC / AbortController
- * 2. Observe worker exit
+ * 2. Observe worker exit and confirm all owned descendants are terminated
  * 3. Bounded escalation (SIGTERM, then process tree termination)
- * 4. Only release execution slot and trigger drainQueue after worker has fully terminated.
- *    If process cannot be confirmed dead, quarantine the slot and retain capacity.
+ * 4. Only release execution slot and trigger drainQueue after worker and all descendants have fully terminated.
+ *    If any process cannot be confirmed dead, quarantine the slot and retain capacity.
  */
 export async function shutdownWorker(jobId: string, reason: string = 'shutdown'): Promise<void> {
   const runtime = activeRuntimes.get(jobId);
@@ -467,8 +587,26 @@ export async function shutdownWorker(jobId: string, reason: string = 'shutdown')
     const worker = runtime.workerProcess;
     const workerPid = worker?.pid;
 
-    // If already confirmed dead
-    if (!worker || (runtime.isExited && !isPidAlive(workerPid))) {
+    if (!runtime.ownedPids) runtime.ownedPids = new Set<number>();
+    if (workerPid) {
+      runtime.ownedPids.add(workerPid);
+      for (const p of getDescendantPids(workerPid)) {
+        runtime.ownedPids.add(p);
+      }
+    }
+
+    const isTreeDead = (): boolean => {
+      if (workerPid && isPidAlive(workerPid)) return false;
+      if (runtime.ownedPids) {
+        for (const p of runtime.ownedPids) {
+          if (isPidAlive(p)) return false;
+        }
+      }
+      return true;
+    };
+
+    // If already confirmed dead across entire process tree
+    if (!worker || (runtime.isExited && isTreeDead())) {
       activeRuntimes.delete(jobId);
       drainQueue();
       return;
@@ -487,21 +625,21 @@ export async function shutdownWorker(jobId: string, reason: string = 'shutdown')
 
     // Helper to await process exit with timeout and actual PID liveness check
     const waitForExit = (timeoutMs: number): Promise<boolean> => {
-      if (runtime.isExited && !isPidAlive(workerPid)) {
+      if (runtime.isExited && isTreeDead()) {
         return Promise.resolve(true);
       }
       return new Promise<boolean>(resolve => {
         let timer: NodeJS.Timeout | null = null;
         const checkDead = () => {
           if (timer) clearTimeout(timer);
-          resolve(!isPidAlive(workerPid));
+          resolve(isTreeDead());
         };
 
         timer = setTimeout(() => {
           if (runtime.workerProcess) {
             runtime.workerProcess.removeListener('exit', onExit);
           }
-          resolve(!isPidAlive(workerPid));
+          resolve(isTreeDead());
         }, timeoutMs);
 
         const onExit = () => {
@@ -534,19 +672,20 @@ export async function shutdownWorker(jobId: string, reason: string = 'shutdown')
     }
 
     // Phase 3: Hard termination via process tree kill
-    if (!exited && workerPid && isPidAlive(workerPid)) {
-      await killProcessTree(workerPid);
+    if (!isTreeDead()) {
+      await killProcessTree(workerPid || 0, runtime.ownedPids);
       exited = await waitForExit(tSigkill);
     }
 
-    // Verify if worker is still alive
-    if (workerPid && isPidAlive(workerPid)) {
+    // Verify if worker OR any owned descendant is still alive
+    if (!isTreeDead()) {
       // Process could not be confirmed terminated!
       // Quarantine execution slot so capacity is NOT released to drainQueue.
       runtime.quarantined = true;
-      runtime.record.errorMessage = `Worker PID ${workerPid} failed to exit; slot quarantined to protect system resources.`;
+      runtime.shutdownPromise = undefined; // allow subsequent reconciliation retry
+      runtime.record.errorMessage = `Worker PID ${workerPid} or descendant process failed to exit; slot quarantined to protect system resources.`;
       saveJobRecord(runtime.record);
-      console.error(`[ScraperService] CRITICAL: Worker PID ${workerPid} for job ${jobId} failed to terminate. Slot quarantined.`);
+      console.error(`[ScraperService] CRITICAL: Worker process tree for job ${jobId} failed to terminate. Slot quarantined.`);
       return; // DO NOT delete from activeRuntimes, DO NOT call drainQueue!
     }
 
@@ -560,11 +699,52 @@ export async function shutdownWorker(jobId: string, reason: string = 'shutdown')
   return runtime.shutdownPromise;
 }
 
+export async function reconcileQuarantinedSlots(): Promise<{ recoveredCount: number; stillQuarantinedCount: number }> {
+  let recoveredCount = 0;
+  let stillQuarantinedCount = 0;
+
+  for (const [jobId, runtime] of Array.from(activeRuntimes.entries())) {
+    if (!runtime.quarantined) continue;
+
+    const workerPid = runtime.workerProcess?.pid;
+    const pidsToCheck = new Set<number>(runtime.ownedPids || []);
+    if (workerPid) pidsToCheck.add(workerPid);
+
+    // Attempt termination on remaining living PIDs
+    await killProcessTree(workerPid || 0, pidsToCheck);
+
+    let allDead = true;
+    for (const p of pidsToCheck) {
+      if (isPidAlive(p)) {
+        allDead = false;
+        break;
+      }
+    }
+
+    if (allDead) {
+      console.log(`[ScraperService] Quarantined slot for job ${jobId} successfully reconciled: all descendant processes terminated.`);
+      runtime.quarantined = false;
+      runtime.workerProcess = null;
+      activeRuntimes.delete(jobId);
+      recoveredCount++;
+      drainQueue();
+    } else {
+      stillQuarantinedCount++;
+    }
+  }
+
+  return { recoveredCount, stillQuarantinedCount };
+}
+
 export function getActiveScraperCount(): number {
   return activeRuntimes.size;
 }
 
 export function registerRuntimeForTesting(runtime: any): void {
+  if (!runtime.ownedPids) {
+    runtime.ownedPids = new Set<number>();
+    if (runtime.workerProcess?.pid) runtime.ownedPids.add(runtime.workerProcess.pid);
+  }
   activeRuntimes.set(runtime.jobId, runtime);
   if (runtime.workerProcess) {
     attachWorkerEventHandlers(runtime);
@@ -805,7 +985,10 @@ export async function importScraperFileToCampaign(
     throw new Error(`No dialable business leads found in file (Skipped ${skippedCount} nondialable records).`);
   }
 
-  const result = await createCampaign(finalCampaignName, fileName, validLeads, tenantId, { allowSharedPhoneBranches: true });
+  const result = await createCampaign(finalCampaignName, fileName, validLeads, tenantId, {
+    allowSharedPhoneBranches: true,
+    idempotencyKey: safeFilePath
+  });
 
   return {
     success: true,
