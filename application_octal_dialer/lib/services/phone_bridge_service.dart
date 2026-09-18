@@ -638,6 +638,11 @@ class PhoneBridgeService extends ChangeNotifier {
         'sessionId': _currentSessionId,
       });
     }
+    try {
+      _nativeChannel.invokeMethod('updateServiceStatus', {
+        'status': 'Phone Link idle. Ready to pair.'
+      });
+    } catch (_) {}
     _handleUnpaired('Disconnected by user');
   }
 
@@ -645,6 +650,10 @@ class PhoneBridgeService extends ChangeNotifier {
   Future<void> logout() async {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+
+    try {
+      _nativeChannel.invokeMethod('stopForegroundService');
+    } catch (_) {}
 
     if (_socket != null) {
       if (_currentSessionId != null) {

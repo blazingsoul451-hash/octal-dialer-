@@ -98,7 +98,7 @@ class OctalForegroundService : Service() {
                 val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
                 wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "OctalDialer:PhoneLinkWakeLock").apply {
                     setReferenceCounted(false)
-                    acquire(24 * 60 * 60 * 1000L) // 24 hours max
+                    acquire(15 * 60 * 1000L) // 15 minutes bounded timeout to prevent indefinite battery drain
                 }
             }
         } catch (e: Exception) {

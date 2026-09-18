@@ -87,10 +87,11 @@ class TelecomService {
           // Legacy telephony events from MainActivity TelephonyManager listener
           case 'onCallStateChanged':
             final state = (args['state'] ?? 'UNKNOWN').toString();
+            final phoneNumber = (args['phoneNumber'] ?? '').toString();
             _callEventController.add(TelecomCallEvent(
               type: 'legacy_state',
               callId: '',
-              phoneNumber: '',
+              phoneNumber: phoneNumber,
               state: state,
             ));
             break;

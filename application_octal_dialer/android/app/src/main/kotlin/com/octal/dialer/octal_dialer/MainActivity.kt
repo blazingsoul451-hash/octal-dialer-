@@ -588,9 +588,15 @@ class MainActivity: FlutterActivity() {
 
         // Dynamic multi-SIM routing: If operator selected a specific SIM slot (0 or 1), prioritize it
         val targetSim = if (requestedSimSlot != null && requestedSimSlot >= 0) {
-            descriptors.find { it.simSlotIndex == requestedSimSlot } ?: effectiveSim
+            descriptors.find { it.simSlotIndex == requestedSimSlot }
         } else {
             effectiveSim
+        }
+
+        if (requestedSimSlot != null && requestedSimSlot >= 0 && targetSim == null) {
+            Log.e(TAG, "[OctalCall] FAIL CLOSED: Requested SIM slot $requestedSimSlot not found among active SIM descriptors")
+            result.error("SIM_UNAVAILABLE", "Requested SIM slot $requestedSimSlot is not available on this device", null)
+            return
         }
 
         if (targetSim != null) {
@@ -607,6 +613,11 @@ class MainActivity: FlutterActivity() {
                 isSystemDefault = targetSim.isSystemDefault,
                 activeList = activeList
             )
+            if (requestedSimSlot != null && requestedSimSlot >= 0 && matchedHandle == null) {
+                Log.e(TAG, "[OctalCall] FAIL CLOSED: Could not resolve PhoneAccountHandle for requested SIM slot $requestedSimSlot")
+                result.error("SIM_UNAVAILABLE", "Could not resolve telephony handle for requested SIM slot $requestedSimSlot", null)
+                return
+            }
         } else {
             matchedHandle = telecomManager?.getDefaultOutgoingPhoneAccount(PhoneAccount.SCHEME_TEL)
         }
@@ -686,9 +697,15 @@ class MainActivity: FlutterActivity() {
             val uri = Uri.parse("tel:$cleanPhone")
 
             val (descriptors, effectiveSim, _) = getActiveSimsWithReconciliation()
-            val targetSim = if (requestedSlot != null) {
-                descriptors.find { it.simSlotIndex == requestedSlot } ?: effectiveSim
+            val targetSim = if (requestedSlot != null && requestedSlot >= 0) {
+                descriptors.find { it.simSlotIndex == requestedSlot }
             } else effectiveSim
+
+            if (requestedSlot != null && requestedSlot >= 0 && targetSim == null) {
+                Log.e(TAG, "[Telecom] FAIL CLOSED: Requested SIM slot $requestedSlot not found in active descriptors")
+                result.error("SIM_UNAVAILABLE", "Requested SIM slot $requestedSlot is not available", null)
+                return
+            }
 
             val callAccounts = telecomManager.getCallCapablePhoneAccounts() ?: emptyList()
             val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
@@ -707,6 +724,12 @@ class MainActivity: FlutterActivity() {
                 isSystemDefault = targetSim?.isSystemDefault ?: false,
                 activeList = activeList
             )
+
+            if (requestedSlot != null && requestedSlot >= 0 && matchedHandle == null) {
+                Log.e(TAG, "[Telecom] FAIL CLOSED: Requested SIM slot $requestedSlot could not be resolved to a PhoneAccountHandle")
+                result.error("SIM_UNAVAILABLE", "Requested SIM slot $requestedSlot could not be resolved to a call-capable account", null)
+                return
+            }
 
             val extras = Bundle().apply {
                 if (matchedHandle != null) {
@@ -792,19 +815,40 @@ class MainActivity: FlutterActivity() {
     private fun handleCallStateChange(state: Int, phoneNumber: String?) {
         val session = synchronized(callLock) { currentCall }
 
-        if (state == TelephonyManager.CALL_STATE_OFFHOOK) {
-            session?.let {
-                it.offhookReceived = true
-                it.offhookAt = System.currentTimeMillis()
+        when (state) {
+            TelephonyManager.CALL_STATE_RINGING -> {
+                val callerPhone = phoneNumber ?: ""
+                Log.d(TAG, "[OctalCall] TELEPHONY_STATE state=RINGING (incoming call: $callerPhone)")
+                runOnUiThread {
+                    methodChannel?.invokeMethod("onCallStateChanged", mapOf(
+                        "state" to "RINGING",
+                        "phoneNumber" to callerPhone
+                    ))
+                }
             }
-            Log.d(TAG, "[OctalCall] TELEPHONY_STATE state=OFFHOOK (dialing/ringing)")
-            runOnUiThread {
-                methodChannel?.invokeMethod("onCallStateChanged", mapOf("state" to "RINGING"))
+            TelephonyManager.CALL_STATE_OFFHOOK -> {
+                session?.let {
+                    it.offhookReceived = true
+                    it.offhookAt = System.currentTimeMillis()
+                }
+                Log.d(TAG, "[OctalCall] TELEPHONY_STATE state=OFFHOOK (active/dialing)")
+                runOnUiThread {
+                    methodChannel?.invokeMethod("onCallStateChanged", mapOf(
+                        "state" to "OFFHOOK",
+                        "phoneNumber" to (phoneNumber ?: "")
+                    ))
+                }
             }
-        } else if (state == TelephonyManager.CALL_STATE_IDLE) {
-            Log.d(TAG, "[OctalCall] TELEPHONY_STATE state=IDLE (call ended)")
-            if (session != null && !session.completionSent) {
-                startCallLogCorrelation(session)
+            TelephonyManager.CALL_STATE_IDLE -> {
+                Log.d(TAG, "[OctalCall] TELEPHONY_STATE state=IDLE (call ended)")
+                runOnUiThread {
+                    methodChannel?.invokeMethod("onCallStateChanged", mapOf(
+                        "state" to "IDLE"
+                    ))
+                }
+                if (session != null && !session.completionSent) {
+                    startCallLogCorrelation(session)
+                }
             }
         }
     }
@@ -970,6 +1014,9 @@ class MainActivity: FlutterActivity() {
                 }
             }
             val mandatoryGranted = callPhoneGranted && phoneStateGranted
+            if (mandatoryGranted) {
+                registerTelephonyListeners()
+            }
             pendingResult?.success(mandatoryGranted)
             pendingResult = null
         }

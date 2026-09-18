@@ -232,7 +232,15 @@ object OctalPhoneAccountManager {
             }
         }
 
-        // 5. Safe fallback to system default outgoing account rather than guessing
+        // FAIL CLOSED (AND-04): If an explicit SIM slot or subscription was requested and could not be resolved,
+        // do NOT silently fall back to an arbitrary account or the wrong SIM.
+        val wasExplicitSimRequested = slotIndex != null || (subId != null && subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+        if (wasExplicitSimRequested) {
+            Log.e(TAG, "[Telecom] FAIL CLOSED: Explicit SIM requested (slot=$slotIndex, subId=$subId) could not be resolved to any call-capable account.")
+            return null
+        }
+
+        // Safe fallback ONLY when caller explicitly requested system default policy (no specific SIM specified)
         return defaultHandle ?: callAccounts.firstOrNull()
     }
 }
