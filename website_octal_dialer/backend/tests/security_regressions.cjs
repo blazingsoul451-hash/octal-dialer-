@@ -171,6 +171,105 @@ async function main() {
     await assert.rejects(manager.setTeamCampaigns('foreign-team', 'tenant', ['campaign']));
     assert.equal(writes, 0);
   });
+  const safety = load('safetyController.ts', {
+    './sessionManager': session,
+    './databaseManager': { db, reserveLead: async () => true, recordCall: () => {} },
+    './entitlementManager': { checkLimit: async () => ({ allowed: true }) }
+  });
+
+  await check('commands and locked leads enforce tenant scoping', async () => {
+    let lastQuery = '', lastParams = [];
+    db.queryAll = async (sql, params) => { lastQuery = sql; lastParams = params; return []; };
+    execute = async (sql, params) => { lastQuery = sql; lastParams = params; return { rowCount: 1 }; };
+
+    await safety.issueCommandId('lead1', 'sess1', 'tenantA');
+    assert.ok(lastQuery.includes('"tenantId"'));
+    assert.equal(lastParams[5], 'tenantA');
+
+    await safety.getActiveCommands('tenantA');
+    assert.ok(lastQuery.includes('"tenantId" = $2'));
+    assert.equal(lastParams[1], 'tenantA');
+
+    await manager.getLockedLeads('tenantA');
+    assert.ok(lastQuery.includes('"tenantId" = $1'));
+    assert.equal(lastParams[0], 'tenantA');
+  });
+
+  await check('unlock-all-leads scopes to tenant and awaits release', async () => {
+    let releasedTenant = null;
+    let releasedMinutes = null;
+    let leadsEmitted = null;
+    const mockRelease = async (mins, tenantId) => {
+      releasedMinutes = mins;
+      releasedTenant = tenantId;
+      return 5;
+    };
+    const source = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    const start = source.indexOf("app.post('/api/admin/system/unlock-all-leads'");
+    const end = source.indexOf('// REST: App Version & OTA Update Check', start);
+    let handler;
+    const script = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    vm.runInNewContext(script, {
+      app: { post: (p, a, b, fn) => { handler = fn; } },
+      requireAuth: (req, res, next) => next(),
+      requireAdmin: (req, res, next) => next(),
+      releaseExpiredLeases: mockRelease,
+      io: { to: (room) => ({ emit: (ev) => { leadsEmitted = { room, ev }; } }), emit: (ev) => { leadsEmitted = { ev }; } }
+    });
+
+    const res = { status(c) { this.code = c; return this; }, json(b) { this.body = b; } };
+    // Tenant admin cannot unlock other tenants
+    await handler({ user: { role: 'admin', tenantId: 'tenant_123' }, body: { tenantId: 'other_tenant' } }, res);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.count, 5);
+    assert.equal(releasedTenant, 'tenant_123'); // strictly scoped to user tenantId
+    assert.equal(leadsEmitted.room, 'tenant_tenant_123');
+
+    // Platform admin can specify target tenant
+    await handler({ user: { role: 'platform_admin', tenantId: 'sys' }, body: { tenantId: 'target_tenant' } }, res);
+    assert.equal(releasedTenant, 'target_tenant');
+  });
+
+  await check('scraper file path traversal is rejected with 403', async () => {
+    const source = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    const start = source.indexOf("app.post('/api/scraper-files/import'");
+    const end = source.indexOf('// REST: Run Scraper', start);
+    let handler;
+    const script = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    vm.runInNewContext(script, {
+      app: { post: (p, a, fn) => { handler = fn; } },
+      requireAuth: (req, res, next) => next(),
+      SCRAPER_PATHS: [path.join(root, '../data/scraper_output')],
+      path,
+      fs,
+      __dirname: root
+    });
+
+    const res = { status(c) { this.code = c; return this; }, json(b) { this.body = b; } };
+    await handler({ user: { tenantId: 't1' }, body: { filePath: '../../../../etc/passwd' } }, res);
+    assert.equal(res.code, 403);
+    assert.ok(res.body.error.includes('Forbidden'));
+  });
+
+  await check('auto-emailer routes enforce permissions', async () => {
+    const permMiddleware = auth.requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']);
+    let called = false;
+    const next = () => { called = true; };
+    const res = { status(c) { this.code = c; return this; }, json(b) { this.body = b; } };
+
+    // Standard unassigned agent (no autoEmailer)
+    db.queryOne = async () => null; // unassigned
+    db.queryAll = async () => [];
+    await permMiddleware({ user: { id: 'u1', role: 'agent', tenantId: 't1' } }, res, next);
+    assert.equal(called, false);
+    assert.equal(res.code, 403);
+
+    // Tenant admin has '*' bypass
+    called = false;
+    await permMiddleware({ user: { id: 'admin1', role: 'admin', tenantId: 't1' } }, res, next);
+    assert.equal(called, true);
+  });
+
   console.log(`${count} isolated regression groups passed. Real PostgreSQL and handset tests remain required.`);
 }
 main().catch(err => { console.error(err); process.exitCode = 1; });

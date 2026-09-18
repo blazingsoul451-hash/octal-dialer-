@@ -1101,12 +1101,18 @@ app.get('/api/safety-status', requireAuth, (req, res) => {
 
 // GET /api/commands — active in-flight commands
 app.get('/api/commands', requireAuth, async (req, res) => {
-  res.json(await getActiveCommands());
+  const user = (req as any).user;
+  const isPlatformAdmin = user?.role === 'platform_admin' || user?.role === 'master_admin';
+  const tenantId = isPlatformAdmin ? (req.query.tenantId as string | undefined) : user?.tenantId;
+  res.json(await getActiveCommands(tenantId));
 });
 
 // GET /api/leads/locked — list all currently locked leads
 app.get('/api/leads/locked', requireAuth, async (req, res) => {
-  res.json(await getLockedLeads());
+  const user = (req as any).user;
+  const isPlatformAdmin = user?.role === 'platform_admin' || user?.role === 'master_admin';
+  const tenantId = isPlatformAdmin ? (req.query.tenantId as string | undefined) : user?.tenantId;
+  res.json(await getLockedLeads(tenantId));
 });
 
 // POST /api/devices/register — register or update a mobile device
@@ -1893,14 +1899,22 @@ app.get('/api/scraper-files', requireAuth, (req, res) => {
 // REST: Download scraped file
 app.get('/api/scraper-files/download/:filename', requireAuth, (req, res) => {
   const filename = path.basename(req.params.filename);
+  if (!filename || filename.includes('..') || filename === '.' || filename === '/') {
+    res.status(400).json({ error: 'Invalid filename.' });
+    return;
+  }
   const candidateDirs = [
     path.resolve(__dirname, '../data/scraper_output'),
-    ...SCRAPER_PATHS
+    ...SCRAPER_PATHS.map(p => path.resolve(p))
   ];
 
   for (const dir of candidateDirs) {
-    const filePath = path.join(dir, filename);
-    if (fs.existsSync(filePath)) {
+    const filePath = path.resolve(dir, filename);
+    const rel = path.relative(dir, filePath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      continue;
+    }
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
       res.download(filePath, filename);
       return;
     }
@@ -1917,7 +1931,28 @@ app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
       return;
     }
     const { filePath, campaignName } = req.body as { filePath: string; campaignName?: string };
-    if (!filePath || !fs.existsSync(filePath)) {
+    if (!filePath || typeof filePath !== 'string') {
+      res.status(400).json({ error: 'filePath is required.' });
+      return;
+    }
+
+    const resolvedFilePath = path.resolve(filePath);
+    const candidateDirs = [
+      path.resolve(__dirname, '../data/scraper_output'),
+      ...SCRAPER_PATHS.map(p => path.resolve(p))
+    ];
+
+    const isPathAllowed = candidateDirs.some(dir => {
+      const rel = path.relative(dir, resolvedFilePath);
+      return !rel.startsWith('..') && !path.isAbsolute(rel);
+    });
+
+    if (!isPathAllowed) {
+      res.status(403).json({ error: 'Forbidden: Access to requested file path is not permitted.' });
+      return;
+    }
+
+    if (!fs.existsSync(resolvedFilePath) || !fs.statSync(resolvedFilePath).isFile()) {
       res.status(404).json({ error: 'File not found on system.' });
       return;
     }
@@ -2981,15 +3016,24 @@ app.post('/api/admin/scraper/force-stop', requireAuth, requireAdmin, async (req,
 });
 
 // POST /api/admin/system/unlock-all-leads
-app.post('/api/admin/system/unlock-all-leads', requireAuth, requireAdmin, (req, res) => {
-  const user = (req as any).user;
-  const count = releaseExpiredLeases(0);
-  if (user?.tenantId) {
-    io.to(`tenant_${user.tenantId}`).emit('leads:updated');
-  } else {
-    io.emit('leads:updated');
+app.post('/api/admin/system/unlock-all-leads', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const isPlatformAdmin = user?.role === 'platform_admin' || user?.role === 'master_admin';
+    const targetTenantId = isPlatformAdmin
+      ? (req.body?.tenantId || req.query?.tenantId || user?.tenantId)
+      : user?.tenantId;
+
+    const count = await releaseExpiredLeases(0, targetTenantId);
+    if (targetTenantId) {
+      io.to(`tenant_${targetTenantId}`).emit('leads:updated');
+    } else {
+      io.emit('leads:updated');
+    }
+    res.json({ success: true, count, message: `Unlocked ${count} locked lead(s).` });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to unlock leads: ' + err.message });
   }
-  res.json({ success: true, count, message: `Unlocked ${count} locked lead(s).` });
 });
 
 // REST: App Version & OTA Update Check with SHA-256 integrity verification
@@ -4492,7 +4536,7 @@ function emailLog(tenantId: string, msg: string) {
 }
 
 // ── GET /email/leads
-app.get('/email/leads', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
+app.get('/email/leads', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -4503,7 +4547,7 @@ app.get('/email/leads', requireAuth, async (req: express.Request, res: express.R
 });
 
 // ── POST /email/upload
-app.post('/email/upload', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
+app.post('/email/upload', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'leads:import']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -4530,7 +4574,7 @@ app.post('/email/upload', requireAuth, async (req: express.Request, res: express
 });
 
 // ── DELETE /email/leads
-app.delete('/email/leads', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
+app.delete('/email/leads', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -4541,7 +4585,7 @@ app.delete('/email/leads', requireAuth, async (req: express.Request, res: expres
 });
 
 // ── GET /email/accounts
-app.get('/email/accounts', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
+app.get('/email/accounts', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -4552,7 +4596,7 @@ app.get('/email/accounts', requireAuth, async (req: express.Request, res: expres
 });
 
 // ── POST /email/accounts
-app.post('/email/accounts', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
+app.post('/email/accounts', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -4590,7 +4634,7 @@ app.post('/email/accounts', requireAuth, async (req: express.Request, res: expre
 });
 
 // ── GET /email/templates
-app.get('/email/templates', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
+app.get('/email/templates', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -4601,7 +4645,7 @@ app.get('/email/templates', requireAuth, async (req: express.Request, res: expre
 });
 
 // ── POST /email/templates
-app.post('/email/templates', requireAuth, async (req: express.Request, res: express.Response): Promise<void> => {
+app.post('/email/templates', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -4621,7 +4665,7 @@ app.post('/email/templates', requireAuth, async (req: express.Request, res: expr
 });
 
 // ── POST /email/start — fire-and-forget campaign runner
-app.post('/email/start', requireAuth, (req: express.Request, res: express.Response): void => {
+app.post('/email/start', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'email:send']), (req: express.Request, res: express.Response): void => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -4724,7 +4768,7 @@ app.post('/email/start', requireAuth, (req: express.Request, res: express.Respon
 });
 
 // ── POST /emailer/stop
-app.post('/emailer/stop', requireAuth, (req: express.Request, res: express.Response): void => {
+app.post('/emailer/stop', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), (req: express.Request, res: express.Response): void => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -4736,7 +4780,7 @@ app.post('/emailer/stop', requireAuth, (req: express.Request, res: express.Respo
 });
 
 // ── GET /emailer/status
-app.get('/emailer/status', requireAuth, (req: express.Request, res: express.Response): void => {
+app.get('/emailer/status', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), (req: express.Request, res: express.Response): void => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });

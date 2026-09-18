@@ -235,7 +235,7 @@ export async function checkCallAllowed(req: CallRequest): Promise<SafetyResult> 
     recordCall(req.campaignId, tenantId);
   }
 
-  const commandId = await issueCommandId(req.leadId || req.phone, req.sessionId);
+  const commandId = await issueCommandId(req.leadId || req.phone, req.sessionId, tenantId);
 
   return { allowed: true, commandId };
 }
@@ -372,16 +372,16 @@ export async function getSuppressionList(tenantId: string): Promise<SuppressionE
 // ─── Command ID & Idempotency Management ─────────────────────────────────────
 export const COMMAND_TTL_MINUTES = 5;
 
-export async function issueCommandId(leadId: string, sessionId: string): Promise<string> {
+export async function issueCommandId(leadId: string, sessionId: string, tenantId?: string): Promise<string> {
   const commandId = 'cmd_' + Math.random().toString(36).substring(2, 11);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + COMMAND_TTL_MINUTES * 60 * 1000).toISOString();
 
   await db.execute(`
-    INSERT INTO commands (id, "leadId", "sessionId", "issuedAt", "expiresAt")
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO commands (id, "leadId", "sessionId", "issuedAt", "expiresAt", "tenantId")
+    VALUES ($1, $2, $3, $4, $5, $6)
     ON CONFLICT ("id") DO NOTHING
-  `, [commandId, leadId, sessionId, now.toISOString(), expiresAt]);
+  `, [commandId, leadId, sessionId, now.toISOString(), expiresAt, tenantId || null]);
 
   return commandId;
 }
@@ -396,8 +396,11 @@ export async function cleanupExpiredCommands(): Promise<void> {
   await db.execute(`DELETE FROM commands WHERE "expiresAt" <= $1`, [now]);
 }
 
-export async function getActiveCommands(): Promise<any[]> {
+export async function getActiveCommands(tenantId?: string): Promise<any[]> {
   const now = new Date().toISOString();
+  if (tenantId) {
+    return await db.queryAll<any>(`SELECT * FROM commands WHERE "expiresAt" > $1 AND "tenantId" = $2 ORDER BY "issuedAt" DESC`, [now, tenantId]);
+  }
   return await db.queryAll<any>(`SELECT * FROM commands WHERE "expiresAt" > $1 ORDER BY "issuedAt" DESC`, [now]);
 }
 

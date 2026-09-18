@@ -193,30 +193,121 @@ export function findSchemaFilePath(): string {
   return candidates[0];
 }
 
+const ADVISORY_LOCK_ID = 987654321;
+
 export async function initializeSchema(schemaFilePath?: string): Promise<void> {
   const schemaPath = schemaFilePath && fs.existsSync(schemaFilePath) ? schemaFilePath : findSchemaFilePath();
   if (!fs.existsSync(schemaPath)) {
     throw new Error(`Schema file not found at: ${schemaPath}`);
   }
   const ddl = fs.readFileSync(schemaPath, 'utf-8');
-  
-  // Strip comments and split by semicolon
-  const cleanDdl = ddl.replace(/--.*$/gm, '');
-  const statements = cleanDdl
-    .split(';')
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
 
-  for (const stmt of statements) {
+  // Multi-instance concurrency protection: Acquire PostgreSQL advisory lock on real databases
+  let lockAcquired = false;
+  if (!isInMemoryDatabase()) {
     try {
-      await query(stmt);
+      await query('SELECT pg_advisory_lock($1)', [ADVISORY_LOCK_ID]);
+      lockAcquired = true;
     } catch (e: any) {
-      if (!e.message.includes('already exists') && !e.message.includes('duplicate key')) {
-        console.warn(`[Schema Init] Warning on statement: ${stmt.slice(0, 60)}... => ${e.message}`);
+      console.warn('[PostgreSQL] Advisory lock acquisition warning:', e.message);
+    }
+  }
+
+  try {
+    // 1. Run baseline schema DDL
+    const cleanDdl = ddl.replace(/--.*$/gm, '');
+    const statements = cleanDdl
+      .split(';')
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    for (const stmt of statements) {
+      try {
+        await query(stmt);
+      } catch (e: any) {
+        const ignorable =
+          e.message?.includes('already exists') ||
+          e.message?.includes('duplicate key') ||
+          e.message?.includes('multiple primary keys') ||
+          e.message?.includes('parts have not been read');
+        if (ignorable) {
+          continue;
+        }
+        console.error(`[Schema Init Fatal] Statement failed: ${stmt.slice(0, 80)}... => ${e.message}`);
+        throw new Error(`Schema initialization failed on statement: ${stmt.slice(0, 60)}... Error: ${e.message}`);
+      }
+    }
+
+    // 2. Ensure schema_migrations table exists for versioned migration tracking
+    try {
+      await query(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          appliedAt TEXT
+        );
+      `);
+    } catch (e: any) {
+      if (!e.message?.includes('already exists') && !e.message?.includes('parts have not been read')) {
+        throw e;
+      }
+    }
+
+    // 3. Find and run incremental migrations on real PostgreSQL from src/db/migrations
+    if (!isInMemoryDatabase()) {
+      const migrationsDirCandidates = [
+        path.join(__dirname, 'migrations'),
+        path.join(__dirname, '../../src/db/migrations'),
+        path.join(process.cwd(), 'src/db/migrations'),
+        path.join(process.cwd(), 'dist/db/migrations')
+      ];
+      let migrationsDir: string | null = null;
+      for (const dir of migrationsDirCandidates) {
+        if (fs.existsSync(dir)) {
+          migrationsDir = dir;
+          break;
+        }
+      }
+
+      if (migrationsDir) {
+        const appliedRows = await query<{ id: string }>('SELECT id FROM schema_migrations');
+        const appliedSet = new Set(appliedRows.rows.map(r => r.id));
+
+        const files = fs.readdirSync(migrationsDir)
+          .filter(f => f.endsWith('.sql'))
+          .sort();
+
+        for (const file of files) {
+          const migrationId = file.replace(/\.sql$/, '');
+          if (appliedSet.has(migrationId)) {
+            continue;
+          }
+
+          const sqlFile = path.join(migrationsDir, file);
+          const migrationSql = fs.readFileSync(sqlFile, 'utf-8');
+
+          // Real PostgreSQL natively executes the entire migration script
+          await query(migrationSql);
+
+          await query(
+            'INSERT INTO schema_migrations (id, name, appliedAt) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
+            [migrationId, file, new Date().toISOString()]
+          );
+          console.log(`[PostgreSQL Migrations] Applied: ${file}`);
+        }
+      }
+    }
+
+    console.log('[PostgreSQL] Schema initialized successfully (all tables ready).');
+  } finally {
+    if (lockAcquired) {
+      try {
+        await query('SELECT pg_advisory_unlock($1)', [ADVISORY_LOCK_ID]);
+      } catch (e: any) {
+        console.warn('[PostgreSQL] Advisory lock release warning:', e.message);
       }
     }
   }
-  console.log('[PostgreSQL] Schema initialized successfully (34 tables ready).');
 }
 
 /**

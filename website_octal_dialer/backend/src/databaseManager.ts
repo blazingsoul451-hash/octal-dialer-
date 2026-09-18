@@ -509,21 +509,33 @@ export async function unlockLeadsForSession(sessionId: string): Promise<void> {
   }
 }
 
-export async function releaseExpiredLeases(leaseMinutes: number = LEASE_TTL_MINUTES): Promise<number> {
+export async function releaseExpiredLeases(leaseMinutes: number = LEASE_TTL_MINUTES, tenantId?: string): Promise<number> {
   const now = new Date();
   const cutoff = new Date(now.getTime() - leaseMinutes * 60 * 1000).toISOString();
-  const result = await db.execute(`
-    UPDATE leads
-    SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
-    WHERE "lockedAt" < $1 AND status != 'COMPLETED' AND "lockedBy" IS NOT NULL
-  `, [cutoff]);
+  let result;
+  if (tenantId) {
+    result = await db.execute(`
+      UPDATE leads
+      SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+      WHERE "lockedAt" < $1 AND status != 'COMPLETED' AND "lockedBy" IS NOT NULL AND "tenantId" = $2
+    `, [cutoff, tenantId]);
+  } else {
+    result = await db.execute(`
+      UPDATE leads
+      SET "lockedBy" = NULL, "lockedAt" = NULL, status = CASE WHEN status = 'CALLING' THEN 'PENDING' ELSE status END
+      WHERE "lockedAt" < $1 AND status != 'COMPLETED' AND "lockedBy" IS NOT NULL
+    `, [cutoff]);
+  }
   if (result.rowCount > 0) {
-    console.log(`[LeadLock] Released ${result.rowCount} expired lead lease(s) (older than ${leaseMinutes} mins)`);
+    console.log(`[LeadLock] Released ${result.rowCount} expired lead lease(s) (older than ${leaseMinutes} mins)${tenantId ? ` for tenant ${tenantId}` : ''}`);
   }
   return result.rowCount;
 }
 
-export async function getLockedLeads(): Promise<Lead[]> {
+export async function getLockedLeads(tenantId?: string): Promise<Lead[]> {
+  if (tenantId) {
+    return db.queryAll<Lead>(`SELECT * FROM leads WHERE "lockedBy" IS NOT NULL AND status != 'COMPLETED' AND "tenantId" = $1`, [tenantId]);
+  }
   return db.queryAll<Lead>(`SELECT * FROM leads WHERE "lockedBy" IS NOT NULL AND status != 'COMPLETED'`);
 }
 

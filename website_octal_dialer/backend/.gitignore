@@ -39,3 +39,4 @@ coverage/
 *.tmp
 *.temp
 test_*.js
+dist_test/

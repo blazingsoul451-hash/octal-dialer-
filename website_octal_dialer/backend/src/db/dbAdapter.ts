@@ -86,14 +86,26 @@ export function transformSql(sql: string, params: any[] = []): { sql: string; pa
  */
 export class DbAdapter {
   private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   public async init(): Promise<void> {
     if (this.initialized) return;
-    console.log('[DbAdapter] Initializing PostgreSQL engine...');
-    getPool();
-    await initializeSchema(path.join(__dirname, 'schema.sql'));
-    console.log('[DbAdapter] PostgreSQL engine online and schema ready.');
-    this.initialized = true;
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = (async () => {
+      console.log('[DbAdapter] Initializing PostgreSQL engine...');
+      getPool();
+      await initializeSchema(path.join(__dirname, 'schema.sql'));
+      console.log('[DbAdapter] PostgreSQL engine online and schema ready.');
+      this.initialized = true;
+    })();
+
+    try {
+      await this.initPromise;
+    } catch (err) {
+      this.initPromise = null;
+      throw err;
+    }
   }
 
   public async query<T extends QueryResultRow = any>(sql: string, params: any[] = []): Promise<{ rows: T[]; rowCount: number }> {

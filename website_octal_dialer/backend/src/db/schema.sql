@@ -295,7 +295,8 @@ CREATE TABLE IF NOT EXISTS "commands" (
   "leadId" TEXT NOT NULL,
   "sessionId" TEXT NOT NULL,
   "issuedAt" TEXT NOT NULL DEFAULT '',
-  "expiresAt" TEXT NOT NULL
+  "expiresAt" TEXT NOT NULL,
+  "tenantId" TEXT
 );
 
 -- Table: suppression_list
