@@ -684,7 +684,7 @@ export async function ensureDefaultAdmin(): Promise<void> {
   if (existing) return;
   const username = process.env.BOOTSTRAP_ADMIN_USERNAME?.trim().toLowerCase();
   const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
-  const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+  const password = process.env.BOOTSTRAP_ADMIN_PASSWORD?.trim();
   if (!username || !email || !password || password.length < 16) {
     throw new Error('No platform administrator exists. Provision BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_EMAIL and a password of at least 16 characters.');
   }
