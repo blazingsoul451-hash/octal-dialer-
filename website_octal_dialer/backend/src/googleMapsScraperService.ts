@@ -114,11 +114,12 @@ interface ActiveJobRuntime {
   isExited?: boolean;
   quarantined?: boolean;
   ownedPids?: Set<number>;
+  messageQueue?: Promise<void>;
 }
 
 // In-memory runtime state (not serialized to disk)
 const activeRuntimes = new Map<string, ActiveJobRuntime>();
-const jobQueue: ScraperJobOptions[] = [];
+const jobQueue: { jobId: string; options: ScraperJobOptions }[] = [];
 
 // Optional socket.io broadcaster instance
 let ioBroadcaster: any = null;
@@ -136,14 +137,16 @@ function broadcastToTenant(tenantId: string, event: string, payload: any) {
 // ─── FILE PATH SECURITY HELPERS ──────────────────────────────────────────────
 
 export function getTenantOutputDir(tenantId: string): string {
-  const safeTenant = tenantId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (!tenantId || !/^[a-zA-Z0-9_-]+$/.test(tenantId)) throw new Error('Unauthorized: Invalid tenant identity.');
+  const safeTenant = tenantId;
   const dir = path.resolve(OUTPUT_DIR, safeTenant);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
 export function getTenantJobsDir(tenantId: string): string {
-  const safeTenant = tenantId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (!tenantId || !/^[a-zA-Z0-9_-]+$/.test(tenantId)) throw new Error('Unauthorized: Invalid tenant identity.');
+  const safeTenant = tenantId;
   const dir = path.resolve(JOBS_DIR, safeTenant);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
@@ -162,7 +165,14 @@ export function validateTenantFileAccess(tenantId: string, targetPath: string): 
     throw new Error('Requested scraper file not found.');
   }
 
-  return resolved;
+  const realDir = fs.realpathSync(tenantDir);
+  const realFile = fs.realpathSync(resolved);
+  const realRel = path.relative(realDir, realFile);
+  if (realRel.startsWith('..') || path.isAbsolute(realRel) || !fs.statSync(realFile).isFile()) {
+    throw new Error('Forbidden: Invalid scraper file.');
+  }
+  if (!/\.(xlsx|csv)$/i.test(realFile)) throw new Error('Forbidden: Unsupported export format.');
+  return realFile;
 }
 
 // ─── PERSISTENCE HELPERS ─────────────────────────────────────────────────────
@@ -171,7 +181,9 @@ function saveJobRecord(record: ScraperJobRecord): void {
   try {
     const dir = getTenantJobsDir(record.tenantId);
     const filePath = path.join(dir, `${record.jobId}.json`);
-    fs.writeFileSync(filePath, JSON.stringify(record, null, 2), 'utf8');
+    const tmp = `${filePath}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(record, null, 2), 'utf8');
+    fs.renameSync(tmp, filePath);
   } catch (err: any) {
     console.error(`[ScraperService] Failed to save job record ${record.jobId}:`, err.message);
   }
@@ -219,15 +231,9 @@ function drainQueue(): void {
     return;
   }
 
-  const nextOptions = jobQueue.shift();
-  if (!nextOptions) return;
-
-  const existingRecord = listTenantJobs(nextOptions.tenantId).find(
-    j => j.status === 'queued' && j.options.keyword === nextOptions.keyword
-  );
-
-  const jobId = existingRecord ? existingRecord.jobId : generateJobId(nextOptions.tenantId);
-  launchWorkerJob(jobId, nextOptions);
+  const next = jobQueue.shift();
+  if (!next) return;
+  launchWorkerJob(next.jobId, next.options);
 }
 
 function generateJobId(tenantId: string): string {
@@ -267,8 +273,9 @@ function launchWorkerJob(jobId: string, options: ScraperJobOptions): void {
       failed: 0
     },
     maxLimit: Math.max(1, Math.min(options.maxLeads || 50, 1000)),
-    outputFile: outputFileName,
+    outputFile: outputPath,
     checkpointFile: checkpointFileName,
+    checkpointPath,
     logs: [`🚀 Scraper job started for: "${options.keyword}" in "${options.location || 'Any'}"`],
     executionId
   };
@@ -327,15 +334,15 @@ function launchWorkerJob(jobId: string, options: ScraperJobOptions): void {
     outputPath
   };
 
-  worker.send(startMsg);
   attachWorkerEventHandlers(runtime);
+  worker.send(startMsg);
 }
 
 export function attachWorkerEventHandlers(runtime: ActiveJobRuntime): void {
   const { jobId, workerProcess: worker } = runtime;
   if (!worker) return;
 
-  worker.on('message', async (msg: WorkerChildMessage) => {
+  const handleMessage = async (msg: WorkerChildMessage) => {
     if (!msg || typeof msg !== 'object') return;
 
     // 1. Generation & identity check: verify executionId & jobId match current generation to prevent stale events
@@ -354,9 +361,7 @@ export function attachWorkerEventHandlers(runtime: ActiveJobRuntime): void {
     // 3. Counter validation: if counters object is supplied, ensure non-negative numbers
     if ('counters' in msg && msg.counters) {
       const { extracted, discovered, failed } = msg.counters;
-      if (typeof extracted !== 'number' || extracted < 0 ||
-          typeof discovered !== 'number' || discovered < 0 ||
-          typeof failed !== 'number' || failed < 0) {
+      if ([extracted, discovered, failed, msg.counters.qualified ?? 0].some(value => !Number.isSafeInteger(value) || value < 0)) {
         console.warn(`[ScraperService] Rejecting message with invalid counters from worker:`, msg.counters);
         return;
       }
@@ -431,30 +436,26 @@ export function attachWorkerEventHandlers(runtime: ActiveJobRuntime): void {
           const lines = content.split('\n').filter(l => l.trim().length > 0);
           for (const line of lines) {
             try {
-              JSON.parse(line);
-              validCheckpointRecords++;
+              const lead = JSON.parse(line);
+              if (lead && typeof lead.listingId === 'string' && lead.listingId && typeof lead.businessName === 'string' && lead.businessName) validCheckpointRecords++;
             } catch (_) {}
           }
         } catch (_) {}
       }
 
-      // Validate XLSX artifact
+      // Open the ZIP/workbook rather than accepting a four-byte PK prefix.
       let isValidXlsx = false;
       if (runtime.record.outputFile && fs.existsSync(runtime.record.outputFile)) {
         try {
-          const stat = fs.statSync(runtime.record.outputFile);
-          if (stat.size >= 4) {
-            const fd = fs.openSync(runtime.record.outputFile, 'r');
-            const buf = Buffer.alloc(4);
-            fs.readSync(fd, buf, 0, 4, 0);
-            fs.closeSync(fd);
-            // XLSX must be a valid zip archive starting with 'PK\x03\x04'
-            if (buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04) {
-              isValidXlsx = true;
-            }
-          }
+          const workbook = new ExcelJS.Workbook();
+          await workbook.xlsx.readFile(runtime.record.outputFile);
+          const sheet = workbook.worksheets[0];
+          isValidXlsx = !!sheet && sheet.getRow(1).getCell(1).text === 'Listing ID' &&
+            sheet.actualRowCount - 1 === qualifiedCount;
         } catch (_) {}
       }
+      // Cancellation may have arrived during asynchronous artifact validation.
+      if (runtime.record.status !== 'running') return;
 
       // Artifact and record integrity validation
       if (qualifiedCount > 0) {
@@ -475,7 +476,7 @@ export function attachWorkerEventHandlers(runtime: ActiveJobRuntime): void {
             await shutdownWorker(jobId, 'invalid_artifact');
             return;
           }
-        } else if (validCheckpointRecords < qualifiedCount) {
+        } else if (validCheckpointRecords !== qualifiedCount) {
           // Committed count mismatch
           runtime.record.status = 'completed_partial';
           runtime.record.errorMessage = `Committed record count mismatch (expected ${qualifiedCount}, found ${validCheckpointRecords} in checkpoint).`;
@@ -508,6 +509,16 @@ export function attachWorkerEventHandlers(runtime: ActiveJobRuntime): void {
       });
       await shutdownWorker(jobId, 'error');
     }
+  };
+  worker.on('message', (msg: WorkerChildMessage) => {
+    runtime.messageQueue = (runtime.messageQueue || Promise.resolve()).then(() => handleMessage(msg)).catch(async err => {
+      if (!['stopped', 'failed', 'completed', 'completed_partial', 'paused_challenge'].includes(runtime.record.status)) {
+        runtime.record.status = 'failed';
+        runtime.record.errorMessage = `Worker message failed: ${err.message}`;
+        saveJobRecord(runtime.record);
+        await shutdownWorker(jobId, 'message_error');
+      }
+    });
   });
 
   worker.on('error', async (err) => {
@@ -528,6 +539,7 @@ export function attachWorkerEventHandlers(runtime: ActiveJobRuntime): void {
       if (active) {
         active.exitCode = code;
         active.isExited = true;
+        await active.messageQueue;
         // P1 Requirement 3: Exit code is NOT a completion acknowledgement.
         // Exit without DONE must be marked failed or partial, NEVER completed.
         if (!active.hasReceivedDone && active.record.status === 'running') {
@@ -764,6 +776,10 @@ export async function submitScraperJob(options: ScraperJobOptions): Promise<{
   message: string;
 }> {
   const { tenantId, keyword } = options;
+  getTenantJobsDir(tenantId);
+  if (jobQueue.length >= 100 || jobQueue.filter(job => job.options.tenantId === tenantId).length >= 5) {
+    throw new Error('Scraper queue is full. Try again later.');
+  }
   if (!keyword || !keyword.trim()) {
     throw new Error('Search keyword is required.');
   }
@@ -805,7 +821,7 @@ export async function submitScraperJob(options: ScraperJobOptions): Promise<{
       executionId: 0
     };
     saveJobRecord(queuedRecord);
-    jobQueue.push(options);
+    jobQueue.push({ jobId, options });
 
     return {
       success: true,
@@ -816,10 +832,9 @@ export async function submitScraperJob(options: ScraperJobOptions): Promise<{
   }
 }
 
-export function getTenantScraperStatus(tenantId: string = 'default', jobId?: string): ScraperJobRecord | null {
+export function getTenantScraperStatus(tenantId: string, jobId?: string): ScraperJobRecord | null {
   if (jobId) {
-    const record = loadJobRecord(tenantId, jobId);
-    if (record) return record;
+    return loadJobRecord(tenantId, jobId);
   }
 
   // If no jobId specified, return current active runtime or most recent job
@@ -833,7 +848,7 @@ export function getTenantScraperStatus(tenantId: string = 'default', jobId?: str
   return jobs.length > 0 ? jobs[0] : null;
 }
 
-export async function stopTenantScraperJob(tenantId: string = 'default', jobId?: string): Promise<boolean> {
+export async function stopTenantScraperJob(tenantId: string, jobId?: string): Promise<boolean> {
   let targetRuntime: ActiveJobRuntime | undefined;
 
   if (jobId) {
@@ -862,7 +877,7 @@ export async function stopTenantScraperJob(tenantId: string = 'default', jobId?:
 
   // Case 2: Job is in the pending queue
   if (jobId) {
-    const queuedIdx = jobQueue.findIndex(opt => opt.tenantId === tenantId);
+    const queuedIdx = jobQueue.findIndex(job => job.jobId === jobId && job.options.tenantId === tenantId);
     if (queuedIdx !== -1) {
       jobQueue.splice(queuedIdx, 1);
       const record = loadJobRecord(tenantId, jobId);
@@ -880,7 +895,7 @@ export async function stopTenantScraperJob(tenantId: string = 'default', jobId?:
   return false;
 }
 
-export function listTenantScraperFiles(tenantId: string = 'default'): Array<{
+export function listTenantScraperFiles(tenantId: string): Array<{
   name: string;
   path: string;
   sizeBytes: number;
@@ -892,7 +907,10 @@ export function listTenantScraperFiles(tenantId: string = 'default'): Array<{
   const dir = getTenantOutputDir(tenantId);
   if (!fs.existsSync(dir)) return [];
 
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.xlsx') || f.endsWith('.csv'));
+  const files = fs.readdirSync(dir).filter(f => {
+    if (!/\.(xlsx|csv)$/i.test(f)) return false;
+    try { validateTenantFileAccess(tenantId, path.join(dir, f)); return true; } catch { return false; }
+  });
   return files.map(name => {
     const fullPath = path.join(dir, name);
     const stats = fs.statSync(fullPath);
@@ -926,18 +944,20 @@ export async function importScraperFileToCampaign(
   importedCount: number;
   skippedCount: number;
   dedupedCount: number;
+  name: string;
 }> {
   const safeFilePath = validateTenantFileAccess(tenantId, filePath);
 
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(safeFilePath);
+  if (path.extname(safeFilePath).toLowerCase() === '.csv') await workbook.csv.readFile(safeFilePath);
+  else await workbook.xlsx.readFile(safeFilePath);
   const worksheet = workbook.worksheets[0];
   if (!worksheet) {
     throw new Error('Workbook contains no valid sheets.');
   }
 
   const fileName = path.basename(safeFilePath);
-  const finalCampaignName = campaignName.trim() || `Scraped Campaign ${new Date().toLocaleDateString()}`;
+  const finalCampaignName = campaignName.trim() || `Scraped: ${path.basename(safeFilePath, path.extname(safeFilePath))}`;
   const validLeads: { name: string; phone: string; address?: string; listingId?: string }[] = [];
   let skippedCount = 0;
 
@@ -948,22 +968,20 @@ export async function importScraperFileToCampaign(
     headerMap[header] = colNumber;
   });
 
-  const getColVal = (row: any, headerKey: string, fallbackIdx: number): string => {
-    const colIdx = headerMap[headerKey];
-    if (colIdx) {
-      return String(row.getCell(colIdx).value || '').trim();
-    }
-    const val = row.values ? row.values[fallbackIdx] : '';
-    return String(val || '').trim();
-  };
+  const findColumn = (names: string[]) => names.map(name => headerMap[name]).find(Boolean);
+  const nameCol = findColumn(['business name', 'name', 'businessname']);
+  const phoneCol = findColumn(['phone number', 'phone', 'telephone']);
+  const addressCol = findColumn(['address']);
+  const listingCol = findColumn(['listing id', 'listingid']);
+  if (!nameCol || !phoneCol) throw new Error('Export must contain business name and phone headers.');
+  const cellText = (row: ExcelJS.Row, column?: number) => column ? row.getCell(column).text.trim() : '';
 
   worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return; // skip header row
-
-    const name = getColVal(row, 'business name', 2) || getColVal(row, 'name', 2) || 'Scraped Business';
-    const rawPhone = getColVal(row, 'phone number', 3) || getColVal(row, 'phone', 3);
-    const address = getColVal(row, 'address', 5);
-    const listingId = getColVal(row, 'listing id', 1) || getColVal(row, 'listingid', 1);
+    if (rowNumber === 1) return;
+    const name = cellText(row, nameCol) || 'Scraped Business';
+    const rawPhone = cellText(row, phoneCol);
+    const address = cellText(row, addressCol);
+    const listingId = cellText(row, listingCol);
 
     // Digits validation: require at least 7 dialable digits
     const digitsOnly = rawPhone.replace(/\D/g, '');
@@ -994,6 +1012,7 @@ export async function importScraperFileToCampaign(
     success: true,
     campaignId: result.campaign.id,
     importedCount: result.finalCount,
+    name: result.campaign.name,
     skippedCount,
     dedupedCount: result.dedupedCount
   };

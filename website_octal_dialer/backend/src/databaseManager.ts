@@ -102,6 +102,22 @@ export async function createCampaign(
   tenantId: string,
   options?: CreateCampaignOptions
 ): Promise<CampaignImportResult> {
+  if (!tenantId) throw new Error('Tenant ID is required to create a campaign.');
+  return db.withTransaction(async () => {
+    // Serialize tenant imports across API processes before checking existing rows
+    // or plan limits. The lock is released with the transaction, including rollback.
+    await db.execute("SELECT pg_advisory_xact_lock(hashtext('octal-campaign-import'), hashtext($1))", [tenantId]);
+    return createCampaignInTransaction(name, fileName, rawLeads, tenantId, options);
+  });
+}
+
+async function createCampaignInTransaction(
+  name: string,
+  fileName: string,
+  rawLeads: { name: string; phone: string; address?: string; listingId?: string }[],
+  tenantId: string,
+  options?: CreateCampaignOptions
+): Promise<CampaignImportResult> {
   if (!tenantId) {
     throw new Error('Tenant ID is required to create a campaign (fail-closed).');
   }
@@ -110,14 +126,14 @@ export async function createCampaign(
   const now = new Date().toISOString();
 
   // Idempotency check: if an identical campaign for this fileName/intent already exists, return it
-  if (options?.idempotencyKey || fileName) {
+  if (options?.idempotencyKey) {
     const existingCampaign = await db.queryOne<Campaign>(`
       SELECT * FROM campaigns 
       WHERE "fileName" = $1 AND "tenantId" = $2 AND name = $3
       ORDER BY "createdAt" DESC LIMIT 1
     `, [fileName, tId, name]);
 
-    if (existingCampaign && existingCampaign.leadCount > 0) {
+    if (existingCampaign) {
       return {
         campaign: existingCampaign,
         totalRaw: rawLeads.length,

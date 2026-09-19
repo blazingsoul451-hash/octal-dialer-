@@ -51,6 +51,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
 
   const logsContainerRef = useRef<HTMLDivElement>(null);
   const pollSeqRef = useRef<number>(0);
+  const fileSeqRef = useRef<number>(0);
 
   const fetchScraperStatus = async () => {
     const currentSeq = ++pollSeqRef.current;
@@ -61,8 +62,9 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
       const res = await fetch(`${serverUrl}/api/scraper/status${queryParam}`, { headers });
       if (res.ok) {
         // Prevent stale responses from overwriting newer polls
-        if (currentSeq !== pollSeqRef.current) return;
         const data = await res.json();
+        if (currentSeq !== pollSeqRef.current) return;
+        if (!data) { setScraperStatus('idle'); return; }
         if (data.jobId) setActiveJobId(data.jobId);
         setScraperStatus(data.status || 'idle');
         setScraperLogs(data.logs || []);
@@ -91,6 +93,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
     }
     return () => {
       if (interval) clearInterval(interval);
+      ++pollSeqRef.current;
     };
   }, [scraperStatus, serverUrl, authToken, activeJobId]);
 
@@ -103,6 +106,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
   const handleStartScraper = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!keyword.trim()) return;
+    ++pollSeqRef.current;
     setActionLoading(true);
     setError(null);
     setSuccessMsg(null);
@@ -125,10 +129,10 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to start scraper');
+      ++pollSeqRef.current;
       if (data.jobId) setActiveJobId(data.jobId);
-      setScraperStatus(data.status || 'running');
+      setScraperStatus(data.status || 'queued');
       setSuccessMsg(`Scraper job ${data.jobId || ''} submitted for "${keyword}" (Target: ${maxLeads} leads).`);
-      fetchScraperStatus();
     } catch (err: any) {
       setError(err.message || 'Error starting scraper.');
     } finally {
@@ -146,18 +150,19 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
         headers,
         body: JSON.stringify({ jobId: activeJobId })
       });
-      if (res.ok) {
-        setScraperStatus('stopped');
-        fetchScraperStatus();
-      }
-    } catch (err) {
-      console.error(err);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to stop scraper.');
+      ++pollSeqRef.current;
+      setScraperStatus(data.status || 'stopping');
+    } catch (err: any) {
+      setError(err.message);
     } finally {
       setActionLoading(false);
     }
   };
 
   const fetchFiles = async () => {
+    const seq = ++fileSeqRef.current;
     setLoading(true);
     try {
       const headers: Record<string, string> = {};
@@ -166,17 +171,21 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
       const res = await fetch(`${serverUrl}/api/scraper-files`, { headers });
       if (res.ok) {
         const data = await res.json();
-        setFiles(data);
+        if (seq === fileSeqRef.current) setFiles(data);
       }
     } catch (err: any) {
       console.error('Error fetching files:', err);
     } finally {
-      setLoading(false);
+      if (seq === fileSeqRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
+    setSelectedFile(null);
+    setFiles([]);
+    setActiveJobId('');
     fetchFiles();
+    return () => { ++fileSeqRef.current; ++pollSeqRef.current; };
   }, [serverUrl, authToken]);
 
   const handleSelectFile = (file: ScraperFile) => {
@@ -219,9 +228,19 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
     }
   };
 
-  const handleDownload = (fileName: string) => {
-    const downloadUrl = `${serverUrl}/api/scraper-files/download/${encodeURIComponent(fileName)}`;
-    window.open(downloadUrl, '_blank');
+  const handleDownload = async (fileName: string) => {
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      const response = await fetch(`${serverUrl}/api/scraper-files/download/${encodeURIComponent(fileName)}`, { headers });
+      if (!response.ok) throw new Error('Download failed. Check your access and retry.');
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err: any) { setError(err.message); }
   };
 
   const formatSize = (bytes: number) => {

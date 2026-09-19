@@ -944,7 +944,7 @@ class MainActivity: FlutterActivity() {
             return null
         }
 
-        val cleanTarget = session.phoneNumber
+        val cleanTarget = session.phoneNumber.filter { it.isDigit() }
         val minDate = session.startedAt - 5000L // 5s clock tolerance
         val projection = arrayOf(
             CallLog.Calls._ID,
@@ -978,9 +978,8 @@ class MainActivity: FlutterActivity() {
                     val duration = if (durationIdx != -1) cursor.getInt(durationIdx) else 0
                     val cleanNum = num.filter { it.isDigit() }
 
-                    val isMatch = cleanNum == cleanTarget ||
-                        (cleanTarget.length >= 7 && cleanNum.endsWith(cleanTarget.takeLast(7))) ||
-                        (cleanNum.length >= 7 && cleanTarget.endsWith(cleanNum.takeLast(7)))
+                    val isMatch = cleanTarget.isNotEmpty() && cleanNum == cleanTarget &&
+                        date <= System.currentTimeMillis()
 
                     if (isMatch) {
                         return CallLogMatch(duration = duration, date = date, number = num)

@@ -231,24 +231,22 @@ async function main() {
   });
 
   await check('scraper file path traversal is rejected with 403', async () => {
-    const source = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
-    const start = source.indexOf("app.post('/api/scraper-files/import'");
-    const end = source.indexOf('// REST: Run Scraper', start);
-    let handler;
-    const script = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-    vm.runInNewContext(script, {
-      app: { post: (p, a, fn) => { handler = fn; } },
-      requireAuth: (req, res, next) => next(),
-      SCRAPER_PATHS: [path.join(root, '../data/scraper_output')],
-      path,
-      fs,
-      __dirname: root
-    });
-
-    const res = { status(c) { this.code = c; return this; }, json(b) { this.body = b; } };
-    await handler({ user: { tenantId: 't1' }, body: { filePath: '../../../../etc/passwd' } }, res);
-    assert.equal(res.code, 403);
-    assert.ok(res.body.error.includes('Forbidden'));
+    const temp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'octal-security-'));
+    try {
+      const service = load('googleMapsScraperService.ts', {
+        child_process: {}, exceljs: {}, './databaseManager': { db }
+      }, { __dirname: path.join(temp, 'src') });
+      const routes = load('scraperRoutes.ts', { './googleMapsScraperService': service });
+      let handler;
+      routes.registerScraperRoutes({
+        get() {},
+        post(p, ...handlers) { if (p === '/api/scraper-files/import') handler = handlers.at(-1); }
+      }, () => {}, { to() { return { emit() {} }; } }, service);
+      const res = { status(c) { this.code = c; return this; }, json(b) { this.body = b; } };
+      await handler({ user: { tenantId: 't1' }, body: { filePath: '../../../../etc/passwd' } }, res);
+      assert.equal(res.code, 403);
+      assert.ok(res.body.error.includes('Forbidden'));
+    } finally { fs.rmSync(temp, { recursive: true, force: true }); }
   });
 
   await check('auto-emailer routes enforce permissions', async () => {

@@ -292,7 +292,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
           autoDialTimeout,
           nextLead.id,
           nextLead.campaignId || selectedCampIdRef.current,
-          { forceRedial: true, simSlot: selectedSimSlot }
+          { forceRedial: false, simSlot: selectedSimSlot }
         );
       } else {
         setCountdownSeconds(remaining);
@@ -315,7 +315,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         autoDialTimeout,
         lead.id,
         lead.campaignId || selectedCampIdRef.current,
-        { forceRedial: true, simSlot: selectedSimSlot }
+        { forceRedial: false, simSlot: selectedSimSlot }
       );
     }
   };
@@ -650,7 +650,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       autoDialTimeout,
       activeLead.id,
       activeLead.campaignId || selectedCampId,
-      { forceRedial: true, simSlot: selectedSimSlot }
+      { forceRedial: false, simSlot: selectedSimSlot }
     );
   };
 
@@ -697,7 +697,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       autoDialTimeout,
       targetLead.id,
       targetLead.campaignId || selectedCampId,
-      { forceRedial: true, simSlot: selectedSimSlot }
+      { forceRedial: false, simSlot: selectedSimSlot }
     );
   };
 

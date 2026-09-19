@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:local": "tsc -b && node scripts/vite-local.cjs build",
+    "dev:local": "node scripts/vite-local.cjs serve",
+    "test:scraper-ui": "node tests/scraper-browser.cjs",
     "preview": "vite preview"
   },
   "dependencies": {

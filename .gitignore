@@ -43,5 +43,11 @@ AGENTS.md
 PONYTAIL_REFACTOR_REVIEW_FOR_GPT.md
 reset_zakria.sql
 *.xlsx
+# Local compiler caches and production signing material
+**/.build-cache/
+**/android/key.properties
+*.jks
+*.keystore
+
 
 

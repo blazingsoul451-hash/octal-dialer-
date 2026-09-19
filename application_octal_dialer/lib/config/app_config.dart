@@ -1,9 +1,11 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 
 /// Single source of truth for the Octal Dialer Android application backend configuration.
 class AppConfig {
   /// Default backend URL if none configured (Production Cloud Server)
-  static const String defaultBaseUrl = 'http://140.245.215.156';
+  static const String defaultBaseUrl = String.fromEnvironment('OCTAL_API_BASE_URL',
+      defaultValue: kDebugMode ? 'http://140.245.215.156' : 'https://140.245.215.156');
 
   /// Key used in SharedPreferences
   static const String serverUrlKey = 'server_url';
@@ -38,8 +40,8 @@ class AppConfig {
 
   /// Update and persist server URL
   static Future<void> setBaseUrl(String newUrl) async {
-    final clean = newUrl.trim().replaceAll(RegExp(r'/+$'), '');
-    if (clean.isEmpty) return;
+    final clean = sanitizeUrl(newUrl);
+    if (clean == null) throw ArgumentError('A valid HTTPS server origin is required.');
 
     _currentBaseUrl = clean;
     final prefs = await SharedPreferences.getInstance();
@@ -51,13 +53,14 @@ class AppConfig {
     String trimmed = rawUrl.trim().replaceAll(RegExp(r'/+$'), '');
     if (trimmed.isEmpty) return null;
 
-    if (!trimmed.contains('://')) trimmed = 'http://$trimmed';
+    if (!trimmed.contains('://')) trimmed = 'https://$trimmed';
     final uri = Uri.tryParse(trimmed);
     if (uri == null || !['http', 'https'].contains(uri.scheme) ||
         uri.host.isEmpty || uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment ||
         (uri.path.isNotEmpty && uri.path != '/')) {
       return null;
     }
+    if (!kDebugMode && uri.scheme != 'https') return null;
     // Preserve explicit origin/port; silently rewriting it can send credentials to another service.
 
     return trimmed;

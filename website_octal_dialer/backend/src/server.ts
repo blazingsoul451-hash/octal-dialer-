@@ -123,13 +123,8 @@ import {
   registerTokenRevocationHandler
 } from './authManager';
 
-import {
-  runGoogleMapsScraper,
-  getScraperStatus,
-  stopScraperJob,
-  listScraperOutputFiles,
-  importScraperFileToCampaign
-} from './googleMapsScraperService';
+import { registerScraperRoutes } from './scraperRoutes';
+import { getTenantScraperStatus, stopTenantScraperJob } from './googleMapsScraperService';
 
 import {
   checkCallAllowed,
@@ -310,14 +305,7 @@ io.use(async (socket, next) => {
 });
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 5000;
-const SCRAPER_PATHS = [
-  'C:\\Users\\ice\\.gemini\\antigravity\\scratch\\MY_PROJECTS\\Lead_And_Data_Scrapers\\google-maps-scraper-pro\\output',
-  'C:\\Users\\ice\\.gemini\\antigravity\\scratch\\MY_PROJECTS\\Lead_And_Data_Scrapers\\google-maps-scraper-pro',
-  'C:\\Users\\ice\\.gemini\\antigravity\\scratch\\MY_PROJECTS\\Lead_And_Data_Scrapers',
-  path.resolve(__dirname, '../../../../Lead_And_Data_Scrapers/google-maps-scraper-pro/output'),
-  path.resolve(__dirname, '../../../../Lead_And_Data_Scrapers/google-maps-scraper-pro'),
-  path.resolve(__dirname, '../../../Lead_And_Data_Scrapers/google-maps-scraper-pro')
-];
+
 
 function findScraperInfo(): { dir: string; scriptPath: string } | null {
   const candidateDirs = [
@@ -1880,260 +1868,7 @@ app.get('/api/campaigns/:id/next-lead', requireAuth, async (req, res) => {
   });
 });
 
-// REST: Scan sibling scraper folders (protected)
-app.get('/api/scraper-files', requireAuth, (req, res) => {
-  const list: { name: string; path: string; sizeBytes: number; lastModified: string }[] = [];
-
-  // 1. Check generated output files from built-in scraper service
-  const generatedFiles = listScraperOutputFiles();
-  for (const gf of generatedFiles) {
-    list.push({
-      name: gf.name,
-      path: gf.path,
-      sizeBytes: gf.size,
-      lastModified: gf.mtime.toISOString()
-    });
-  }
-
-  // 2. Also check external legacy scraper folders
-  for (const folder of SCRAPER_PATHS) {
-    if (fs.existsSync(folder)) {
-      try {
-        const files = fs.readdirSync(folder);
-        for (const file of files) {
-          if ((file.endsWith('.xlsx') || file.endsWith('.xls') || file.endsWith('.csv')) && !list.some(item => item.name === file)) {
-            const filePath = path.join(folder, file);
-            const stats = fs.statSync(filePath);
-            list.push({
-              name: file,
-              path: filePath,
-              sizeBytes: stats.size,
-              lastModified: stats.mtime.toISOString()
-            });
-          }
-        }
-      } catch (err) {
-        console.error(`Error scanning folder ${folder}:`, err);
-      }
-    }
-  }
-  res.json(list);
-});
-
-// REST: Download scraped file
-app.get('/api/scraper-files/download/:filename', requireAuth, (req, res) => {
-  const filename = path.basename(req.params.filename);
-  if (!filename || filename.includes('..') || filename === '.' || filename === '/') {
-    res.status(400).json({ error: 'Invalid filename.' });
-    return;
-  }
-  const candidateDirs = [
-    path.resolve(__dirname, '../data/scraper_output'),
-    ...SCRAPER_PATHS.map(p => path.resolve(p))
-  ];
-
-  for (const dir of candidateDirs) {
-    const filePath = path.resolve(dir, filename);
-    const rel = path.relative(dir, filePath);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      continue;
-    }
-    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-      res.download(filePath, filename);
-      return;
-    }
-  }
-  res.status(404).json({ error: 'File not found.' });
-});
-
-// REST: Import leads from scraped file (protected)
-app.post('/api/scraper-files/import', requireAuth, async (req, res) => {
-  try {
-    const tenantId = (req as any).user?.tenantId;
-    if (!tenantId) {
-      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-      return;
-    }
-    const { filePath, campaignName } = req.body as { filePath: string; campaignName?: string };
-    if (!filePath || typeof filePath !== 'string') {
-      res.status(400).json({ error: 'filePath is required.' });
-      return;
-    }
-
-    const resolvedFilePath = path.resolve(filePath);
-    const candidateDirs = [
-      path.resolve(__dirname, '../data/scraper_output'),
-      ...SCRAPER_PATHS.map(p => path.resolve(p))
-    ];
-
-    const isPathAllowed = candidateDirs.some(dir => {
-      const rel = path.relative(dir, resolvedFilePath);
-      return !rel.startsWith('..') && !path.isAbsolute(rel);
-    });
-
-    if (!isPathAllowed) {
-      res.status(403).json({ error: 'Forbidden: Access to requested file path is not permitted.' });
-      return;
-    }
-
-    if (!fs.existsSync(resolvedFilePath) || !fs.statSync(resolvedFilePath).isFile()) {
-      res.status(404).json({ error: 'File not found on system.' });
-      return;
-    }
-
-    const fileName = path.basename(filePath);
-    const rawName = fileName.replace(/\.[^.]+$/, '').trim();
-    const finalCampaignName = campaignName || rawName || 'Imported Scraper List';
-
-    const leads: { name: string; phone: string }[] = [];
-
-    if (filePath.endsWith('.xlsx') || filePath.endsWith('.xls')) {
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(filePath);
-      const worksheet = workbook.getWorksheet('Doctors') || workbook.worksheets[0];
-
-      if (!worksheet) {
-        res.status(400).json({ error: 'Sheet is empty or invalid.' });
-        return;
-      }
-
-      let nameColIndex = -1;
-      let phoneColIndex = -1;
-
-      const headerRow = worksheet.getRow(1);
-      headerRow.eachCell((cell, colNumber) => {
-        const val = cell.text.toLowerCase().trim();
-        if (val.includes('name') || val.includes('clinic') || val.includes('doctor')) {
-          nameColIndex = colNumber;
-        } else if (val.includes('phone') || val.includes('number') || val.includes('contact')) {
-          phoneColIndex = colNumber;
-        }
-      });
-
-      if (nameColIndex === -1) nameColIndex = 2; // column 2 default
-      if (phoneColIndex === -1) phoneColIndex = 4; // column 4 default
-
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber === 1) return; // skip header
-        const nameVal = row.getCell(nameColIndex).text.trim();
-        const phoneVal = row.getCell(phoneColIndex).text.trim();
-
-        if (phoneVal && phoneVal !== 'N/A') {
-          leads.push({
-            name: nameVal || 'Unnamed Scraped Entry',
-            phone: phoneVal
-          });
-        }
-      });
-
-    } else if (filePath.endsWith('.csv')) {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const lines = content.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (i === 0) continue;
-        const parts = lines[i].split(',');
-        if (parts.length >= 2) {
-          const name = parts[0].trim().replace(/^["']|["']$/g, '');
-          const phone = parts[1].trim().replace(/^["']|["']$/g, '');
-          if (phone) {
-            leads.push({ name, phone });
-          }
-        }
-      }
-    }
-
-    if (leads.length === 0) {
-      res.status(400).json({ error: 'No valid phone numbers extracted from file.' });
-      return;
-    }
-
-    const result = await createCampaign(finalCampaignName, fileName, leads, tenantId);
-    io.to(`tenant_${tenantId}`).emit('leads:updated');
-    io.to(`tenant_${tenantId}`).emit('campaigns:updated');
-    res.json({
-      success: true,
-      campaignId: result.campaign.id,
-      count: result.finalCount,
-      name: result.campaign.name,
-      totalRaw: result.totalRaw,
-      dedupedCount: result.dedupedCount,
-      dncSkippedCount: result.dncSkippedCount
-    });
-
-  } catch (err: any) {
-    console.error('Import error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// REST: Run Scraper (protected)
-app.post('/api/scraper/run', requireAuth, async (req, res) => {
-  const currentStatus = getScraperStatus();
-  if (currentStatus && currentStatus.status === 'running') {
-    res.status(400).json({ error: 'A scraper job is already running.' });
-    return;
-  }
-
-  const user = (req as any).user;
-  const { keyword, location = '', requirePhone = false, requireEmail = false, maxLeads = 50 } = req.body as {
-    keyword: string;
-    location?: string;
-    requirePhone?: boolean;
-    requireEmail?: boolean;
-    maxLeads?: number | string;
-  };
-
-  if (!keyword || !keyword.trim()) {
-    res.status(400).json({ error: 'Search keyword is required.' });
-    return;
-  }
-
-  const parsedLimit = parseInt(String(maxLeads || '50'), 10) || 50;
-  const tenantId = user.tenantId;
-  if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-    return;
-  }
-
-  // Run asynchronously so the REST request responds immediately
-  runGoogleMapsScraper({
-    keyword: keyword.trim(),
-    location: location ? location.trim() : '',
-    maxLeads: parsedLimit,
-    requirePhone: !!requirePhone,
-    requireEmail: !!requireEmail,
-    tenantId,
-    username: user.username || 'admin'
-  }).then(result => {
-    io.to(`tenant_${tenantId}`).emit('scraper:completed', result);
-  }).catch(err => {
-    console.error('[Scraper Job Error]:', err);
-    io.to(`tenant_${tenantId}`).emit('scraper:failed', { error: err.message });
-  });
-
-  res.json({
-    success: true,
-    message: 'Google Maps Scraper engine started successfully.',
-    keyword,
-    location,
-    targetLimit: parsedLimit
-  });
-});
-
-// REST: Scraper Status (protected)
-app.get('/api/scraper/status', requireAuth, (req, res) => {
-  res.json(getScraperStatus());
-});
-
-// REST: Stop Scraper (protected)
-app.post('/api/scraper/stop', requireAuth, async (req, res) => {
-  const stopped = await stopScraperJob();
-  if (stopped) {
-    res.json({ success: true, message: 'Scraper task stopped.' });
-  } else {
-    res.status(400).json({ error: 'No active scraper task is running.' });
-  }
-});
+registerScraperRoutes(app, requireAuth, io);
 
 // ─── ADMIN AUTHORITY MASTER CONTROL REST ENDPOINTS ────────────────────────────
 
@@ -2178,7 +1913,7 @@ app.get(['/api/admin/overview', '/admin/platform/overview', '/admin/overview'], 
   res.json({
     metrics,
     ...metrics,
-    activeScraper: getScraperStatus(),
+    activeScraper: tenantId ? getTenantScraperStatus(tenantId) : null,
     systemUptimeSeconds: Math.floor(process.uptime())
   });
 });
@@ -3035,8 +2770,15 @@ app.post('/api/campaigns/:id/activity/heartbeat', requireAuth, async (req, res) 
 
 // POST /api/admin/scraper/force-stop
 app.post('/api/admin/scraper/force-stop', requireAuth, requireAdmin, async (req, res) => {
-  await stopScraperJob();
-  res.json({ success: true, message: 'Scraper terminated by admin.' });
+  try {
+    const user = (req as any).user;
+    if (!user?.tenantId) { res.status(401).json({ error: 'Missing tenant identity.' }); return; }
+    const job = getTenantScraperStatus(user.tenantId, typeof req.body.jobId === 'string' ? req.body.jobId : undefined);
+    if (!job || !await stopTenantScraperJob(user.tenantId, job.jobId)) {
+      res.status(404).json({ error: 'Active job not found.' }); return;
+    }
+    res.json({ success: true, message: 'Scraper stopped for this tenant.' });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
 // POST /api/admin/system/unlock-all-leads

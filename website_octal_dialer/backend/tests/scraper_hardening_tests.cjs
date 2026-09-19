@@ -616,6 +616,7 @@ async function main() {
       counters: { extracted: 5, discovered: 10, failed: 0 }
     });
 
+    await runtime.messageQueue;
     assert.equal(runtime.record.status, 'failed', 'Must transition to failed when completion evidence is missing on disk');
     assert.match(runtime.record.errorMessage, /neither output artifact nor checkpoint file exists/i);
 
@@ -663,6 +664,7 @@ async function main() {
     // Worker process exits unexpectedly without DONE
     mockWorker.emit('exit', 0, null);
 
+    await runtime.messageQueue;
     assert.equal(runtime.record.status, 'failed', 'Must mark failed when checkpoint is empty on disk');
     assert.match(runtime.record.errorMessage, /without completion acknowledgment and no flushed checkpoint found/i);
 
@@ -1237,6 +1239,7 @@ async function main() {
       outputFile: outputPath
     });
 
+    await runtime.messageQueue;
     assert.equal(runtime.record.status, 'completed_partial', 'Corrupt XLSX must be demoted to completed_partial when valid checkpoint exists');
     assert.match(runtime.record.errorMessage, /XLSX export file invalid or missing/i);
 
@@ -1275,6 +1278,7 @@ async function main() {
       reachedEnd: false
     });
 
+    await runtimeZero.messageQueue;
     assert.equal(runtimeZero.record.status, 'failed', 'Zero-result completed without reachedEnd must transition to failed');
     assert.match(runtimeZero.record.errorMessage, /0 qualified results without explicit end-of-results/i);
 

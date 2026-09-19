@@ -188,36 +188,20 @@ class PhoneBridgeService extends ChangeNotifier {
     final placement = _activePlacement;
     final eventCallId = event.callId.trim();
 
-    bool isMatch = false;
-    if (placement != null) {
-      if (eventCallId.isNotEmpty && (placement.callId == eventCallId || placement.commandId == eventCallId)) {
-        isMatch = true;
-      } else if (event.phoneNumber.isNotEmpty) {
-        final cleanEventPhone = event.phoneNumber.replaceAll(RegExp(r'\D'), '');
-        final cleanPlacementPhone = placement.phone.replaceAll(RegExp(r'\D'), '');
-        if (cleanEventPhone.isNotEmpty && cleanPlacementPhone.isNotEmpty &&
-            (cleanEventPhone == cleanPlacementPhone ||
-             (cleanEventPhone.length >= 10 && cleanPlacementPhone.length >= 10 &&
-              (cleanEventPhone.endsWith(cleanPlacementPhone) || cleanPlacementPhone.endsWith(cleanEventPhone))))) {
-          isMatch = true;
-        }
-      } else if (eventCallId.isEmpty && DateTime.now().millisecondsSinceEpoch - placement.dialedAtMs < 30 * 60 * 1000) {
-        isMatch = true;
-      }
-    }
-
-    final targetCallId = isMatch ? placement!.callId : eventCallId;
-    if (targetCallId.isEmpty) {
-      debugPrint('[PhoneBridge] Cannot correlate terminal telecom event to valid call identity; ignoring.');
+    // A terminal event must identify the exact placement. Number/time
+    // heuristics can attach a personal or call-waiting call to a campaign.
+    final isMatch = placement != null && eventCallId.isNotEmpty &&
+        (placement.callId == eventCallId || placement.commandId == eventCallId);
+    if (!isMatch) {
+      debugPrint('[PhoneBridge] Uncorrelated terminal event; retaining placement for reconciliation.');
       return;
     }
+    final targetCallId = placement!.callId;
 
     if (_enqueuedCallIds.contains(targetCallId)) {
       debugPrint('[PhoneBridge] Terminal outcome for $targetCallId already enqueued; skipping duplicate app-level capture.');
       return;
     }
-
-    markCallEnqueued(targetCallId);
 
     final effectiveReason = event.reason ?? (event.answered == true ? 'ANSWERED' : 'UNKNOWN');
     final effectiveDuration = event.duration ?? 0;
@@ -250,7 +234,13 @@ class PhoneBridgeService extends ChangeNotifier {
     );
 
     debugPrint('[PhoneBridge] Application-owned terminal capture enqueuing outcome for callId=$targetCallId reason=$effectiveReason dur=${effectiveDuration}s');
-    CallOutboxService.instance.enqueueOutcome(outboxEntry).then((_) {
+    CallOutboxService.instance.enqueueOutcome(outboxEntry).then((saved) {
+      if (!saved) {
+        debugPrint('[PhoneBridge] Outcome was not persisted; retaining placement for retry.');
+        return;
+      }
+      markCallEnqueued(targetCallId);
+      if (identical(_activePlacement, placement)) _activePlacement = null;
       CallOutboxService.instance.flush(
         _socket,
         currentOrigin: effectiveOrigin,
@@ -261,9 +251,6 @@ class PhoneBridgeService extends ChangeNotifier {
       debugPrint('[PhoneBridge] App-level outbox enqueue error: $err');
     });
 
-    if (isMatch) {
-      _activePlacement = null;
-    }
   }
 
   // SIM management state

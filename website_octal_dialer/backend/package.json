@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "test:security": "node tests/security_regressions.cjs",
     "test:scraper": "node tests/scraper_hardening_tests.cjs",
+    "test:integration": "node tests/scraper_integration_tests.cjs",
     "profile:scraper": "node tests/profile_scraper_processes.cjs"
   },
   "dependencies": {

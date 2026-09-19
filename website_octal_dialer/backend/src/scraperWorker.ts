@@ -299,7 +299,6 @@ export async function executeScraperRun(
     activeBrowser = await chromium.launch({
       headless: true,
       args: [
-        '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
@@ -311,7 +310,6 @@ export async function executeScraperRun(
     });
 
     const context = await activeBrowser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       viewport: { width: 1280, height: 800 },
       locale: 'en-US'
     });
@@ -387,6 +385,7 @@ export async function executeScraperRun(
     if (isSingleResult) {
       const singleListingId = extractListingId(page.url());
       counters.discovered = 1;
+      reachedEnd = true;
       const singleLead = await extractPanelDetails(page, location, '', page.url(), singleListingId);
       if (singleLead && singleLead.businessName) {
         await processCandidateLead(singleLead, options, counters, checkpointPath, targetLimit, jobId, executionId);
@@ -398,7 +397,8 @@ export async function executeScraperRun(
       let consecutiveNoProgress = 0;
       const maxTotalAttempts = Math.max(targetLimit * 5, 100);
       let totalAttempts = 0;
-      let lastFingerprint: { listingId?: string; businessName?: string; address?: string; phone?: string } | null = null;
+      const detailPage = await context.newPage();
+      detailPage.setDefaultTimeout(15000);
 
       while (
         (requirePhone || requireEmail ? counters.qualified : counters.extracted) < targetLimit &&
@@ -434,93 +434,30 @@ export async function executeScraperRun(
           totalAttempts++;
 
           try {
-            // Find specific element by href to avoid stale ElementHandle issues
-            const targetLink = await page.$(`a[href="${candidate.href}"]`);
-            if (targetLink) {
-              await targetLink.scrollIntoViewIfNeeded();
-              await targetLink.click({ timeout: 4000 });
-            } else {
-              // Direct navigation fallback
-              await page.goto(candidate.href, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            // A fresh document prevents A's SPA fields from surviving navigation to B.
+            // Keep the discovery feed in its own page, with only one detail page active.
+            await detailPage.goto('about:blank');
+            await detailPage.goto(new URL(candidate.href, page.url()).href, { waitUntil: 'load', timeout: 30000 });
+            if (!await cancelableSleep(1200) || isStopRequested) break;
+            const blocked = await detailPage.evaluate(() => {
+              const text = document.body?.innerText || '';
+              return window.location.href.includes('/sorry/') ||
+                /unusual traffic|verify you are human/i.test(text) ||
+                !!document.querySelector('iframe[src*="recaptcha"]');
+            });
+            if (blocked) {
+              sendToParent({ type: 'CHALLENGE', jobId, executionId, reason: 'Access challenge on listing page.', counters });
+              await activeBrowser?.close();
+              activeBrowser = null;
+              return;
             }
-
-            // Intentional pacing sleep (minimum 1,200 ms between listing actions)
-            const proceed = await cancelableSleep(1200);
-            if (!proceed || isStopRequested) break;
-
-            // Confirm panel identity:
-            // 1. Detail panel container (div[role="main"]) must exist
-            // 2. URL must reflect candidate listing identity
-            // 3. Heading inside panel must match candidate ariaLabel (if ariaLabel is present)
-            // 4. Reject stale panel from previous listing (same-name branches / un-refreshed DOM)
-            const isConfirmed = await page.waitForFunction(
-              ({ expectedId, expectedName, prevFingerprint }) => {
-                const panel = document.querySelector('div[role="main"]') || document.querySelector('div.m6QErb[aria-label]');
-                if (!panel) return false;
-
-                const url = window.location.href;
-                const h1 = panel.querySelector('h1.DUwDvf, h1[class*="header"], h1')?.textContent?.trim() || '';
-
-                // URL check: URL must contain expectedId
-                const urlMatches = expectedId ? url.includes(expectedId) : false;
-                if (!urlMatches) return false;
-
-                // Heading check: if expectedName is provided, panel h1 must match or contain it
-                if (expectedName) {
-                  const normH1 = h1.toLowerCase();
-                  const normName = expectedName.toLowerCase();
-                  const nameMatches = normH1.includes(normName) || normName.includes(normH1);
-                  if (!nameMatches) return false;
-                } else if (!h1) {
-                  return false;
-                }
-
-                // Stale panel check: if candidate is different from previous listing, panel must not still display previous listing fields
-                if (prevFingerprint && prevFingerprint.listingId && expectedId !== prevFingerprint.listingId) {
-                  const currentAddress = panel.querySelector('button[data-item-id*="address"], button[aria-label*="Address" i]')?.textContent?.trim();
-                  const currentPhone = panel.querySelector('button[data-tooltip*="phone" i], button[aria-label*="Phone" i], button[data-item-id*="phone:tel:"]')?.textContent?.trim();
-
-                  const prevName = prevFingerprint.businessName || '';
-                  const isSameName = (prevName && h1.toLowerCase() === prevName.toLowerCase()) ||
-                    (expectedName && h1.toLowerCase() === expectedName.toLowerCase() && prevName && prevName.toLowerCase() === expectedName.toLowerCase());
-
-                  // Reject if panel still shows previous listing phone
-                  if (prevFingerprint.phone && currentPhone && currentPhone === prevFingerprint.phone) {
-                    return false; // panel still shows previous listing phone
-                  }
-                  // If same-name branch, reject if panel still shows previous branch address
-                  if (isSameName && prevFingerprint.address && currentAddress && currentAddress === prevFingerprint.address) {
-                    return false; // panel still shows previous listing address
-                  }
-                }
-
-                return true;
-              },
-              { expectedId: candidate.listingId, expectedName: candidate.ariaLabel, prevFingerprint: lastFingerprint },
-              { timeout: 5000 }
-            ).catch(() => false);
-
-            if (!isConfirmed) {
-              log(`⚠️ Could not confirm panel readiness/identity for listing: ${candidate.listingId} ("${candidate.ariaLabel}"). Skipping.`);
+            await detailPage.waitForSelector('h1.DUwDvf, div[role="main"] h1', { timeout: 10000 });
+            const lead = await extractPanelDetails(detailPage, location, candidate.ariaLabel, candidate.href, candidate.listingId);
+            if (!lead) {
               counters.failed++;
+              log(`Unable to confirm listing ${candidate.listingId}; skipped.`);
               continue;
             }
-
-            // Extract fields atomically with double-checked identity verification
-            const lead = await extractPanelDetails(page, location, candidate.ariaLabel, candidate.href, candidate.listingId, lastFingerprint || undefined);
-            if (!lead || !lead.businessName) {
-              log(`⚠️ Panel extraction failed or identity mismatch for: ${candidate.listingId}. Skipping.`);
-              counters.failed++;
-              continue;
-            }
-
-            // Record verified fingerprint for subsequent stale-panel detection
-            lastFingerprint = {
-              listingId: lead.listingId,
-              businessName: lead.businessName,
-              address: lead.address,
-              phone: lead.phone
-            };
 
             await processCandidateLead(lead, options, counters, checkpointPath, targetLimit, jobId, executionId);
 
@@ -637,7 +574,7 @@ export async function extractPanelDetails(
     if (expectedName) {
       const normH1 = h1Before.toLowerCase();
       const normExp = expectedName.toLowerCase();
-      if (!normH1.includes(normExp) && !normExp.includes(normH1)) {
+      if (normH1 !== normExp) {
         return null;
       }
     }
