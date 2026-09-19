@@ -1,4 +1,4 @@
-﻿-- Migration 007: Durable Call Outcomes Ledger & Deduplication
+-- Migration 007: Durable Call Outcomes Ledger & Deduplication
 CREATE TABLE IF NOT EXISTS "call_outcomes" (
   "id" TEXT PRIMARY KEY,
   "tenantId" TEXT NOT NULL,

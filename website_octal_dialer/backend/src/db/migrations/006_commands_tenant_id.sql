@@ -1,4 +1,4 @@
-﻿-- ============================================================================
+-- ============================================================================
 -- 006_commands_tenant_id.sql
 -- Multi-Tenant Scoping for Telephony Commands
 -- 1. Add tenantId column to commands table if not exists

@@ -1,4 +1,4 @@
-﻿-- Additive Migration: 010_leads_branch_identity.sql
+-- Additive Migration: 010_leads_branch_identity.sql
 -- Adds persistent branch identity (address, listingId) to leads table for CRM provenance and branch deduplication
 
 ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "address" TEXT;

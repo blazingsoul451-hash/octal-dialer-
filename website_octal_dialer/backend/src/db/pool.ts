@@ -207,7 +207,10 @@ export function initializeSchema(schemaFilePath?: string): Promise<void> {
     if (!fs.existsSync(schemaPath)) {
       throw new Error(`Schema file not found at: ${schemaPath}`);
     }
-    const ddl = fs.readFileSync(schemaPath, 'utf-8');
+    let ddl = fs.readFileSync(schemaPath, 'utf-8');
+    if (ddl.charCodeAt(0) === 0xFEFF) {
+      ddl = ddl.slice(1);
+    }
 
     let dedicatedClient: PoolClient | null = null;
     let lockAcquired = false;
@@ -331,7 +334,10 @@ export function initializeSchema(schemaFilePath?: string): Promise<void> {
           }
 
           const sqlFile = path.join(migrationsDir, file);
-          const migrationSql = fs.readFileSync(sqlFile, 'utf-8');
+          let migrationSql = fs.readFileSync(sqlFile, 'utf-8');
+          if (migrationSql.charCodeAt(0) === 0xFEFF) {
+            migrationSql = migrationSql.slice(1);
+          }
 
           // Wrap each transactional migration and its applied-marker insertion in the same transaction
           await runStmt('BEGIN');

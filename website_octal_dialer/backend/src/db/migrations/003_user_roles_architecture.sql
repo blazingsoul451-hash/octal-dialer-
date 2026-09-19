@@ -1,4 +1,4 @@
-﻿-- ============================================================================
+-- ============================================================================
 -- 003_user_roles_architecture.sql
 -- Clean PostgreSQL Migration: Connect Users to Custom Roles with Referential
 -- Integrity, Tenant Scoping, and Zero Duplicate Authorization Tables.

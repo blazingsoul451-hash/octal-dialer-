@@ -1,4 +1,4 @@
-﻿-- Additive Migration: 009_call_dispatch_journal.sql
+-- Additive Migration: 009_call_dispatch_journal.sql
 -- Immutable durable pre-dispatch call journal for authoritative identity & recovery authorization
 
 CREATE TABLE IF NOT EXISTS "call_dispatch_journal" (
