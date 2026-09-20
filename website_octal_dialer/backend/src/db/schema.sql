@@ -12,7 +12,10 @@ CREATE TABLE IF NOT EXISTS "tenants" (
   "updatedAt" TEXT NOT NULL DEFAULT '',
   "country" TEXT DEFAULT 'US',
   "logoUrl" TEXT,
-  "ownerEmail" TEXT
+  "ownerEmail" TEXT,
+  "leadPoolMode" TEXT NOT NULL DEFAULT 'shared',
+  "maxAgents" INTEGER NOT NULL DEFAULT 10,
+  "tier" TEXT NOT NULL DEFAULT 'standard'
 );
 
 -- Table: plans
@@ -225,7 +228,8 @@ CREATE TABLE IF NOT EXISTS "leads" (
   "createdAt" TEXT NOT NULL DEFAULT '',
   "tenantId" TEXT,
   "address" TEXT,
-  "listingId" TEXT
+  "listingId" TEXT,
+  "assignedTo" TEXT
 );
 
 -- Table: call_attempts

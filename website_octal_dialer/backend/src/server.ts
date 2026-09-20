@@ -70,6 +70,11 @@ import {
   setTeamCampaigns,
   getUserTeamIds,
   getUserScopedCampaignIds,
+  getAllTenantsSummary,
+  updateTenantLeadPoolMode,
+  updateTenantStatus,
+  getGlobalSuperAdminMetrics,
+  getTenantById,
   db
 } from './databaseManager';
 import { dbAdapter } from './db/dbAdapter';
@@ -525,24 +530,31 @@ app.get(['/auth/config', '/api/auth/config'], (_req, res) => {
   });
 });
 
-// Helper: calculate OAuth redirect URI dynamically based on client origin
+// Helper: calculate OAuth redirect URI dynamically based on client origin or host
 function getOAuthRedirectUri(clientOrigin: string, req: express.Request): string {
-  // HTTPS / Vercel → use client origin directly
-  if (clientOrigin && (clientOrigin.startsWith('https://') || clientOrigin.includes('vercel.app'))) {
-    return `${clientOrigin.replace(/\/$/, '')}/auth/google/callback`;
-  }
-  // Explicit env override
+  // Explicit env override has highest priority
   if (process.env.GOOGLE_REDIRECT_URI) {
     return process.env.GOOGLE_REDIRECT_URI;
   }
-  // Local/LAN dev → use sslip.io with server IP (Google OAuth requires a proper domain)
-  const ip = getLocalIP();
-  if (ip && ip !== '127.0.0.1' && ip !== 'localhost') {
-    return `http://${ip}.sslip.io:${PORT}/auth/google/callback`;
+
+  // Detect real domain from host headers or client origin
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
+  
+  if (host.includes('zestify7.online') || clientOrigin.includes('zestify7.online')) {
+    return 'https://zestify7.online/auth/google/callback';
   }
+
+  // HTTPS / custom domain / Vercel
+  if (clientOrigin && clientOrigin.startsWith('https://')) {
+    return `${clientOrigin.replace(/\/$/, '')}/auth/google/callback`;
+  }
+
   const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
-  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || `localhost:${PORT}`;
-  return `${proto}://${host}/auth/google/callback`;
+  if (host && !host.includes('127.0.0.1') && !host.includes('localhost')) {
+    return `${proto}://${host}/auth/google/callback`;
+  }
+
+  return `http://localhost:${PORT}/auth/google/callback`;
 }
 
 // POST /auth/google/initiate — Returns direct Google OAuth URL
@@ -592,7 +604,9 @@ app.get(['/auth/google', '/api/auth/google'], (req, res) => {
 
 // GET /auth/google/callback & GET /api/auth/google/callback — Handles OAuth Code Exchange
 app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res) => {
-  const fallbackOrigin = 'http://localhost:5173';
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
+  const isProd = host.includes('zestify7.online') || !host.includes('localhost');
+  const fallbackOrigin = isProd ? 'https://zestify7.online' : 'http://localhost:5173';
   let clientOrigin = fallbackOrigin;
   let storedRedirectUri: string | undefined;
 
@@ -1672,6 +1686,138 @@ app.post('/api/crm/follow-ups', requireAuth, requirePermission(['crm:edit', 'crm
     res.status(500).json({ error: 'Internal server error while creating follow-up' });
   }
 });
+
+// ============================================================================
+// PRODUCT SUPER ADMIN / GLOBAL BACKOFFICE APIS (admin.zestify7.online)
+// ============================================================================
+
+// GET /api/super-admin/telemetry: Aggregated platform-wide metrics
+app.get('/api/super-admin/telemetry', requirePlatformAdmin, async (req, res) => {
+  try {
+    const metrics = await getGlobalSuperAdminMetrics();
+    // Also include live sessions count
+    const sessionList = Array.from(getSessions().values());
+    const liveCalls = sessionList.filter((s: Session) => s.status === 'CALLING' || s.phoneStatus === 'CONNECTED').length;
+    const connectedPhones = sessionList.filter((s: Session) => !!s.phoneSocketId).length;
+
+    res.json({
+      success: true,
+      telemetry: {
+        ...metrics,
+        liveCalls,
+        connectedPhones,
+        activeLaptops: sessionList.length,
+        uptimeSeconds: Math.floor(process.uptime()),
+        serverTimestamp: new Date().toISOString()
+      }
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Telemetry error:', err);
+    res.status(500).json({ error: 'Failed to retrieve telemetry' });
+  }
+});
+
+// GET /api/super-admin/tenants: List all organizations
+app.get('/api/super-admin/tenants', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenants = await getAllTenantsSummary();
+    res.json({ success: true, tenants });
+  } catch (err: any) {
+    console.error('[Super Admin] Get tenants error:', err);
+    res.status(500).json({ error: 'Failed to retrieve tenants' });
+  }
+});
+
+// PUT /api/super-admin/tenants/:id/mode: Toggle Lead Pool Mode (shared vs assigned)
+app.put('/api/super-admin/tenants/:id/mode', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const { leadPoolMode } = req.body;
+    if (leadPoolMode !== 'shared' && leadPoolMode !== 'assigned') {
+      res.status(400).json({ error: 'Invalid leadPoolMode. Must be "shared" or "assigned".' });
+      return;
+    }
+
+    await updateTenantLeadPoolMode(tenantId, leadPoolMode);
+    res.json({ success: true, message: `Tenant lead pool mode set to ${leadPoolMode}.` });
+  } catch (err: any) {
+    console.error('[Super Admin] Update mode error:', err);
+    res.status(500).json({ error: 'Failed to update lead pool mode' });
+  }
+});
+
+// PUT /api/super-admin/tenants/:id/status: Suspend or reactivate a tenant
+app.put('/api/super-admin/tenants/:id/status', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const { status } = req.body;
+    if (status !== 'active' && status !== 'suspended') {
+      res.status(400).json({ error: 'Invalid status. Must be "active" or "suspended".' });
+      return;
+    }
+
+    await updateTenantStatus(tenantId, status);
+    res.json({ success: true, message: `Tenant status set to ${status}.` });
+  } catch (err: any) {
+    console.error('[Super Admin] Update status error:', err);
+    res.status(500).json({ error: 'Failed to update tenant status' });
+  }
+});
+
+// POST /api/super-admin/impersonate/:id: One-click jump into tenant workspace for support
+app.post('/api/super-admin/impersonate/:id', requirePlatformAdmin, async (req, res) => {
+  try {
+    const targetTenantId = req.params.id;
+    const tenant = await getTenantById(targetTenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant organization not found.' });
+      return;
+    }
+
+    // Find the primary admin or user for that tenant
+    const primaryUser = await db.queryOne<any>(`
+      SELECT id, username, role, "tenantId", email 
+      FROM users 
+      WHERE "tenantId" = $1 
+      ORDER BY CASE WHEN role IN ('platform_admin', 'admin') THEN 1 ELSE 2 END, "createdAt" ASC 
+      LIMIT 1
+    `, [targetTenantId]);
+
+    if (!primaryUser) {
+      res.status(400).json({ error: 'No user accounts found under this tenant.' });
+      return;
+    }
+
+    // Issue a short-lived impersonation token (1 hour)
+    const jwt = require('jsonwebtoken');
+    const secret = process.env.JWT_SECRET || 'octal-dev-secret';
+    const payload = {
+      sub: primaryUser.id,
+      username: primaryUser.username,
+      role: primaryUser.role,
+      tenantId: primaryUser.tenantId,
+      impersonatedBy: (req as any).user.username
+    };
+    const impersonationToken = jwt.sign(payload, secret, { expiresIn: 3600 });
+
+    res.json({
+      success: true,
+      token: impersonationToken,
+      user: {
+        id: primaryUser.id,
+        username: primaryUser.username,
+        role: primaryUser.role,
+        tenantId: primaryUser.tenantId,
+        email: primaryUser.email
+      },
+      tenant
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Impersonate error:', err);
+    res.status(500).json({ error: 'Failed to generate impersonation token' });
+  }
+});
+
 
 // REST: Update follow-up status (protected)
 app.patch('/api/crm/follow-ups/:id/status', requireAuth, requirePermission(['crm:edit', 'leads:edit']), async (req, res) => {

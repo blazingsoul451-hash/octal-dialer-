@@ -45,6 +45,22 @@ export interface Lead {
   duration?: number;
   address?: string;
   listingId?: string;
+  assignedTo?: string | null;
+}
+
+export interface TenantInfo {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  country?: string;
+  logoUrl?: string;
+  ownerEmail?: string;
+  leadPoolMode: 'shared' | 'assigned';
+  maxAgents: number;
+  tier: string;
 }
 
 export interface CallLog {
@@ -60,15 +76,32 @@ export interface CallLog {
 
 // ─── Exported API (explicit tenantId required - fail closed) ─────────────
 
-export async function getNextPendingLead(campaignId: string, tenantId: string, afterLeadId?: string): Promise<Lead | null> {
+export async function getTenantById(tenantId: string): Promise<TenantInfo | undefined> {
+  if (!tenantId) return undefined;
+  return db.queryOne<TenantInfo>(`SELECT * FROM tenants WHERE id = $1`, [tenantId]);
+}
+
+export async function getNextPendingLead(campaignId: string, tenantId: string, afterLeadId?: string, userId?: string): Promise<Lead | null> {
   if (!campaignId || !tenantId) return null;
-  const row = await db.queryOne<Lead>(`
+
+  // Check tenant's leadPoolMode
+  const tenant = await getTenantById(tenantId);
+  const isAssignedOnly = tenant?.leadPoolMode === 'assigned';
+
+  let querySql = `
     SELECT * FROM leads 
     WHERE "campaignId" = $1 AND "tenantId" = $2 AND status = 'PENDING' AND "lockedBy" IS NULL
-    ORDER BY "createdAt" ASC, id ASC
-    LIMIT 1
-  `, [campaignId, tenantId]);
+  `;
+  const params: any[] = [campaignId, tenantId];
 
+  if (isAssignedOnly && userId) {
+    querySql += ` AND "assignedTo" = $3`;
+    params.push(userId);
+  }
+
+  querySql += ` ORDER BY "createdAt" ASC, id ASC LIMIT 1`;
+
+  const row = await db.queryOne<Lead>(querySql, params);
   return row || null;
 }
 
@@ -1314,6 +1347,95 @@ export async function getUserScopedCampaignIds(userId: string, tenantId: string)
     WHERE tm."userId" = $1 AND tm."tenantId" = $2
   `, [userId, tenantId]);
   return rows.map(r => r.campaignId);
+}
+
+// ─── Super Admin Cross-Tenant Management APIs ────────────────────────────────
+
+export interface SuperAdminTenantSummary {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  ownerEmail?: string;
+  leadPoolMode: 'shared' | 'assigned';
+  maxAgents: number;
+  tier: string;
+  createdAt: string;
+  totalUsers: number;
+  totalLeads: number;
+  totalCampaigns: number;
+}
+
+export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]> {
+  const tenants = await db.queryAll<any>(`
+    SELECT 
+      t.id, 
+      t.name, 
+      t.slug, 
+      t.status, 
+      t."ownerEmail", 
+      COALESCE(t."leadPoolMode", 'shared') as "leadPoolMode",
+      COALESCE(t."maxAgents", 10) as "maxAgents",
+      COALESCE(t.tier, 'standard') as tier,
+      t."createdAt",
+      (SELECT COUNT(*) FROM users u WHERE u."tenantId" = t.id) as "totalUsers",
+      (SELECT COUNT(*) FROM leads l WHERE l."tenantId" = t.id) as "totalLeads",
+      (SELECT COUNT(*) FROM campaigns c WHERE c."tenantId" = t.id) as "totalCampaigns"
+    FROM tenants t
+    ORDER BY t."createdAt" DESC
+  `);
+
+  return tenants.map(t => ({
+    id: t.id,
+    name: t.name,
+    slug: t.slug,
+    status: t.status,
+    ownerEmail: t.ownerEmail,
+    leadPoolMode: (t.leadPoolMode === 'assigned' ? 'assigned' : 'shared'),
+    maxAgents: Number(t.maxAgents) || 10,
+    tier: t.tier || 'standard',
+    createdAt: t.createdAt,
+    totalUsers: Number(t.totalUsers) || 0,
+    totalLeads: Number(t.totalLeads) || 0,
+    totalCampaigns: Number(t.totalCampaigns) || 0
+  }));
+}
+
+export async function updateTenantLeadPoolMode(tenantId: string, leadPoolMode: 'shared' | 'assigned'): Promise<void> {
+  const now = new Date().toISOString();
+  await db.execute(`
+    UPDATE tenants
+    SET "leadPoolMode" = $1, "updatedAt" = $2
+    WHERE id = $3
+  `, [leadPoolMode, now, tenantId]);
+}
+
+export async function updateTenantStatus(tenantId: string, status: 'active' | 'suspended'): Promise<void> {
+  const now = new Date().toISOString();
+  await db.execute(`
+    UPDATE tenants
+    SET status = $1, "updatedAt" = $2
+    WHERE id = $3
+  `, [status, now, tenantId]);
+}
+
+export async function getGlobalSuperAdminMetrics(): Promise<{
+  totalTenants: number;
+  totalUsers: number;
+  totalLeads: number;
+  activeCampaigns: number;
+}> {
+  const tenantsCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM tenants`);
+  const usersCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM users`);
+  const leadsCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM leads`);
+  const campsCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM campaigns`);
+
+  return {
+    totalTenants: Number(tenantsCount?.c || 0),
+    totalUsers: Number(usersCount?.c || 0),
+    totalLeads: Number(leadsCount?.c || 0),
+    activeCampaigns: Number(campsCount?.c || 0)
+  };
 }
 
 // ─── Expose the raw db instance for future steps ─────────────────────────────
