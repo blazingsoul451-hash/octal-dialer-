@@ -1430,6 +1430,21 @@ export async function canAccessUser(actor: any, targetUserId: string, tenantId: 
   return false;
 }
 
+export async function getLedTeamIds(userId: string, tenantId: string): Promise<string[]> {
+  const teams = await getTeamsLedByUser(userId, tenantId);
+  return teams.map(t => t.id);
+}
+
+export async function getCampaignIdsForLedTeams(userId: string, tenantId: string): Promise<string[]> {
+  const ledTeamIds = await getLedTeamIds(userId, tenantId);
+  if (ledTeamIds.length === 0) return [];
+  const placeholders = ledTeamIds.map((_, i) => `$${i + 2}`).join(', ');
+  const rows = await db.queryAll<{ campaignId: string }>(`
+    SELECT DISTINCT "campaignId" FROM campaign_teams WHERE "tenantId" = $1 AND "teamId" IN (${placeholders})
+  `, [tenantId, ...ledTeamIds]);
+  return rows.map(r => r.campaignId);
+}
+
 export async function getTeamLeadScopedUserIds(userId: string, tenantId: string): Promise<string[]> {
   const ledTeams = await getTeamsLedByUser(userId, tenantId);
   const userIds = new Set<string>([userId]);
@@ -1438,6 +1453,44 @@ export async function getTeamLeadScopedUserIds(userId: string, tenantId: string)
     for (const mid of memberIds) userIds.add(mid);
   }
   return Array.from(userIds);
+}
+
+export interface UserTeamVisibilitySets {
+  readablePeerUserIds: string[];
+  editablePeerUserIds: string[];
+}
+
+/**
+ * Computes visibility sets PER TEAM so a permissive policy in one team does not leak to an OWN team.
+ */
+export async function getUserTeamPeerVisibilitySets(userId: string, tenantId: string): Promise<UserTeamVisibilitySets> {
+  const userTeamIds = await getUserTeamIds(userId, tenantId);
+  const readableSet = new Set<string>();
+  const editableSet = new Set<string>();
+
+  for (const tid of userTeamIds) {
+    const effVis = await getTeamEffectiveVisibility(tenantId, tid);
+    if (effVis === 'TEAM_READ') {
+      const memberIds = await getTeamMemberUserIds(tid, tenantId);
+      for (const mid of memberIds) {
+        if (mid !== userId) readableSet.add(mid);
+      }
+    } else if (effVis === 'TEAM_COLLABORATE') {
+      const memberIds = await getTeamMemberUserIds(tid, tenantId);
+      for (const mid of memberIds) {
+        if (mid !== userId) {
+          readableSet.add(mid);
+          editableSet.add(mid);
+        }
+      }
+    }
+    // If OWN: add no peer users
+  }
+
+  return {
+    readablePeerUserIds: Array.from(readableSet),
+    editablePeerUserIds: Array.from(editableSet)
+  };
 }
 
 export interface TeamSettingsRecord {
@@ -1472,6 +1525,14 @@ export async function upsertTeamSettings(
   tenantId: string,
   leadVisibility: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE'
 ): Promise<TeamSettingsRecord> {
+  // Validate team exists and belongs to tenant
+  const team = await db.queryOne<{ id: string }>(`
+    SELECT id FROM teams WHERE id = $1 AND "tenantId" = $2
+  `, [teamId, tenantId]);
+  if (!team) {
+    throw new Error('Team not found or does not belong to your organization.');
+  }
+
   const now = new Date().toISOString();
   const existing = await db.queryOne<{ id: string }>(`
     SELECT id FROM team_settings WHERE "teamId" = $1 AND "tenantId" = $2
@@ -1539,10 +1600,12 @@ export interface SuperAdminTenantSummary {
   name: string;
   slug: string;
   status: string;
-  ownerEmail?: string;
+  ownerEmail: string;
   leadPoolMode: 'shared' | 'assigned';
   maxAgents: number;
   tier: string;
+  customerType: 'COMPANY' | 'PERSONAL';
+  maxTeamVisibility: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE';
   createdAt: string;
   totalUsers: number;
   totalLeads: number;
@@ -1560,6 +1623,8 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
       COALESCE(t."leadPoolMode", 'shared') as "leadPoolMode",
       COALESCE(t."maxAgents", 10) as "maxAgents",
       COALESCE(t.tier, 'standard') as tier,
+      COALESCE(t."customerType", 'COMPANY') as "customerType",
+      COALESCE(t."maxTeamVisibility", 'TEAM_COLLABORATE') as "maxTeamVisibility",
       t."createdAt",
       (SELECT COUNT(*) FROM users u WHERE u."tenantId" = t.id) as "totalUsers",
       (SELECT COUNT(*) FROM leads l WHERE l."tenantId" = t.id) as "totalLeads",
@@ -1577,6 +1642,8 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
     leadPoolMode: (t.leadPoolMode === 'assigned' ? 'assigned' : 'shared'),
     maxAgents: Number(t.maxAgents) || 10,
     tier: t.tier || 'standard',
+    customerType: (t.customerType === 'PERSONAL' ? 'PERSONAL' : 'COMPANY'),
+    maxTeamVisibility: (t.maxTeamVisibility || 'TEAM_COLLABORATE'),
     createdAt: t.createdAt,
     totalUsers: Number(t.totalUsers) || 0,
     totalLeads: Number(t.totalLeads) || 0,

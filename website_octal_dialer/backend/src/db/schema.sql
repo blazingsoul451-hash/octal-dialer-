@@ -633,10 +633,12 @@ CREATE INDEX IF NOT EXISTS "idx_campaign_teams_tenant_camp" ON "campaign_teams"(
 CREATE TABLE IF NOT EXISTS "team_settings" (
   "id" TEXT PRIMARY KEY,
   "tenantId" TEXT NOT NULL,
-  "teamId" TEXT NOT NULL UNIQUE,
+  "teamId" TEXT NOT NULL,
   "leadVisibility" TEXT NOT NULL DEFAULT 'OWN',
   "createdAt" TEXT NOT NULL DEFAULT '',
-  "updatedAt" TEXT NOT NULL DEFAULT ''
+  "updatedAt" TEXT NOT NULL DEFAULT '',
+  CONSTRAINT "uq_team_settings_tenant_team" UNIQUE ("tenantId", "teamId")
 );
 CREATE INDEX IF NOT EXISTS "idx_team_settings_tenant_team" ON "team_settings"("tenantId", "teamId");
+CREATE INDEX IF NOT EXISTS "idx_leads_tenant_assigned" ON "leads"("tenantId", "assignedTo");
 

@@ -69,6 +69,32 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [showProfileSetupModal, setShowProfileSetupModal] = useState<boolean>(false);
 
+  // ─── Impersonation state (tab-local in sessionStorage; never touches localStorage octal_auth_token) ──
+  const [impersonateToken, setImpersonateToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlImpToken = urlParams.get('impersonateToken');
+      if (urlImpToken) {
+        sessionStorage.setItem('octal_impersonate_token', urlImpToken);
+        const urlImpTenant = urlParams.get('impersonateTenant');
+        if (urlImpTenant) sessionStorage.setItem('octal_impersonate_tenant', urlImpTenant);
+        return urlImpToken;
+      }
+      return sessionStorage.getItem('octal_impersonate_token');
+    }
+    return null;
+  });
+
+  const [impersonateTenant, setImpersonateTenant] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('octal_impersonate_tenant');
+    }
+    return null;
+  });
+
+  const isImpersonating = !!impersonateToken;
+  const effectiveAuthToken = impersonateToken || authToken;
+
   // ─── Permission & SaaS Scope state ──────────────────────────────────────────
   const [userRole, setUserRole] = useState<'platform_admin' | 'admin' | 'team_lead' | 'agent'>('agent');
   const [customerType, setCustomerType] = useState<'COMPANY' | 'PERSONAL'>('COMPANY');
@@ -240,16 +266,26 @@ export default function App() {
     localStorage.setItem('octal_theme', next);
   };
 
-  // Verify stored auth token on mount & check URL query params from Google OAuth redirects
+  // Verify stored auth token on mount & check URL query params from Google OAuth redirects or impersonation
   useEffect(() => {
-    // Check URL parameters for OAuth tokens or auth errors
+    // Check URL parameters for OAuth tokens, impersonation tokens, or auth errors
     const urlParams = new URLSearchParams(window.location.search);
     const oauthToken = urlParams.get('token');
     const oauthUser = urlParams.get('displayName') || urlParams.get('username') || urlParams.get('user') || 'Google User';
     const authError = urlParams.get('auth_error');
+    const urlImpToken = urlParams.get('impersonateToken');
+    const urlImpTenant = urlParams.get('impersonateTenant');
 
-    let currentToken = authToken;
-    if (oauthToken) {
+    let currentToken = effectiveAuthToken;
+
+    if (urlImpToken) {
+      sessionStorage.setItem('octal_impersonate_token', urlImpToken);
+      if (urlImpTenant) sessionStorage.setItem('octal_impersonate_tenant', urlImpTenant);
+      setImpersonateToken(urlImpToken);
+      setImpersonateTenant(urlImpTenant || 'Tenant Organization');
+      currentToken = urlImpToken;
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (oauthToken) {
       localStorage.setItem('octal_auth_token', oauthToken);
       localStorage.setItem('octal_auth_user', oauthUser);
       setAuthToken(oauthToken);
@@ -279,14 +315,22 @@ export default function App() {
           const preferredName = data.user?.displayName || data.user?.username;
           if (preferredName) {
             setAuthUser(preferredName);
-            localStorage.setItem('octal_auth_user', preferredName);
+            if (!sessionStorage.getItem('octal_impersonate_token')) {
+              localStorage.setItem('octal_auth_user', preferredName);
+            }
           }
         } else if (res.status === 401 || res.status === 403) {
           // Token strictly rejected by server
-          localStorage.removeItem('octal_auth_token');
-          localStorage.removeItem('octal_auth_user');
-          setAuthToken(null);
-          setAuthUser(null);
+          if (sessionStorage.getItem('octal_impersonate_token')) {
+            sessionStorage.removeItem('octal_impersonate_token');
+            sessionStorage.removeItem('octal_impersonate_tenant');
+            setImpersonateToken(null);
+          } else {
+            localStorage.removeItem('octal_auth_token');
+            localStorage.removeItem('octal_auth_user');
+            setAuthToken(null);
+            setAuthUser(null);
+          }
         }
       } catch (err) {
         clearTimeout(timeoutId);
@@ -300,13 +344,13 @@ export default function App() {
 
   // Fetch user role and permissions
   useEffect(() => {
-    if (!authToken) return;
+    if (!effectiveAuthToken) return;
 
     const fetchUserData = async () => {
       try {
         // Get user role
         const res = await fetch(`${lanServerUrl}/auth/me`, {
-          headers: { 'Authorization': `Bearer ${authToken}` }
+          headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
         });
 
         if (res.ok) {
@@ -334,7 +378,7 @@ export default function App() {
           } else {
             // Fetch module permissions
             const permRes = await fetch(`${lanServerUrl}/auth/permissions`, {
-              headers: { 'Authorization': `Bearer ${authToken}` }
+              headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
             });
 
             if (permRes.ok) {
@@ -349,7 +393,7 @@ export default function App() {
     };
 
     fetchUserData();
-  }, [authToken, lanServerUrl]);
+  }, [effectiveAuthToken, lanServerUrl]);
 
   // Fetch Server Info (Public Tunnel / LAN IP) on mount
   useEffect(() => {
@@ -373,13 +417,13 @@ export default function App() {
   const [lastDispositionSaved, setLastDispositionSaved] = useState<DispositionResult | null>(null);
 
   // Pass auth token to socket connection
-  const socketData = useSocket(SERVER_URL, authToken || undefined);
+  const socketData = useSocket(SERVER_URL, effectiveAuthToken || undefined);
 
   const fetchCampaigns = async () => {
-    if (!authToken) return;
+    if (!effectiveAuthToken) return;
     try {
       const res = await fetch(`${SERVER_URL}/campaigns`, {
-        headers: { 'Authorization': `Bearer ${authToken}` }
+        headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
       });
       if (res.ok) {
         const data = await res.json();
@@ -391,10 +435,10 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (authToken) {
+    if (effectiveAuthToken) {
       fetchCampaigns();
     }
-  }, [authToken]);
+  }, [effectiveAuthToken]);
 
   const showToast = (message: string, type: 'success' | 'info' = 'success') => {
     setToast({ message, type });
@@ -435,14 +479,48 @@ export default function App() {
   }
 
   // ─── Gate: show login screen if not authenticated ─────────────────────────────
-  if (!authToken) {
+  if (!effectiveAuthToken) {
     return <LoginScreen serverUrl={SERVER_URL} onLogin={handleLogin} />;
+  }
+
+  // Section 12: Dedicated Platform Owner shell: if platform_admin and NOT impersonating, render SuperAdminPortal directly without customer drawer
+  if (userRole === 'platform_admin' && !isImpersonating) {
+    return (
+      <div className={`min-h-screen w-full flex flex-col font-sans ${isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'}`}>
+        <SuperAdminPortal
+          serverUrl={lanServerUrl}
+          authToken={effectiveAuthToken}
+          currentUser={authUser}
+          onLogout={handleLogout}
+        />
+      </div>
+    );
   }
 
   return (
     <div className={`min-h-screen w-full max-w-full overflow-x-hidden flex flex-col font-sans transition-colors ${
       isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'
     }`}>
+
+      {/* 🛡️ Platform Support Impersonation Banner */}
+      {isImpersonating && (
+        <div className="bg-gradient-to-r from-amber-600 to-rose-600 text-white px-4 py-2.5 flex items-center justify-between text-xs font-bold shadow-lg z-50 sticky top-0 border-b border-rose-400/40">
+          <div className="flex items-center gap-2">
+            <Shield className="w-4 h-4 text-white animate-pulse" />
+            <span>IMPERSONATING WORKSPACE: <span className="underline font-mono text-amber-200">{impersonateTenant || 'Tenant Organization'}</span> (Platform Support Mode)</span>
+          </div>
+          <button
+            onClick={() => {
+              sessionStorage.removeItem('octal_impersonate_token');
+              sessionStorage.removeItem('octal_impersonate_tenant');
+              window.location.href = window.location.origin;
+            }}
+            className="px-3 py-1 bg-white text-slate-950 font-bold rounded-lg hover:bg-amber-100 transition font-mono text-[11px] cursor-pointer shadow-sm"
+          >
+            Exit Impersonation
+          </button>
+        </div>
+      )}
 
       {/* 📲 Incoming Cellular Call Modal / Banner */}
       {socketData.incomingCall && (
@@ -800,8 +878,8 @@ export default function App() {
                 </button>
               )}
 
-              {/* Administration — Available to Platform Admin & Tenant Admin */}
-              {(userRole === 'platform_admin' || userRole === 'admin') && (
+              {/* Administration — Available to Platform Admin & Tenant Admin for COMPANY accounts */}
+              {(userRole === 'platform_admin' || userRole === 'admin') && customerType !== 'PERSONAL' && (
                 <button
                   onClick={() => setActiveTab('admin')}
                   className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${

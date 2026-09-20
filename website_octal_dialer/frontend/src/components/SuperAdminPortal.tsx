@@ -210,8 +210,8 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
         <div className="bg-[#0d121f] border border-slate-800/80 p-4 rounded-2xl relative overflow-hidden shadow-lg shadow-black/40">
           <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Security & Encryption</div>
           <div className="text-2xl font-black mt-1 text-amber-400 flex items-baseline gap-2">
-            TLS Active
-            <span className="text-xs font-normal text-emerald-400">Healthy</span>
+            JWT Token Auth
+            <span className="text-xs font-normal text-emerald-400">Active</span>
           </div>
           <div className="text-[11px] text-slate-400 mt-2 flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-emerald-400" />

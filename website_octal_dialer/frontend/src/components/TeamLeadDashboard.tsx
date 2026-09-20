@@ -216,45 +216,57 @@ export const TeamLeadDashboard: React.FC<TeamLeadDashboardProps> = ({
             </div>
           </button>
 
-          <button
-            onClick={() => handleUpdatePolicy('TEAM_READ')}
-            disabled={savingPolicy}
-            className={`p-3 rounded-lg border text-left transition-all ${
-              currentTeam?.settings?.leadVisibility === 'TEAM_READ'
-                ? 'bg-amber-500/15 border-amber-500/50 text-white'
-                : 'bg-slate-850/50 border-slate-800 text-slate-300 hover:border-slate-700'
-            }`}
-          >
-            <div className="text-xs font-bold flex items-center justify-between">
-              <span>TEAM_READ</span>
-              {currentTeam?.settings?.leadVisibility === 'TEAM_READ' && (
-                <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />
-              )}
-            </div>
-            <div className="text-[11px] text-slate-400 mt-1">
-              Members can view peer leads in team. Read-only; no reassign.
-            </div>
-          </button>
+          {(() => {
+            const isCollaborateRestricted = currentTeam?.companyMaxVisibility === 'OWN' || currentTeam?.companyMaxVisibility === 'TEAM_READ';
+            const isReadRestricted = currentTeam?.companyMaxVisibility === 'OWN';
+            return (
+              <>
+                <button
+                  onClick={() => handleUpdatePolicy('TEAM_READ')}
+                  disabled={savingPolicy || isReadRestricted}
+                  title={isReadRestricted ? `Restricted: Company Maximum Policy is set to ${currentTeam?.companyMaxVisibility}` : 'Set TEAM_READ policy'}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    isReadRestricted ? 'opacity-50 cursor-not-allowed bg-slate-900/40 border-slate-800 text-slate-500' :
+                    currentTeam?.settings?.leadVisibility === 'TEAM_READ'
+                      ? 'bg-amber-500/15 border-amber-500/50 text-white'
+                      : 'bg-slate-850/50 border-slate-800 text-slate-300 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="text-xs font-bold flex items-center justify-between">
+                    <span>TEAM_READ</span>
+                    {currentTeam?.settings?.leadVisibility === 'TEAM_READ' && (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />
+                    )}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1">
+                    {isReadRestricted ? `Restricted by Company Policy (${currentTeam?.companyMaxVisibility})` : 'Members can view peer leads in team. Read-only; no reassign.'}
+                  </div>
+                </button>
 
-          <button
-            onClick={() => handleUpdatePolicy('TEAM_COLLABORATE')}
-            disabled={savingPolicy}
-            className={`p-3 rounded-lg border text-left transition-all ${
-              currentTeam?.settings?.leadVisibility === 'TEAM_COLLABORATE'
-                ? 'bg-amber-500/15 border-amber-500/50 text-white'
-                : 'bg-slate-850/50 border-slate-800 text-slate-300 hover:border-slate-700'
-            }`}
-          >
-            <div className="text-xs font-bold flex items-center justify-between">
-              <span>TEAM_COLLABORATE</span>
-              {currentTeam?.settings?.leadVisibility === 'TEAM_COLLABORATE' && (
-                <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />
-              )}
-            </div>
-            <div className="text-[11px] text-slate-400 mt-1">
-              Members can collaborate and update same-team leads.
-            </div>
-          </button>
+                <button
+                  onClick={() => handleUpdatePolicy('TEAM_COLLABORATE')}
+                  disabled={savingPolicy || isCollaborateRestricted}
+                  title={isCollaborateRestricted ? `Restricted: Company Maximum Policy is set to ${currentTeam?.companyMaxVisibility}` : 'Set TEAM_COLLABORATE policy'}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    isCollaborateRestricted ? 'opacity-50 cursor-not-allowed bg-slate-900/40 border-slate-800 text-slate-500' :
+                    currentTeam?.settings?.leadVisibility === 'TEAM_COLLABORATE'
+                      ? 'bg-amber-500/15 border-amber-500/50 text-white'
+                      : 'bg-slate-850/50 border-slate-800 text-slate-300 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="text-xs font-bold flex items-center justify-between">
+                    <span>TEAM_COLLABORATE</span>
+                    {currentTeam?.settings?.leadVisibility === 'TEAM_COLLABORATE' && (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />
+                    )}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1">
+                    {isCollaborateRestricted ? `Restricted by Company Policy (${currentTeam?.companyMaxVisibility})` : 'Members can collaborate and update same-team leads.'}
+                  </div>
+                </button>
+              </>
+            );
+          })()}
         </div>
       </div>
 

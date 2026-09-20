@@ -7,7 +7,7 @@ import {
 interface User {
   id: string;
   username: string;
-  role: 'platform_admin' | 'admin' | 'agent';
+  role: 'platform_admin' | 'admin' | 'team_lead' | 'agent' | 'user';
   createdAt: string;
   permissions?: {
     id: string;
@@ -24,7 +24,7 @@ interface AdminUsersProps {
   serverUrl: string;
   authToken: string;
   currentUser?: string;
-  currentUserRole?: 'platform_admin' | 'admin' | 'agent';
+  currentUserRole?: 'platform_admin' | 'admin' | 'team_lead' | 'agent' | 'user';
 }
 
 const MODULES = [
@@ -60,13 +60,13 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [newRole, setNewRole] = useState<'admin' | 'agent'>('agent');
+  const [newRole, setNewRole] = useState<'admin' | 'team_lead' | 'agent'>('agent');
   const [selectedModules, setSelectedModules] = useState<Record<string, boolean>>({});
   const [creatingUser, setCreatingUser] = useState(false);
 
   // Edit User & Permissions Modal State
   const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [editRole, setEditRole] = useState<'admin' | 'agent'>('agent');
+  const [editRole, setEditRole] = useState<'admin' | 'team_lead' | 'agent'>('agent');
   const [editPassword, setEditPassword] = useState('');
   const [editModules, setEditModules] = useState<Record<string, boolean>>({});
   const [savingUserEdit, setSavingUserEdit] = useState(false);
@@ -132,7 +132,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
         body: JSON.stringify({
           username: newUsername.trim(),
           password: newPassword,
-          role: isPlatformMaster ? newRole : 'agent',
+          role: isPlatformMaster ? newRole : (newRole === 'team_lead' ? 'team_lead' : 'agent'),
           initialPermissions
         })
       });
@@ -159,7 +159,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
   const handleOpenEdit = (u: User) => {
     setEditingUser(u);
-    setEditRole(u.role === 'admin' ? 'admin' : 'agent');
+    setEditRole(u.role === 'admin' ? 'admin' : (u.role === 'team_lead' ? 'team_lead' : 'agent'));
     setEditPassword('');
     const modMap: Record<string, boolean> = {};
     MODULES.forEach(m => {
@@ -181,7 +181,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
           'Authorization': `Bearer ${authToken}`
         },
         body: JSON.stringify({
-          role: isPlatformMaster ? editRole : (editingUser.role === 'agent' ? editRole : undefined),
+          role: isPlatformMaster ? editRole : ((editingUser.role === 'admin' || editingUser.role === 'platform_admin') ? undefined : editRole),
           newPassword: editPassword.trim() ? editPassword.trim() : undefined,
           permissions: editModules
         })
@@ -281,6 +281,8 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
         return isLight ? 'bg-purple-100 border-purple-300 text-purple-800' : 'bg-purple-950/40 border-purple-800 text-purple-400';
       case 'admin':
         return isLight ? 'bg-amber-100 border-amber-300 text-amber-800' : 'bg-amber-950/40 border-amber-800 text-amber-400';
+      case 'team_lead':
+        return isLight ? 'bg-blue-100 border-blue-300 text-blue-800' : 'bg-blue-950/40 border-blue-800 text-blue-400';
       default:
         return isLight ? 'bg-slate-100 border-slate-300 text-slate-700' : 'bg-[#18181b] border-[#18181b] text-slate-300';
     }
@@ -301,42 +303,47 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
         <button
           onClick={() => {
+            setNewUsername('');
+            setNewPassword('');
+            setNewRole('agent');
             setSelectedModules({});
             setShowCreateModal(true);
           }}
-          className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md self-start sm:self-auto"
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold font-display text-xs bg-amber-500 hover:bg-amber-400 text-slate-950 transition-all shadow-md shadow-amber-500/10 cursor-pointer self-start sm:self-auto"
         >
           <UserPlus className="w-4 h-4" />
           <span>Add Team Member</span>
         </button>
       </div>
 
-      {/* Notifications */}
+      {/* Alert Messages */}
       {error && (
-        <div className={`p-3.5 border text-xs rounded-xl flex items-start gap-2.5 shadow-sm ${
-          isLight ? 'bg-red-50 border-red-200 text-red-700' : 'bg-red-950/30 border-red-900/50 text-red-400'
-        }`}>
-          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{error}</span>
+        <div className="p-3.5 rounded-2xl border flex items-center justify-between gap-3 text-xs font-mono bg-rose-500/10 border-rose-500/30 text-rose-400">
+          <div className="flex items-center gap-2.5">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+            <span>{error}</span>
+          </div>
+          <button onClick={() => setError(null)} className="text-rose-400 hover:text-white cursor-pointer">×</button>
         </div>
       )}
 
       {success && (
-        <div className={`p-3.5 border text-xs rounded-xl flex items-start gap-2.5 shadow-sm ${
-          isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-emerald-950/30 border-emerald-900/50 text-emerald-400'
-        }`}>
-          <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{success}</span>
+        <div className="p-3.5 rounded-2xl border flex items-center justify-between gap-3 text-xs font-mono bg-emerald-500/10 border-emerald-500/30 text-emerald-400">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
+            <span>{success}</span>
+          </div>
+          <button onClick={() => setSuccess(null)} className="text-emerald-400 hover:text-white cursor-pointer">×</button>
         </div>
       )}
 
-      {/* Filter Bar */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex-1 min-w-[220px] relative">
-          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
+      {/* ── Search & Filter Bar ── */}
+      <div className="flex flex-col sm:flex-row items-center gap-3">
+        <div className="relative flex-1 w-full">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
             type="text"
-            placeholder="Search by username..."
+            placeholder="Search by username or user ID..."
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             className={`w-full pl-9 pr-3 py-2 text-xs rounded-xl border font-mono transition-colors outline-none ${
@@ -345,18 +352,19 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-1.5">
-          <Filter className="w-3.5 h-3.5 text-slate-500" />
+        <div className="flex items-center gap-1.5 w-full sm:w-auto">
+          <Filter className="w-3.5 h-3.5 text-slate-500 shrink-0" />
           <select
             value={roleFilter}
             onChange={e => setRoleFilter(e.target.value)}
-            className={`text-xs rounded-xl border px-3 py-2 font-mono outline-none cursor-pointer ${
+            className={`text-xs rounded-xl border px-3 py-2 font-mono outline-none cursor-pointer w-full sm:w-auto ${
               isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-slate-200'
             }`}
           >
             <option value="ALL">All Roles</option>
             <option value="platform_admin">Master Admin</option>
             <option value="admin">Tenant Admin</option>
+            <option value="team_lead">Team Lead</option>
             <option value="agent">Employee / Agent</option>
           </select>
         </div>
@@ -364,7 +372,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
         <button
           onClick={fetchUsers}
           disabled={loading}
-          className={`p-2 rounded-xl border transition-all cursor-pointer ${
+          className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
             isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700' : 'bg-[#18181b] hover:bg-[#27272a] border-[#18181b] text-slate-300'
           }`}
           title="Refresh user list"
@@ -430,7 +438,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
                       <td className="p-3">
                         <span className={`px-2 py-0.5 rounded border text-[10px] font-bold uppercase ${getRoleBadge(u.role)}`}>
-                          {u.role === 'platform_admin' ? 'Master Admin' : u.role === 'admin' ? 'Tenant Admin' : 'Employee'}
+                          {u.role === 'platform_admin' ? 'Master Admin' : u.role === 'admin' ? 'Tenant Admin' : u.role === 'team_lead' ? 'Team Lead' : 'Employee'}
                         </span>
                       </td>
 
@@ -616,14 +624,20 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                     }`}
                   >
                     <option value="agent">Employee / Agent (Restricted by module permissions)</option>
+                    <option value="team_lead">Team Lead (Leads assigned teams)</option>
                     <option value="admin">Tenant Administrator (Full organizational authority)</option>
                   </select>
                 ) : (
-                  <div className={`p-2.5 rounded-xl border text-xs ${
-                    isLight ? 'bg-slate-50 border-slate-200 text-slate-700' : 'bg-[#18181b] border-[#18181b] text-slate-300'
-                  }`}>
-                    <span className="font-bold">Employee / Agent</span> (Admins can only create operational employees)
-                  </div>
+                  <select
+                    value={newRole}
+                    onChange={e => setNewRole(e.target.value as any)}
+                    className={`w-full px-3 py-2 rounded-xl border outline-none cursor-pointer ${
+                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white'
+                    }`}
+                  >
+                    <option value="agent">Employee / Agent (Restricted by module permissions)</option>
+                    <option value="team_lead">Team Lead (Leads assigned teams)</option>
+                  </select>
                 )}
               </div>
 
@@ -711,21 +725,38 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                 {/* Select Role */}
                 <div>
                   <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
-                    Assigned Role {!isPlatformMaster && <span className="text-purple-400 font-bold lowercase">(Super Admin Only)</span>}
+                    Assigned Role
                   </label>
-                  <select
-                    value={editRole}
-                    disabled={!isPlatformMaster}
-                    onChange={e => setEditRole(e.target.value as any)}
-                    className={`w-full px-3 py-2 rounded-xl border outline-none ${
-                      !isPlatformMaster ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
-                    } ${
-                      isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white'
-                    }`}
-                  >
-                    <option value="agent">Employee / Agent</option>
-                    <option value="admin">Tenant Administrator</option>
-                  </select>
+                  {isPlatformMaster ? (
+                    <select
+                      value={editRole}
+                      onChange={e => setEditRole(e.target.value as any)}
+                      className={`w-full px-3 py-2 rounded-xl border outline-none cursor-pointer ${
+                        isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white'
+                      }`}
+                    >
+                      <option value="agent">Employee / Agent</option>
+                      <option value="team_lead">Team Lead</option>
+                      <option value="admin">Tenant Administrator</option>
+                    </select>
+                  ) : (editingUser.role === 'admin' || editingUser.role === 'platform_admin') ? (
+                    <div className={`p-2.5 rounded-xl border text-xs ${
+                      isLight ? 'bg-slate-50 border-slate-200 text-slate-700' : 'bg-[#18181b] border-[#18181b] text-slate-300'
+                    }`}>
+                      <span className="font-bold">{editingUser.role === 'platform_admin' ? 'Master Admin' : 'Tenant Administrator'}</span> (Protected)
+                    </div>
+                  ) : (
+                    <select
+                      value={editRole}
+                      onChange={e => setEditRole(e.target.value as any)}
+                      className={`w-full px-3 py-2 rounded-xl border outline-none cursor-pointer ${
+                        isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-[#18181b] border-[#18181b] text-white'
+                      }`}
+                    >
+                      <option value="agent">Employee / Agent</option>
+                      <option value="team_lead">Team Lead</option>
+                    </select>
+                  )}
                 </div>
 
                 {/* Reset / Change Password (Optional) */}

@@ -993,10 +993,18 @@ export async function resetPasswordWithToken(resetToken: string, newPassword: st
   return { success: true, message: 'Password successfully updated. You may now log in.' };
 }
 
-/** Update user role — STRICTLY restricted to Super Admin (Platform Owner) */
+/** 
+ * Update user role — Enforces the Canonical Role Transition Matrix:
+ * - Platform Owner: may assign admin, team_lead, user (cannot create another platform_admin).
+ * - Company Owner: may assign within own tenant team_lead or user (cannot assign platform_admin or admin).
+ * - Team Lead / Member: strictly forbidden from changing user roles.
+ */
 export async function updateUserRole(executorUser: AuthUser, targetUserId: string, newRole: string): Promise<{ success: boolean; user: any }> {
-  if (executorUser.role !== 'platform_admin' && executorUser.role !== 'master_admin') {
-    throw new Error('Forbidden: Only Super Admin can change user roles.');
+  const isPlatform = executorUser.role === 'platform_admin' || executorUser.role === 'master_admin';
+  const isCompanyOwner = executorUser.role === 'admin';
+
+  if (!isPlatform && !isCompanyOwner) {
+    throw new Error('Forbidden: Only Platform Owners and Company Owners can change user roles.');
   }
 
   const target = await db.queryOne<any>(`SELECT id, username, role, "tenantId" FROM users WHERE id = $1`, [targetUserId]);
@@ -1004,30 +1012,44 @@ export async function updateUserRole(executorUser: AuthUser, targetUserId: strin
     throw new Error('User not found.');
   }
 
-  if ((newRole === 'platform_admin' || newRole === 'master_admin') && target.role !== 'platform_admin') {
-    throw new Error('Forbidden: No new Super Admin accounts can be created. There is only one Super Admin.');
+  // Cross-tenant protection: Company Owner cannot edit users outside their own tenant
+  if (!isPlatform && target.tenantId !== executorUser.tenantId) {
+    throw new Error('Forbidden: Cannot modify a user from another organization.');
   }
 
-  if ((target.username === 'mohsin1' || target.role === 'platform_admin') && newRole !== 'platform_admin') {
-    throw new Error('Forbidden: The Super Admin account cannot be demoted.');
+  // Self-modification protection: Company Owner cannot change their own role
+  if (!isPlatform && target.id === executorUser.id) {
+    throw new Error('Forbidden: Company Owners cannot change their own role.');
   }
 
-  const allowedRoles = ['user', 'agent', 'admin', 'team_lead'];
-  if (target.role === 'platform_admin') allowedRoles.push('platform_admin');
-  if (!allowedRoles.includes(newRole)) {
-    throw new Error(`Invalid role. Allowed roles: ${allowedRoles.join(', ')}`);
+  // Protect platform owner accounts against modification or demotion
+  if ((target.username === 'mohsin1' || target.role === 'platform_admin' || target.role === 'master_admin')) {
+    throw new Error('Forbidden: Platform Owner accounts cannot be modified or demoted.');
   }
 
-  const normalized = (newRole === 'agent' ? 'user' : newRole);
+  // Strict role allowlist and normalization
+  const roleRaw = (newRole || '').toLowerCase().trim();
+  const normalizedRole = (roleRaw === 'agent' ? 'user' : roleRaw);
+
+  if (isPlatform) {
+    if (!['admin', 'team_lead', 'user'].includes(normalizedRole)) {
+      throw new Error('Invalid role. Platform Owners may assign admin, team_lead, or user.');
+    }
+  } else if (isCompanyOwner) {
+    if (!['team_lead', 'user'].includes(normalizedRole)) {
+      throw new Error('Forbidden: Company Owners may only assign team_lead or user roles.');
+    }
+  }
+
   const now = new Date().toISOString();
-  await db.execute(`UPDATE users SET role = $1, "updatedAt" = $2 WHERE id = $3`, [normalized, now, targetUserId]);
+  await db.execute(`UPDATE users SET role = $1, "updatedAt" = $2 WHERE id = $3`, [normalizedRole, now, targetUserId]);
 
   return {
     success: true,
     user: {
       id: target.id,
       username: target.username,
-      role: normalized,
+      role: normalizedRole,
       tenantId: target.tenantId
     }
   };
