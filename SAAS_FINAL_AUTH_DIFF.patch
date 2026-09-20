@@ -1,0 +1,608 @@
+diff --git a/website_octal_dialer/backend/src/authManager.ts b/website_octal_dialer/backend/src/authManager.ts
+index c270749..1f1ba45 100644
+--- a/website_octal_dialer/backend/src/authManager.ts
++++ b/website_octal_dialer/backend/src/authManager.ts
+@@ -993,10 +993,18 @@ export async function resetPasswordWithToken(resetToken: string, newPassword: st
+   return { success: true, message: 'Password successfully updated. You may now log in.' };
+ }
+ 
+-/** Update user role ΓÇö STRICTLY restricted to Super Admin (Platform Owner) */
++/** 
++ * Update user role ΓÇö Enforces the Canonical Role Transition Matrix:
++ * - Platform Owner: may assign admin, team_lead, user (cannot create another platform_admin).
++ * - Company Owner: may assign within own tenant team_lead or user (cannot assign platform_admin or admin).
++ * - Team Lead / Member: strictly forbidden from changing user roles.
++ */
+ export async function updateUserRole(executorUser: AuthUser, targetUserId: string, newRole: string): Promise<{ success: boolean; user: any }> {
+-  if (executorUser.role !== 'platform_admin' && executorUser.role !== 'master_admin') {
+-    throw new Error('Forbidden: Only Super Admin can change user roles.');
++  const isPlatform = executorUser.role === 'platform_admin' || executorUser.role === 'master_admin';
++  const isCompanyOwner = executorUser.role === 'admin';
++
++  if (!isPlatform && !isCompanyOwner) {
++    throw new Error('Forbidden: Only Platform Owners and Company Owners can change user roles.');
+   }
+ 
+   const target = await db.queryOne<any>(`SELECT id, username, role, "tenantId" FROM users WHERE id = $1`, [targetUserId]);
+@@ -1004,30 +1012,44 @@ export async function updateUserRole(executorUser: AuthUser, targetUserId: strin
+     throw new Error('User not found.');
+   }
+ 
+-  if ((newRole === 'platform_admin' || newRole === 'master_admin') && target.role !== 'platform_admin') {
+-    throw new Error('Forbidden: No new Super Admin accounts can be created. There is only one Super Admin.');
++  // Cross-tenant protection: Company Owner cannot edit users outside their own tenant
++  if (!isPlatform && target.tenantId !== executorUser.tenantId) {
++    throw new Error('Forbidden: Cannot modify a user from another organization.');
+   }
+ 
+-  if ((target.username === 'mohsin1' || target.role === 'platform_admin') && newRole !== 'platform_admin') {
+-    throw new Error('Forbidden: The Super Admin account cannot be demoted.');
++  // Self-modification protection: Company Owner cannot change their own role
++  if (!isPlatform && target.id === executorUser.id) {
++    throw new Error('Forbidden: Company Owners cannot change their own role.');
+   }
+ 
+-  const allowedRoles = ['user', 'agent', 'admin'];
+-  if (target.role === 'platform_admin') allowedRoles.push('platform_admin');
+-  if (!allowedRoles.includes(newRole)) {
+-    throw new Error(`Invalid role. Allowed roles: ${allowedRoles.join(', ')}`);
++  // Protect platform owner accounts against modification or demotion
++  if ((target.username === 'mohsin1' || target.role === 'platform_admin' || target.role === 'master_admin')) {
++    throw new Error('Forbidden: Platform Owner accounts cannot be modified or demoted.');
++  }
++
++  // Strict role allowlist and normalization
++  const roleRaw = (newRole || '').toLowerCase().trim();
++  const normalizedRole = (roleRaw === 'agent' ? 'user' : roleRaw);
++
++  if (isPlatform) {
++    if (!['admin', 'team_lead', 'user'].includes(normalizedRole)) {
++      throw new Error('Invalid role. Platform Owners may assign admin, team_lead, or user.');
++    }
++  } else if (isCompanyOwner) {
++    if (!['team_lead', 'user'].includes(normalizedRole)) {
++      throw new Error('Forbidden: Company Owners may only assign team_lead or user roles.');
++    }
+   }
+ 
+-  const normalized = (newRole === 'agent' ? 'user' : newRole);
+   const now = new Date().toISOString();
+-  await db.execute(`UPDATE users SET role = $1, "updatedAt" = $2 WHERE id = $3`, [normalized, now, targetUserId]);
++  await db.execute(`UPDATE users SET role = $1, "updatedAt" = $2 WHERE id = $3`, [normalizedRole, now, targetUserId]);
+ 
+   return {
+     success: true,
+     user: {
+       id: target.id,
+       username: target.username,
+-      role: normalized,
++      role: normalizedRole,
+       tenantId: target.tenantId
+     }
+   };
+@@ -1077,6 +1099,46 @@ export async function requireTenantAdmin(req: express.Request, res: express.Resp
+ 
+ export const requireAdmin = requireTenantAdmin;
+ 
++/** Middleware: require Team Lead or Admin role */
++export async function requireTeamLeadOrAdmin(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
++  const authHeader = req.headers['authorization'] || '';
++  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
++  const user = await validateToken(token);
++
++  if (!user) {
++    res.status(401).json({ error: 'Unauthorized. Please log in.' });
++    return;
++  }
++
++  if (user.role !== 'team_lead' && user.role !== 'admin' && user.role !== 'platform_admin' && user.role !== 'master_admin') {
++    res.status(403).json({ error: 'Forbidden. Team Lead or Admin access required.' });
++    return;
++  }
++
++  (req as any).user = user;
++  next();
++}
++
++/**
++ * Authorization scope classification:
++ * - platform_admin -> PLATFORM
++ * - admin -> TENANT
++ * - team_lead -> TEAM
++ * - user / agent -> OWN
++ */
++export function resolveAccessScope(user: AuthUser): 'PLATFORM' | 'TENANT' | 'TEAM' | 'OWN' {
++  if (user.role === 'platform_admin' || user.role === 'master_admin') {
++    return 'PLATFORM';
++  }
++  if (user.role === 'admin') {
++    return 'TENANT';
++  }
++  if (user.role === 'team_lead') {
++    return 'TEAM';
++  }
++  return 'OWN';
++}
++
+ /**
+  * Resolves the authoritative effective permissions for a user.
+  *
+@@ -1142,6 +1204,23 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
+     return permissions;
+   }
+ 
++  if (user.role === 'team_lead') {
++    // Standard unassigned Team Lead: calling, CRM, leads, and team scope permissions
++    permissions.add('calls:view_queue');
++    permissions.add('calls:dial_outbound');
++    permissions.add('calls:manual_keypad');
++    permissions.add('calls:log_disposition');
++    permissions.add('leads:view');
++    permissions.add('leads:import');
++    permissions.add('leads:edit');
++    permissions.add('crm:view');
++    permissions.add('crm:edit');
++    permissions.add('campaigns:view');
++    permissions.add('teams:view_own');
++    permissions.add('teams:manage_own');
++    return permissions;
++  }
++
+   // Standard unassigned agents: default calling permissions
+   permissions.add('calls:view_queue');
+   permissions.add('calls:dial_outbound');
+diff --git a/website_octal_dialer/backend/src/databaseManager.ts b/website_octal_dialer/backend/src/databaseManager.ts
+index 07942ca..6172ca8 100644
+--- a/website_octal_dialer/backend/src/databaseManager.ts
++++ b/website_octal_dialer/backend/src/databaseManager.ts
+@@ -61,6 +61,8 @@ export interface TenantInfo {
+   leadPoolMode: 'shared' | 'assigned';
+   maxAgents: number;
+   tier: string;
++  customerType?: 'COMPANY' | 'PERSONAL';
++  maxTeamVisibility?: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE';
+ }
+ 
+ export interface CallLog {
+@@ -1349,6 +1351,409 @@ export async function getUserScopedCampaignIds(userId: string, tenantId: string)
+   return rows.map(r => r.campaignId);
+ }
+ 
++export async function getTeamsLedByUser(userId: string, tenantId: string): Promise<TeamRecord[]> {
++  const teams = await db.queryAll<TeamRecord>(`
++    SELECT t.id, t.name, t.description, t."leaderId", t."tenantId", t.status, t."createdAt", t."updatedAt",
++           u."displayName" as "leaderName"
++    FROM teams t
++    LEFT JOIN users u ON u.id = t."leaderId"
++    WHERE t."tenantId" = $1 AND (
++      t."leaderId" = $2 OR EXISTS (
++        SELECT 1 FROM team_members tm WHERE tm."teamId" = t.id AND tm."userId" = $2 AND tm."roleInTeam" = 'leader'
++      )
++    )
++    ORDER BY t."createdAt" DESC
++  `, [tenantId, userId]);
++
++  for (const t of teams) {
++    const memCount = await db.queryOne<{ count: number | string }>(
++      `SELECT COUNT(*)::int AS count FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2`,
++      [t.id, tenantId]
++    );
++    const campCount = await db.queryOne<{ count: number | string }>(
++      `SELECT COUNT(*)::int AS count FROM campaign_teams WHERE "teamId" = $1 AND "tenantId" = $2`,
++      [t.id, tenantId]
++    );
++    t.memberCount = Number(memCount?.count || 0);
++    t.campaignCount = Number(campCount?.count || 0);
++  }
++
++  return teams;
++}
++
++export async function getTeamMemberUserIds(teamId: string, tenantId: string): Promise<string[]> {
++  const rows = await db.queryAll<{ userId: string }>(`
++    SELECT "userId" FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2
++  `, [teamId, tenantId]);
++  return rows.map(r => r.userId);
++}
++
++export async function isTeamLeader(userId: string, teamId: string, tenantId: string): Promise<boolean> {
++  const team = await db.queryOne<{ leaderId: string }>(`
++    SELECT "leaderId" FROM teams WHERE id = $1 AND "tenantId" = $2
++  `, [teamId, tenantId]);
++  if (team?.leaderId === userId) return true;
++
++  const member = await db.queryOne<{ roleInTeam: string }>(`
++    SELECT "roleInTeam" FROM team_members WHERE "teamId" = $1 AND "userId" = $2 AND "tenantId" = $3
++  `, [teamId, userId, tenantId]);
++  return member?.roleInTeam === 'leader';
++}
++
++export async function canAccessTeam(actor: any, teamId: string, tenantId: string): Promise<boolean> {
++  if (!actor || !teamId || !tenantId) return false;
++  if (actor.role === 'platform_admin' || actor.role === 'master_admin') return true;
++  if (actor.tenantId !== tenantId) return false;
++  if (actor.role === 'admin') return true;
++  if (actor.role === 'team_lead') {
++    return await isTeamLeader(actor.id, teamId, tenantId);
++  }
++  const member = await db.queryOne(`
++    SELECT id FROM team_members WHERE "teamId" = $1 AND "userId" = $2 AND "tenantId" = $3
++  `, [teamId, actor.id, tenantId]);
++  return !!member;
++}
++
++export async function canAccessUser(actor: any, targetUserId: string, tenantId: string): Promise<boolean> {
++  if (!actor || !targetUserId || !tenantId) return false;
++  if (actor.role === 'platform_admin' || actor.role === 'master_admin') return true;
++  if (actor.tenantId !== tenantId) return false;
++  if (actor.role === 'admin') return true;
++  if (actor.id === targetUserId) return true;
++  if (actor.role === 'team_lead') {
++    const ledTeams = await getTeamsLedByUser(actor.id, tenantId);
++    for (const t of ledTeams) {
++      const memberIds = await getTeamMemberUserIds(t.id, tenantId);
++      if (memberIds.includes(targetUserId)) return true;
++    }
++  }
++  return false;
++}
++
++export async function getLedTeamIds(userId: string, tenantId: string): Promise<string[]> {
++  const teams = await getTeamsLedByUser(userId, tenantId);
++  return teams.map(t => t.id);
++}
++
++export async function getCampaignIdsForLedTeams(userId: string, tenantId: string): Promise<string[]> {
++  const ledTeamIds = await getLedTeamIds(userId, tenantId);
++  if (ledTeamIds.length === 0) return [];
++  const placeholders = ledTeamIds.map((_, i) => `$${i + 2}`).join(', ');
++  const rows = await db.queryAll<{ campaignId: string }>(`
++    SELECT DISTINCT "campaignId" FROM campaign_teams WHERE "tenantId" = $1 AND "teamId" IN (${placeholders})
++  `, [tenantId, ...ledTeamIds]);
++  return rows.map(r => r.campaignId);
++}
++
++export async function getTeamLeadScopedUserIds(userId: string, tenantId: string): Promise<string[]> {
++  const ledTeams = await getTeamsLedByUser(userId, tenantId);
++  const userIds = new Set<string>([userId]);
++  for (const t of ledTeams) {
++    const memberIds = await getTeamMemberUserIds(t.id, tenantId);
++    for (const mid of memberIds) userIds.add(mid);
++  }
++  return Array.from(userIds);
++}
++
++export interface UserTeamVisibilitySets {
++  readablePeerUserIds: string[];
++  editablePeerUserIds: string[];
++}
++
++/**
++ * Computes visibility sets PER TEAM so a permissive policy in one team does not leak to an OWN team.
++ */
++export async function getUserTeamPeerVisibilitySets(userId: string, tenantId: string): Promise<UserTeamVisibilitySets> {
++  const userTeamIds = await getUserTeamIds(userId, tenantId);
++  const readableSet = new Set<string>();
++  const editableSet = new Set<string>();
++
++  for (const tid of userTeamIds) {
++    const effVis = await getTeamEffectiveVisibility(tenantId, tid);
++    if (effVis === 'TEAM_READ') {
++      const memberIds = await getTeamMemberUserIds(tid, tenantId);
++      for (const mid of memberIds) {
++        if (mid !== userId) readableSet.add(mid);
++      }
++    } else if (effVis === 'TEAM_COLLABORATE') {
++      const memberIds = await getTeamMemberUserIds(tid, tenantId);
++      for (const mid of memberIds) {
++        if (mid !== userId) {
++          readableSet.add(mid);
++          editableSet.add(mid);
++        }
++      }
++    }
++    // If OWN: add no peer users
++  }
++
++  return {
++    readablePeerUserIds: Array.from(readableSet),
++    editablePeerUserIds: Array.from(editableSet)
++  };
++}
++
++export interface TeamSettingsRecord {
++  id: string;
++  tenantId: string;
++  teamId: string;
++  leadVisibility: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE';
++  createdAt: string;
++  updatedAt: string;
++}
++
++export async function getTeamSettings(teamId: string, tenantId: string): Promise<TeamSettingsRecord> {
++  const existing = await db.queryOne<TeamSettingsRecord>(`
++    SELECT * FROM team_settings WHERE "teamId" = $1 AND "tenantId" = $2
++  `, [teamId, tenantId]);
++
++  if (existing) return existing;
++
++  // Default record
++  return {
++    id: `ts_${teamId}`,
++    tenantId,
++    teamId,
++    leadVisibility: 'OWN',
++    createdAt: new Date().toISOString(),
++    updatedAt: new Date().toISOString()
++  };
++}
++
++export async function upsertTeamSettings(
++  teamId: string,
++  tenantId: string,
++  leadVisibility: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE'
++): Promise<TeamSettingsRecord> {
++  // Validate team exists and belongs to tenant
++  const team = await db.queryOne<{ id: string }>(`
++    SELECT id FROM teams WHERE id = $1 AND "tenantId" = $2
++  `, [teamId, tenantId]);
++  if (!team) {
++    throw new Error('Team not found or does not belong to your organization.');
++  }
++
++  const now = new Date().toISOString();
++  const existing = await db.queryOne<{ id: string }>(`
++    SELECT id FROM team_settings WHERE "teamId" = $1 AND "tenantId" = $2
++  `, [teamId, tenantId]);
++
++  if (existing) {
++    await db.execute(`
++      UPDATE team_settings 
++      SET "leadVisibility" = $1, "updatedAt" = $2
++      WHERE id = $3 AND "tenantId" = $4
++    `, [leadVisibility, now, existing.id, tenantId]);
++    return { id: existing.id, tenantId, teamId, leadVisibility, createdAt: '', updatedAt: now };
++  } else {
++    const id = 'ts_' + Math.random().toString(36).substring(2, 11);
++    await db.execute(`
++      INSERT INTO team_settings (id, "tenantId", "teamId", "leadVisibility", "createdAt", "updatedAt")
++      VALUES ($1, $2, $3, $4, $5, $6)
++    `, [id, tenantId, teamId, leadVisibility, now, now]);
++    return { id, tenantId, teamId, leadVisibility, createdAt: now, updatedAt: now };
++  }
++}
++
++/**
++ * Resolves the effective team visibility policy.
++ * COMPANY MAXIMUM POLICY:
++ * Company Owner sets tenants.maxTeamVisibility.
++ * Team Lead sets team_settings.leadVisibility.
++ * Effective is the minimum of the two (lower levels can restrict, never escalate).
++ */
++export async function getTeamEffectiveVisibility(tenantId: string, teamId: string): Promise<'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE'> {
++  const tenant = await db.queryOne<{ maxTeamVisibility?: string }>(`
++    SELECT "maxTeamVisibility" FROM tenants WHERE id = $1
++  `, [tenantId]);
++
++  const teamSettings = await getTeamSettings(teamId, tenantId);
++
++  const rank = (val: string | undefined): number => {
++    switch (val) {
++      case 'TEAM_COLLABORATE': return 3;
++      case 'TEAM_READ': return 2;
++      case 'OWN':
++      default: return 1;
++    }
++  };
++
++  const toVisibility = (r: number): 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE' => {
++    if (r >= 3) return 'TEAM_COLLABORATE';
++    if (r === 2) return 'TEAM_READ';
++    return 'OWN';
++  };
++
++  const companyRank = rank(tenant?.maxTeamVisibility || 'TEAM_COLLABORATE');
++  const teamRank = rank(teamSettings.leadVisibility);
++
++  // Lower levels may restrict, never escalate
++  const effectiveRank = Math.min(companyRank, teamRank);
++  return toVisibility(effectiveRank);
++}
++
++/**
++ * Resolves whether an actor has permission to perform an action ('read' | 'edit' | 'delete') on a lead.
++ * Follows strict SaaS structure:
++ * - platform_admin / master_admin: allowed
++ * - admin: allowed tenant-wide (lead must belong to caller's tenant)
++ * - team_lead:
++ *     - 'delete': denied (deletion is strictly restricted to company owners and platform admins)
++ *     - 'read' / 'edit': targetLead.assignedTo must be the Team Lead OR a member of a team they lead.
++ *       Unassigned leads fail closed (unless explicit dialer pool workflow).
++ * - user / member:
++ *     - 'delete': denied
++ *     - 'read': targetLead.assignedTo === actor.id OR targetLead.assignedTo in readablePeerUserIds
++ *     - 'edit': targetLead.assignedTo === actor.id OR targetLead.assignedTo in editablePeerUserIds
++ *     - Unassigned leads fail closed.
++ */
++export async function canAccessLead(
++  actor: any,
++  leadOrId: string | { id?: string; assignedTo?: string | null; tenantId?: string },
++  action: 'read' | 'edit' | 'delete',
++  tenantId: string
++): Promise<boolean> {
++  if (!actor || !tenantId) return false;
++  const isPlatform = actor.role === 'platform_admin' || actor.role === 'master_admin';
++  if (!isPlatform && actor.tenantId !== tenantId) return false;
++
++  let lead: { id?: string; assignedTo?: string | null; tenantId?: string } | null | undefined = null;
++  if (typeof leadOrId === 'string') {
++    lead = await db.queryOne<{ id: string; assignedTo: string | null; tenantId: string }>(
++      `SELECT id, "assignedTo", "tenantId" FROM leads WHERE id = $1 AND "tenantId" = $2`,
++      [leadOrId, tenantId]
++    );
++  } else {
++    lead = leadOrId;
++  }
++
++  if (!lead) return false;
++  if (lead.tenantId && lead.tenantId !== tenantId) return false;
++
++  if (isPlatform) return true;
++  if (actor.role === 'admin') return true;
++
++  // Deletion is strictly restricted to company owners and platform admins
++  if (action === 'delete') return false;
++
++  if (actor.role === 'team_lead') {
++    // Unassigned leads fail closed
++    if (!lead.assignedTo) return false;
++    if (lead.assignedTo === actor.id) return true;
++    const scopedUserIds = await getTeamLeadScopedUserIds(actor.id, tenantId);
++    return scopedUserIds.includes(lead.assignedTo);
++  }
++
++  // Standard member / user / agent
++  if (!lead.assignedTo) return false;
++  if (lead.assignedTo === actor.id) return true;
++
++  const { readablePeerUserIds, editablePeerUserIds } = await getUserTeamPeerVisibilitySets(actor.id, tenantId);
++  if (action === 'read') {
++    return readablePeerUserIds.includes(lead.assignedTo);
++  }
++  if (action === 'edit') {
++    return editablePeerUserIds.includes(lead.assignedTo);
++  }
++
++  return false;
++}
++
++export async function canReadLead(actor: any, leadOrId: string | any, tenantId: string): Promise<boolean> {
++  return canAccessLead(actor, leadOrId, 'read', tenantId);
++}
++
++export async function canEditLead(actor: any, leadOrId: string | any, tenantId: string): Promise<boolean> {
++  return canAccessLead(actor, leadOrId, 'edit', tenantId);
++}
++
++export async function canDeleteLead(actor: any, leadOrId: string | any, tenantId: string): Promise<boolean> {
++  return canAccessLead(actor, leadOrId, 'delete', tenantId);
++}
++
++/**
++ * Builds a SQL WHERE clause fragment and params to scope lead queries by actor:
++ * - admin / platform: no extra filter (all tenant leads)
++ * - team_lead: AND {alias}."assignedTo" IN ($1, $2...) (all members of led teams + self)
++ * - user / member: AND {alias}."assignedTo" IN ($1, $2...) (self + readable peers)
++ * Unassigned leads are excluded for non-admins (fail closed).
++ */
++export async function getScopedLeadFilterSql(
++  actor: any,
++  tenantId: string,
++  tableAlias: string = 'l',
++  startParamIndex: number = 1
++): Promise<{ sql: string; params: any[] }> {
++  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
++  if (isPlatform || actor?.role === 'admin') {
++    return { sql: '', params: [] };
++  }
++
++  const prefix = tableAlias ? `"${tableAlias}".` : '';
++
++  if (actor?.role === 'team_lead') {
++    const scopedUserIds = await getTeamLeadScopedUserIds(actor.id, tenantId);
++    if (scopedUserIds.length === 0) {
++      return { sql: ` AND 1=0`, params: [] };
++    }
++    const phs = scopedUserIds.map((_, i) => `$${startParamIndex + i}`).join(', ');
++    return {
++      sql: ` AND ${prefix}"assignedTo" IN (${phs})`,
++      params: scopedUserIds
++    };
++  }
++
++  // Standard member
++  const { readablePeerUserIds } = await getUserTeamPeerVisibilitySets(actor.id, tenantId);
++  const visibleUserIds = [actor.id, ...readablePeerUserIds];
++  const phs = visibleUserIds.map((_, i) => `$${startParamIndex + i}`).join(', ');
++  return {
++    sql: ` AND ${prefix}"assignedTo" IN (${phs})`,
++    params: visibleUserIds
++  };
++}
++
++/**
++ * Scopes call log visibility per actor role:
++ * - Platform Admin / Company Owner: all tenant call logs.
++ * - Team Lead: logs for leads assigned to self or members of teams they lead.
++ * - Standard Member: logs for leads assigned to self or readable peers.
++ */
++export async function getScopedLogs(actor: any, tenantId: string): Promise<CallLog[]> {
++  if (!tenantId) return [];
++  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
++  const isCompanyAdmin = actor?.role === 'admin';
++
++  if (isPlatform || isCompanyAdmin) {
++    return getLogs(tenantId);
++  }
++
++  let allowedUserIds: string[] = [];
++  if (actor?.role === 'team_lead') {
++    const scopedUserIds = await getTeamLeadScopedUserIds(actor.id, tenantId);
++    allowedUserIds = scopedUserIds;
++  } else {
++    // Standard member / user
++    const { readablePeerUserIds } = await getUserTeamPeerVisibilitySets(actor.id, tenantId);
++    allowedUserIds = [actor.id, ...readablePeerUserIds];
++  }
++
++  if (allowedUserIds.length === 0) {
++    return [];
++  }
++
++  const placeholders = allowedUserIds.map((_, i) => `$${i + 2}`).join(', ');
++  return db.queryAll<CallLog>(`
++    SELECT cl.*
++    FROM call_logs cl
++    JOIN leads l ON l.id = cl."leadId" AND l."tenantId" = cl."tenantId"
++    WHERE cl."tenantId" = $1 AND l."assignedTo" IN (${placeholders})
++    ORDER BY cl.timestamp DESC
++  `, [tenantId, ...allowedUserIds]);
++}
++
++
++
+ // ΓöÇΓöÇΓöÇ Super Admin Cross-Tenant Management APIs ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+ 
+ export interface SuperAdminTenantSummary {
+@@ -1356,10 +1761,12 @@ export interface SuperAdminTenantSummary {
+   name: string;
+   slug: string;
+   status: string;
+-  ownerEmail?: string;
++  ownerEmail: string;
+   leadPoolMode: 'shared' | 'assigned';
+   maxAgents: number;
+   tier: string;
++  customerType: 'COMPANY' | 'PERSONAL';
++  maxTeamVisibility: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE';
+   createdAt: string;
+   totalUsers: number;
+   totalLeads: number;
+@@ -1377,6 +1784,8 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
+       COALESCE(t."leadPoolMode", 'shared') as "leadPoolMode",
+       COALESCE(t."maxAgents", 10) as "maxAgents",
+       COALESCE(t.tier, 'standard') as tier,
++      COALESCE(t."customerType", 'COMPANY') as "customerType",
++      COALESCE(t."maxTeamVisibility", 'TEAM_COLLABORATE') as "maxTeamVisibility",
+       t."createdAt",
+       (SELECT COUNT(*) FROM users u WHERE u."tenantId" = t.id) as "totalUsers",
+       (SELECT COUNT(*) FROM leads l WHERE l."tenantId" = t.id) as "totalLeads",
+@@ -1394,6 +1803,8 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
+     leadPoolMode: (t.leadPoolMode === 'assigned' ? 'assigned' : 'shared'),
+     maxAgents: Number(t.maxAgents) || 10,
+     tier: t.tier || 'standard',
++    customerType: (t.customerType === 'PERSONAL' ? 'PERSONAL' : 'COMPANY'),
++    maxTeamVisibility: (t.maxTeamVisibility || 'TEAM_COLLABORATE'),
+     createdAt: t.createdAt,
+     totalUsers: Number(t.totalUsers) || 0,
+     totalLeads: Number(t.totalLeads) || 0,

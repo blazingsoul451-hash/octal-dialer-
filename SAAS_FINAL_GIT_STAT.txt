@@ -1,0 +1,22 @@
+ .gitignore                                         |   1 +
+ IMPORTANT_SECRETS/VERCEL_RECOVERY_CODES.txt        |  17 -
+ SAAS_STRUCTURE_V2_CORRECTION_REPORT.md             |  96 +++
+ SAAS_STRUCTURE_V2_FINAL_REVIEW_REPORT.md           | 106 ++++
+ SAAS_STRUCTURE_V2_IMPLEMENTATION_REPORT.md         | 144 +++++
+ SAAS_V2_BRANCH_DIFF_MANIFEST.md                    |  47 ++
+ .../IMPORTANT_SECRETS/PROJECT_SECRETS_BACKUP.md    |  70 --
+ website_octal_dialer/backend/package-lock.json     | 179 ++++++
+ website_octal_dialer/backend/package.json          |   1 +
+ website_octal_dialer/backend/src/authManager.ts    | 107 +++-
+ .../backend/src/databaseManager.ts                 | 413 +++++++++++-
+ .../src/db/migrations/012_saas_structure_v2.sql    |  27 +
+ .../013_saas_structure_v2_corrections.sql          |  83 +++
+ website_octal_dialer/backend/src/db/schema.sql     |  56 +-
+ website_octal_dialer/backend/src/server.ts         | 639 ++++++++++++++++---
+ .../backend/tests/test_migration_013_real_pg.cjs   | 213 +++++++
+ .../backend/tests/test_saas_structure_v2.cjs       | 701 +++++++++++++++++++++
+ website_octal_dialer/frontend/src/App.tsx          | 267 ++++++--
+ .../frontend/src/components/SuperAdminPortal.tsx   | 271 ++++----
+ .../frontend/src/components/TeamLeadDashboard.tsx  | 386 ++++++++++++
+ .../src/components/admin/sections/AdminUsers.tsx   | 127 ++--
+ 21 files changed, 3540 insertions(+), 411 deletions(-)
