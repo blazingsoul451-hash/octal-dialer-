@@ -29,6 +29,7 @@ import { CRMWorkspacePage } from './components/crm/CRMWorkspacePage';
 import { GoogleProfileSetupModal } from './components/GoogleProfileSetupModal';
 import { TeamLeadDashboard } from './components/TeamLeadDashboard';
 import { SuperAdminPortal } from './components/SuperAdminPortal';
+import { CompanySettings } from './components/settings/CompanySettings';
 import type { Campaign } from './types';
 
 const getBackendUrl = () => {
@@ -898,24 +899,23 @@ export default function App() {
                 </button>
               )}
 
-              {/* Administration — Available to Platform Admin & Tenant Admin for COMPANY accounts */}
-              {(userRole === 'platform_admin' || userRole === 'admin') && customerType !== 'PERSONAL' && (
-                <button
-                  onClick={() => setActiveTab('admin')}
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
-                    activeTab === 'admin'
-                      ? isLight
-                        ? 'bg-purple-500/15 text-purple-950 font-bold border-l-3 border-purple-500 shadow-sm'
-                        : 'bg-purple-500/15 text-purple-400 font-bold border-l-3 border-purple-500 shadow-sm'
-                      : isLight
-                        ? 'text-slate-800 hover:text-purple-600 hover:bg-purple-500/5 hover:translate-x-0.5 shadow-sm'
-                        : 'text-slate-200 hover:text-purple-400 hover:bg-purple-500/10 hover:translate-x-0.5 shadow-sm'
-                  }`}
-                >
-                  <Shield className={`w-4 h-4 shrink-0 ${activeTab === 'admin' ? (isLight ? 'text-purple-700' : 'text-purple-400') : 'text-slate-400'}`} />
-                  {isNavExpanded && <span className="truncate">{userRole === 'platform_admin' ? 'Platform Admin' : 'Administration'}</span>}
-                </button>
-              )}
+              {/* Settings — Central Control Center for Company Owner, Team Lead, Member, and Personal Mode */}
+              <button
+                onClick={() => setActiveTab('admin')}
+                title="Settings"
+                className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  activeTab === 'admin'
+                    ? isLight
+                      ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
+                      : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500 shadow-sm'
+                    : isLight
+                      ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                      : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+                }`}
+              >
+                <Settings className={`w-4 h-4 shrink-0 ${activeTab === 'admin' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
+                {isNavExpanded && <span className="truncate">Settings</span>}
+              </button>
 
               {/* Billing & Subscription — STRICTLY MASTER ADMIN ONLY */}
               {userRole === 'platform_admin' && (
@@ -1513,24 +1513,20 @@ export default function App() {
           )}
 
           {activeTab === 'admin' && (
-            (userRole === 'admin' || userRole === 'platform_admin') ? (
-              <AdminPanel
-                isLight={isLight}
-                serverUrl={lanServerUrl}
-                authToken={effectiveAuthToken || ''}
-                currentUser={authUser || ''}
-                currentUserRole={userRole}
-              />
-            ) : (
-              <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
-                <Shield className="w-8 h-8 text-amber-500 mx-auto" />
-                <h3 className="text-base font-bold font-display">Administrator Access Required</h3>
-                <p className="text-xs font-mono text-slate-500 max-w-md mx-auto">
-                  You are currently logged in as an Employee. The Enterprise Control Center is restricted to Tenant Administrators and Master Admin authorities.
-                </p>
-              </div>
-            )
+            <CompanySettings
+              isLight={isLight}
+              serverUrl={lanServerUrl}
+              authToken={effectiveAuthToken || ''}
+              currentUser={authUser || ''}
+              currentUserRole={userRole}
+              customerType={customerType}
+              userPermissions={userPermissions}
+              onNavigateTab={(tab) => setActiveTab(tab as any)}
+            />
           )}
+
+          {/* Diagnostic Administration Module (Retained for platform diagnostics & compatibility) */}
+          {false && <AdminPanel serverUrl={lanServerUrl} authToken={effectiveAuthToken || ''} currentUser={authUser || ''} />}
 
           {activeTab === 'billing' && (
             userRole === 'platform_admin' ? (
