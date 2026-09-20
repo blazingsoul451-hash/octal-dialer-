@@ -1012,7 +1012,7 @@ export async function updateUserRole(executorUser: AuthUser, targetUserId: strin
     throw new Error('Forbidden: The Super Admin account cannot be demoted.');
   }
 
-  const allowedRoles = ['user', 'agent', 'admin'];
+  const allowedRoles = ['user', 'agent', 'admin', 'team_lead'];
   if (target.role === 'platform_admin') allowedRoles.push('platform_admin');
   if (!allowedRoles.includes(newRole)) {
     throw new Error(`Invalid role. Allowed roles: ${allowedRoles.join(', ')}`);
@@ -1077,6 +1077,46 @@ export async function requireTenantAdmin(req: express.Request, res: express.Resp
 
 export const requireAdmin = requireTenantAdmin;
 
+/** Middleware: require Team Lead or Admin role */
+export async function requireTeamLeadOrAdmin(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  const user = await validateToken(token);
+
+  if (!user) {
+    res.status(401).json({ error: 'Unauthorized. Please log in.' });
+    return;
+  }
+
+  if (user.role !== 'team_lead' && user.role !== 'admin' && user.role !== 'platform_admin' && user.role !== 'master_admin') {
+    res.status(403).json({ error: 'Forbidden. Team Lead or Admin access required.' });
+    return;
+  }
+
+  (req as any).user = user;
+  next();
+}
+
+/**
+ * Authorization scope classification:
+ * - platform_admin -> PLATFORM
+ * - admin -> TENANT
+ * - team_lead -> TEAM
+ * - user / agent -> OWN
+ */
+export function resolveAccessScope(user: AuthUser): 'PLATFORM' | 'TENANT' | 'TEAM' | 'OWN' {
+  if (user.role === 'platform_admin' || user.role === 'master_admin') {
+    return 'PLATFORM';
+  }
+  if (user.role === 'admin') {
+    return 'TENANT';
+  }
+  if (user.role === 'team_lead') {
+    return 'TEAM';
+  }
+  return 'OWN';
+}
+
 /**
  * Resolves the authoritative effective permissions for a user.
  *
@@ -1139,6 +1179,23 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
   if (user.role === 'admin') {
     // Primary unassigned tenant admin retains full rights to avoid lockout
     permissions.add('*');
+    return permissions;
+  }
+
+  if (user.role === 'team_lead') {
+    // Standard unassigned Team Lead: calling, CRM, leads, and team scope permissions
+    permissions.add('calls:view_queue');
+    permissions.add('calls:dial_outbound');
+    permissions.add('calls:manual_keypad');
+    permissions.add('calls:log_disposition');
+    permissions.add('leads:view');
+    permissions.add('leads:import');
+    permissions.add('leads:edit');
+    permissions.add('crm:view');
+    permissions.add('crm:edit');
+    permissions.add('campaigns:view');
+    permissions.add('teams:view_own');
+    permissions.add('teams:manage_own');
     return permissions;
   }
 

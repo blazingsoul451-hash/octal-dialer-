@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS "tenants" (
   "ownerEmail" TEXT,
   "leadPoolMode" TEXT NOT NULL DEFAULT 'shared',
   "maxAgents" INTEGER NOT NULL DEFAULT 10,
-  "tier" TEXT NOT NULL DEFAULT 'standard'
+  "tier" TEXT NOT NULL DEFAULT 'standard',
+  "customerType" TEXT NOT NULL DEFAULT 'COMPANY',
+  "maxTeamVisibility" TEXT NOT NULL DEFAULT 'TEAM_COLLABORATE'
 );
 
 -- Table: plans
@@ -589,3 +591,52 @@ CREATE TABLE IF NOT EXISTS "call_dispatch_journal" (
 CREATE INDEX IF NOT EXISTS "idx_call_journal_tenant_call" ON "call_dispatch_journal"("tenantId", "callId");
 CREATE INDEX IF NOT EXISTS "idx_call_journal_tenant_cmd" ON "call_dispatch_journal"("tenantId", "commandId");
 CREATE INDEX IF NOT EXISTS "idx_call_journal_replay_exp" ON "call_dispatch_journal"("replayExpiresAt");
+
+-- Table: teams
+CREATE TABLE IF NOT EXISTS "teams" (
+  "id" TEXT PRIMARY KEY,
+  "name" TEXT NOT NULL,
+  "description" TEXT DEFAULT '',
+  "leaderId" TEXT,
+  "tenantId" TEXT NOT NULL,
+  "status" TEXT NOT NULL DEFAULT 'active',
+  "createdAt" TEXT NOT NULL,
+  "updatedAt" TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "idx_teams_tenant" ON "teams"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_teams_leader" ON "teams"("leaderId");
+
+-- Table: team_members
+CREATE TABLE IF NOT EXISTS "team_members" (
+  "id" TEXT PRIMARY KEY,
+  "teamId" TEXT NOT NULL,
+  "userId" TEXT NOT NULL,
+  "tenantId" TEXT NOT NULL,
+  "roleInTeam" TEXT NOT NULL DEFAULT 'member',
+  "joinedAt" TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "idx_team_members_tenant_user" ON "team_members"("tenantId", "userId");
+CREATE INDEX IF NOT EXISTS "idx_team_members_tenant_team" ON "team_members"("tenantId", "teamId");
+
+-- Table: campaign_teams
+CREATE TABLE IF NOT EXISTS "campaign_teams" (
+  "id" TEXT PRIMARY KEY,
+  "campaignId" TEXT NOT NULL,
+  "teamId" TEXT NOT NULL,
+  "tenantId" TEXT NOT NULL,
+  "assignedAt" TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "idx_campaign_teams_tenant_team" ON "campaign_teams"("tenantId", "teamId");
+CREATE INDEX IF NOT EXISTS "idx_campaign_teams_tenant_camp" ON "campaign_teams"("tenantId", "campaignId");
+
+-- Table: team_settings
+CREATE TABLE IF NOT EXISTS "team_settings" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "teamId" TEXT NOT NULL UNIQUE,
+  "leadVisibility" TEXT NOT NULL DEFAULT 'OWN',
+  "createdAt" TEXT NOT NULL DEFAULT '',
+  "updatedAt" TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS "idx_team_settings_tenant_team" ON "team_settings"("tenantId", "teamId");
+

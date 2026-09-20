@@ -3,7 +3,8 @@ import {
   PhoneCall, Database, Upload, History,
   Bluetooth, PlaySquare, Sun, Moon, LogOut, ShieldAlert, LayoutDashboard, Menu, Mail,
   Play, Layers, Settings, Users, FileText,
-  Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp
+  Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp,
+  Target, Building2
 } from 'lucide-react';
 import { useSocket } from './hooks/useSocket';
 import { DashboardOverview } from './components/DashboardOverview';
@@ -26,6 +27,8 @@ import { BillingPage } from './components/BillingPage';
 import { CampaignWorkspacePage } from './components/crm/CampaignWorkspacePage';
 import { CRMWorkspacePage } from './components/crm/CRMWorkspacePage';
 import { GoogleProfileSetupModal } from './components/GoogleProfileSetupModal';
+import { TeamLeadDashboard } from './components/TeamLeadDashboard';
+import { SuperAdminPortal } from './components/SuperAdminPortal';
 import type { Campaign } from './types';
 
 const getBackendUrl = () => {
@@ -46,7 +49,7 @@ const getBackendUrl = () => {
 const SERVER_URL = getBackendUrl();
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs' | 'team-lead' | 'super-admin'>('dashboard');
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
   const [lanServerUrl, setLanServerUrl] = useState<string>(SERVER_URL);
@@ -66,8 +69,9 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [showProfileSetupModal, setShowProfileSetupModal] = useState<boolean>(false);
 
-  // ─── Permission state ───────────────────────────────────────────────────────
-  const [userRole, setUserRole] = useState<'platform_admin' | 'admin' | 'agent'>('agent');
+  // ─── Permission & SaaS Scope state ──────────────────────────────────────────
+  const [userRole, setUserRole] = useState<'platform_admin' | 'admin' | 'team_lead' | 'agent'>('agent');
+  const [customerType, setCustomerType] = useState<'COMPANY' | 'PERSONAL'>('COMPANY');
   const [userPermissions, setUserPermissions] = useState<Record<string, boolean>>({
     crm: false,
     campaigns: false,
@@ -218,6 +222,7 @@ export default function App() {
     setAuthToken(null);
     setAuthUser(null);
     setUserRole('agent');
+    setCustomerType('COMPANY');
     setUserPermissions({} as any);
     setCampaigns([]);
     setDispOpen(false);
@@ -307,6 +312,9 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           setUserRole(data.user.role);
+          if (data.tenant) {
+            if (data.tenant.customerType) setCustomerType(data.tenant.customerType);
+          }
           if (data.needsProfileSetup || data.user?.needsProfileSetup) {
             setShowProfileSetupModal(true);
           }
@@ -827,6 +835,46 @@ export default function App() {
                 >
                   <CreditCard className={`w-4 h-4 shrink-0 ${activeTab === 'billing' ? (isLight ? 'text-emerald-700' : 'text-emerald-400') : 'text-slate-400'}`} />
                   {isNavExpanded && <span className="truncate">Billing & Plans</span>}
+                </button>
+              )}
+
+              {/* Team Workspace — Gated by Team Lead / Admin / Platform Admin in Company workspace */}
+              {(userRole === 'platform_admin' || userRole === 'admin' || userRole === 'team_lead') && customerType !== 'PERSONAL' && (
+                <button
+                  onClick={() => setActiveTab('team-lead')}
+                  title="Team Workspace"
+                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                    activeTab === 'team-lead'
+                      ? isLight
+                        ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
+                        : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500 shadow-sm'
+                      : isLight
+                        ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                        : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+                  }`}
+                >
+                  <Target className={`w-4 h-4 shrink-0 ${activeTab === 'team-lead' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
+                  {isNavExpanded && <span className="truncate">Team Workspace</span>}
+                </button>
+              )}
+
+              {/* Platform Console — STRICTLY PLATFORM ADMIN ONLY */}
+              {userRole === 'platform_admin' && (
+                <button
+                  onClick={() => setActiveTab('super-admin')}
+                  title="Platform Console"
+                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                    activeTab === 'super-admin'
+                      ? isLight
+                        ? 'bg-indigo-500/15 text-indigo-950 font-bold border-l-3 border-indigo-500 shadow-sm'
+                        : 'bg-indigo-500/15 text-indigo-400 font-bold border-l-3 border-indigo-500 shadow-sm'
+                      : isLight
+                        ? 'text-slate-800 hover:text-indigo-600 hover:bg-indigo-500/5 hover:translate-x-0.5 shadow-sm'
+                        : 'text-slate-200 hover:text-indigo-400 hover:bg-indigo-500/10 hover:translate-x-0.5 shadow-sm'
+                  }`}
+                >
+                  <Building2 className={`w-4 h-4 shrink-0 ${activeTab === 'super-admin' ? (isLight ? 'text-indigo-700' : 'text-indigo-400') : 'text-slate-400'}`} />
+                  {isNavExpanded && <span className="truncate">Platform Console</span>}
                 </button>
               )}
 
@@ -1400,6 +1448,43 @@ export default function App() {
                 <h3 className="text-base font-bold font-display">Internal Plans & Platform Billing Restricted</h3>
                 <p className="text-xs font-mono text-slate-500 max-w-md mx-auto">
                   Internal plan configuration and subscription control are strictly restricted to Master Admin authorities.
+                </p>
+              </div>
+            )
+          )}
+
+          {activeTab === 'team-lead' && (
+            (userRole === 'team_lead' || userRole === 'admin' || userRole === 'platform_admin') ? (
+              <TeamLeadDashboard
+                serverUrl={lanServerUrl}
+                authToken={authToken}
+                onSelectCampaign={(_cId) => setActiveTab('campaigns')}
+              />
+            ) : (
+              <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
+                <Users className="w-8 h-8 text-amber-500 mx-auto" />
+                <h3 className="text-base font-bold font-display">Team Workspace Access Restricted</h3>
+                <p className="text-xs font-mono text-slate-500 max-w-md mx-auto">
+                  Team workspace and supervisor controls are reserved for Team Leads, Company Administrators, and Platform Owners.
+                </p>
+              </div>
+            )
+          )}
+
+          {activeTab === 'super-admin' && (
+            userRole === 'platform_admin' ? (
+              <SuperAdminPortal
+                serverUrl={lanServerUrl}
+                authToken={authToken || ''}
+                currentUser={authUser}
+                onLogout={handleLogout}
+              />
+            ) : (
+              <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
+                <Shield className="w-8 h-8 text-purple-500 mx-auto" />
+                <h3 className="text-base font-bold font-display">Platform Console Access Restricted</h3>
+                <p className="text-xs font-mono text-slate-500 max-w-md mx-auto">
+                  The Global Platform Console is strictly restricted to Platform Administrators.
                 </p>
               </div>
             )

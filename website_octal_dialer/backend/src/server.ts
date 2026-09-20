@@ -70,6 +70,15 @@ import {
   setTeamCampaigns,
   getUserTeamIds,
   getUserScopedCampaignIds,
+  getTeamsLedByUser,
+  getTeamMemberUserIds,
+  isTeamLeader,
+  canAccessTeam,
+  canAccessUser,
+  getTeamLeadScopedUserIds,
+  getTeamSettings,
+  upsertTeamSettings,
+  getTeamEffectiveVisibility,
   getAllTenantsSummary,
   updateTenantLeadPoolMode,
   updateTenantStatus,
@@ -118,6 +127,8 @@ import {
   updateUserRole,
   requirePlatformAdmin,
   requireTenantAdmin,
+  requireTeamLeadOrAdmin,
+  resolveAccessScope,
   requireModule,
   getEffectivePermissions,
   requirePermission,
@@ -836,8 +847,13 @@ app.post('/auth/change-password', requireAuth, async (req, res) => {
 });
 
 // GET /auth/me — validate token and return current user
-app.get('/auth/me', requireAuth, (req, res) => {
-  res.json({ user: (req as any).user });
+app.get('/auth/me', requireAuth, async (req, res) => {
+  const user = (req as any).user;
+  let tenant: any = null;
+  if (user?.tenantId) {
+    tenant = await getTenantById(user.tenantId);
+  }
+  res.json({ user, tenant });
 });
 
 // ─── User Profile & Account Management REST Endpoints ─────────────────────────
@@ -1378,13 +1394,77 @@ app.get(['/leads', '/api/leads'], requireAuth, requirePermission(['leads:view', 
     const status = (req.query.status as string || '').trim();
 
     let query = `
-      SELECT l.id, l.name, l.phone, l.status, l.outcome, l.duration, l."createdAt", l."campaignId",
+      SELECT l.id, l.name, l.phone, l.status, l.outcome, l.duration, l."createdAt", l."campaignId", l."assignedTo",
              c.name as "campaignName"
       FROM leads l
       LEFT JOIN campaigns c ON l."campaignId" = c.id
       WHERE l."tenantId" = $1 AND l.status != 'ARCHIVED'
     `;
     const params: any[] = [tenantId];
+
+    // Access Scoping (Platform -> Platform, Admin -> Tenant, Team Lead -> Team, User -> OWN / Team Policy)
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const isCompanyAdmin = caller.role === 'admin';
+    const isTeamLead = caller.role === 'team_lead';
+
+    let scopeSql = '';
+    const scopeParams: any[] = [];
+    if (!isPlatform && !isCompanyAdmin) {
+      if (isTeamLead) {
+        const teamUserIds = await getTeamLeadScopedUserIds(caller.id, tenantId);
+        const scopedCampIds = await getUserScopedCampaignIds(caller.id, tenantId);
+        const orClauses: string[] = [];
+        if (teamUserIds.length > 0) {
+          const phs = teamUserIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+          orClauses.push(`l."assignedTo" IN (${phs})`);
+          params.push(...teamUserIds);
+          scopeParams.push(...teamUserIds);
+        }
+        if (scopedCampIds.length > 0) {
+          const phs = scopedCampIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+          orClauses.push(`l."campaignId" IN (${phs})`);
+          params.push(...scopedCampIds);
+          scopeParams.push(...scopedCampIds);
+        }
+        if (orClauses.length > 0) {
+          scopeSql = ` AND (${orClauses.join(' OR ')})`;
+        } else {
+          scopeSql = ` AND l."assignedTo" = $${params.length + 1}`;
+          params.push(caller.id);
+          scopeParams.push(caller.id);
+        }
+      } else {
+        // Standard Member / Agent: Check effective team visibility policy
+        const userTeams = await getUserTeamIds(caller.id, tenantId);
+        let maxVis: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE' = 'OWN';
+        for (const tid of userTeams) {
+          const vis = await getTeamEffectiveVisibility(tenantId, tid);
+          if (vis === 'TEAM_COLLABORATE') maxVis = 'TEAM_COLLABORATE';
+          else if (vis === 'TEAM_READ' && maxVis !== 'TEAM_COLLABORATE') maxVis = 'TEAM_READ';
+        }
+
+        if (maxVis === 'TEAM_READ' || maxVis === 'TEAM_COLLABORATE') {
+          const sameTeamUserIds = new Set<string>([caller.id]);
+          for (const tid of userTeams) {
+            const memberIds = await getTeamMemberUserIds(tid, tenantId);
+            for (const mid of memberIds) sameTeamUserIds.add(mid);
+          }
+          const userList = Array.from(sameTeamUserIds);
+          const phs = userList.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+          scopeSql = ` AND (l."assignedTo" IN (${phs}) OR l."assignedTo" IS NULL)`;
+          params.push(...userList);
+          scopeParams.push(...userList);
+        } else {
+          // Default OWN visibility
+          scopeSql = ` AND (l."assignedTo" = $${params.length + 1} OR l."assignedTo" IS NULL)`;
+          params.push(caller.id);
+          scopeParams.push(caller.id);
+        }
+      }
+    }
+
+    query += scopeSql;
 
     if (source) {
       query += ` AND (c.name LIKE $${params.length + 1} OR l."campaignId" = $${params.length + 2})`;
@@ -1408,6 +1488,14 @@ app.get(['/leads', '/api/leads'], requireAuth, requirePermission(['leads:view', 
       WHERE l."tenantId" = $1 AND l.status != 'ARCHIVED'
     `;
     const countParams: any[] = [tenantId];
+    if (scopeSql) {
+      // Re-index scopeSql placeholders for countParams
+      let countScopeSql = scopeSql;
+      // Since countParams starts with [tenantId], scopeParams are indices $2 ... $1+scopeParams.length
+      // scopeSql was constructed with params.length which was 1, so the placeholders $2, $3... match countParams!
+      countQuery += countScopeSql;
+      countParams.push(...scopeParams);
+    }
     if (source) {
       countQuery += ` AND (c.name LIKE $${countParams.length + 1} OR l."campaignId" = $${countParams.length + 2})`;
       countParams.push(`%${source}%`, source);
@@ -1448,26 +1536,108 @@ app.get(['/leads', '/api/leads'], requireAuth, requirePermission(['leads:view', 
   }
 });
 
-// REST: Update lead status (protected)
+// REST: Update lead status or assignment (protected)
 app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, requirePermission(['leads:edit', 'crm:edit']), async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId;
+    const caller = (req as any).user;
+    const tenantId = caller?.tenantId;
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
     }
-    const { status } = req.body;
-    if (!status) {
-      res.status(400).json({ error: 'Status is required' });
+    const { status, assignedTo } = req.body;
+    if (!status && assignedTo === undefined) {
+      res.status(400).json({ error: 'Status or assignedTo is required' });
       return;
     }
-    const info = await db.execute(`UPDATE leads SET status = $1 WHERE id = $2 AND "tenantId" = $3`, [status, req.params.id, tenantId]);
-    if (info.rowCount === 0) {
+
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const isCompanyAdmin = caller.role === 'admin';
+    const isTeamLead = caller.role === 'team_lead';
+
+    // Verify access to update this specific lead
+    const targetLead = await db.queryOne<{ id: string; assignedTo?: string; campaignId?: string }>(
+      `SELECT id, "assignedTo", "campaignId" FROM leads WHERE id = $1 AND "tenantId" = $2`,
+      [req.params.id, tenantId]
+    );
+    if (!targetLead) {
       res.status(404).json({ error: 'Lead not found in your organization.' });
       return;
     }
+
+    // Reassignment guard: Only Platform Owner, Company Owner, or Team Lead can reassign leads
+    if (assignedTo !== undefined && assignedTo !== null) {
+      if (!isPlatform && !isCompanyAdmin && !isTeamLead) {
+        res.status(403).json({ error: 'Forbidden: TEAM_READ policy does not permit lead reassignment. Only Team Lead or Company Admin can reassign.' });
+        return;
+      }
+      if (isTeamLead) {
+        // Team Lead can only reassign to members within their own led teams
+        const teamUserIds = await getTeamLeadScopedUserIds(caller.id, tenantId);
+        if (!teamUserIds.includes(assignedTo)) {
+          res.status(403).json({ error: 'Forbidden: Team Lead cannot reassign leads to users outside their led teams.' });
+          return;
+        }
+      }
+    }
+
+    // Edit permission guard for standard agents
+    if (!isPlatform && !isCompanyAdmin) {
+      if (isTeamLead) {
+        const teamUserIds = await getTeamLeadScopedUserIds(caller.id, tenantId);
+        const scopedCampIds = await getUserScopedCampaignIds(caller.id, tenantId);
+        const isAssignedToTeamMember = targetLead.assignedTo && teamUserIds.includes(targetLead.assignedTo);
+        const isCampaignInTeam = targetLead.campaignId && scopedCampIds.includes(targetLead.campaignId);
+        if (!isAssignedToTeamMember && !isCampaignInTeam && targetLead.assignedTo !== caller.id) {
+          res.status(403).json({ error: 'Forbidden: Cannot edit leads outside your team scope.' });
+          return;
+        }
+      } else {
+        // Standard Member / Agent: if lead belongs to someone else, check effective team policy
+        if (targetLead.assignedTo && targetLead.assignedTo !== caller.id) {
+          const userTeams = await getUserTeamIds(caller.id, tenantId);
+          let maxVis: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE' = 'OWN';
+          for (const tid of userTeams) {
+            const vis = await getTeamEffectiveVisibility(tenantId, tid);
+            if (vis === 'TEAM_COLLABORATE') maxVis = 'TEAM_COLLABORATE';
+            else if (vis === 'TEAM_READ' && maxVis !== 'TEAM_COLLABORATE') maxVis = 'TEAM_READ';
+          }
+          if (maxVis !== 'TEAM_COLLABORATE') {
+            res.status(403).json({ error: 'Forbidden: TEAM_READ policy grants view-only access. TEAM_COLLABORATE required to edit peers\' records.' });
+            return;
+          }
+          // Verify same team membership
+          const sameTeamUserIds = new Set<string>();
+          for (const tid of userTeams) {
+            const memberIds = await getTeamMemberUserIds(tid, tenantId);
+            for (const mid of memberIds) sameTeamUserIds.add(mid);
+          }
+          if (!sameTeamUserIds.has(targetLead.assignedTo)) {
+            res.status(403).json({ error: 'Forbidden: Cannot edit leads outside your team.' });
+            return;
+          }
+        }
+      }
+    }
+
+    const updates: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
+
+    if (status) {
+      updates.push(`status = $${idx++}`);
+      params.push(status);
+    }
+    if (assignedTo !== undefined) {
+      updates.push(`"assignedTo" = $${idx++}`);
+      params.push(assignedTo);
+    }
+
+    params.push(req.params.id, tenantId);
+    await db.execute(`UPDATE leads SET ${updates.join(', ')} WHERE id = $${idx++} AND "tenantId" = $${idx}`, params);
+
     io.to(`tenant_${tenantId}`).emit('leads:updated');
-    res.json({ success: true });
+    res.json({ success: true, message: 'Lead updated successfully.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2778,6 +2948,180 @@ app.post(['/api/admin/teams/:id/campaigns', '/admin/teams/:id/campaigns'], requi
     await setTeamCampaigns(req.params.id, caller.tenantId, campaignIds);
     const campaigns = await getTeamCampaigns(req.params.id, caller.tenantId);
     res.json({ success: true, campaigns });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── SaaS Structure v2: Team Lead & Team Policy Endpoints ────────────────────
+
+// GET /api/teams/my-teams: Returns teams led by or assigned to current user
+app.get(['/api/teams/my-teams', '/teams/my-teams'], requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const tenantId = caller.tenantId;
+
+    let teams: any[];
+    if (caller.role === 'admin' || isPlatform) {
+      teams = await getTeams(tenantId);
+    } else if (caller.role === 'team_lead') {
+      teams = await getTeamsLedByUser(caller.id, tenantId);
+    } else {
+      const userTeamIds = await getUserTeamIds(caller.id, tenantId);
+      teams = [];
+      for (const tid of userTeamIds) {
+        const t = await getTeamById(tid, tenantId);
+        if (t) teams.push(t);
+      }
+    }
+
+    const enriched = await Promise.all(teams.map(async (t) => {
+      const members = await getTeamMembers(t.id, tenantId);
+      const campaigns = await getTeamCampaigns(t.id, tenantId);
+      const settings = await getTeamSettings(t.id, tenantId);
+      const effectiveVisibility = await getTeamEffectiveVisibility(tenantId, t.id);
+      return {
+        ...t,
+        members,
+        campaigns,
+        settings,
+        effectiveVisibility,
+        memberCount: members.length,
+        campaignCount: campaigns.length
+      };
+    }));
+
+    res.json(enriched);
+  } catch (err: any) {
+    console.error('[TEAMS API] GET my-teams error:', err);
+    res.status(500).json({ error: 'Failed to retrieve user teams: ' + err.message });
+  }
+});
+
+// GET /api/teams/:id/settings: Retrieves team visibility policy
+app.get(['/api/teams/:id/settings', '/teams/:id/settings'], requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const tenantId = caller.tenantId;
+    const teamId = req.params.id;
+
+    const hasAccess = await canAccessTeam(caller, teamId, tenantId);
+    if (!hasAccess) {
+      res.status(403).json({ error: 'Forbidden: Access to team settings denied.' });
+      return;
+    }
+
+    const settings = await getTeamSettings(teamId, tenantId);
+    const effectiveVisibility = await getTeamEffectiveVisibility(tenantId, teamId);
+    const tenant = await getTenantById(tenantId);
+
+    res.json({
+      ...settings,
+      effectiveVisibility,
+      companyMaxVisibility: tenant?.maxTeamVisibility || 'TEAM_COLLABORATE'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/teams/:id/settings: Updates team visibility policy with Company Maximum enforcement
+app.put(['/api/teams/:id/settings', '/teams/:id/settings'], requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const tenantId = caller.tenantId;
+    const teamId = req.params.id;
+    const { leadVisibility } = req.body;
+
+    const validVisibilities = ['OWN', 'TEAM_READ', 'TEAM_COLLABORATE'];
+    if (!leadVisibility || !validVisibilities.includes(leadVisibility)) {
+      res.status(400).json({ error: `Invalid leadVisibility. Must be one of: ${validVisibilities.join(', ')}` });
+      return;
+    }
+
+    // Only Company Owner (admin), Platform Owner, or Team Leader of THIS team can update settings
+    let isAuthorized = false;
+    if (caller.role === 'platform_admin' || caller.role === 'master_admin' || caller.role === 'admin') {
+      isAuthorized = true;
+    } else if (caller.role === 'team_lead') {
+      isAuthorized = await isTeamLeader(caller.id, teamId, tenantId);
+    }
+
+    if (!isAuthorized) {
+      res.status(403).json({ error: 'Forbidden: Only Team Lead or Company Admin can update team settings.' });
+      return;
+    }
+
+    // COMPANY POLICY RULE: Lower levels may restrict access, NEVER escalate access
+    const tenant = await getTenantById(tenantId);
+    const companyMax = tenant?.maxTeamVisibility || 'TEAM_COLLABORATE';
+
+    const rank = (val: string): number => {
+      if (val === 'TEAM_COLLABORATE') return 3;
+      if (val === 'TEAM_READ') return 2;
+      return 1;
+    };
+
+    if (rank(leadVisibility) > rank(companyMax)) {
+      res.status(403).json({
+        error: `Forbidden: Team visibility (${leadVisibility}) cannot exceed Company Maximum Policy (${companyMax}).`
+      });
+      return;
+    }
+
+    const updated = await upsertTeamSettings(teamId, tenantId, leadVisibility);
+    const effectiveVisibility = await getTeamEffectiveVisibility(tenantId, teamId);
+
+    res.json({
+      success: true,
+      settings: updated,
+      effectiveVisibility
+    });
+  } catch (err: any) {
+    console.error('[TEAMS API] PUT team settings error:', err);
+    res.status(500).json({ error: 'Failed to update team settings: ' + err.message });
+  }
+});
+
+// PUT /api/admin/company/policy: Company Owner defines tenant-wide policies (maxTeamVisibility, customerType)
+app.put(['/api/admin/company/policy', '/admin/company/policy'], requireAuth, requireTenantAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const tenantId = caller.tenantId;
+    const { maxTeamVisibility, customerType } = req.body;
+
+    const updates: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
+
+    if (maxTeamVisibility) {
+      const valid = ['OWN', 'TEAM_READ', 'TEAM_COLLABORATE'];
+      if (!valid.includes(maxTeamVisibility)) {
+        res.status(400).json({ error: `Invalid maxTeamVisibility. Allowed: ${valid.join(', ')}` });
+        return;
+      }
+      updates.push(`"maxTeamVisibility" = $${idx++}`);
+      params.push(maxTeamVisibility);
+    }
+
+    if (customerType) {
+      const validTypes = ['COMPANY', 'PERSONAL'];
+      if (!validTypes.includes(customerType)) {
+        res.status(400).json({ error: `Invalid customerType. Allowed: ${validTypes.join(', ')}` });
+        return;
+      }
+      updates.push(`"customerType" = $${idx++}`);
+      params.push(customerType);
+    }
+
+    if (updates.length > 0) {
+      params.push(tenantId);
+      await db.execute(`UPDATE tenants SET ${updates.join(', ')} WHERE id = $${idx}`, params);
+    }
+
+    const updatedTenant = await getTenantById(tenantId);
+    res.json({ success: true, tenant: updatedTenant });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

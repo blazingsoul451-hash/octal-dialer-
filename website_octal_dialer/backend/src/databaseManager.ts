@@ -61,6 +61,8 @@ export interface TenantInfo {
   leadPoolMode: 'shared' | 'assigned';
   maxAgents: number;
   tier: string;
+  customerType?: 'COMPANY' | 'PERSONAL';
+  maxTeamVisibility?: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE';
 }
 
 export interface CallLog {
@@ -1348,6 +1350,187 @@ export async function getUserScopedCampaignIds(userId: string, tenantId: string)
   `, [userId, tenantId]);
   return rows.map(r => r.campaignId);
 }
+
+export async function getTeamsLedByUser(userId: string, tenantId: string): Promise<TeamRecord[]> {
+  const teams = await db.queryAll<TeamRecord>(`
+    SELECT t.id, t.name, t.description, t."leaderId", t."tenantId", t.status, t."createdAt", t."updatedAt",
+           u."displayName" as "leaderName"
+    FROM teams t
+    LEFT JOIN users u ON u.id = t."leaderId"
+    WHERE t."tenantId" = $1 AND (
+      t."leaderId" = $2 OR EXISTS (
+        SELECT 1 FROM team_members tm WHERE tm."teamId" = t.id AND tm."userId" = $2 AND tm."roleInTeam" = 'leader'
+      )
+    )
+    ORDER BY t."createdAt" DESC
+  `, [tenantId, userId]);
+
+  for (const t of teams) {
+    const memCount = await db.queryOne<{ count: number | string }>(
+      `SELECT COUNT(*)::int AS count FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2`,
+      [t.id, tenantId]
+    );
+    const campCount = await db.queryOne<{ count: number | string }>(
+      `SELECT COUNT(*)::int AS count FROM campaign_teams WHERE "teamId" = $1 AND "tenantId" = $2`,
+      [t.id, tenantId]
+    );
+    t.memberCount = Number(memCount?.count || 0);
+    t.campaignCount = Number(campCount?.count || 0);
+  }
+
+  return teams;
+}
+
+export async function getTeamMemberUserIds(teamId: string, tenantId: string): Promise<string[]> {
+  const rows = await db.queryAll<{ userId: string }>(`
+    SELECT "userId" FROM team_members WHERE "teamId" = $1 AND "tenantId" = $2
+  `, [teamId, tenantId]);
+  return rows.map(r => r.userId);
+}
+
+export async function isTeamLeader(userId: string, teamId: string, tenantId: string): Promise<boolean> {
+  const team = await db.queryOne<{ leaderId: string }>(`
+    SELECT "leaderId" FROM teams WHERE id = $1 AND "tenantId" = $2
+  `, [teamId, tenantId]);
+  if (team?.leaderId === userId) return true;
+
+  const member = await db.queryOne<{ roleInTeam: string }>(`
+    SELECT "roleInTeam" FROM team_members WHERE "teamId" = $1 AND "userId" = $2 AND "tenantId" = $3
+  `, [teamId, userId, tenantId]);
+  return member?.roleInTeam === 'leader';
+}
+
+export async function canAccessTeam(actor: any, teamId: string, tenantId: string): Promise<boolean> {
+  if (!actor || !teamId || !tenantId) return false;
+  if (actor.role === 'platform_admin' || actor.role === 'master_admin') return true;
+  if (actor.tenantId !== tenantId) return false;
+  if (actor.role === 'admin') return true;
+  if (actor.role === 'team_lead') {
+    return await isTeamLeader(actor.id, teamId, tenantId);
+  }
+  const member = await db.queryOne(`
+    SELECT id FROM team_members WHERE "teamId" = $1 AND "userId" = $2 AND "tenantId" = $3
+  `, [teamId, actor.id, tenantId]);
+  return !!member;
+}
+
+export async function canAccessUser(actor: any, targetUserId: string, tenantId: string): Promise<boolean> {
+  if (!actor || !targetUserId || !tenantId) return false;
+  if (actor.role === 'platform_admin' || actor.role === 'master_admin') return true;
+  if (actor.tenantId !== tenantId) return false;
+  if (actor.role === 'admin') return true;
+  if (actor.id === targetUserId) return true;
+  if (actor.role === 'team_lead') {
+    const ledTeams = await getTeamsLedByUser(actor.id, tenantId);
+    for (const t of ledTeams) {
+      const memberIds = await getTeamMemberUserIds(t.id, tenantId);
+      if (memberIds.includes(targetUserId)) return true;
+    }
+  }
+  return false;
+}
+
+export async function getTeamLeadScopedUserIds(userId: string, tenantId: string): Promise<string[]> {
+  const ledTeams = await getTeamsLedByUser(userId, tenantId);
+  const userIds = new Set<string>([userId]);
+  for (const t of ledTeams) {
+    const memberIds = await getTeamMemberUserIds(t.id, tenantId);
+    for (const mid of memberIds) userIds.add(mid);
+  }
+  return Array.from(userIds);
+}
+
+export interface TeamSettingsRecord {
+  id: string;
+  tenantId: string;
+  teamId: string;
+  leadVisibility: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getTeamSettings(teamId: string, tenantId: string): Promise<TeamSettingsRecord> {
+  const existing = await db.queryOne<TeamSettingsRecord>(`
+    SELECT * FROM team_settings WHERE "teamId" = $1 AND "tenantId" = $2
+  `, [teamId, tenantId]);
+
+  if (existing) return existing;
+
+  // Default record
+  return {
+    id: `ts_${teamId}`,
+    tenantId,
+    teamId,
+    leadVisibility: 'OWN',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+export async function upsertTeamSettings(
+  teamId: string,
+  tenantId: string,
+  leadVisibility: 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE'
+): Promise<TeamSettingsRecord> {
+  const now = new Date().toISOString();
+  const existing = await db.queryOne<{ id: string }>(`
+    SELECT id FROM team_settings WHERE "teamId" = $1 AND "tenantId" = $2
+  `, [teamId, tenantId]);
+
+  if (existing) {
+    await db.execute(`
+      UPDATE team_settings 
+      SET "leadVisibility" = $1, "updatedAt" = $2
+      WHERE id = $3 AND "tenantId" = $4
+    `, [leadVisibility, now, existing.id, tenantId]);
+    return { id: existing.id, tenantId, teamId, leadVisibility, createdAt: '', updatedAt: now };
+  } else {
+    const id = 'ts_' + Math.random().toString(36).substring(2, 11);
+    await db.execute(`
+      INSERT INTO team_settings (id, "tenantId", "teamId", "leadVisibility", "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [id, tenantId, teamId, leadVisibility, now, now]);
+    return { id, tenantId, teamId, leadVisibility, createdAt: now, updatedAt: now };
+  }
+}
+
+/**
+ * Resolves the effective team visibility policy.
+ * COMPANY MAXIMUM POLICY:
+ * Company Owner sets tenants.maxTeamVisibility.
+ * Team Lead sets team_settings.leadVisibility.
+ * Effective is the minimum of the two (lower levels can restrict, never escalate).
+ */
+export async function getTeamEffectiveVisibility(tenantId: string, teamId: string): Promise<'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE'> {
+  const tenant = await db.queryOne<{ maxTeamVisibility?: string }>(`
+    SELECT "maxTeamVisibility" FROM tenants WHERE id = $1
+  `, [tenantId]);
+
+  const teamSettings = await getTeamSettings(teamId, tenantId);
+
+  const rank = (val: string | undefined): number => {
+    switch (val) {
+      case 'TEAM_COLLABORATE': return 3;
+      case 'TEAM_READ': return 2;
+      case 'OWN':
+      default: return 1;
+    }
+  };
+
+  const toVisibility = (r: number): 'OWN' | 'TEAM_READ' | 'TEAM_COLLABORATE' => {
+    if (r >= 3) return 'TEAM_COLLABORATE';
+    if (r === 2) return 'TEAM_READ';
+    return 'OWN';
+  };
+
+  const companyRank = rank(tenant?.maxTeamVisibility || 'TEAM_COLLABORATE');
+  const teamRank = rank(teamSettings.leadVisibility);
+
+  // Lower levels may restrict, never escalate
+  const effectiveRank = Math.min(companyRank, teamRank);
+  return toVisibility(effectiveRank);
+}
+
 
 // ─── Super Admin Cross-Tenant Management APIs ────────────────────────────────
 
