@@ -91,6 +91,7 @@ import {
   canEditLead,
   canDeleteLead,
   getScopedLeadFilterSql,
+  getScopedLogs,
   db
 } from './databaseManager';
 import { dbAdapter } from './db/dbAdapter';
@@ -1071,7 +1072,7 @@ app.post('/api/suppression-list', requireAuth, async (req, res) => {
 });
 
 // POST /api/suppression-list/import — bulk add DNC numbers
-app.post('/api/suppression-list/import', requireAuth, async (req, res) => {
+app.post('/api/suppression-list/import', requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const { entries, reason } = req.body as { entries: { phone: string; reason?: string }[]; reason?: string };
   if (!Array.isArray(entries) || entries.length === 0) {
     res.status(400).json({ error: 'Array of entries with phone property is required.' });
@@ -1093,7 +1094,7 @@ app.post('/api/suppression-list/import', requireAuth, async (req, res) => {
 });
 
 // DELETE /api/suppression-list/:id — remove from DNC
-app.delete('/api/suppression-list/:id', requireAuth, async (req, res) => {
+app.delete('/api/suppression-list/:id', requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId;
   if (!tenantId) {
@@ -1132,15 +1133,11 @@ app.post('/api/emergency-stop', requireAuth, async (req, res) => {
 });
 
 // POST /api/emergency-stop/clear — re-enable dialing after emergency stop
-app.post('/api/emergency-stop/clear', requireAuth, async (req, res) => {
+app.post('/api/emergency-stop/clear', requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-    return;
-  }
-  if (user.role === 'agent') {
-    res.status(403).json({ error: 'Only administrators or supervisors can clear emergency stops.' });
     return;
   }
   clearEmergencyStop(tenantId);
@@ -1270,7 +1267,7 @@ app.get(['/api/audit-logs', '/admin/audit-logs'], requireAuth, requireCompanyOwn
   res.json({ logs, pagination: { total: logs.length, totalPages: 1 } });
 });
 
-// POST /api/leads/:id/unlock — manually unlock a lead (strictly tenant-scoped)
+// POST /api/leads/:id/unlock — manually unlock a lead (strictly scoped)
 app.post('/api/leads/:id/unlock', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId;
@@ -1283,6 +1280,28 @@ app.post('/api/leads/:id/unlock', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Lead not found in your organization.' });
     return;
   }
+
+  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const isCompanyAdmin = user.role === 'admin';
+  if (!isPlatform && !isCompanyAdmin) {
+    if (!lead.assignedTo) {
+      res.status(403).json({ error: 'Forbidden: Cannot unlock unassigned lead.' });
+      return;
+    }
+    if (user.role === 'team_lead') {
+      const teamUserIds = await getTeamLeadScopedUserIds(user.id, tenantId);
+      if (lead.assignedTo !== user.id && !teamUserIds.includes(lead.assignedTo)) {
+        res.status(403).json({ error: 'Forbidden: Team Lead can only unlock leads assigned to themselves or their led team members.' });
+        return;
+      }
+    } else {
+      if (lead.assignedTo !== user.id) {
+        res.status(403).json({ error: 'Forbidden: Members can only unlock leads assigned to themselves.' });
+        return;
+      }
+    }
+  }
+
   await releaseLeadLock(req.params.id, undefined, tenantId);
   res.json({ success: true, message: `Lead ${req.params.id} unlocked.` });
 });
@@ -1363,8 +1382,8 @@ app.get(['/campaigns', '/api/campaigns', '/api/campaigns/mobile'], requireAuth, 
   res.json(filtered);
 });
 
-// REST: Create campaign (protected, strictly tenant-scoped)
-app.post(['/campaigns', '/api/campaigns'], requireAuth, async (req, res) => {
+// REST: Create campaign (protected, strictly company owner / platform admin)
+app.post(['/campaigns', '/api/campaigns'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId;
     if (!tenantId) {
@@ -2141,7 +2160,7 @@ app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, requireCompanyOwnerOrP
 });
 
 // REST: Purge all fake/sample leads across queue (protected)
-app.post('/api/leads/purge-fake', requireAuth, requirePermission('leads:delete'), async (req, res) => {
+app.post('/api/leads/purge-fake', requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('leads:delete'), async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -2153,7 +2172,7 @@ app.post('/api/leads/purge-fake', requireAuth, requirePermission('leads:delete')
 });
 
 // REST: Clear all leads in a campaign (protected)
-app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, requirePermission(['leads:delete', 'campaigns:delete']), async (req, res) => {
+app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['leads:delete', 'campaigns:delete']), async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -2170,7 +2189,7 @@ app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, re
 });
 
 // REST: Reset all lead statuses in a campaign to PENDING without deleting leads (protected)
-app.post(['/campaigns/:id/reset-status', '/api/campaigns/:id/reset-status'], requireAuth, requirePermission(['leads:edit', 'campaigns:edit']), async (req, res) => {
+app.post(['/campaigns/:id/reset-status', '/api/campaigns/:id/reset-status'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['leads:edit', 'campaigns:edit']), async (req, res) => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -2186,14 +2205,15 @@ app.post(['/campaigns/:id/reset-status', '/api/campaigns/:id/reset-status'], req
   res.json({ success: true, count, message: `Reset ${count} leads in campaign ${req.params.id} back to PENDING.` });
 });
 
-// REST: Call logs history (protected — for dashboard & mobile)
+// REST: Call logs history (protected — scoped per actor role)
 app.get(['/logs', '/api/logs', '/api/call-logs'], requireAuth, requirePermission(['history:view_logs', 'calls:view_queue']), async (req, res) => {
-  const tenantId = (req as any).user?.tenantId;
+  const caller = (req as any).user;
+  const tenantId = caller?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  res.json(await getLogs(tenantId));
+  res.json(await getScopedLogs(caller, tenantId));
 });
 
 // POST /api/logs/update & /logs/update — Update call disposition (protected)

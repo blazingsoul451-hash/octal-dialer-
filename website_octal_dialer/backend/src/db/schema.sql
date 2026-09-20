@@ -442,6 +442,7 @@ CREATE TABLE IF NOT EXISTS "crm_follow_ups" (
   "tenantId" TEXT NOT NULL,
   "userId" TEXT,
   "assignedAgent" TEXT,
+  "assignedTo" TEXT,
   "scheduledAt" TEXT NOT NULL,
   "status" TEXT NOT NULL DEFAULT 'pending',
   "notes" TEXT,

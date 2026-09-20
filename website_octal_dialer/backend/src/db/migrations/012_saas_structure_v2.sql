@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS "team_settings" (
 );
 
 CREATE INDEX IF NOT EXISTS "idx_team_settings_tenant_team" ON "team_settings"("tenantId", "teamId");
+ALTER TABLE "crm_follow_ups" ADD COLUMN IF NOT EXISTS "assignedTo" TEXT;
 CREATE INDEX IF NOT EXISTS "idx_crm_follow_ups_tenant_assigned" ON "crm_follow_ups"("tenantId", "assignedTo");
 CREATE INDEX IF NOT EXISTS "idx_team_members_user_team" ON "team_members"("userId", "teamId");
 CREATE INDEX IF NOT EXISTS "idx_leads_tenant_assigned" ON "leads"("tenantId", "assignedTo");

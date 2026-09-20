@@ -149,7 +149,7 @@ function createInMemoryDb() {
 
 async function runAllTests() {
   let passedCount = 0;
-  const totalTests = 32;
+  const totalTests = 40;
 
   async function check(num, name, fn) {
     try {
@@ -187,7 +187,7 @@ async function runAllTests() {
   });
 
   console.log('===============================================================');
-  console.log('SAAS STRUCTURE V2: EXECUTING 32 COMPREHENSIVE VERIFICATION TESTS');
+  console.log('SAAS STRUCTURE V2: EXECUTING 40 COMPREHENSIVE VERIFICATION TESTS');
   console.log('===============================================================\n');
 
   // ── GROUP A: Role Transition Matrix (Section 1) ────────────────────────────
@@ -622,6 +622,72 @@ async function runAllTests() {
     const gitignore = fs.readFileSync(path.join(root, '../../../.gitignore'), 'utf8');
     assert.ok(gitignore.includes('IMPORTANT_SECRETS/'));
     assert.ok(gitignore.includes('**/IMPORTANT_SECRETS/**'));
+  });
+
+  // ── GROUP H: Pre-Deploy Blocker Pass (Structural Authorization & Scoping) ──
+  console.log('\n── GROUP H: Pre-Deploy Blocker Pass (Structural Authorization & Scoping) ──');
+
+  await check(33, 'POST /campaigns & POST /api/campaigns are strictly locked with requireCompanyOwnerOrPlatformAdmin', async () => {
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes("app.post(['/campaigns', '/api/campaigns'], requireAuth, requireCompanyOwnerOrPlatformAdmin"));
+  });
+
+  await check(34, 'Destructive lead routes (purge-fake, DELETE campaign leads, reset-status) require Company Owner or Platform Admin', async () => {
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes("app.post('/api/leads/purge-fake', requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('leads:delete')"));
+    assert.ok(serverCode.includes("app.delete(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['leads:delete', 'campaigns:delete'])"));
+    assert.ok(serverCode.includes("app.post(['/campaigns/:id/reset-status', '/api/campaigns/:id/reset-status'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['leads:edit', 'campaigns:edit'])"));
+  });
+
+  await check(35, 'Manual lead unlock (POST /api/leads/:id/unlock) enforces structural scoping hierarchy and fails closed on unassigned', async () => {
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes("app.post('/api/leads/:id/unlock', requireAuth"));
+    assert.ok(serverCode.includes("if (!lead.assignedTo) {"));
+    assert.ok(serverCode.includes("res.status(403).json({ error: 'Forbidden: Cannot unlock unassigned lead.' });"));
+    assert.ok(serverCode.includes("const teamUserIds = await getTeamLeadScopedUserIds(user.id, tenantId);"));
+    assert.ok(serverCode.includes("if (lead.assignedTo !== user.id && !teamUserIds.includes(lead.assignedTo)) {"));
+    assert.ok(serverCode.includes("if (lead.assignedTo !== user.id) {"));
+  });
+
+  await check(36, 'Call log routes (GET /logs, /api/logs, /api/call-logs) and getScopedLogs enforce role scoping', async () => {
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes("app.get(['/logs', '/api/logs', '/api/call-logs']"));
+    assert.ok(serverCode.includes("res.json(await getScopedLogs(caller, tenantId));"));
+
+    const dbCode = fs.readFileSync(path.join(root, 'databaseManager.ts'), 'utf8');
+    assert.ok(dbCode.includes("export async function getScopedLogs(actor: any, tenantId: string): Promise<CallLog[]>"));
+    assert.ok(dbCode.includes("const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';"));
+    assert.ok(dbCode.includes("const isCompanyAdmin = actor?.role === 'admin';"));
+    assert.ok(dbCode.includes("getTeamLeadScopedUserIds(actor.id, tenantId);"));
+    assert.ok(dbCode.includes("getUserTeamPeerVisibilitySets(actor.id, tenantId);"));
+  });
+
+  await check(37, 'Emergency stop clear (POST /api/emergency-stop/clear) strictly locked with requireCompanyOwnerOrPlatformAdmin', async () => {
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes("app.post('/api/emergency-stop/clear', requireAuth, requireCompanyOwnerOrPlatformAdmin"));
+  });
+
+  await check(38, 'DNC suppression list import and deletion require Company Owner; single addition preserved as safety action', async () => {
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes("app.post('/api/suppression-list/import', requireAuth, requireCompanyOwnerOrPlatformAdmin"));
+    assert.ok(serverCode.includes("app.delete('/api/suppression-list/:id', requireAuth, requireCompanyOwnerOrPlatformAdmin"));
+    assert.ok(serverCode.includes("app.post('/api/suppression-list', requireAuth, async (req, res) => {"));
+  });
+
+  await check(39, 'Impersonation token transported via URL hash fragment, stored in sessionStorage, and cleared immediately', async () => {
+    const portalCode = fs.readFileSync(path.join(root, '../../frontend/src/components/SuperAdminPortal.tsx'), 'utf8');
+    assert.ok(portalCode.includes('/#impersonateToken=${encodeURIComponent(data.token)}&impersonateTenant=${encodeURIComponent(tenantName)}'));
+
+    const appCode = fs.readFileSync(path.join(root, '../../frontend/src/App.tsx'), 'utf8');
+    assert.ok(appCode.includes('window.location.hash.startsWith('));
+    assert.ok(appCode.includes("sessionStorage.setItem('octal_impersonate_token', hashImpToken);"));
+    assert.ok(appCode.includes("sessionStorage.setItem('octal_impersonate_tenant', hashImpTenant);"));
+    assert.ok(appCode.includes('window.history.replaceState(null, document.title, window.location.pathname + window.location.search);'));
+  });
+
+  await check(40, 'Real PostgreSQL 18.4 engine executes migration chain schema.sql -> 012 -> 013 and verifies all catalog constraints and DML', async () => {
+    const { runRealPgMigrationTest } = require('./test_migration_013_real_pg.cjs');
+    await runRealPgMigrationTest();
   });
 
   console.log('\n===============================================================');

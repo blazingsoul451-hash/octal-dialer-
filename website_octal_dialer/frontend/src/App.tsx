@@ -72,13 +72,17 @@ export default function App() {
   // ─── Impersonation state (tab-local in sessionStorage; never touches localStorage octal_auth_token) ──
   const [impersonateToken, setImpersonateToken] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
-      const urlParams = new URLSearchParams(window.location.search);
-      const urlImpToken = urlParams.get('impersonateToken');
-      if (urlImpToken) {
-        sessionStorage.setItem('octal_impersonate_token', urlImpToken);
-        const urlImpTenant = urlParams.get('impersonateTenant');
-        if (urlImpTenant) sessionStorage.setItem('octal_impersonate_tenant', urlImpTenant);
-        return urlImpToken;
+      let hashImpToken: string | null = null;
+      let hashImpTenant: string | null = null;
+      if (window.location.hash && window.location.hash.startsWith('#')) {
+        const hashParams = new URLSearchParams(window.location.hash.slice(1));
+        hashImpToken = hashParams.get('impersonateToken');
+        hashImpTenant = hashParams.get('impersonateTenant');
+      }
+      if (hashImpToken) {
+        sessionStorage.setItem('octal_impersonate_token', hashImpToken);
+        if (hashImpTenant) sessionStorage.setItem('octal_impersonate_tenant', hashImpTenant);
+        return hashImpToken;
       }
       return sessionStorage.getItem('octal_impersonate_token');
     }
@@ -276,23 +280,31 @@ export default function App() {
 
   // Verify stored auth token on mount & check URL query params from Google OAuth redirects or impersonation
   useEffect(() => {
-    // Check URL parameters for OAuth tokens, impersonation tokens, or auth errors
+    // Check URL parameters for OAuth tokens or auth errors
     const urlParams = new URLSearchParams(window.location.search);
     const oauthToken = urlParams.get('token');
     const oauthUser = urlParams.get('displayName') || urlParams.get('username') || urlParams.get('user') || 'Google User';
     const authError = urlParams.get('auth_error');
-    const urlImpToken = urlParams.get('impersonateToken');
-    const urlImpTenant = urlParams.get('impersonateTenant');
+
+    // Check URL fragment/hash for impersonation token and tenant (#impersonateToken=...&impersonateTenant=...)
+    let hashImpToken: string | null = null;
+    let hashImpTenant: string | null = null;
+    if (typeof window !== 'undefined' && window.location.hash && window.location.hash.startsWith('#')) {
+      const hashParams = new URLSearchParams(window.location.hash.slice(1));
+      hashImpToken = hashParams.get('impersonateToken');
+      hashImpTenant = hashParams.get('impersonateTenant');
+    }
 
     let currentToken = effectiveAuthToken;
 
-    if (urlImpToken) {
-      sessionStorage.setItem('octal_impersonate_token', urlImpToken);
-      if (urlImpTenant) sessionStorage.setItem('octal_impersonate_tenant', urlImpTenant);
-      setImpersonateToken(urlImpToken);
-      setImpersonateTenant(urlImpTenant || 'Tenant Organization');
-      currentToken = urlImpToken;
-      window.history.replaceState({}, document.title, window.location.pathname);
+    if (hashImpToken) {
+      sessionStorage.setItem('octal_impersonate_token', hashImpToken);
+      if (hashImpTenant) sessionStorage.setItem('octal_impersonate_tenant', hashImpTenant);
+      setImpersonateToken(hashImpToken);
+      setImpersonateTenant(hashImpTenant || 'Tenant Organization');
+      currentToken = hashImpToken;
+      // Immediately clear fragment with replaceState, preserving search if any
+      window.history.replaceState(null, document.title, window.location.pathname + window.location.search);
     } else if (oauthToken) {
       localStorage.setItem('octal_auth_token', oauthToken);
       localStorage.setItem('octal_auth_user', oauthUser);

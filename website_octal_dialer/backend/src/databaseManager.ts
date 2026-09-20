@@ -1713,6 +1713,45 @@ export async function getScopedLeadFilterSql(
   };
 }
 
+/**
+ * Scopes call log visibility per actor role:
+ * - Platform Admin / Company Owner: all tenant call logs.
+ * - Team Lead: logs for leads assigned to self or members of teams they lead.
+ * - Standard Member: logs for leads assigned to self or readable peers.
+ */
+export async function getScopedLogs(actor: any, tenantId: string): Promise<CallLog[]> {
+  if (!tenantId) return [];
+  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
+  const isCompanyAdmin = actor?.role === 'admin';
+
+  if (isPlatform || isCompanyAdmin) {
+    return getLogs(tenantId);
+  }
+
+  let allowedUserIds: string[] = [];
+  if (actor?.role === 'team_lead') {
+    const scopedUserIds = await getTeamLeadScopedUserIds(actor.id, tenantId);
+    allowedUserIds = scopedUserIds;
+  } else {
+    // Standard member / user
+    const { readablePeerUserIds } = await getUserTeamPeerVisibilitySets(actor.id, tenantId);
+    allowedUserIds = [actor.id, ...readablePeerUserIds];
+  }
+
+  if (allowedUserIds.length === 0) {
+    return [];
+  }
+
+  const placeholders = allowedUserIds.map((_, i) => `$${i + 2}`).join(', ');
+  return db.queryAll<CallLog>(`
+    SELECT cl.*
+    FROM call_logs cl
+    JOIN leads l ON l.id = cl."leadId" AND l."tenantId" = cl."tenantId"
+    WHERE cl."tenantId" = $1 AND l."assignedTo" IN (${placeholders})
+    ORDER BY cl.timestamp DESC
+  `, [tenantId, ...allowedUserIds]);
+}
+
 
 
 // ─── Super Admin Cross-Tenant Management APIs ────────────────────────────────

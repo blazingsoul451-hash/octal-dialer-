@@ -96,7 +96,7 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
         const data = await res.json();
         const tenantObj = tenants.find(t => t.id === tenantId);
         const tenantName = tenantObj?.name || tenantId;
-        window.open(`${window.location.origin}?impersonateToken=${encodeURIComponent(data.token)}&impersonateTenant=${encodeURIComponent(tenantName)}`, '_blank');
+        window.open(`${window.location.origin}/#impersonateToken=${encodeURIComponent(data.token)}&impersonateTenant=${encodeURIComponent(tenantName)}`, '_blank');
       } else {
         const err = await res.json();
         alert(err.error || 'Failed to generate impersonation session.');
