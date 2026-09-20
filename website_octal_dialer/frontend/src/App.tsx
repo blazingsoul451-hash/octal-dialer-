@@ -236,6 +236,14 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    if (isImpersonating) {
+      sessionStorage.removeItem('octal_impersonate_token');
+      sessionStorage.removeItem('octal_impersonate_tenant');
+      setImpersonateToken(null);
+      setImpersonateTenant(null);
+      window.location.href = window.location.origin;
+      return;
+    }
     if (authToken) {
       await fetch(`${SERVER_URL}/auth/logout`, {
         method: 'POST',
@@ -1393,7 +1401,7 @@ export default function App() {
             <DashboardOverview
               isLight={isLight}
               serverUrl={SERVER_URL}
-              authToken={authToken || ''}
+              authToken={effectiveAuthToken || ''}
               authUser={authUser}
               phoneConnected={socketData.phoneConnected}
               phoneDeviceName={socketData.phoneDeviceName}
@@ -1408,7 +1416,7 @@ export default function App() {
               <CRMWorkspacePage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
                 campaigns={campaigns}
                 onDialLead={(phone, leadId, leadName) => {
                   socketData.dialLead(phone, leadName, 30, leadId);
@@ -1432,7 +1440,7 @@ export default function App() {
               <CampaignWorkspacePage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
                 campaigns={campaigns}
                 onSelectCampaignForDialer={() => {}}
                 onNavigateTab={(tab) => setActiveTab(tab as any)}
@@ -1453,7 +1461,7 @@ export default function App() {
               <CRMWorkspacePage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
                 campaigns={campaigns}
                 initialSubTab="follow-ups"
                 onDialLead={(phone, leadId, leadName) => {
@@ -1478,7 +1486,7 @@ export default function App() {
               <ReportsPage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
-                authToken={authToken}
+                authToken={effectiveAuthToken}
                 campaigns={campaigns}
               />
             ) : (
@@ -1497,7 +1505,7 @@ export default function App() {
               <AdminPanel
                 isLight={isLight}
                 serverUrl={lanServerUrl}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
                 currentUser={authUser || ''}
                 currentUserRole={userRole}
               />
@@ -1517,7 +1525,7 @@ export default function App() {
               <BillingPage
                 isLight={isLight}
                 serverUrl={lanServerUrl}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
                 userRole={userRole}
               />
             ) : (
@@ -1535,7 +1543,7 @@ export default function App() {
             (userRole === 'team_lead' || userRole === 'admin' || userRole === 'platform_admin') ? (
               <TeamLeadDashboard
                 serverUrl={lanServerUrl}
-                authToken={authToken}
+                authToken={effectiveAuthToken}
                 onSelectCampaign={(_cId) => setActiveTab('campaigns')}
               />
             ) : (
@@ -1553,7 +1561,7 @@ export default function App() {
             userRole === 'platform_admin' ? (
               <SuperAdminPortal
                 serverUrl={lanServerUrl}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || authToken || ''}
                 currentUser={authUser}
                 onLogout={handleLogout}
               />
@@ -1573,7 +1581,7 @@ export default function App() {
               <LeadsTable
                 isLight={isLight}
                 serverUrl={lanServerUrl}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
 
               />
             ) : (
@@ -1595,7 +1603,7 @@ export default function App() {
               isConnected={socketData.isConnected}
               campaigns={campaigns}
               serverUrl={SERVER_URL}
-              authToken={authToken || ''}
+              authToken={effectiveAuthToken || ''}
               dialLead={socketData.dialLead}
               hangupCall={socketData.hangupCall}
               emergencyStop={socketData.emergencyStop}
@@ -1635,7 +1643,7 @@ export default function App() {
               connectDevice={socketData.connectDevice}
               disconnectDevice={socketData.disconnectDevice}
               deviceError={socketData.deviceError}
-              authToken={authToken || ''}
+              authToken={effectiveAuthToken || ''}
               socket={socketData.socket}
               serverUrl={socketData.qrPayload?.serverUrl || lanServerUrl || SERVER_URL}
             />
@@ -1645,7 +1653,7 @@ export default function App() {
             <DncPanel
               isLight={isLight}
               serverUrl={SERVER_URL}
-              authToken={authToken || ''}
+              authToken={effectiveAuthToken || ''}
             />
           )}
 
@@ -1655,7 +1663,7 @@ export default function App() {
                 isLight={isLight}
                 onImportSuccess={handleImportSuccess}
                 serverUrl={SERVER_URL}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
                 activeSubTab={activeTab}
               />
             ) : (
@@ -1674,7 +1682,7 @@ export default function App() {
               isLight={isLight}
               onImportSuccess={handleImportSuccess}
               serverUrl={SERVER_URL}
-              authToken={authToken || ''}
+              authToken={effectiveAuthToken || ''}
               campaigns={campaigns}
             />
           )}
@@ -1683,7 +1691,7 @@ export default function App() {
             <CallLog
               isLight={isLight}
               serverUrl={SERVER_URL}
-              authToken={authToken}
+              authToken={effectiveAuthToken}
             />
           )}
 
@@ -1692,7 +1700,7 @@ export default function App() {
               <AutoEmailer
                 isLight={isLight}
                 serverUrl={SERVER_URL}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
                 activeSubTab={activeTab}
               />
             ) : (
@@ -1711,7 +1719,7 @@ export default function App() {
               <FacebookScraper
                 isLight={isLight}
                 serverUrl={SERVER_URL}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
                 activeSubTab={activeTab}
               />
             ) : (
@@ -1730,7 +1738,7 @@ export default function App() {
               <FacebookAutoPoster
                 isLight={isLight}
                 serverUrl={SERVER_URL}
-                authToken={authToken || ''}
+                authToken={effectiveAuthToken || ''}
                 activeSubTab={activeTab}
               />
             ) : (
@@ -1755,7 +1763,7 @@ export default function App() {
         initialOutcome={dispInitialOutcome}
         onClose={() => setDispOpen(false)}
         serverUrl={SERVER_URL}
-        authToken={authToken || ''}
+        authToken={effectiveAuthToken || ''}
         onSaveSuccess={(result) => {
           if (!result?.success) return;
           showToast('Call disposition logged successfully.', 'success');

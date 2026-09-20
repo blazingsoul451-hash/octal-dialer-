@@ -38,6 +38,7 @@ website_octal_dialer/backend/data/scraper_jobs/
 
 # Secrets & Scratch
 IMPORTANT_SECRETS/
+**/IMPORTANT_SECRETS/**
 .agents/
 AGENTS.md
 PONYTAIL_REFACTOR_REVIEW_FOR_GPT.md

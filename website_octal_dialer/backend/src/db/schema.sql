@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS "tenants" (
   "leadPoolMode" TEXT NOT NULL DEFAULT 'shared',
   "maxAgents" INTEGER NOT NULL DEFAULT 10,
   "tier" TEXT NOT NULL DEFAULT 'standard',
-  "customerType" TEXT NOT NULL DEFAULT 'COMPANY',
-  "maxTeamVisibility" TEXT NOT NULL DEFAULT 'TEAM_COLLABORATE'
+  "customerType" TEXT NOT NULL DEFAULT 'COMPANY' CHECK ("customerType" IN ('COMPANY', 'PERSONAL')),
+  "maxTeamVisibility" TEXT NOT NULL DEFAULT 'TEAM_COLLABORATE' CHECK ("maxTeamVisibility" IN ('OWN', 'TEAM_READ', 'TEAM_COLLABORATE'))
 );
 
 -- Table: plans
@@ -634,7 +634,7 @@ CREATE TABLE IF NOT EXISTS "team_settings" (
   "id" TEXT PRIMARY KEY,
   "tenantId" TEXT NOT NULL,
   "teamId" TEXT NOT NULL,
-  "leadVisibility" TEXT NOT NULL DEFAULT 'OWN',
+  "leadVisibility" TEXT NOT NULL DEFAULT 'OWN' CHECK ("leadVisibility" IN ('OWN', 'TEAM_READ', 'TEAM_COLLABORATE')),
   "createdAt" TEXT NOT NULL DEFAULT '',
   "updatedAt" TEXT NOT NULL DEFAULT '',
   CONSTRAINT "uq_team_settings_tenant_team" UNIQUE ("tenantId", "teamId")

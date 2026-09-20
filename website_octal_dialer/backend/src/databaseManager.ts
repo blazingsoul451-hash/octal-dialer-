@@ -1592,6 +1592,128 @@ export async function getTeamEffectiveVisibility(tenantId: string, teamId: strin
   return toVisibility(effectiveRank);
 }
 
+/**
+ * Resolves whether an actor has permission to perform an action ('read' | 'edit' | 'delete') on a lead.
+ * Follows strict SaaS structure:
+ * - platform_admin / master_admin: allowed
+ * - admin: allowed tenant-wide (lead must belong to caller's tenant)
+ * - team_lead:
+ *     - 'delete': denied (deletion is strictly restricted to company owners and platform admins)
+ *     - 'read' / 'edit': targetLead.assignedTo must be the Team Lead OR a member of a team they lead.
+ *       Unassigned leads fail closed (unless explicit dialer pool workflow).
+ * - user / member:
+ *     - 'delete': denied
+ *     - 'read': targetLead.assignedTo === actor.id OR targetLead.assignedTo in readablePeerUserIds
+ *     - 'edit': targetLead.assignedTo === actor.id OR targetLead.assignedTo in editablePeerUserIds
+ *     - Unassigned leads fail closed.
+ */
+export async function canAccessLead(
+  actor: any,
+  leadOrId: string | { id?: string; assignedTo?: string | null; tenantId?: string },
+  action: 'read' | 'edit' | 'delete',
+  tenantId: string
+): Promise<boolean> {
+  if (!actor || !tenantId) return false;
+  const isPlatform = actor.role === 'platform_admin' || actor.role === 'master_admin';
+  if (!isPlatform && actor.tenantId !== tenantId) return false;
+
+  let lead: { id?: string; assignedTo?: string | null; tenantId?: string } | null | undefined = null;
+  if (typeof leadOrId === 'string') {
+    lead = await db.queryOne<{ id: string; assignedTo: string | null; tenantId: string }>(
+      `SELECT id, "assignedTo", "tenantId" FROM leads WHERE id = $1 AND "tenantId" = $2`,
+      [leadOrId, tenantId]
+    );
+  } else {
+    lead = leadOrId;
+  }
+
+  if (!lead) return false;
+  if (lead.tenantId && lead.tenantId !== tenantId) return false;
+
+  if (isPlatform) return true;
+  if (actor.role === 'admin') return true;
+
+  // Deletion is strictly restricted to company owners and platform admins
+  if (action === 'delete') return false;
+
+  if (actor.role === 'team_lead') {
+    // Unassigned leads fail closed
+    if (!lead.assignedTo) return false;
+    if (lead.assignedTo === actor.id) return true;
+    const scopedUserIds = await getTeamLeadScopedUserIds(actor.id, tenantId);
+    return scopedUserIds.includes(lead.assignedTo);
+  }
+
+  // Standard member / user / agent
+  if (!lead.assignedTo) return false;
+  if (lead.assignedTo === actor.id) return true;
+
+  const { readablePeerUserIds, editablePeerUserIds } = await getUserTeamPeerVisibilitySets(actor.id, tenantId);
+  if (action === 'read') {
+    return readablePeerUserIds.includes(lead.assignedTo);
+  }
+  if (action === 'edit') {
+    return editablePeerUserIds.includes(lead.assignedTo);
+  }
+
+  return false;
+}
+
+export async function canReadLead(actor: any, leadOrId: string | any, tenantId: string): Promise<boolean> {
+  return canAccessLead(actor, leadOrId, 'read', tenantId);
+}
+
+export async function canEditLead(actor: any, leadOrId: string | any, tenantId: string): Promise<boolean> {
+  return canAccessLead(actor, leadOrId, 'edit', tenantId);
+}
+
+export async function canDeleteLead(actor: any, leadOrId: string | any, tenantId: string): Promise<boolean> {
+  return canAccessLead(actor, leadOrId, 'delete', tenantId);
+}
+
+/**
+ * Builds a SQL WHERE clause fragment and params to scope lead queries by actor:
+ * - admin / platform: no extra filter (all tenant leads)
+ * - team_lead: AND {alias}."assignedTo" IN ($1, $2...) (all members of led teams + self)
+ * - user / member: AND {alias}."assignedTo" IN ($1, $2...) (self + readable peers)
+ * Unassigned leads are excluded for non-admins (fail closed).
+ */
+export async function getScopedLeadFilterSql(
+  actor: any,
+  tenantId: string,
+  tableAlias: string = 'l',
+  startParamIndex: number = 1
+): Promise<{ sql: string; params: any[] }> {
+  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
+  if (isPlatform || actor?.role === 'admin') {
+    return { sql: '', params: [] };
+  }
+
+  const prefix = tableAlias ? `"${tableAlias}".` : '';
+
+  if (actor?.role === 'team_lead') {
+    const scopedUserIds = await getTeamLeadScopedUserIds(actor.id, tenantId);
+    if (scopedUserIds.length === 0) {
+      return { sql: ` AND 1=0`, params: [] };
+    }
+    const phs = scopedUserIds.map((_, i) => `$${startParamIndex + i}`).join(', ');
+    return {
+      sql: ` AND ${prefix}"assignedTo" IN (${phs})`,
+      params: scopedUserIds
+    };
+  }
+
+  // Standard member
+  const { readablePeerUserIds } = await getUserTeamPeerVisibilitySets(actor.id, tenantId);
+  const visibleUserIds = [actor.id, ...readablePeerUserIds];
+  const phs = visibleUserIds.map((_, i) => `$${startParamIndex + i}`).join(', ');
+  return {
+    sql: ` AND ${prefix}"assignedTo" IN (${phs})`,
+    params: visibleUserIds
+  };
+}
+
+
 
 // ─── Super Admin Cross-Tenant Management APIs ────────────────────────────────
 

@@ -86,6 +86,11 @@ import {
   updateTenantStatus,
   getGlobalSuperAdminMetrics,
   getTenantById,
+  canAccessLead,
+  canReadLead,
+  canEditLead,
+  canDeleteLead,
+  getScopedLeadFilterSql,
   db
 } from './databaseManager';
 import { dbAdapter } from './db/dbAdapter';
@@ -1255,8 +1260,8 @@ app.post('/api/devices/:id/revoke', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/audit-logs & /admin/audit-logs — view system audit logs
-app.get(['/api/audit-logs', '/admin/audit-logs'], requireAuth, async (req, res) => {
+// GET /api/audit-logs & /admin/audit-logs — view system audit logs (strictly Company Owner / Platform Owner)
+app.get(['/api/audit-logs', '/admin/audit-logs'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const logs = isPlatform
@@ -1347,8 +1352,12 @@ app.get(['/campaigns', '/api/campaigns', '/api/campaigns/mobile'], requireAuth, 
     return;
   }
 
-  // Scoping is active: only return campaigns assigned to this user's teams
-  const scopedCampaignIds = await getUserScopedCampaignIds(user.id, tenantId);
+  // Scoping is active:
+  // For team_lead: only campaigns assigned to teams they LEAD
+  // For standard user/member: campaigns assigned to teams they are member of
+  const scopedCampaignIds = user.role === 'team_lead'
+    ? await getCampaignIdsForLedTeams(user.id, tenantId)
+    : await getUserScopedCampaignIds(user.id, tenantId);
   const scopedSet = new Set(scopedCampaignIds);
   const filtered = allCampaigns.filter(c => scopedSet.has(c.id));
   res.json(filtered);
@@ -1375,9 +1384,10 @@ app.post(['/campaigns', '/api/campaigns'], requireAuth, async (req, res) => {
   }
 });
 
-// REST: Get leads for a campaign (protected)
+// REST: Get leads for a campaign (protected and strictly scoped to caller visibility)
 app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async (req, res) => {
-  const tenantId = (req as any).user?.tenantId;
+  const caller = (req as any).user;
+  const tenantId = caller?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
@@ -1387,6 +1397,19 @@ app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async
     res.status(404).json({ error: 'Campaign not found in your organization.' });
     return;
   }
+  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+  const isCompanyAdmin = caller.role === 'admin';
+
+  if (!isPlatform && !isCompanyAdmin) {
+    const scopedFilter = await getScopedLeadFilterSql(caller, tenantId, '', 3);
+    const leads = await db.queryAll(
+      `SELECT * FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED'${scopedFilter.sql}`,
+      [req.params.id, tenantId, ...scopedFilter.params]
+    );
+    res.json(leads);
+    return;
+  }
+
   res.json(await getLeads(req.params.id, tenantId));
 });
 
@@ -1562,38 +1585,32 @@ app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, requirePermission(['lea
         return;
       }
       if (isTeamLead) {
-        // Team Lead can only reassign to members within their own led teams
-        if (assignedTo !== null) {
-          const teamUserIds = await getTeamLeadScopedUserIds(caller.id, tenantId);
-          if (!teamUserIds.includes(assignedTo)) {
-            res.status(403).json({ error: 'Forbidden: Team Lead cannot reassign leads to users outside their led teams.' });
-            return;
-          }
+        // Team Lead must assign to a real user in a team they lead; unassignment (null/empty) is forbidden
+        if (!assignedTo || typeof assignedTo !== 'string' || assignedTo.trim() === '') {
+          res.status(400).json({ error: 'Team Lead cannot unassign leads. A valid member ID from a team you lead is required.' });
+          return;
+        }
+        const teamUserIds = await getTeamLeadScopedUserIds(caller.id, tenantId);
+        if (!teamUserIds.includes(assignedTo)) {
+          res.status(403).json({ error: 'Forbidden: Team Lead cannot reassign leads to users outside their led teams.' });
+          return;
+        }
+        const targetUser = await db.queryOne<{ id: string; tenantId: string }>(
+          `SELECT id, "tenantId" FROM users WHERE id = $1 AND "tenantId" = $2`,
+          [assignedTo, tenantId]
+        );
+        if (!targetUser) {
+          res.status(404).json({ error: 'Target user not found in your organization.' });
+          return;
         }
       }
     }
 
-    // Edit permission guard for standard agents and team leads
-    if (!isPlatform && !isCompanyAdmin) {
-      if (isTeamLead) {
-        const teamUserIds = await getTeamLeadScopedUserIds(caller.id, tenantId);
-        const ledCampaignIds = await getCampaignIdsForLedTeams(caller.id, tenantId);
-        const isAssignedToTeamMember = targetLead.assignedTo && teamUserIds.includes(targetLead.assignedTo);
-        const isCampaignInLedTeam = targetLead.campaignId && ledCampaignIds.includes(targetLead.campaignId);
-        if (!isAssignedToTeamMember && !isCampaignInLedTeam && targetLead.assignedTo !== caller.id) {
-          res.status(403).json({ error: 'Forbidden: Cannot edit leads outside your team scope.' });
-          return;
-        }
-      } else {
-        // Standard Member / Agent: if lead belongs to someone else, check effective team peer visibility sets
-        if (targetLead.assignedTo !== caller.id) {
-          const { editablePeerUserIds } = await getUserTeamPeerVisibilitySets(caller.id, tenantId);
-          if (!targetLead.assignedTo || !editablePeerUserIds.includes(targetLead.assignedTo)) {
-            res.status(403).json({ error: 'Forbidden: TEAM_READ policy grants view-only access. TEAM_COLLABORATE required to edit peers\' records.' });
-            return;
-          }
-        }
-      }
+    // Edit permission guard: use central canEditLead helper (no campaign bypass)
+    const canEdit = await canEditLead(caller, targetLead, tenantId);
+    if (!canEdit) {
+      res.status(403).json({ error: 'Forbidden: Cannot edit leads outside your authorized scope.' });
+      return;
     }
 
     const updates: string[] = [];
@@ -1634,7 +1651,23 @@ app.get('/api/crm/campaigns/:id/workspace', requireAuth, requirePermission(['cam
       return;
     }
 
-    const leads = await db.queryAll(`SELECT * FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED' ORDER BY "createdAt" ASC, "id" ASC`, [campaignId, tenantId]) as any[];
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const isCompanyAdmin = caller.role === 'admin';
+
+    let leads: any[] = [];
+    if (!isPlatform && !isCompanyAdmin) {
+      const scopedFilter = await getScopedLeadFilterSql(caller, tenantId, '', 3);
+      leads = await db.queryAll(
+        `SELECT * FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED'${scopedFilter.sql} ORDER BY "createdAt" ASC, "id" ASC`,
+        [campaignId, tenantId, ...scopedFilter.params]
+      );
+    } else {
+      leads = await db.queryAll(
+        `SELECT * FROM leads WHERE "campaignId" = $1 AND "tenantId" = $2 AND status != 'ARCHIVED' ORDER BY "createdAt" ASC, "id" ASC`,
+        [campaignId, tenantId]
+      );
+    }
 
     const totalLeads = leads.length;
     const completedLeads = leads.filter(l => l.status === 'COMPLETED').length;
@@ -1684,6 +1717,13 @@ app.get('/api/crm/leads/:id/profile', requireAuth, requirePermission(['leads:vie
 
     if (!lead) {
       res.status(404).json({ error: 'Lead not found in your organization.' });
+      return;
+    }
+
+    const caller = (req as any).user;
+    const canRead = await canReadLead(caller, lead, tenantId);
+    if (!canRead) {
+      res.status(403).json({ error: 'Forbidden: You do not have permission to view this lead profile.' });
       return;
     }
 
@@ -1749,6 +1789,11 @@ app.post('/api/crm/leads/:id/notes', requireAuth, requirePermission(['leads:edit
       res.status(404).json({ error: 'Lead not found in your organization.' });
       return;
     }
+    const canEdit = await canEditLead(user, lead, tenantId);
+    if (!canEdit) {
+      res.status(403).json({ error: 'Forbidden: You do not have permission to add notes to this lead.' });
+      return;
+    }
 
     await recordLeadActivity({
       leadId,
@@ -1766,16 +1811,37 @@ app.post('/api/crm/leads/:id/notes', requireAuth, requirePermission(['leads:edit
   }
 });
 
-// REST: Get scheduled follow-ups for tenant (protected)
+// REST: Get scheduled follow-ups for tenant (protected and scoped to caller visibility)
 app.get('/api/crm/follow-ups', requireAuth, requirePermission(['crm:view', 'leads:view']), async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId;
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
     }
     const status = req.query.status as string | undefined;
-    const followUps = await getFollowUps(tenantId, status ? { status } : undefined);
+    const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+    const isCompanyAdmin = user.role === 'admin';
+
+    let query = `
+      SELECT f.* 
+      FROM crm_follow_ups f
+      JOIN leads l ON f."leadId" = l.id
+      WHERE f."tenantId" = $1
+    `;
+    const params: any[] = [tenantId];
+    if (status) {
+      query += ` AND f.status = $${params.length + 1}`;
+      params.push(status);
+    }
+    if (!isPlatform && !isCompanyAdmin) {
+      const scopedFilter = await getScopedLeadFilterSql(user, tenantId, 'l', params.length + 1);
+      query += scopedFilter.sql;
+      params.push(...scopedFilter.params);
+    }
+    query += ` ORDER BY f."scheduledAt" ASC`;
+    const followUps = await db.queryAll(query, params);
     res.json({ followUps });
   } catch (err: any) {
     console.error('Error fetching follow-ups:', err);
@@ -1801,6 +1867,11 @@ app.post('/api/crm/follow-ups', requireAuth, requirePermission(['crm:edit', 'crm
     const lead = await getLead(leadId, tenantId);
     if (!lead) {
       res.status(404).json({ error: 'Lead not found in your organization.' });
+      return;
+    }
+    const canEdit = await canEditLead(user, lead, tenantId);
+    if (!canEdit) {
+      res.status(403).json({ error: 'Forbidden: You do not have permission to create follow-ups for this lead.' });
       return;
     }
 
@@ -1984,23 +2055,32 @@ app.patch('/api/crm/follow-ups/:id/status', requireAuth, requirePermission(['crm
       return;
     }
 
+    const fu = await db.queryOne<{ leadId: string }>(`SELECT "leadId" FROM crm_follow_ups WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    if (!fu) {
+      res.status(404).json({ error: 'Follow-up not found in your organization.' });
+      return;
+    }
+
+    const canEdit = await canEditLead(user, fu.leadId, tenantId);
+    if (!canEdit) {
+      res.status(403).json({ error: 'Forbidden: You do not have permission to update follow-ups for this lead.' });
+      return;
+    }
+
     const updated = await updateFollowUpStatus(id, tenantId, status, notes);
     if (!updated) {
       res.status(404).json({ error: 'Follow-up not found in your organization.' });
       return;
     }
 
-    const fu = await db.queryOne<{ leadId: string }>(`SELECT "leadId" FROM crm_follow_ups WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
-    if (fu?.leadId) {
-      await recordLeadActivity({
-        leadId: fu.leadId,
-        tenantId,
-        userId: user.id,
-        username: user.username,
-        eventType: 'FOLLOW_UP_UPDATED',
-        description: `Follow-up marked as ${status}${notes ? ': ' + notes : ''}`
-      });
-    }
+    await recordLeadActivity({
+      leadId: fu.leadId,
+      tenantId,
+      userId: user.id,
+      username: user.username,
+      eventType: 'FOLLOW_UP_UPDATED',
+      description: `Follow-up marked as ${status}${notes ? ': ' + notes : ''}`
+    });
 
     res.json({ success: true, message: 'Follow-up status updated successfully.' });
   } catch (err: any) {
@@ -2023,6 +2103,13 @@ app.get('/api/crm/leads/:id/activities', requireAuth, requirePermission(['leads:
       res.status(404).json({ error: 'Lead not found in your organization.' });
       return;
     }
+
+    const canRead = await canReadLead((req as any).user, lead, tenantId);
+    if (!canRead) {
+      res.status(403).json({ error: 'Forbidden: You do not have permission to view activities for this lead.' });
+      return;
+    }
+
     const activities = await getLeadActivities(leadId, tenantId);
     res.json({ activities });
   } catch (err: any) {
@@ -2031,11 +2118,17 @@ app.get('/api/crm/leads/:id/activities', requireAuth, requirePermission(['leads:
   }
 });
 
-// REST: Delete single lead (protected)
-app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, requirePermission(['leads:delete', 'crm:delete']), async (req, res) => {
-  const tenantId = (req as any).user?.tenantId;
+// REST: Delete single lead (protected, strictly Company Owner / Platform Owner)
+app.delete(['/api/leads/:id', '/leads/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['leads:delete', 'crm:delete']), async (req, res) => {
+  const caller = (req as any).user;
+  const tenantId = caller?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const canDel = await canDeleteLead(caller, req.params.id, tenantId);
+  if (!canDel) {
+    res.status(403).json({ error: 'Forbidden: You do not have permission to delete leads.' });
     return;
   }
   const success = await deleteLead(req.params.id, tenantId);
@@ -2213,7 +2306,7 @@ app.get(['/api/admin/overview', '/admin/platform/overview', '/admin/overview'], 
 });
 
 // GET /api/admin/users & /admin/users
-app.get(['/api/admin/users', '/admin/users'], requireAuth, requirePermission('users:view'), async (req, res) => {
+app.get(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:view'), async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const users = isPlatform
@@ -2251,7 +2344,7 @@ app.get(['/api/admin/users', '/admin/users'], requireAuth, requirePermission('us
 });
 
 // POST /api/admin/users & /admin/users
-app.post(['/api/admin/users', '/admin/users'], requireAuth, requirePermission('users:add'), async (req, res) => {
+app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:add'), async (req, res) => {
   try {
     const caller = (req as any).user;
     const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
@@ -2341,7 +2434,7 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requirePermission('u
 });
 
 // PUT /api/admin/users/:id & /admin/users/:id (Unified update for role, password, and permissions)
-app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requirePermission('users:edit'), async (req, res) => {
+app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:edit'), async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
@@ -2477,7 +2570,7 @@ app.post(['/api/admin/permissions', '/admin/permissions'], requireAuth, requireA
 });
 
 // PUT /api/admin/users/:id/role
-app.put(['/api/admin/users/:id/role', '/admin/users/:id/role'], requireAuth, requirePermission('users:edit'), async (req, res) => {
+app.put(['/api/admin/users/:id/role', '/admin/users/:id/role'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:edit'), async (req, res) => {
   const { role } = req.body;
   if (!role) {
     res.status(400).json({ error: 'Role is required.' });
@@ -2496,7 +2589,7 @@ app.put(['/api/admin/users/:id/role', '/admin/users/:id/role'], requireAuth, req
 });
 
 // POST /api/admin/users/:id/password
-app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], requireAuth, requirePermission('users:edit'), async (req, res) => {
+app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:edit'), async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
@@ -2526,7 +2619,7 @@ app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], require
 });
 
 // DELETE /api/admin/users/:id
-app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requirePermission('users:delete'), async (req, res) => {
+app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:delete'), async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
@@ -2560,7 +2653,7 @@ app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requirePer
 // ─── Custom Roles Endpoints ──────────────────────────────────────────────────
 
 // GET /api/admin/roles & /admin/roles
-app.get(['/api/admin/roles', '/admin/roles'], requireAuth, requirePermission('roles:view'), async (req, res) => {
+app.get(['/api/admin/roles', '/admin/roles'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('roles:view'), async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const roles = isPlatform
@@ -2608,7 +2701,7 @@ app.get(['/api/admin/roles', '/admin/roles'], requireAuth, requirePermission('ro
 });
 
 // POST /api/admin/roles & /admin/roles
-app.post(['/api/admin/roles', '/admin/roles'], requireAuth, requirePermission('roles:add'), async (req, res) => {
+app.post(['/api/admin/roles', '/admin/roles'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('roles:add'), async (req, res) => {
   const caller = (req as any).user;
   const rawRoleName = req.body.roleName || req.body.name || '';
   const roleName = typeof rawRoleName === 'string' ? rawRoleName.trim() : '';
@@ -2643,7 +2736,7 @@ app.post(['/api/admin/roles', '/admin/roles'], requireAuth, requirePermission('r
 });
 
 // PUT /api/admin/roles/:id & /admin/roles/:id
-app.put(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requirePermission('roles:edit'), async (req, res) => {
+app.put(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('roles:edit'), async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetRole = await db.queryOne(`SELECT id, "roleName", "tenantId" FROM custom_roles WHERE id = $1`, [req.params.id]) as any;
@@ -2686,7 +2779,7 @@ app.put(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requirePermis
 });
 
 // DELETE /api/admin/roles/:id & /admin/roles/:id
-app.delete(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requirePermission('roles:delete'), async (req, res) => {
+app.delete(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('roles:delete'), async (req, res) => {
   const caller = (req as any).user;
   const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
   const targetRole = await db.queryOne(`SELECT id, "roleName", "tenantId" FROM custom_roles WHERE id = $1`, [req.params.id]) as any;
@@ -3533,6 +3626,16 @@ app.get('/api/leads/export', requireAuth, requirePermission(['leads:export', 'le
     if (status) {
       query += ` AND l.status = $${params.length + 1}`;
       params.push(status);
+    }
+
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const isCompanyAdmin = caller.role === 'admin';
+
+    if (!isPlatform && !isCompanyAdmin) {
+      const scopedFilter = await getScopedLeadFilterSql(caller, tenantId, 'l', params.length + 1);
+      query += scopedFilter.sql;
+      params.push(...scopedFilter.params);
     }
 
     query += ` ORDER BY l."createdAt" DESC LIMIT 50000`;
