@@ -55,14 +55,18 @@ function shouldInclude(relPath) {
   for (const seg of segments) {
     if (EXCLUDE_DIRS.has(seg)) return false;
     if (seg.startsWith('pg_mig013_test_')) return false;
+    if (seg.toLowerCase().includes('important_secrets')) return false;
   }
 
   const fileName = segments[segments.length - 1];
+  const lowerName = fileName.toLowerCase();
+
   if (EXCLUDE_FILES.has(fileName)) return false;
-  if (fileName.endsWith('.zip') || fileName.endsWith('.tar.gz') || fileName.endsWith('.apk') || fileName.endsWith('.exe')) return false;
-  if (fileName.startsWith('.env') && !fileName.endsWith('.example')) return false;
-  if (fileName.endsWith('.pem') || fileName.endsWith('.key') || fileName.endsWith('.log')) return false;
-  if (normalized.includes('IMPORTANT_SECRETS')) return false;
+  if (lowerName.endsWith('.zip') || lowerName.endsWith('.tar.gz') || lowerName.endsWith('.apk') || lowerName.endsWith('.exe')) return false;
+  if (lowerName.startsWith('.env') && !lowerName.endsWith('.example')) return false;
+  if (lowerName.endsWith('.pem') || lowerName.endsWith('.key') || lowerName.endsWith('.log')) return false;
+  if (lowerName.endsWith('.jks') || lowerName.endsWith('.keystore') || lowerName.endsWith('.p12') || lowerName.endsWith('.pfx')) return false;
+  if (normalized.toLowerCase().includes('important_secrets')) return false;
 
   return true;
 }
@@ -121,6 +125,39 @@ async function main() {
   console.log(`\nArchiving to ${primaryZip}...`);
   await createZip(primaryZip, files);
 
+  // Explicit security audit on the produced ZIP
+  console.log('\nScanning generated ZIP archive for sensitive files...');
+  const unzipper = require('unzipper');
+  const forbiddenFound = [];
+  await new Promise((resolve, reject) => {
+    fs.createReadStream(primaryZip)
+      .pipe(unzipper.Parse())
+      .on('entry', entry => {
+        const p = entry.path.toLowerCase();
+        if (
+          p.endsWith('.jks') ||
+          p.endsWith('.keystore') ||
+          p.endsWith('.p12') ||
+          p.endsWith('.pfx') ||
+          p.endsWith('.pem') ||
+          p.endsWith('.key') ||
+          (p.includes('.env') && !p.endsWith('.example')) ||
+          p.includes('important_secrets')
+        ) {
+          forbiddenFound.push(entry.path);
+        }
+        entry.autodrain();
+      })
+      .on('close', resolve)
+      .on('finish', resolve)
+      .on('error', reject);
+  });
+
+  if (forbiddenFound.length > 0) {
+    throw new Error('SECURITY VIOLATION: Review ZIP contains forbidden sensitive files:\n' + forbiddenFound.join('\n'));
+  }
+  console.log('✓ Security Audit PASSED: 0 keystores, 0 certificates, 0 private keys, 0 secrets in ZIP.');
+
   // Copy to remaining destinations
   for (let i = 1; i < outputPaths.length; i++) {
     const dest = outputPaths[i];
@@ -129,7 +166,7 @@ async function main() {
     console.log(`✓ Copied ${dest}`);
   }
 
-  console.log('\nAll review archives successfully generated!');
+  console.log('\nAll review archives successfully generated and cryptographically audited!');
 }
 
 main().catch(err => {

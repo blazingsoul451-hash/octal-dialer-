@@ -46,6 +46,9 @@ export interface Lead {
   address?: string;
   listingId?: string;
   assignedTo?: string | null;
+  lockedBy?: string | null;
+  lockedAt?: string | null;
+  tenantId?: string;
 }
 
 export interface TenantInfo {
@@ -1750,6 +1753,111 @@ export async function getScopedLogs(actor: any, tenantId: string): Promise<CallL
     WHERE cl."tenantId" = $1 AND l."assignedTo" IN (${placeholders})
     ORDER BY cl.timestamp DESC
   `, [tenantId, ...allowedUserIds]);
+}
+
+/**
+ * Authorizes a user to disposition a lead.
+ * Allows disposition when EITHER:
+ * A. canEditLead(caller, lead, tenantId) is true (Company Owner, or Member assigned/collaborating)
+ * OR
+ * B. Authoritative call/session/lead-lock/journal state proves this authenticated user is the user
+ *    currently handling that exact lead/call (e.g. legitimate shared-pool caller handling unassigned lead).
+ */
+export async function canDispositionLead(caller: any, lead: any, tenantId: string): Promise<boolean> {
+  if (!caller || !lead || !tenantId) return false;
+
+  // A. Structural edit permission
+  if (await canEditLead(caller, lead, tenantId)) {
+    return true;
+  }
+
+  const userId = caller.id;
+
+  // B. Authoritative call/session/lead-lock/journal state
+  // 1. Check if the lead is currently locked by a session owned by this user
+  if (lead.lockedBy) {
+    if (lead.lockedBy === userId) return true;
+    try {
+      const { getSessionById } = require('./sessionManager');
+      const session = getSessionById(lead.lockedBy);
+      if (session && session.userId === userId && (!session.tenantId || session.tenantId === tenantId)) {
+        return true;
+      }
+    } catch (_) {}
+  }
+
+  // 2. Check call dispatch journal for pre-dispatch record
+  try {
+    const journalEntry = await db.queryOne<{ callId: string }>(
+      `SELECT "callId" FROM call_dispatch_journal WHERE "leadId" = $1 AND "tenantId" = $2 AND "userId" = $3 LIMIT 1`,
+      [lead.id, tenantId, userId]
+    );
+    if (journalEntry) return true;
+  } catch (_) {}
+
+  // 3. Check call outcomes for completed call outcome record
+  try {
+    const outcomeEntry = await db.queryOne<{ id: string }>(
+      `SELECT id FROM call_outcomes WHERE "leadId" = $1 AND "tenantId" = $2 AND "userId" = $3 LIMIT 1`,
+      [lead.id, tenantId, userId]
+    );
+    if (outcomeEntry) return true;
+  } catch (_) {}
+
+  return false;
+}
+
+/**
+ * Scopes locked leads visibility per actor role:
+ * - Platform Admin / Company Owner: all tenant locked leads.
+ * - Team Lead: locked leads belonging to self or members of teams they lead.
+ * - Member: only their own authorized locked lead(s).
+ */
+export async function getScopedLockedLeads(actor: any, tenantId?: string): Promise<Lead[]> {
+  if (!tenantId) return [];
+  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
+  const isCompanyAdmin = actor?.role === 'admin';
+
+  const allLocked = await getLockedLeads(tenantId);
+  if (isPlatform || isCompanyAdmin) {
+    return allLocked;
+  }
+
+  let allowedUserIds: string[] = [];
+  if (actor?.role === 'team_lead') {
+    const teamUserIds = await getTeamLeadScopedUserIds(actor.id, tenantId);
+    allowedUserIds = [actor.id, ...teamUserIds];
+  } else {
+    allowedUserIds = [actor.id];
+  }
+
+  const allowedSet = new Set(allowedUserIds);
+
+  let getSessionById: any = null;
+  try {
+    getSessionById = require('./sessionManager').getSessionById;
+  } catch (_) {}
+
+  return allLocked.filter(lead => {
+    // Check assignedTo
+    if (lead.assignedTo && allowedSet.has(lead.assignedTo)) {
+      return true;
+    }
+    // Check lockedBy directly (if lockedBy stores userId)
+    if (lead.lockedBy && allowedSet.has(lead.lockedBy)) {
+      return true;
+    }
+    // Check session corresponding to lockedBy
+    if (lead.lockedBy && getSessionById) {
+      try {
+        const sess = getSessionById(lead.lockedBy);
+        if (sess && sess.userId && allowedSet.has(sess.userId)) {
+          return true;
+        }
+      } catch (_) {}
+    }
+    return false;
+  });
 }
 
 

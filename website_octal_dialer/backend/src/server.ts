@@ -92,6 +92,8 @@ import {
   canDeleteLead,
   getScopedLeadFilterSql,
   getScopedLogs,
+  canDispositionLead,
+  getScopedLockedLeads,
   db
 } from './databaseManager';
 import { dbAdapter } from './db/dbAdapter';
@@ -1162,12 +1164,12 @@ app.get('/api/commands', requireAuth, async (req, res) => {
   res.json(await getActiveCommands(tenantId));
 });
 
-// GET /api/leads/locked — list all currently locked leads
+// GET /api/leads/locked — list all currently locked leads (scoped per actor role)
 app.get('/api/leads/locked', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const isPlatformAdmin = user?.role === 'platform_admin' || user?.role === 'master_admin';
-  const tenantId = isPlatformAdmin ? (req.query.tenantId as string | undefined) : user?.tenantId;
-  res.json(await getLockedLeads(tenantId));
+  const tenantId = isPlatformAdmin ? (req.query.tenantId as string | undefined || user?.tenantId) : user?.tenantId;
+  res.json(await getScopedLockedLeads(user, tenantId));
 });
 
 // POST /api/devices/register — register or update a mobile device
@@ -2233,7 +2235,18 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, requirePermission(['
     return;
   }
 
-  const leadRow = await db.queryOne('SELECT "campaignId" FROM leads WHERE id = $1 AND "tenantId" = $2', [leadId, tenantId]) as any;
+  const lead = await getLead(leadId, tenantId);
+  if (!lead) {
+    res.status(404).json({ error: 'Lead not found in your organization.' });
+    return;
+  }
+
+  // Authorization check: EITHER canEditLead is true OR authoritative call/session/lock/journal proves user handled this lead
+  const authorized = await canDispositionLead(user, lead, tenantId);
+  if (!authorized) {
+    res.status(403).json({ error: 'Forbidden: You do not have authorization to disposition this lead.' });
+    return;
+  }
 
   const updated = await updateLogDisposition({
     leadId,
@@ -2246,7 +2259,7 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, requirePermission(['
   });
 
   if (updated) {
-    const nextLead = leadRow?.campaignId ? await getNextPendingLead(leadRow.campaignId, tenantId, leadId) : null;
+    const nextLead = lead.campaignId ? await getNextPendingLead(lead.campaignId, tenantId, leadId) : null;
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     res.json({
       success: true,
@@ -3498,9 +3511,62 @@ const serveApkHandler = (_req: express.Request, res: express.Response): void => 
 app.get('/download/apk', serveApkHandler);
 app.get('/api/download/apk', serveApkHandler);
 
+// Helper to structurally authorize manual lead imports per SaaS Structure V2
+async function authorizeLeadImport(user: any, tenantId: string, campaignId?: string): Promise<{ authorized: boolean; error?: string; status?: number }> {
+  if (!user || !tenantId) {
+    return { authorized: false, status: 401, error: 'Unauthorized: missing tenant identity' };
+  }
+
+  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const isCompanyAdmin = user.role === 'admin';
+
+  if (isPlatform || isCompanyAdmin) {
+    if (campaignId) {
+      const c = await getCampaignById(campaignId, tenantId);
+      if (!c) {
+        return { authorized: false, status: 404, error: 'Campaign not found in your organization.' };
+      }
+    }
+    return { authorized: true };
+  }
+
+  if (user.role === 'team_lead') {
+    const perms = await getEffectivePermissions(user);
+    if (!perms.has('*') && !perms.has('all') && !perms.has('leads:import') && !perms.has('leads:add')) {
+      return { authorized: false, status: 403, error: 'Forbidden: Team Leads require leads:import permission.' };
+    }
+
+    if (!campaignId) {
+      return { authorized: false, status: 403, error: 'Forbidden: Team Leads cannot create company-wide campaigns. Provide a campaignId assigned to your led team.' };
+    }
+
+    const c = await getCampaignById(campaignId, tenantId);
+    if (!c) {
+      return { authorized: false, status: 404, error: 'Campaign not found in your organization.' };
+    }
+
+    const ledCampaignIds = await getCampaignIdsForLedTeams(user.id, tenantId);
+    if (!ledCampaignIds.includes(campaignId)) {
+      return { authorized: false, status: 403, error: 'Forbidden: Team Leads may only import leads into campaigns assigned to teams they lead.' };
+    }
+
+    return { authorized: true };
+  }
+
+  // Member / Agent: deny manual import for this release
+  return { authorized: false, status: 403, error: 'Forbidden: Manual lead import is restricted to Company Owners and Team Leads.' };
+}
+
 // REST: Manual leads import (protected)
 app.post('/api/leads/import', requireAuth, async (req, res) => {
   try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
     const { campaignName, campaignId, fileName, leads } = req.body as {
       campaignName?: string;
       campaignId?: string;
@@ -3513,9 +3579,9 @@ app.post('/api/leads/import', requireAuth, async (req, res) => {
       return;
     }
 
-    const tenantId = (req as any).user?.tenantId;
-    if (!tenantId) {
-      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    const authCheck = await authorizeLeadImport(user, tenantId, campaignId);
+    if (!authCheck.authorized) {
+      res.status(authCheck.status || 403).json({ error: authCheck.error });
       return;
     }
 
@@ -3564,6 +3630,12 @@ app.post('/api/leads/import/mobile', requireAuth, async (req, res) => {
       return;
     }
 
+    const authCheck = await authorizeLeadImport(user, tenantId, campaignId);
+    if (!authCheck.authorized) {
+      res.status(authCheck.status || 403).json({ error: authCheck.error });
+      return;
+    }
+
     // Tenant identity is strictly derived from authenticated user JWT
     const result = campaignId
       ? await appendLeadsToCampaign(campaignId, leads, tenantId)
@@ -3590,12 +3662,13 @@ app.post('/api/leads/import/mobile', requireAuth, async (req, res) => {
 // REST: Export logs to CSV (protected)
 app.get('/api/logs/export', requireAuth, requirePermission(['history:view_logs', 'calls:view_queue']), async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId;
+    const caller = (req as any).user;
+    const tenantId = caller?.tenantId;
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
     }
-    const logs = await getLogs(tenantId);
+    const logs = await getScopedLogs(caller, tenantId);
 
     const header = ['Time', 'Lead Name', 'Phone', 'Campaign', 'Outcome', 'Duration (s)'];
     const rows = logs.map(l => [

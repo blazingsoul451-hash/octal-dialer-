@@ -52,7 +52,10 @@ function createInMemoryDb() {
     team_members: [],
     campaign_teams: [],
     team_settings: [],
-    leads: []
+    leads: [],
+    call_dispatch_journal: [],
+    call_outcomes: [],
+    campaigns: []
   };
 
   return {
@@ -77,6 +80,15 @@ function createInMemoryDb() {
       if (sql.includes('FROM leads WHERE id = $1 AND "tenantId" = $2')) {
         return tables.leads.find(l => l.id === params[0] && l.tenantId === params[1]) || null;
       }
+      if (sql.includes('FROM call_dispatch_journal WHERE "leadId" = $1 AND "tenantId" = $2 AND "userId" = $3')) {
+        return (tables.call_dispatch_journal || []).find(j => j.leadId === params[0] && j.tenantId === params[1] && j.userId === params[2]) || null;
+      }
+      if (sql.includes('FROM call_outcomes WHERE "leadId" = $1 AND "tenantId" = $2 AND "userId" = $3')) {
+        return (tables.call_outcomes || []).find(o => o.leadId === params[0] && o.tenantId === params[1] && o.userId === params[2]) || null;
+      }
+      if (sql.includes('FROM campaigns WHERE id = $1 AND "tenantId" = $2')) {
+        return (tables.campaigns || []).find(c => c.id === params[0] && c.tenantId === params[1]) || null;
+      }
       if (sql.includes('SELECT COUNT(*)::int AS count FROM team_members')) {
         return { count: 0 };
       }
@@ -86,6 +98,13 @@ function createInMemoryDb() {
       return null;
     },
     queryAll: async (sql, params = []) => {
+      if (sql.includes('FROM leads WHERE "lockedBy" IS NOT NULL')) {
+        let results = (tables.leads || []).filter(l => l.lockedBy != null && l.status !== 'COMPLETED');
+        if (params.length > 0) {
+          results = results.filter(l => l.tenantId === params[0]);
+        }
+        return results;
+      }
       if (sql.includes('FROM teams t') && sql.includes('t."leaderId" = $2')) {
         return tables.teams.filter(t => t.tenantId === params[0] && (t.leaderId === params[1] || (tables.team_members && tables.team_members.some(m => m.teamId === t.id && m.userId === params[1] && m.roleInTeam === 'leader'))));
       }
@@ -149,7 +168,7 @@ function createInMemoryDb() {
 
 async function runAllTests() {
   let passedCount = 0;
-  const totalTests = 40;
+  const totalTests = 45;
 
   async function check(num, name, fn) {
     try {
@@ -163,6 +182,7 @@ async function runAllTests() {
   }
 
   const memDb = createInMemoryDb();
+  const memSessions = new Map();
   const mockDbAdapter = {
     ...memDb,
     init: async () => {},
@@ -183,11 +203,12 @@ async function runAllTests() {
     './db/dbAdapter': { dbAdapter: mockDbAdapter, db: mockDbAdapter },
     './authManager': authMgr,
     './entitlementManager': { checkLimit: () => ({ allowed: true }), initializeCatalogPlans: () => {} },
+    './sessionManager': { getSessionById: id => memSessions.get(id) },
     crypto: require('crypto')
   });
 
   console.log('===============================================================');
-  console.log('SAAS STRUCTURE V2: EXECUTING 40 COMPREHENSIVE VERIFICATION TESTS');
+  console.log('SAAS STRUCTURE V2: EXECUTING 45 COMPREHENSIVE VERIFICATION TESTS');
   console.log('===============================================================\n');
 
   // ── GROUP A: Role Transition Matrix (Section 1) ────────────────────────────
@@ -688,6 +709,126 @@ async function runAllTests() {
   await check(40, 'Real PostgreSQL 18.4 engine executes migration chain schema.sql -> 012 -> 013 and verifies all catalog constraints and DML', async () => {
     const { runRealPgMigrationTest } = require('./test_migration_013_real_pg.cjs');
     await runRealPgMigrationTest();
+  });
+
+  // ── GROUP I: Final Five Structural Pre-Deploy Fixes ────────────────────────
+  console.log('\n── GROUP I: Final Five Structural Pre-Deploy Fixes ──');
+
+  await check(41, 'Packaging script excludes signing keys (*.jks, *.keystore, *.p12, *.pfx) and produced ZIPs contain 0 secrets/keys', async () => {
+    const pkgScript = fs.readFileSync(path.join(root, '../../../scripts/package_final_review_zip.cjs'), 'utf8');
+    assert.ok(pkgScript.includes('.keystore'));
+    assert.ok(pkgScript.includes('.jks'));
+    assert.ok(pkgScript.includes('.p12'));
+    assert.ok(pkgScript.includes('.pfx'));
+    assert.ok(pkgScript.includes('Security Audit PASSED'));
+
+    // Scan actual desktop review zip
+    const unzipper = require('unzipper');
+    const zipPath = 'C:\\Users\\ice\\Desktop\\octal-dialer-review.zip';
+    if (fs.existsSync(zipPath)) {
+      const forbidden = [];
+      await new Promise((resolve, reject) => {
+        fs.createReadStream(zipPath)
+          .pipe(unzipper.Parse())
+          .on('entry', entry => {
+            const p = entry.path.toLowerCase();
+            if (p.endsWith('.keystore') || p.endsWith('.jks') || p.endsWith('.p12') || p.endsWith('.pfx') || p.endsWith('.pem') || p.endsWith('.key') || p.includes('important_secrets')) {
+              forbidden.push(entry.path);
+            }
+            entry.autodrain();
+          })
+          .on('finish', resolve)
+          .on('error', reject);
+      });
+      assert.equal(forbidden.length, 0, 'Review ZIP must contain zero signing keys or secrets');
+    }
+  });
+
+  await check(42, 'CSV call log export route (GET /api/logs/export) uses getScopedLogs per actor scope', async () => {
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes("app.get('/api/logs/export'"));
+    assert.ok(serverCode.includes("const logs = await getScopedLogs(caller, tenantId);"));
+    assert.ok(!serverCode.includes("const logs = await getLogs(tenantId);\n\n    const header = ['Time'"), 'Export must never call unscoped getLogs');
+  });
+
+  await check(43, 'POST /api/logs/update and canDispositionLead: enforces authorization hierarchy without breaking dialer', async () => {
+    const member1A = { id: 'member-1A', role: 'user', tenantId: 't1' };
+    const member2A = { id: 'member-2A', role: 'user', tenantId: 't1' };
+    const lead1Actor = { id: 'lead-1', role: 'team_lead', tenantId: 't1' };
+    const adminActor = { id: 'admin1', role: 'admin', tenantId: 't1' };
+
+    const leadAssignedTo2A = { id: 'lead-assigned-2a', assignedTo: 'member-2A', tenantId: 't1', campaignId: 'c1' };
+    const leadTeam2Only = { id: 'lead-t2-only', assignedTo: 'member-2A', tenantId: 't1', campaignId: 'c-t2' };
+    const unassignedDialedLead = { id: 'lead-unassigned-dialed', assignedTo: null, tenantId: 't1', campaignId: 'c1', lockedBy: 'sess_dialer_1' };
+
+    // 1. Member 1A CANNOT disposition Member 2A's assigned lead (unauthorized)
+    assert.equal(await dbMgr.canDispositionLead(member1A, leadAssignedTo2A, 't1'), false);
+
+    // 2. Team Lead 1 CANNOT disposition Team 2's lead (outside led teams)
+    assert.equal(await dbMgr.canDispositionLead(lead1Actor, leadTeam2Only, 't1'), false);
+
+    // 3. Legitimate shared-pool caller handling unassigned lead:
+    // With active session lock:
+    memSessions.set('sess_dialer_1', { id: 'sess_dialer_1', userId: 'member-1A', tenantId: 't1' });
+    assert.equal(await dbMgr.canDispositionLead(member1A, unassignedDialedLead, 't1'), true);
+
+    // With call_dispatch_journal entry:
+    const completedUnassignedLead = { id: 'lead-unassigned-journaled', assignedTo: null, tenantId: 't1', campaignId: 'c1' };
+    memDb.tables.call_dispatch_journal.push({ leadId: 'lead-unassigned-journaled', tenantId: 't1', userId: 'member-1A' });
+    assert.equal(await dbMgr.canDispositionLead(member1A, completedUnassignedLead, 't1'), true);
+
+    // 4. Company Owner can disposition any lead
+    assert.equal(await dbMgr.canDispositionLead(adminActor, leadAssignedTo2A, 't1'), true);
+    assert.equal(await dbMgr.canDispositionLead(adminActor, unassignedDialedLead, 't1'), true);
+
+    // In server.ts: verify route checks canDispositionLead
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes('const authorized = await canDispositionLead(user, lead, tenantId);'));
+    assert.ok(serverCode.includes("res.status(403).json({ error: 'Forbidden: You do not have authorization to disposition this lead.' });"));
+  });
+
+  await check(44, 'Manual lead import (/api/leads/import & mobile) structurally scoped per actor role', async () => {
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes('async function authorizeLeadImport(user: any, tenantId: string, campaignId?: string)'));
+    assert.ok(serverCode.includes("error: 'Forbidden: Manual lead import is restricted to Company Owners and Team Leads.'"));
+    assert.ok(serverCode.includes("error: 'Forbidden: Team Leads cannot create company-wide campaigns. Provide a campaignId assigned to your led team.'"));
+    assert.ok(serverCode.includes("error: 'Forbidden: Team Leads may only import leads into campaigns assigned to teams they lead.'"));
+    assert.ok(serverCode.includes("const authCheck = await authorizeLeadImport(user, tenantId, campaignId);"));
+  });
+
+  await check(45, 'GET /api/leads/locked and getScopedLockedLeads isolate locked leads per role hierarchy', async () => {
+    const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+    assert.ok(serverCode.includes("app.get('/api/leads/locked'"));
+    assert.ok(serverCode.includes('res.json(await getScopedLockedLeads(user, tenantId));'));
+
+    // Set up mock locked leads in memDb
+    memDb.tables.leads = [
+      { id: 'lead-lock-1', assignedTo: 'member-1A', lockedBy: 'sess_1', status: 'CALLING', tenantId: 't1' },
+      { id: 'lead-lock-2', assignedTo: 'member-2A', lockedBy: 'sess_2', status: 'CALLING', tenantId: 't1' },
+      { id: 'lead-lock-foreign', assignedTo: 'other-user', lockedBy: 'sess_other', status: 'CALLING', tenantId: 't2' }
+    ];
+    memSessions.set('sess_1', { id: 'sess_1', userId: 'member-1A', tenantId: 't1' });
+    memSessions.set('sess_2', { id: 'sess_2', userId: 'member-2A', tenantId: 't1' });
+
+    const member1A = { id: 'member-1A', role: 'user', tenantId: 't1' };
+    const lead1Actor = { id: 'lead-1', role: 'team_lead', tenantId: 't1' };
+    const adminActor = { id: 'admin1', role: 'admin', tenantId: 't1' };
+
+    // Member 1A only sees own locked lead
+    const memberLocked = await dbMgr.getScopedLockedLeads(member1A, 't1');
+    assert.equal(memberLocked.length, 1);
+    assert.equal(memberLocked[0].id, 'lead-lock-1');
+
+    // Team Lead 1 sees leads of team 1 members (member-1A is in team-1, member-2A is in team-2)
+    const teamLeadLocked = await dbMgr.getScopedLockedLeads(lead1Actor, 't1');
+    assert.equal(teamLeadLocked.length, 1);
+    assert.equal(teamLeadLocked[0].id, 'lead-lock-1');
+
+    // Company Owner sees all locked leads in tenant 1 (both lead-lock-1 and lead-lock-2, but not t2)
+    const adminLocked = await dbMgr.getScopedLockedLeads(adminActor, 't1');
+    assert.equal(adminLocked.length, 2);
+    assert.ok(adminLocked.some(l => l.id === 'lead-lock-1'));
+    assert.ok(adminLocked.some(l => l.id === 'lead-lock-2'));
   });
 
   console.log('\n===============================================================');
