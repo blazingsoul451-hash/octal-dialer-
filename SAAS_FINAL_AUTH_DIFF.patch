@@ -152,10 +152,20 @@ index c270749..1f1ba45 100644
    permissions.add('calls:view_queue');
    permissions.add('calls:dial_outbound');
 diff --git a/website_octal_dialer/backend/src/databaseManager.ts b/website_octal_dialer/backend/src/databaseManager.ts
-index 07942ca..6172ca8 100644
+index 07942ca..ace1d45 100644
 --- a/website_octal_dialer/backend/src/databaseManager.ts
 +++ b/website_octal_dialer/backend/src/databaseManager.ts
-@@ -61,6 +61,8 @@ export interface TenantInfo {
+@@ -46,6 +46,9 @@ export interface Lead {
+   address?: string;
+   listingId?: string;
+   assignedTo?: string | null;
++  lockedBy?: string | null;
++  lockedAt?: string | null;
++  tenantId?: string;
+ }
+ 
+ export interface TenantInfo {
+@@ -61,6 +64,8 @@ export interface TenantInfo {
    leadPoolMode: 'shared' | 'assigned';
    maxAgents: number;
    tier: string;
@@ -164,7 +174,7 @@ index 07942ca..6172ca8 100644
  }
  
  export interface CallLog {
-@@ -1349,6 +1351,409 @@ export async function getUserScopedCampaignIds(userId: string, tenantId: string)
+@@ -1349,6 +1354,514 @@ export async function getUserScopedCampaignIds(userId: string, tenantId: string)
    return rows.map(r => r.campaignId);
  }
  
@@ -569,12 +579,117 @@ index 07942ca..6172ca8 100644
 +  `, [tenantId, ...allowedUserIds]);
 +}
 +
++/**
++ * Authorizes a user to disposition a lead.
++ * Allows disposition when EITHER:
++ * A. canEditLead(caller, lead, tenantId) is true (Company Owner, or Member assigned/collaborating)
++ * OR
++ * B. Authoritative call/session/lead-lock/journal state proves this authenticated user is the user
++ *    currently handling that exact lead/call (e.g. legitimate shared-pool caller handling unassigned lead).
++ */
++export async function canDispositionLead(caller: any, lead: any, tenantId: string): Promise<boolean> {
++  if (!caller || !lead || !tenantId) return false;
++
++  // A. Structural edit permission
++  if (await canEditLead(caller, lead, tenantId)) {
++    return true;
++  }
++
++  const userId = caller.id;
++
++  // B. Authoritative call/session/lead-lock/journal state
++  // 1. Check if the lead is currently locked by a session owned by this user
++  if (lead.lockedBy) {
++    if (lead.lockedBy === userId) return true;
++    try {
++      const { getSessionById } = require('./sessionManager');
++      const session = getSessionById(lead.lockedBy);
++      if (session && session.userId === userId && (!session.tenantId || session.tenantId === tenantId)) {
++        return true;
++      }
++    } catch (_) {}
++  }
++
++  // 2. Check call dispatch journal for pre-dispatch record
++  try {
++    const journalEntry = await db.queryOne<{ callId: string }>(
++      `SELECT "callId" FROM call_dispatch_journal WHERE "leadId" = $1 AND "tenantId" = $2 AND "userId" = $3 LIMIT 1`,
++      [lead.id, tenantId, userId]
++    );
++    if (journalEntry) return true;
++  } catch (_) {}
++
++  // 3. Check call outcomes for completed call outcome record
++  try {
++    const outcomeEntry = await db.queryOne<{ id: string }>(
++      `SELECT id FROM call_outcomes WHERE "leadId" = $1 AND "tenantId" = $2 AND "userId" = $3 LIMIT 1`,
++      [lead.id, tenantId, userId]
++    );
++    if (outcomeEntry) return true;
++  } catch (_) {}
++
++  return false;
++}
++
++/**
++ * Scopes locked leads visibility per actor role:
++ * - Platform Admin / Company Owner: all tenant locked leads.
++ * - Team Lead: locked leads belonging to self or members of teams they lead.
++ * - Member: only their own authorized locked lead(s).
++ */
++export async function getScopedLockedLeads(actor: any, tenantId?: string): Promise<Lead[]> {
++  if (!tenantId) return [];
++  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
++  const isCompanyAdmin = actor?.role === 'admin';
++
++  const allLocked = await getLockedLeads(tenantId);
++  if (isPlatform || isCompanyAdmin) {
++    return allLocked;
++  }
++
++  let allowedUserIds: string[] = [];
++  if (actor?.role === 'team_lead') {
++    const teamUserIds = await getTeamLeadScopedUserIds(actor.id, tenantId);
++    allowedUserIds = [actor.id, ...teamUserIds];
++  } else {
++    allowedUserIds = [actor.id];
++  }
++
++  const allowedSet = new Set(allowedUserIds);
++
++  let getSessionById: any = null;
++  try {
++    getSessionById = require('./sessionManager').getSessionById;
++  } catch (_) {}
++
++  return allLocked.filter(lead => {
++    // Check assignedTo
++    if (lead.assignedTo && allowedSet.has(lead.assignedTo)) {
++      return true;
++    }
++    // Check lockedBy directly (if lockedBy stores userId)
++    if (lead.lockedBy && allowedSet.has(lead.lockedBy)) {
++      return true;
++    }
++    // Check session corresponding to lockedBy
++    if (lead.lockedBy && getSessionById) {
++      try {
++        const sess = getSessionById(lead.lockedBy);
++        if (sess && sess.userId && allowedSet.has(sess.userId)) {
++          return true;
++        }
++      } catch (_) {}
++    }
++    return false;
++  });
++}
++
 +
 +
  // ΓöÇΓöÇΓöÇ Super Admin Cross-Tenant Management APIs ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
  
  export interface SuperAdminTenantSummary {
-@@ -1356,10 +1761,12 @@ export interface SuperAdminTenantSummary {
+@@ -1356,10 +1869,12 @@ export interface SuperAdminTenantSummary {
    name: string;
    slug: string;
    status: string;
@@ -588,7 +703,7 @@ index 07942ca..6172ca8 100644
    createdAt: string;
    totalUsers: number;
    totalLeads: number;
-@@ -1377,6 +1784,8 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
+@@ -1377,6 +1892,8 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
        COALESCE(t."leadPoolMode", 'shared') as "leadPoolMode",
        COALESCE(t."maxAgents", 10) as "maxAgents",
        COALESCE(t.tier, 'standard') as tier,
@@ -597,7 +712,7 @@ index 07942ca..6172ca8 100644
        t."createdAt",
        (SELECT COUNT(*) FROM users u WHERE u."tenantId" = t.id) as "totalUsers",
        (SELECT COUNT(*) FROM leads l WHERE l."tenantId" = t.id) as "totalLeads",
-@@ -1394,6 +1803,8 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
+@@ -1394,6 +1911,8 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
      leadPoolMode: (t.leadPoolMode === 'assigned' ? 'assigned' : 'shared'),
      maxAgents: Number(t.maxAgents) || 10,
      tier: t.tier || 'standard',
