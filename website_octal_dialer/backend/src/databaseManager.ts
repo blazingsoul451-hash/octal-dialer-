@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { checkLimit, initializeCatalogPlans } from './entitlementManager';
 import { dbAdapter, DbAdapter } from './db/dbAdapter';
+import { isInMemoryDatabase } from './db/pool';
 
 // ─── Open PostgreSQL Database Adapter ─────────────────────────────────────────
 const db: DbAdapter = dbAdapter;
@@ -86,6 +87,148 @@ export async function getTenantById(tenantId: string): Promise<TenantInfo | unde
   return db.queryOne<TenantInfo>(`SELECT * FROM tenants WHERE id = $1`, [tenantId]);
 }
 
+// ─── Workspace Invitations & Seat Usage ─────────────────────────────────────────
+
+export interface WorkspaceInvitation {
+  id: string;
+  tenantId: string;
+  email: string;
+  role: 'team_lead' | 'user' | 'agent';
+  teamId?: string | null;
+  invitedByUserId: string;
+  tokenHash: string;
+  status: 'PENDING' | 'ACCEPTED' | 'EXPIRED' | 'REVOKED';
+  initialModules?: string | null;
+  expiresAt: string;
+  createdAt: string;
+  acceptedAt?: string | null;
+  acceptedByUserId?: string | null;
+}
+
+export interface TenantSeatUsage {
+  maxSeats: number;
+  activeSeats: number;
+  pendingInvitations: number;
+  availableSeats: number;
+}
+
+export async function getTenantSeatUsage(tenantId: string): Promise<TenantSeatUsage> {
+  const tenant = await getTenantById(tenantId);
+  const sub = await db.queryOne<{ planId: string }>(
+    `SELECT "planId" FROM subscriptions WHERE "tenantId" = $1 AND status IN ('active', 'trialing') ORDER BY "createdAt" DESC LIMIT 1`,
+    [tenantId]
+  );
+  let maxSeats = tenant?.maxAgents || 10;
+  if (sub?.planId) {
+    const pf = await db.queryOne<{ value: string }>(
+      `SELECT value FROM plan_features WHERE "planId" = $1 AND "featureKey" = 'maxUsers'`,
+      [sub.planId]
+    );
+    if (pf?.value) {
+      const parsed = parseInt(pf.value, 10);
+      if (!isNaN(parsed) && parsed > 0) maxSeats = parsed;
+    }
+  }
+
+  const activeRow = await db.queryOne<{ count: string | number }>(
+    `SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND role NOT IN ('platform_admin', 'master_admin') AND status = 'Active'`,
+    [tenantId]
+  );
+  const activeSeats = parseInt(String(activeRow?.count || '0'), 10);
+
+  const nowIso = new Date().toISOString();
+  const pendingRow = await db.queryOne<{ count: string | number }>(
+    `SELECT COUNT(*) as count FROM workspace_invitations WHERE "tenantId" = $1 AND status = 'PENDING' AND "expiresAt" > $2`,
+    [tenantId, nowIso]
+  );
+  const pendingInvitations = parseInt(String(pendingRow?.count || '0'), 10);
+  const availableSeats = Math.max(0, maxSeats - (activeSeats + pendingInvitations));
+
+  return {
+    maxSeats,
+    activeSeats,
+    pendingInvitations,
+    availableSeats
+  };
+}
+
+export async function getWorkspaceInvitations(tenantId: string): Promise<WorkspaceInvitation[]> {
+  if (!tenantId) return [];
+  return db.queryAll<WorkspaceInvitation>(
+    `SELECT * FROM workspace_invitations WHERE "tenantId" = $1 ORDER BY "createdAt" DESC`,
+    [tenantId]
+  );
+}
+
+export async function getWorkspaceInvitationByTokenHash(tokenHash: string): Promise<WorkspaceInvitation | undefined> {
+  if (!tokenHash) return undefined;
+  return db.queryOne<WorkspaceInvitation>(
+    `SELECT * FROM workspace_invitations WHERE "tokenHash" = $1`,
+    [tokenHash]
+  );
+}
+
+export async function getPendingInvitationForEmail(email: string): Promise<WorkspaceInvitation | undefined> {
+  if (!email) return undefined;
+  const nowIso = new Date().toISOString();
+  return db.queryOne<WorkspaceInvitation>(
+    `SELECT * FROM workspace_invitations WHERE LOWER(email) = LOWER($1) AND status = 'PENDING' AND "expiresAt" > $2 ORDER BY "createdAt" DESC LIMIT 1`,
+    [email.trim(), nowIso]
+  );
+}
+
+export async function createWorkspaceInvitation(data: {
+  id: string;
+  tenantId: string;
+  email: string;
+  role: 'team_lead' | 'user';
+  teamId?: string | null;
+  invitedByUserId: string;
+  tokenHash: string;
+  initialModules?: string | null;
+  expiresAt: string;
+  createdAt: string;
+}): Promise<WorkspaceInvitation> {
+  await db.execute(
+    `INSERT INTO workspace_invitations (id, "tenantId", email, role, "teamId", "invitedByUserId", "tokenHash", status, "initialModules", "expiresAt", "createdAt")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $9, $10)`,
+    [
+      data.id,
+      data.tenantId,
+      data.email.toLowerCase().trim(),
+      data.role,
+      data.teamId || null,
+      data.invitedByUserId,
+      data.tokenHash,
+      data.initialModules || null,
+      data.expiresAt,
+      data.createdAt
+    ]
+  );
+
+  return (await db.queryOne<WorkspaceInvitation>(
+    `SELECT * FROM workspace_invitations WHERE id = $1`,
+    [data.id]
+  ))!;
+}
+
+export async function revokeWorkspaceInvitation(id: string, tenantId: string): Promise<boolean> {
+  const res = await db.execute(
+    `UPDATE workspace_invitations SET status = 'REVOKED' WHERE id = $1 AND "tenantId" = $2 AND status = 'PENDING'`,
+    [id, tenantId]
+  );
+  return res.rowCount > 0;
+}
+
+export async function acceptWorkspaceInvitation(id: string, userId: string): Promise<boolean> {
+  const nowIso = new Date().toISOString();
+  const res = await db.execute(
+    `UPDATE workspace_invitations SET status = 'ACCEPTED', "acceptedAt" = $1, "acceptedByUserId" = $2 WHERE id = $3 AND status = 'PENDING'`,
+    [nowIso, userId, id]
+  );
+  return res.rowCount > 0;
+}
+
 export async function getNextPendingLead(campaignId: string, tenantId: string, afterLeadId?: string, userId?: string): Promise<Lead | null> {
   if (!campaignId || !tenantId) return null;
 
@@ -144,7 +287,9 @@ export async function createCampaign(
   return db.withTransaction(async () => {
     // Serialize tenant imports across API processes before checking existing rows
     // or plan limits. The lock is released with the transaction, including rollback.
-    await db.execute("SELECT pg_advisory_xact_lock(hashtext('octal-campaign-import'), hashtext($1))", [tenantId]);
+    if (process.env.DATABASE_URL && !isInMemoryDatabase()) {
+      await db.execute("SELECT pg_advisory_xact_lock(hashtext('octal-campaign-import'), hashtext($1))", [tenantId]);
+    }
     return createCampaignInTransaction(name, fileName, rawLeads, tenantId, options);
   });
 }
@@ -830,10 +975,13 @@ export const ALL_BUSINESS_MODULES = [
   'octalDialer',
   'leads',
   'reports',
-  'googleScraper',
   'autoEmailer',
-  'facebookScraper',
   'facebookPoster'
+] as const;
+
+export const LEGACY_BUSINESS_MODULES = [
+  'googleScraper',
+  'facebookScraper'
 ] as const;
 
 export async function hasUserModulePermission(userId: string, tenantId: string, moduleId: string): Promise<boolean> {
@@ -1356,14 +1504,13 @@ export async function getUserScopedCampaignIds(userId: string, tenantId: string)
 
 export async function getTeamsLedByUser(userId: string, tenantId: string): Promise<TeamRecord[]> {
   const teams = await db.queryAll<TeamRecord>(`
-    SELECT t.id, t.name, t.description, t."leaderId", t."tenantId", t.status, t."createdAt", t."updatedAt",
+    SELECT DISTINCT t.id, t.name, t.description, t."leaderId", t."tenantId", t.status, t."createdAt", t."updatedAt",
            u."displayName" as "leaderName"
     FROM teams t
     LEFT JOIN users u ON u.id = t."leaderId"
+    LEFT JOIN team_members tm ON tm."teamId" = t.id AND tm."userId" = $2 AND tm."roleInTeam" = 'leader'
     WHERE t."tenantId" = $1 AND (
-      t."leaderId" = $2 OR EXISTS (
-        SELECT 1 FROM team_members tm WHERE tm."teamId" = t.id AND tm."userId" = $2 AND tm."roleInTeam" = 'leader'
-      )
+      t."leaderId" = $2 OR tm.id IS NOT NULL
     )
     ORDER BY t."createdAt" DESC
   `, [tenantId, userId]);
@@ -1894,13 +2041,29 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
       COALESCE(t.tier, 'standard') as tier,
       COALESCE(t."customerType", 'COMPANY') as "customerType",
       COALESCE(t."maxTeamVisibility", 'TEAM_COLLABORATE') as "maxTeamVisibility",
-      t."createdAt",
-      (SELECT COUNT(*) FROM users u WHERE u."tenantId" = t.id) as "totalUsers",
-      (SELECT COUNT(*) FROM leads l WHERE l."tenantId" = t.id) as "totalLeads",
-      (SELECT COUNT(*) FROM campaigns c WHERE c."tenantId" = t.id) as "totalCampaigns"
+      t."createdAt"
     FROM tenants t
     ORDER BY t."createdAt" DESC
   `);
+
+  let userCountMap: Record<string, number> = {};
+  let leadCountMap: Record<string, number> = {};
+  let campCountMap: Record<string, number> = {};
+
+  try {
+    const userCounts = await db.queryAll<any>(`SELECT "tenantId", COUNT(*) as cnt FROM users GROUP BY "tenantId"`);
+    userCounts.forEach((r: any) => { if (r.tenantId) userCountMap[r.tenantId] = Number(r.cnt) || 0; });
+  } catch {}
+
+  try {
+    const leadCounts = await db.queryAll<any>(`SELECT "tenantId", COUNT(*) as cnt FROM leads GROUP BY "tenantId"`);
+    leadCounts.forEach((r: any) => { if (r.tenantId) leadCountMap[r.tenantId] = Number(r.cnt) || 0; });
+  } catch {}
+
+  try {
+    const campCounts = await db.queryAll<any>(`SELECT "tenantId", COUNT(*) as cnt FROM campaigns GROUP BY "tenantId"`);
+    campCounts.forEach((r: any) => { if (r.tenantId) campCountMap[r.tenantId] = Number(r.cnt) || 0; });
+  } catch {}
 
   return tenants.map(t => ({
     id: t.id,
@@ -1914,9 +2077,9 @@ export async function getAllTenantsSummary(): Promise<SuperAdminTenantSummary[]>
     customerType: (t.customerType === 'PERSONAL' ? 'PERSONAL' : 'COMPANY'),
     maxTeamVisibility: (t.maxTeamVisibility || 'TEAM_COLLABORATE'),
     createdAt: t.createdAt,
-    totalUsers: Number(t.totalUsers) || 0,
-    totalLeads: Number(t.totalLeads) || 0,
-    totalCampaigns: Number(t.totalCampaigns) || 0
+    totalUsers: userCountMap[t.id] || 0,
+    totalLeads: leadCountMap[t.id] || 0,
+    totalCampaigns: campCountMap[t.id] || 0
   }));
 }
 
@@ -1957,11 +2120,1104 @@ export async function getGlobalSuperAdminMetrics(): Promise<{
   };
 }
 
+// ─── PLATFORM OWNER LIVE OBSERVABILITY & SYNC DATA LAYER ──────────────────────
+
+export interface GlobalPlatformOverview {
+  // Tenants
+  totalTenants: number;
+  activeTenants: number;
+  companyTenants: number;
+  personalTenants: number;
+  suspendedTenants: number;
+  trialTenants: number;
+  pastDueTenants: number;
+  // Users
+  totalUsers: number;
+  companyOwners: number;
+  teamLeads: number;
+  members: number;
+  platformAdmins: number;
+  // Leads & Campaigns
+  totalLeads: number;
+  newLeadsToday: number;
+  activeCampaigns: number;
+  totalCampaigns: number;
+  // Calls
+  callsToday: number;
+  connectedCallsToday: number;
+  // Devices
+  connectedMobileDevices: number;
+  offlineDevices: number;
+  totalDevices: number;
+  // Commercial
+  activeSubscriptions: number;
+  trialAccounts: number;
+  pastDueAccounts: number;
+  canceledAccounts: number;
+  // Metadata & Timestamps
+  lastPlatformActivity: string | null;
+  serverTimestamp: string;
+  dataUnavailable?: boolean;
+}
+
+export async function getGlobalPlatformOverview(): Promise<GlobalPlatformOverview> {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+
+  let totalTenants = 0;
+  let activeTenants = 0;
+  let companyTenants = 0;
+  let personalTenants = 0;
+  let suspendedTenants = 0;
+  let trialTenants = 0;
+  let pastDueTenants = 0;
+
+  try {
+    const tenantRows = await db.queryAll<any>(`
+      SELECT status, COALESCE("customerType", 'COMPANY') as ctype, COUNT(*) as cnt 
+      FROM tenants 
+      GROUP BY status, "customerType"
+    `);
+    tenantRows.forEach(r => {
+      const c = Number(r.cnt) || 0;
+      totalTenants += c;
+      if (r.status === 'active') activeTenants += c;
+      if (r.status === 'suspended') suspendedTenants += c;
+      if (r.status === 'trial') trialTenants += c;
+      if (r.status === 'past_due') pastDueTenants += c;
+      if (r.ctype === 'PERSONAL') personalTenants += c;
+      else companyTenants += c;
+    });
+  } catch (err) {
+    console.error('[Observability] Tenants query error:', err);
+  }
+
+  let totalUsers = 0;
+  let companyOwners = 0;
+  let teamLeads = 0;
+  let members = 0;
+  let platformAdmins = 0;
+
+  try {
+    const userRows = await db.queryAll<any>(`SELECT role, COUNT(*) as cnt FROM users GROUP BY role`);
+    userRows.forEach(r => {
+      const c = Number(r.cnt) || 0;
+      if (r.role === 'admin') companyOwners += c;
+      else if (r.role === 'team_lead') teamLeads += c;
+      else if (r.role === 'platform_admin' || r.role === 'master_admin') platformAdmins += c;
+      else members += c;
+    });
+    // Customer total users excludes platform_admin & master_admin
+    totalUsers = companyOwners + teamLeads + members;
+  } catch (err) {
+    console.error('[Observability] Users query error:', err);
+  }
+
+  let totalLeads = 0;
+  let newLeadsToday = 0;
+  try {
+    const leadsCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM leads`);
+    totalLeads = Number(leadsCount?.c || 0);
+    const leadsTodayCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM leads WHERE "createdAt" >= $1`, [todayStart]);
+    newLeadsToday = Number(leadsTodayCount?.c || 0);
+  } catch (err) {
+    console.error('[Observability] Leads query error:', err);
+  }
+
+  let totalCampaigns = 0;
+  let activeCampaigns = 0;
+  try {
+    const campRows = await db.queryAll<any>(`SELECT status, COUNT(*) as cnt FROM campaigns GROUP BY status`);
+    campRows.forEach(r => {
+      const c = Number(r.cnt) || 0;
+      totalCampaigns += c;
+      if (r.status === 'ACTIVE' || r.status === 'active') activeCampaigns += c;
+    });
+  } catch (err) {
+    console.error('[Observability] Campaigns query error:', err);
+  }
+
+  let callsToday = 0;
+  let connectedCallsToday = 0;
+  try {
+    const callsCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM call_logs WHERE timestamp >= $1`, [todayStart]);
+    callsToday = Number(callsCount?.c || 0);
+    const connectedCount = await db.queryOne<{ c: string | number }>(`
+      SELECT COUNT(*) as c FROM call_logs 
+      WHERE timestamp >= $1 AND (duration > 0 OR outcome IN ('ANSWERED', 'COMPLETED', 'CONNECTED'))
+    `, [todayStart]);
+    connectedCallsToday = Number(connectedCount?.c || 0);
+  } catch (err) {
+    console.error('[Observability] Calls query error:', err);
+  }
+
+  let connectedMobileDevices = 0;
+  let offlineDevices = 0;
+  let totalDevices = 0;
+  try {
+    const devRows = await db.queryAll<any>(`SELECT status, COUNT(*) as cnt FROM devices GROUP BY status`);
+    devRows.forEach(r => {
+      const c = Number(r.cnt) || 0;
+      totalDevices += c;
+      if (r.status === 'ONLINE' || r.status === 'online') connectedMobileDevices += c;
+      else offlineDevices += c;
+    });
+  } catch (err) {
+    console.error('[Observability] Devices query error:', err);
+  }
+
+  let activeSubscriptions = 0;
+  let trialAccounts = 0;
+  let pastDueAccounts = 0;
+  let canceledAccounts = 0;
+  try {
+    const subRows = await db.queryAll<any>(`SELECT status, COUNT(*) as cnt FROM subscriptions GROUP BY status`);
+    subRows.forEach(r => {
+      const c = Number(r.cnt) || 0;
+      if (r.status === 'active') activeSubscriptions += c;
+      else if (r.status === 'trial') trialAccounts += c;
+      else if (r.status === 'past_due') pastDueAccounts += c;
+      else if (r.status === 'canceled' || r.status === 'cancelled') canceledAccounts += c;
+    });
+  } catch (err) {
+    console.error('[Observability] Subscriptions query error:', err);
+  }
+
+  let lastPlatformActivity: string | null = null;
+  try {
+    const latestCall = await db.queryOne<any>(`SELECT timestamp FROM call_logs ORDER BY timestamp DESC LIMIT 1`);
+    const latestAudit = await db.queryOne<any>(`SELECT timestamp FROM audit_logs_admin ORDER BY timestamp DESC LIMIT 1`);
+    const candidates = [latestCall?.timestamp, latestAudit?.timestamp, now.toISOString()].filter(Boolean);
+    candidates.sort().reverse();
+    lastPlatformActivity = candidates[0] || null;
+  } catch {}
+
+  return {
+    totalTenants,
+    activeTenants,
+    companyTenants,
+    personalTenants,
+    suspendedTenants,
+    trialTenants,
+    pastDueTenants,
+    totalUsers,
+    companyOwners,
+    teamLeads,
+    members,
+    platformAdmins,
+    totalLeads,
+    newLeadsToday,
+    activeCampaigns,
+    totalCampaigns,
+    callsToday,
+    connectedCallsToday,
+    connectedMobileDevices,
+    offlineDevices,
+    totalDevices,
+    activeSubscriptions,
+    trialAccounts,
+    pastDueAccounts,
+    canceledAccounts,
+    lastPlatformActivity,
+    serverTimestamp: now.toISOString()
+  };
+}
+
+export interface DetailedTenantRecord {
+  id: string;
+  name: string;
+  slug: string;
+  customerType: 'COMPANY' | 'PERSONAL';
+  status: 'active' | 'suspended' | 'trial' | 'past_due';
+  primaryOwner: {
+    username: string;
+    email: string | null;
+    displayName?: string;
+  };
+  plan: string;
+  subscriptionStatus: string;
+  moduleEntitlements: string[];
+  createdAt: string;
+  lastActivityAt: string | null;
+  userCount: number;
+  teamCount: number;
+  teamLeadCount: number;
+  memberCount: number;
+  leadCount: number;
+  campaignCount: number;
+  callsToday: number;
+  callsThisMonth: number;
+  connectedDevices: number;
+  offlineDevices: number;
+  activeSockets: number;
+  runningJobs: { scraper: number; emailer: number; facebook: number };
+  errorCount: number;
+  leadPoolMode: 'shared' | 'assigned';
+  healthStatus: 'HEALTHY' | 'WARNING' | 'DEGRADED' | 'OFFLINE';
+  healthReasons: string[];
+}
+
+// ============================================================================
+// CANONICAL MODULE CATALOG & ENTITLEMENT HIERARCHY
+// ============================================================================
+
+export interface CanonicalModule {
+  id: string;
+  key: string;
+  label: string;
+  icon: string;
+  desc: string;
+  aliases?: string[];
+}
+
+export const CANONICAL_MODULES: CanonicalModule[] = [
+  { id: 'crm', key: 'crm', label: 'CRM Workspace', icon: '👥', desc: 'Contacts & customer intelligence' },
+  { id: 'campaigns', key: 'campaigns', label: 'Campaigns', icon: '📂', desc: 'Campaign pipelines & dialing queues' },
+  { id: 'leads', key: 'leads', label: 'Leads Database', icon: '🗄️', desc: 'Contact explorer & imports' },
+  { id: 'dialer', key: 'dialer', aliases: ['octalDialer'], label: 'OCTAL Dialer', icon: '📞', desc: 'GSM auto-dialer & telephony' },
+  { id: 'reports', key: 'reports', aliases: ['analytics'], label: 'Reports & Analytics', icon: '📊', desc: 'Call metrics & performance exports' },
+  { id: 'auto_emailer', key: 'auto_emailer', aliases: ['autoEmailer'], label: 'Email Manager', icon: '✉️', desc: 'Cold email sequences & SMTP' },
+  { id: 'facebook_poster', key: 'facebook_poster', aliases: ['facebookPoster'], label: 'FB Auto Poster', icon: '📤', desc: 'Scheduled Facebook postings' }
+];
+
+export const LEGACY_SCRAPER_MODULES: CanonicalModule[] = [
+  { id: 'google_scraper', key: 'google_scraper', aliases: ['googleScraper'], label: 'Google Scraper', icon: '🔍', desc: 'Google Maps B2B lead extractor (Lead-Gen)' },
+  { id: 'facebook_scraper', key: 'facebook_scraper', aliases: ['facebookScraper'], label: 'Facebook Scraper', icon: '📘', desc: 'Facebook group member extractor (Lead-Gen)' }
+];
+
+export const ALL_CANONICAL_MODULES: CanonicalModule[] = [
+  ...CANONICAL_MODULES,
+  ...LEGACY_SCRAPER_MODULES
+];
+
+export function normalizeModuleKey(rawKey: string): string {
+  const clean = (rawKey || '').trim();
+  for (const mod of ALL_CANONICAL_MODULES) {
+    if (mod.id === clean || mod.key === clean) return mod.id;
+    if (mod.aliases && mod.aliases.includes(clean)) return mod.id;
+  }
+  return clean;
+}
+
+export async function getTenantModuleEntitlements(tenantId: string): Promise<Record<string, boolean>> {
+  const result: Record<string, boolean> = {};
+  ALL_CANONICAL_MODULES.forEach(m => {
+    result[m.id] = true;
+    if (m.aliases) {
+      m.aliases.forEach(a => { result[a] = true; });
+    }
+  });
+
+  if (!tenantId) return result;
+
+  try {
+    const rows = await db.queryAll<{ moduleId: string; enabled: number }>(`
+      SELECT "moduleId", enabled FROM tenant_module_entitlements WHERE "tenantId" = $1
+    `, [tenantId]);
+
+    for (const r of rows) {
+      const canonical = normalizeModuleKey(r.moduleId);
+      const isEnabled = Number(r.enabled) === 1;
+      result[canonical] = isEnabled;
+      const modDef = CANONICAL_MODULES.find(m => m.id === canonical);
+      if (modDef?.aliases) {
+        modDef.aliases.forEach(a => { result[a] = isEnabled; });
+      }
+    }
+  } catch (err) {
+    console.error(`[getTenantModuleEntitlements] Error querying entitlements for ${tenantId}:`, err);
+  }
+
+  return result;
+}
+
+export async function setTenantModuleEntitlement(
+  tenantId: string,
+  moduleId: string,
+  enabled: boolean,
+  updatedBy: string
+): Promise<void> {
+  const canonicalId = normalizeModuleKey(moduleId);
+  const enabledInt = enabled ? 1 : 0;
+  const now = new Date().toISOString();
+  const id = 'tme_' + crypto.randomUUID();
+
+  await db.execute(`
+    INSERT INTO tenant_module_entitlements (id, "tenantId", "moduleId", enabled, "updatedBy", "updatedAt")
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT ("tenantId", "moduleId")
+    DO UPDATE SET enabled = EXCLUDED.enabled, "updatedBy" = EXCLUDED."updatedBy", "updatedAt" = EXCLUDED."updatedAt"
+  `, [id, tenantId, canonicalId, enabledInt, updatedBy || 'platform_admin', now]);
+
+  try {
+    await db.execute(`
+      INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
+      'audit_' + crypto.randomUUID(),
+      updatedBy || 'system',
+      'TENANT_MODULE_ENTITLEMENT_CHANGED',
+      'tenant',
+      tenantId,
+      JSON.stringify({ moduleId: canonicalId, enabled, updatedBy }),
+      now,
+      tenantId
+    ]);
+  } catch (auditErr) {
+    console.warn('[setTenantModuleEntitlement] Failed writing audit log:', auditErr);
+  }
+}
+
+export async function getTenantAccessMatrix(tenantId: string): Promise<any[]> {
+  const entitlements = await getTenantModuleEntitlements(tenantId);
+  const enabledCompanyModules = CANONICAL_MODULES.filter(m => entitlements[m.id]);
+  const companyCeilingSummary = `${enabledCompanyModules.length}/${CANONICAL_MODULES.length} company modules`;
+
+  const users = await db.queryAll<any>(`
+    SELECT id, username, "displayName", email, role, status, "createdAt"
+    FROM users
+    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin')
+    ORDER BY CASE WHEN role = 'admin' THEN 1 WHEN role = 'team_lead' THEN 2 ELSE 3 END, "createdAt" ASC
+  `, [tenantId]);
+
+  const teamMembers = await db.queryAll<any>(`
+    SELECT tm."userId", t.name as "teamName"
+    FROM team_members tm
+    JOIN teams t ON t.id = tm."teamId"
+    WHERE t."tenantId" = $1
+  `, [tenantId]);
+  const userTeamsMap = new Map<string, string[]>();
+  teamMembers.forEach(tm => {
+    if (!userTeamsMap.has(tm.userId)) userTeamsMap.set(tm.userId, []);
+    userTeamsMap.get(tm.userId)!.push(tm.teamName);
+  });
+
+  const permissions = await db.queryAll<any>(`
+    SELECT "userId", "moduleId", enabled
+    FROM user_permissions
+    WHERE "tenantId" = $1
+  `, [tenantId]);
+  const userPermMap = new Map<string, Set<string>>();
+  permissions.forEach(p => {
+    if (Number(p.enabled) === 1) {
+      if (!userPermMap.has(p.userId)) userPermMap.set(p.userId, new Set());
+      userPermMap.get(p.userId)!.add(normalizeModuleKey(p.moduleId));
+    }
+  });
+
+  return users.map(u => {
+    const isOwner = u.role === 'admin';
+    const isTeamLead = u.role === 'team_lead';
+    const assignedSet = userPermMap.get(u.id) || new Set<string>();
+
+    let assignedList: string[];
+    if (isOwner) {
+      assignedList = enabledCompanyModules.map(m => m.id);
+    } else {
+      assignedList = Array.from(assignedSet);
+    }
+
+    const effectiveList = assignedList.filter(modId => entitlements[modId] === true);
+    const userTeams = userTeamsMap.get(u.id) || [];
+    const teamDisplay = isOwner 
+      ? 'Entire Company' 
+      : (userTeams.length > 0 ? userTeams.join(', ') : 'Unassigned');
+
+    const roleDisplay = isOwner ? 'Company Owner' : (isTeamLead ? 'Team Lead' : 'Member');
+
+    return {
+      userId: u.id,
+      username: u.username,
+      displayName: u.displayName || u.username,
+      email: u.email,
+      role: u.role,
+      roleDisplay,
+      teamDisplay,
+      companyCeiling: companyCeilingSummary,
+      assignedCount: assignedList.length,
+      assignedSummary: isOwner ? companyCeilingSummary : `${assignedList.length}/${enabledCompanyModules.length} assigned`,
+      effectiveCount: effectiveList.length,
+      effectiveSummary: `${effectiveList.length} effective`,
+      assignedModules: assignedList,
+      effectiveModules: effectiveList,
+      companyEntitlements: enabledCompanyModules.map(m => m.id),
+      status: u.status || 'Active'
+    };
+  });
+}
+
+export interface DetailedTenantsListResult {
+  tenants: DetailedTenantRecord[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export async function getDetailedTenantsList(options: {
+  page?: number;
+  limit?: number;
+  search?: string;
+  type?: string;
+  status?: string;
+  health?: string;
+} = {}): Promise<DetailedTenantsListResult> {
+  const page = Math.max(1, Number(options.page) || 1);
+  const limit = Math.max(1, Math.min(100, Number(options.limit) || 20));
+  const offset = (page - 1) * limit;
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+  // 1. Fetch all tenants matching filter & search
+  let query = `
+    SELECT 
+      t.id, 
+      t.name, 
+      t.slug, 
+      t.status, 
+      t."ownerEmail", 
+      COALESCE(t."leadPoolMode", 'shared') as "leadPoolMode",
+      COALESCE(t."maxAgents", 10) as "maxAgents",
+      COALESCE(t.tier, 'standard') as tier,
+      COALESCE(t."customerType", 'COMPANY') as "customerType",
+      COALESCE(t."maxTeamVisibility", 'TEAM_COLLABORATE') as "maxTeamVisibility",
+      t."createdAt",
+      t."updatedAt"
+    FROM tenants t
+    WHERE 1=1
+  `;
+  const params: any[] = [];
+
+  if (options.search && options.search.trim()) {
+    const s = `%${options.search.trim().toLowerCase()}%`;
+    params.push(s);
+    query += ` AND (LOWER(t.name) LIKE $${params.length} OR LOWER(t.slug) LIKE $${params.length} OR LOWER(t.id) LIKE $${params.length} OR LOWER(COALESCE(t."ownerEmail", '')) LIKE $${params.length})`;
+  }
+
+  if (options.type && options.type !== 'all') {
+    params.push(options.type);
+    query += ` AND t."customerType" = $${params.length}`;
+  }
+
+  if (options.status && options.status !== 'all') {
+    params.push(options.status);
+    query += ` AND t.status = $${params.length}`;
+  }
+
+  query += ` ORDER BY t."createdAt" DESC`;
+
+  const allMatchingTenants = await db.queryAll<any>(query, params);
+  const total = allMatchingTenants.length;
+  const totalPages = Math.ceil(total / limit) || 1;
+  const paginatedTenants = allMatchingTenants.slice(offset, offset + limit);
+
+  if (paginatedTenants.length === 0) {
+    return { tenants: [], total, page, limit, totalPages };
+  }
+
+  // 2. Fetch Grouped Metrics across these tenants (No N+1)
+  const tenantIds = paginatedTenants.map(t => t.id);
+
+  // Users breakdown
+  const userStatsMap: Record<string, { total: number; owners: number; teamLeads: number; members: number; primaryOwner: any }> = {};
+  tenantIds.forEach(id => {
+    userStatsMap[id] = { total: 0, owners: 0, teamLeads: 0, members: 0, primaryOwner: null };
+  });
+
+  try {
+    const userRows = await db.queryAll<any>(`
+      SELECT id, username, email, "displayName", role, "tenantId", "createdAt" 
+      FROM users 
+      ORDER BY "createdAt" ASC
+    `);
+    userRows.forEach(u => {
+      if (u.tenantId && userStatsMap[u.tenantId]) {
+        if (u.role === 'platform_admin' || u.role === 'master_admin') {
+          // Strictly exclude platform administrators from customer organization metrics
+          return;
+        }
+        const s = userStatsMap[u.tenantId];
+        s.total++;
+        if (u.role === 'admin') {
+          s.owners++;
+          if (!s.primaryOwner) s.primaryOwner = { username: u.username, email: u.email, displayName: u.displayName };
+        } else if (u.role === 'team_lead') {
+          s.teamLeads++;
+        } else {
+          s.members++;
+        }
+        if (!s.primaryOwner) {
+          s.primaryOwner = { username: u.username, email: u.email, displayName: u.displayName };
+        }
+      }
+    });
+  } catch (err) {
+    console.error('[Observability] User stats mapping error:', err);
+  }
+
+  // Module entitlements breakdown across page
+  const tenantModulesMap: Record<string, string[]> = {};
+  tenantIds.forEach(id => { tenantModulesMap[id] = []; });
+  try {
+    const tmeRows = await db.queryAll<any>(`
+      SELECT "tenantId", "moduleId" FROM tenant_module_entitlements WHERE enabled = 1
+    `);
+    tmeRows.forEach(r => {
+      if (r.tenantId && tenantModulesMap[r.tenantId]) {
+        tenantModulesMap[r.tenantId].push(normalizeModuleKey(r.moduleId));
+      }
+    });
+  } catch {}
+
+  // Teams breakdown
+  const teamCountMap: Record<string, number> = {};
+  try {
+    const teamRows = await db.queryAll<any>(`SELECT "tenantId", COUNT(*) as cnt FROM teams GROUP BY "tenantId"`);
+    teamRows.forEach(r => { if (r.tenantId) teamCountMap[r.tenantId] = Number(r.cnt) || 0; });
+  } catch {}
+
+  // Leads breakdown
+  const leadCountMap: Record<string, number> = {};
+  try {
+    const leadRows = await db.queryAll<any>(`SELECT "tenantId", COUNT(*) as cnt FROM leads GROUP BY "tenantId"`);
+    leadRows.forEach(r => { if (r.tenantId) leadCountMap[r.tenantId] = Number(r.cnt) || 0; });
+  } catch {}
+
+  // Campaigns breakdown
+  const campCountMap: Record<string, number> = {};
+  try {
+    const campRows = await db.queryAll<any>(`SELECT "tenantId", COUNT(*) as cnt FROM campaigns GROUP BY "tenantId"`);
+    campRows.forEach(r => { if (r.tenantId) campCountMap[r.tenantId] = Number(r.cnt) || 0; });
+  } catch {}
+
+  // Calls today & this month
+  const callsTodayMap: Record<string, number> = {};
+  const callsMonthMap: Record<string, number> = {};
+  const lastCallMap: Record<string, string> = {};
+  try {
+    const callsTodayRows = await db.queryAll<any>(`
+      SELECT "tenantId", COUNT(*) as cnt, MAX(timestamp) as last_ts 
+      FROM call_logs 
+      WHERE timestamp >= $1 
+      GROUP BY "tenantId"
+    `, [todayStart]);
+    callsTodayRows.forEach(r => {
+      if (r.tenantId) {
+        callsTodayMap[r.tenantId] = Number(r.cnt) || 0;
+        if (r.last_ts) lastCallMap[r.tenantId] = r.last_ts;
+      }
+    });
+
+    const callsMonthRows = await db.queryAll<any>(`
+      SELECT "tenantId", COUNT(*) as cnt, MAX(timestamp) as last_ts 
+      FROM call_logs 
+      WHERE timestamp >= $1 
+      GROUP BY "tenantId"
+    `, [monthStart]);
+    callsMonthRows.forEach(r => {
+      if (r.tenantId) {
+        callsMonthMap[r.tenantId] = Number(r.cnt) || 0;
+        if (r.last_ts && !lastCallMap[r.tenantId]) lastCallMap[r.tenantId] = r.last_ts;
+      }
+    });
+  } catch (err) {
+    console.error('[Observability] Call stats mapping error:', err);
+  }
+
+  // Devices online/offline
+  const deviceOnlineMap: Record<string, number> = {};
+  const deviceOfflineMap: Record<string, number> = {};
+  try {
+    const devRows = await db.queryAll<any>(`SELECT "tenantId", status, COUNT(*) as cnt FROM devices GROUP BY "tenantId", status`);
+    devRows.forEach(r => {
+      if (r.tenantId) {
+        const c = Number(r.cnt) || 0;
+        if (r.status === 'ONLINE' || r.status === 'online') deviceOnlineMap[r.tenantId] = (deviceOnlineMap[r.tenantId] || 0) + c;
+        else deviceOfflineMap[r.tenantId] = (deviceOfflineMap[r.tenantId] || 0) + c;
+      }
+    });
+  } catch {}
+
+  // Subscriptions
+  const subMap: Record<string, { planId: string; status: string }> = {};
+  try {
+    const subRows = await db.queryAll<any>(`SELECT "tenantId", "planId", status FROM subscriptions`);
+    subRows.forEach(r => {
+      if (r.tenantId) subMap[r.tenantId] = { planId: r.planId || 'standard', status: r.status || 'active' };
+    });
+  } catch {}
+
+  // 3. Assemble detailed records with calculated Health Status
+  const records: DetailedTenantRecord[] = paginatedTenants.map(t => {
+    const uStats = userStatsMap[t.id] || { total: 0, owners: 0, teamLeads: 0, members: 0, primaryOwner: null };
+    const leadCount = leadCountMap[t.id] || 0;
+    const campaignCount = campCountMap[t.id] || 0;
+    const teamCount = teamCountMap[t.id] || 0;
+    const callsToday = callsTodayMap[t.id] || 0;
+    const callsThisMonth = callsMonthMap[t.id] || 0;
+    const connectedDevices = deviceOnlineMap[t.id] || 0;
+    const offlineDevices = deviceOfflineMap[t.id] || 0;
+    const totalRegisteredDevices = connectedDevices + offlineDevices;
+
+    const sub = subMap[t.id] || { planId: t.tier || 'standard', status: t.status === 'suspended' ? 'suspended' : 'active' };
+
+    // Concrete Health Status computation (Section 4)
+    let healthStatus: 'HEALTHY' | 'WARNING' | 'DEGRADED' | 'OFFLINE' = 'HEALTHY';
+    const healthReasons: string[] = [];
+
+    if (t.status === 'suspended') {
+      healthStatus = 'OFFLINE';
+      healthReasons.push('Workspace suspended by administrator');
+    } else if (uStats.total === 0) {
+      healthStatus = 'OFFLINE';
+      healthReasons.push('No provisioned user accounts');
+    }
+
+    if (sub.status === 'past_due') {
+      if (healthStatus !== 'OFFLINE') healthStatus = 'DEGRADED';
+      healthReasons.push('Subscription billing past due');
+    }
+
+    if (totalRegisteredDevices > 0 && connectedDevices === 0) {
+      if (healthStatus === 'HEALTHY') healthStatus = 'WARNING';
+      healthReasons.push(`${offlineDevices} registered device(s) currently offline`);
+    }
+
+    if (healthReasons.length === 0) {
+      healthReasons.push('All systems operational');
+    }
+
+    return {
+      id: t.id,
+      name: t.name,
+      slug: t.slug,
+      customerType: (t.customerType === 'PERSONAL' ? 'PERSONAL' : 'COMPANY'),
+      status: t.status,
+      primaryOwner: uStats.primaryOwner || { username: 'unassigned', email: t.ownerEmail || null },
+      plan: sub.planId,
+      subscriptionStatus: sub.status,
+      moduleEntitlements: (tenantModulesMap[t.id] && tenantModulesMap[t.id].length > 0)
+        ? Array.from(new Set(tenantModulesMap[t.id]))
+        : CANONICAL_MODULES.map(m => m.id),
+      createdAt: t.createdAt,
+      lastActivityAt: lastCallMap[t.id] || t.updatedAt || t.createdAt,
+      userCount: uStats.total,
+      teamCount,
+      teamLeadCount: uStats.teamLeads,
+      memberCount: uStats.members,
+      leadCount,
+      campaignCount,
+      callsToday,
+      callsThisMonth,
+      connectedDevices,
+      offlineDevices,
+      activeSockets: connectedDevices,
+      runningJobs: { scraper: 0, emailer: 0, facebook: 0 },
+      errorCount: healthStatus === 'DEGRADED' ? 1 : 0,
+      leadPoolMode: (t.leadPoolMode === 'assigned' ? 'assigned' : 'shared'),
+      healthStatus,
+      healthReasons
+    };
+  });
+
+  // Filter by health if specified
+  let finalTenants = records;
+  if (options.health && options.health !== 'all') {
+    finalTenants = records.filter(r => r.healthStatus === options.health);
+  }
+
+  return {
+    tenants: finalTenants,
+    total,
+    page,
+    limit,
+    totalPages
+  };
+}
+
+export async function getTenantDetail(tenantId: string): Promise<any> {
+  const tenant = await getTenantById(tenantId);
+  if (!tenant) return null;
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+  // Users in tenant (strictly sanitized, NO passwords/secrets, strictly excluding platform admins)
+  const users = await db.queryAll<any>(`
+    SELECT id, username, email, "displayName", role, status, "createdAt", "updatedAt"
+    FROM users
+    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin')
+    ORDER BY CASE WHEN role = 'admin' THEN 1 WHEN role = 'team_lead' THEN 2 ELSE 3 END, "createdAt" ASC
+  `, [tenantId]);
+
+  const moduleEntitlements = await getTenantModuleEntitlements(tenantId);
+  const accessMatrix = await getTenantAccessMatrix(tenantId);
+  const enabledModulesList = CANONICAL_MODULES.filter(m => moduleEntitlements[m.id]).map(m => m.id);
+
+  // Teams in tenant
+  const teams = await db.queryAll<any>(`
+    SELECT id, name, description, "leaderId", status, "createdAt"
+    FROM teams
+    WHERE "tenantId" = $1
+    ORDER BY "createdAt" ASC
+  `, [tenantId]);
+
+  // Campaigns in tenant
+  const campaigns = await db.queryAll<any>(`
+    SELECT id, name, "leadCount", status, "createdAt"
+    FROM campaigns
+    WHERE "tenantId" = $1
+    ORDER BY "createdAt" DESC
+    LIMIT 20
+  `, [tenantId]);
+
+  // Lead totals & outcomes
+  const leadsCount = await db.queryOne<{ c: string | number }>(`SELECT COUNT(*) as c FROM leads WHERE "tenantId" = $1`, [tenantId]);
+  const leadStatuses = await db.queryAll<any>(`
+    SELECT status, COUNT(*) as cnt 
+    FROM leads 
+    WHERE "tenantId" = $1 
+    GROUP BY status
+  `, [tenantId]);
+
+  // Calls
+  const callsTodayCount = await db.queryOne<{ c: string | number }>(`
+    SELECT COUNT(*) as c FROM call_logs WHERE "tenantId" = $1 AND timestamp >= $2
+  `, [tenantId, todayStart]);
+  const callsMonthCount = await db.queryOne<{ c: string | number }>(`
+    SELECT COUNT(*) as c FROM call_logs WHERE "tenantId" = $1 AND timestamp >= $2
+  `, [tenantId, monthStart]);
+
+  // Devices
+  const devices = await db.queryAll<any>(`
+    SELECT id, name, status, platform, "osType", "appVersion", "lastSeenAt", "createdAt"
+    FROM devices
+    WHERE "tenantId" = $1
+    ORDER BY "lastSeenAt" DESC NULLS LAST
+  `, [tenantId]);
+
+  // Subscription
+  const subscription = await db.queryOne<any>(`
+    SELECT id, "planId", status, "currentPeriodStart", "currentPeriodEnd", provider
+    FROM subscriptions
+    WHERE "tenantId" = $1
+    LIMIT 1
+  `, [tenantId]);
+
+  // Recent audit logs
+  const auditLogs = await db.queryAll<any>(`
+    SELECT id, action, "targetType", "targetId", details, timestamp
+    FROM audit_logs_admin
+    WHERE "tenantId" = $1
+    ORDER BY timestamp DESC
+    LIMIT 10
+  `, [tenantId]);
+
+  // Health signals
+  const healthReasons: string[] = [];
+  let healthStatus: 'HEALTHY' | 'WARNING' | 'DEGRADED' | 'OFFLINE' = 'HEALTHY';
+  if (tenant.status === 'suspended') {
+    healthStatus = 'OFFLINE';
+    healthReasons.push('Workspace suspended by administrator');
+  } else if (users.length === 0) {
+    healthStatus = 'OFFLINE';
+    healthReasons.push('No provisioned user accounts');
+  }
+  const offlineDevCount = devices.filter(d => d.status !== 'ONLINE' && d.status !== 'online').length;
+  if (devices.length > 0 && offlineDevCount === devices.length) {
+    if (healthStatus === 'HEALTHY') healthStatus = 'WARNING';
+    healthReasons.push(`${devices.length} registered device(s) currently offline`);
+  }
+  if (healthReasons.length === 0) healthReasons.push('All systems operational');
+
+  return {
+    overview: {
+      id: tenant.id,
+      name: tenant.name,
+      slug: tenant.slug,
+      status: tenant.status,
+      customerType: tenant.customerType || 'COMPANY',
+      ownerEmail: tenant.ownerEmail,
+      leadPoolMode: tenant.leadPoolMode || 'shared',
+      tier: tenant.tier || 'standard',
+      createdAt: tenant.createdAt,
+      updatedAt: tenant.updatedAt
+    },
+    organization: {
+      totalUsers: users.length,
+      users,
+      totalTeams: teams.length,
+      teams
+    },
+    salesOperations: {
+      totalLeads: Number(leadsCount?.c || 0),
+      leadStatusBreakdown: leadStatuses,
+      totalCampaigns: campaigns.length,
+      campaigns,
+      callsToday: Number(callsTodayCount?.c || 0),
+      callsThisMonth: Number(callsMonthCount?.c || 0)
+    },
+    connectedDevices: {
+      total: devices.length,
+      online: devices.filter(d => d.status === 'ONLINE' || d.status === 'online').length,
+      offline: offlineDevCount,
+      devices
+    },
+    automationJobs: {
+      scraper: { running: 0, completed: 0, failed: 0 },
+      emailer: { running: 0, completed: 0, failed: 0 },
+      facebook: { running: 0, completed: 0, failed: 0 }
+    },
+    modules: enabledModulesList,
+    moduleEntitlements,
+    accessMatrix,
+    subscription: subscription || {
+      planId: tenant.tier || 'standard',
+      status: tenant.status === 'suspended' ? 'suspended' : 'active',
+      currentPeriodEnd: null
+    },
+    health: {
+      status: healthStatus,
+      reasons: healthReasons
+    },
+    auditLogs
+  };
+}
+
+export async function getGlobalDevicesList(): Promise<any[]> {
+  try {
+    const rows = await db.queryAll<any>(`
+      SELECT 
+        d.id, 
+        d.name, 
+        d.status, 
+        d.platform, 
+        d."osType", 
+        d."ipAddress", 
+        d."lastSeenAt", 
+        d."createdAt", 
+        d."tenantId", 
+        t.name as "tenantName",
+        u.username as "assignedUser"
+      FROM devices d
+      LEFT JOIN tenants t ON d."tenantId" = t.id
+      LEFT JOIN users u ON d."userId" = u.id
+      ORDER BY d."lastSeenAt" DESC NULLS LAST
+    `);
+    return rows;
+  } catch (err) {
+    console.error('[Observability] Global devices query error:', err);
+    return [];
+  }
+}
+
+export async function getGlobalRecentActivity(limit = 40): Promise<any[]> {
+  try {
+    const adminLogs = await db.queryAll<any>(`
+      SELECT 
+        a.id, 
+        a.action, 
+        a."targetType", 
+        a."targetId", 
+        a.username as "performedBy", 
+        a.details, 
+        a.timestamp, 
+        a."tenantId", 
+        t.name as "tenantName"
+      FROM audit_logs_admin a
+      LEFT JOIN tenants t ON a."tenantId" = t.id
+      ORDER BY a.timestamp DESC
+      LIMIT $1
+    `, [limit]);
+
+    if (adminLogs.length > 0) {
+      return adminLogs;
+    }
+
+    // Fallback to call logs and tenant activity if audit logs are empty
+    const callLogs = await db.queryAll<any>(`
+      SELECT 
+        c.id, 
+        'CALL_COMPLETED' as action, 
+        'call' as "targetType", 
+        c.id as "targetId", 
+        c."leadName" as "performedBy", 
+        'Call recorded: ' || c.outcome || ' (Duration: ' || c.duration || 's)' as details, 
+        c.timestamp, 
+        c."tenantId", 
+        t.name as "tenantName"
+      FROM call_logs c
+      LEFT JOIN tenants t ON c."tenantId" = t.id
+      ORDER BY c.timestamp DESC
+      LIMIT $1
+    `, [limit]);
+
+    return callLogs;
+  } catch (err) {
+    console.error('[Observability] Global activity query error:', err);
+    return [];
+  }
+}
+
+export async function provisionWorkspaceOrganization(data: {
+  name: string;
+  username: string;
+  email?: string;
+  passwordHash: string;
+}): Promise<{ success: boolean; tenantId: string; username: string }> {
+  const now = new Date().toISOString();
+  const rawSlug = data.name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'workspace';
+  const tenantId = 'tenant_' + crypto.randomUUID().replace(/-/g, '').substring(0, 10);
+  const slug = `${rawSlug}-${tenantId.substring(7)}`;
+
+  // Insert tenant
+  await db.execute(`
+    INSERT INTO tenants (id, name, slug, status, "createdAt", "updatedAt", "customerType", "maxTeamVisibility", "leadPoolMode", "maxAgents", tier)
+    VALUES ($1, $2, $3, 'active', $4, $4, 'COMPANY', 'TEAM_COLLABORATE', 'shared', 25, 'standard')
+  `, [tenantId, data.name, slug, now]);
+
+  // Insert primary owner user
+  const userId = 'user_' + crypto.randomUUID();
+  await db.execute(`
+    INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, 'admin', $5, 'local', 1, $6, $6)
+  `, [userId, data.username.trim().toLowerCase(), data.email ? data.email.trim().toLowerCase() : null, data.passwordHash, tenantId, now]);
+
+  // Insert default audit log
+  try {
+    await db.execute(`
+      INSERT INTO audit_logs_admin (id, "userId", username, action, "targetType", "targetId", details, timestamp, "tenantId")
+      VALUES ($1, $2, $3, 'TENANT_PROVISIONED', 'tenant', $4, $5, $6, $4)
+    `, ['audit_' + crypto.randomUUID(), userId, data.username, tenantId, `Provisioned workspace organization: ${data.name}`, now]);
+  } catch {}
+
+  return { success: true, tenantId, username: data.username };
+}
+
+// ─── CRM Domain Interfaces & Scoping Helpers ─────────────────────────────────
+
+export interface CrmCompany {
+  id: string;
+  tenantId: string;
+  name: string;
+  industry?: string;
+  country?: string;
+  phone?: string;
+  email?: string;
+  website?: string;
+  address?: string;
+  status: 'Active' | 'Inactive';
+  paymentStatus: 'Trial' | 'Paid' | 'Invoice' | 'Leaver' | 'Licence Shifted';
+  assignedUserId?: string;
+  assignedTeamId?: string;
+  metadata?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrmContact {
+  id: string;
+  tenantId: string;
+  crmCompanyId?: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  roleTitle?: string;
+  notes?: string;
+  assignedUserId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrmTask {
+  id: string;
+  tenantId: string;
+  title: string;
+  description?: string;
+  taskType: 'call' | 'email' | 'online_meeting' | 'meeting' | 'sms' | 'whatsapp' | 'payment' | 'follow_up' | 'general';
+  status: 'open' | 'completed' | 'rescheduled' | 'cancelled';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  dueAt: string;
+  completedAt?: string;
+  crmCompanyId?: string;
+  contactId?: string;
+  leadId?: string;
+  assignedUserId?: string;
+  assignedTeamId?: string;
+  outcome?: string;
+  outcomeRemarks?: string;
+  cancellationReason?: string;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrmNote {
+  id: string;
+  tenantId: string;
+  entityType: 'lead' | 'contact' | 'crm_company' | 'task';
+  entityId: string;
+  category: 'general' | 'sales' | 'support' | 'meeting' | 'call' | 'billing' | 'follow_up' | 'task';
+  body: string;
+  createdByUserId: string;
+  createdByName: string;
+  createdAt: string;
+}
+
+export async function getScopedCrmUserIds(actor: any, tenantId: string): Promise<string[] | null> {
+  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
+  if (isPlatform || actor?.role === 'admin') {
+    return null; // Null means unrestricted access to all tenant records
+  }
+  if (actor?.role === 'team_lead') {
+    const scoped = await getTeamLeadScopedUserIds(actor.id, tenantId);
+    return scoped.length > 0 ? scoped : [actor.id];
+  }
+  const { readablePeerUserIds } = await getUserTeamPeerVisibilitySets(actor.id, tenantId);
+  return [actor.id, ...readablePeerUserIds];
+}
+
+export async function recordCrmNote(data: {
+  tenantId: string;
+  entityType: 'lead' | 'contact' | 'crm_company' | 'task';
+  entityId: string;
+  category?: 'general' | 'sales' | 'support' | 'meeting' | 'call' | 'billing' | 'follow_up' | 'task';
+  body: string;
+  createdByUserId: string;
+  createdByName?: string;
+}): Promise<CrmNote> {
+  const id = `note_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const now = new Date().toISOString();
+  const cat = data.category || 'general';
+  const name = data.createdByName || 'System';
+
+  await db.execute(`
+    INSERT INTO crm_notes (id, "tenantId", "entityType", "entityId", category, body, "createdByUserId", "createdByName", "createdAt")
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+  `, [id, data.tenantId, data.entityType, data.entityId, cat, data.body, data.createdByUserId, name, now]);
+
+  return {
+    id,
+    tenantId: data.tenantId,
+    entityType: data.entityType,
+    entityId: data.entityId,
+    category: cat,
+    body: data.body,
+    createdByUserId: data.createdByUserId,
+    createdByName: name,
+    createdAt: now
+  };
+}
+
 // ─── Expose the raw db instance for future steps ─────────────────────────────
 export function getDatabase(): DbAdapter {
   return db;
 }
 export { db };
+
 
 
 

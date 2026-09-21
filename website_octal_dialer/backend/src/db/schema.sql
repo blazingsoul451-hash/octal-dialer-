@@ -231,7 +231,11 @@ CREATE TABLE IF NOT EXISTS "leads" (
   "tenantId" TEXT,
   "address" TEXT,
   "listingId" TEXT,
-  "assignedTo" TEXT
+  "assignedTo" TEXT,
+  "crmCompanyId" TEXT,
+  "contactId" TEXT,
+  "requirement" TEXT,
+  "country" TEXT
 );
 
 -- Table: call_attempts
@@ -338,7 +342,7 @@ CREATE TABLE IF NOT EXISTS "audit_logs" (
 CREATE TABLE IF NOT EXISTS "audit_logs_admin" (
   "id" TEXT PRIMARY KEY,
   "userId" TEXT,
-  "username" TEXT NOT NULL,
+  "username" TEXT NOT NULL DEFAULT 'system',
   "action" TEXT NOT NULL,
   "targetType" TEXT,
   "targetId" TEXT,
@@ -643,3 +647,214 @@ CREATE TABLE IF NOT EXISTS "team_settings" (
 CREATE INDEX IF NOT EXISTS "idx_team_settings_tenant_team" ON "team_settings"("tenantId", "teamId");
 CREATE INDEX IF NOT EXISTS "idx_leads_tenant_assigned" ON "leads"("tenantId", "assignedTo");
 
+-- Table: tenant_module_entitlements (Platform Owner module ceiling per tenant)
+CREATE TABLE IF NOT EXISTS "tenant_module_entitlements" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "moduleId" TEXT NOT NULL,
+  "enabled" INTEGER NOT NULL DEFAULT 1,
+  "updatedBy" TEXT NOT NULL DEFAULT 'system',
+  "updatedAt" TEXT NOT NULL DEFAULT '',
+  CONSTRAINT "uq_tenant_module_entitlements_tenant_module" UNIQUE ("tenantId", "moduleId")
+);
+CREATE INDEX IF NOT EXISTS "idx_tenant_module_entitlements_tenant" ON "tenant_module_entitlements"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_tenant_module_entitlements_module" ON "tenant_module_entitlements"("tenantId", "moduleId");
+
+-- ============================================================================
+-- CRM MODULE SCHEMAS
+-- ============================================================================
+
+-- Table: crm_companies
+CREATE TABLE IF NOT EXISTS "crm_companies" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "name" TEXT NOT NULL,
+  "industry" TEXT,
+  "country" TEXT,
+  "phone" TEXT,
+  "email" TEXT,
+  "website" TEXT,
+  "address" TEXT,
+  "status" TEXT NOT NULL DEFAULT 'Active',
+  "paymentStatus" TEXT NOT NULL DEFAULT 'Trial',
+  "assignedUserId" TEXT,
+  "assignedTeamId" TEXT,
+  "metadata" TEXT,
+  "createdAt" TEXT NOT NULL DEFAULT '',
+  "updatedAt" TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS "idx_crm_companies_tenant" ON "crm_companies"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_crm_companies_status" ON "crm_companies"("tenantId", "status");
+CREATE INDEX IF NOT EXISTS "idx_crm_companies_assigned_user" ON "crm_companies"("tenantId", "assignedUserId");
+
+-- Table: crm_contacts
+CREATE TABLE IF NOT EXISTS "crm_contacts" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "crmCompanyId" TEXT,
+  "name" TEXT NOT NULL,
+  "email" TEXT,
+  "phone" TEXT,
+  "roleTitle" TEXT,
+  "notes" TEXT,
+  "assignedUserId" TEXT,
+  "createdAt" TEXT NOT NULL DEFAULT '',
+  "updatedAt" TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS "idx_crm_contacts_tenant" ON "crm_contacts"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_crm_contacts_company" ON "crm_contacts"("tenantId", "crmCompanyId");
+CREATE INDEX IF NOT EXISTS "idx_crm_contacts_assigned_user" ON "crm_contacts"("tenantId", "assignedUserId");
+
+-- Table: crm_tasks
+CREATE TABLE IF NOT EXISTS "crm_tasks" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "title" TEXT NOT NULL,
+  "description" TEXT,
+  "taskType" TEXT NOT NULL DEFAULT 'call',
+  "status" TEXT NOT NULL DEFAULT 'open',
+  "priority" TEXT NOT NULL DEFAULT 'medium',
+  "dueAt" TEXT NOT NULL,
+  "completedAt" TEXT,
+  "crmCompanyId" TEXT,
+  "contactId" TEXT,
+  "leadId" TEXT,
+  "assignedUserId" TEXT,
+  "assignedTeamId" TEXT,
+  "outcome" TEXT,
+  "outcomeRemarks" TEXT,
+  "cancellationReason" TEXT,
+  "createdByUserId" TEXT NOT NULL,
+  "createdAt" TEXT NOT NULL DEFAULT '',
+  "updatedAt" TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS "idx_crm_tasks_tenant" ON "crm_tasks"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_crm_tasks_status" ON "crm_tasks"("tenantId", "status");
+CREATE INDEX IF NOT EXISTS "idx_crm_tasks_assigned_user" ON "crm_tasks"("tenantId", "assignedUserId");
+CREATE INDEX IF NOT EXISTS "idx_crm_tasks_lead" ON "crm_tasks"("tenantId", "leadId");
+CREATE INDEX IF NOT EXISTS "idx_crm_tasks_dueAt" ON "crm_tasks"("tenantId", "dueAt");
+
+-- Table: crm_notes
+CREATE TABLE IF NOT EXISTS "crm_notes" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "entityType" TEXT NOT NULL,
+  "entityId" TEXT NOT NULL,
+  "category" TEXT NOT NULL DEFAULT 'general',
+  "body" TEXT NOT NULL,
+  "createdByUserId" TEXT NOT NULL,
+  "createdByName" TEXT NOT NULL DEFAULT '',
+  "createdAt" TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS "idx_crm_notes_entity" ON "crm_notes"("tenantId", "entityType", "entityId");
+CREATE INDEX IF NOT EXISTS "idx_crm_notes_created" ON "crm_notes"("tenantId", "createdAt");
+
+-- Table: crm_work_items (Deliverables, Tickets, Onboarding & Projects)
+CREATE TABLE IF NOT EXISTS "crm_work_items" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "crmCompanyId" TEXT,
+  "contactId" TEXT,
+  "leadId" TEXT,
+  "title" TEXT NOT NULL,
+  "description" TEXT,
+  "category" TEXT NOT NULL DEFAULT 'General',
+  "subcategory" TEXT,
+  "assignedTeamId" TEXT,
+  "assignedUserId" TEXT,
+  "priority" TEXT NOT NULL DEFAULT 'normal',
+  "status" TEXT NOT NULL DEFAULT 'TODO',
+  "dueAt" TEXT,
+  "completedAt" TEXT,
+  "createdByUserId" TEXT,
+  "createdAt" TEXT NOT NULL DEFAULT '',
+  "updatedAt" TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS "idx_crm_work_items_tenant" ON "crm_work_items"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_crm_work_items_company" ON "crm_work_items"("tenantId", "crmCompanyId");
+CREATE INDEX IF NOT EXISTS "idx_crm_work_items_user" ON "crm_work_items"("tenantId", "assignedUserId");
+CREATE INDEX IF NOT EXISTS "idx_crm_work_items_status" ON "crm_work_items"("tenantId", "status");
+
+-- Table: crm_pricing_rules (Configured by Company Owner per Tenant)
+CREATE TABLE IF NOT EXISTS "crm_pricing_rules" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL UNIQUE,
+  "currency" TEXT NOT NULL DEFAULT 'USD',
+  "taxRate" NUMERIC(5,2) NOT NULL DEFAULT 0,
+  "agentMaxDiscountPct" NUMERIC(5,2) NOT NULL DEFAULT 10,
+  "teamLeadMaxDiscountPct" NUMERIC(5,2) NOT NULL DEFAULT 25,
+  "packagesJson" TEXT NOT NULL,
+  "addonsJson" TEXT NOT NULL,
+  "perUserPriceMonthly" NUMERIC(10,2) NOT NULL DEFAULT 15.00,
+  "perUserPriceAnnual" NUMERIC(10,2) NOT NULL DEFAULT 144.00,
+  "updatedByUserId" TEXT,
+  "createdAt" TEXT NOT NULL DEFAULT '',
+  "updatedAt" TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS "idx_crm_pricing_rules_tenant" ON "crm_pricing_rules"("tenantId");
+
+-- Table: crm_quotes (Commercial quotes generated by agents)
+CREATE TABLE IF NOT EXISTS "crm_quotes" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "quoteNumber" TEXT NOT NULL,
+  "crmCompanyId" TEXT,
+  "contactId" TEXT,
+  "leadId" TEXT,
+  "packageId" TEXT,
+  "packageName" TEXT,
+  "userCount" INTEGER NOT NULL DEFAULT 1,
+  "billingCycle" TEXT NOT NULL DEFAULT 'monthly',
+  "currency" TEXT NOT NULL DEFAULT 'USD',
+  "subtotal" NUMERIC(12,2) NOT NULL DEFAULT 0,
+  "discountPct" NUMERIC(5,2) NOT NULL DEFAULT 0,
+  "discountAmount" NUMERIC(12,2) NOT NULL DEFAULT 0,
+  "taxAmount" NUMERIC(12,2) NOT NULL DEFAULT 0,
+  "totalAmount" NUMERIC(12,2) NOT NULL DEFAULT 0,
+  "status" TEXT NOT NULL DEFAULT 'DRAFT',
+  "notes" TEXT,
+  "validUntil" TEXT,
+  "assignedUserId" TEXT,
+  "createdByUserId" TEXT,
+  "createdAt" TEXT NOT NULL DEFAULT '',
+  "updatedAt" TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS "idx_crm_quotes_tenant" ON "crm_quotes"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_crm_quotes_company" ON "crm_quotes"("tenantId", "crmCompanyId");
+CREATE INDEX IF NOT EXISTS "idx_crm_quotes_lead" ON "crm_quotes"("tenantId", "leadId");
+CREATE INDEX IF NOT EXISTS "idx_crm_quotes_status" ON "crm_quotes"("tenantId", "status");
+
+-- Table: crm_quote_items (Snapshot line items)
+CREATE TABLE IF NOT EXISTS "crm_quote_items" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "quoteId" TEXT NOT NULL,
+  "itemType" TEXT NOT NULL,
+  "name" TEXT NOT NULL,
+  "quantity" INTEGER NOT NULL DEFAULT 1,
+  "unitPrice" NUMERIC(12,2) NOT NULL DEFAULT 0,
+  "lineTotal" NUMERIC(12,2) NOT NULL DEFAULT 0,
+  "createdAt" TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS "idx_crm_quote_items_quote" ON "crm_quote_items"("tenantId", "quoteId");
+
+-- Table: workspace_invitations (Pending and accepted tenant invitations)
+CREATE TABLE IF NOT EXISTS "workspace_invitations" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "email" TEXT NOT NULL,
+  "role" TEXT NOT NULL DEFAULT 'user' CHECK ("role" IN ('team_lead', 'user', 'agent')),
+  "teamId" TEXT,
+  "invitedByUserId" TEXT NOT NULL,
+  "tokenHash" TEXT NOT NULL,
+  "status" TEXT NOT NULL DEFAULT 'PENDING' CHECK ("status" IN ('PENDING', 'ACCEPTED', 'EXPIRED', 'REVOKED')),
+  "initialModules" TEXT,
+  "expiresAt" TEXT NOT NULL,
+  "createdAt" TEXT NOT NULL,
+  "acceptedAt" TEXT,
+  "acceptedByUserId" TEXT
+);
+CREATE INDEX IF NOT EXISTS "idx_workspace_invitations_tenant" ON "workspace_invitations"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_workspace_invitations_email" ON "workspace_invitations"("email");
+CREATE INDEX IF NOT EXISTS "idx_workspace_invitations_tokenHash" ON "workspace_invitations"("tokenHash");
+CREATE INDEX IF NOT EXISTS "idx_workspace_invitations_status" ON "workspace_invitations"("status");

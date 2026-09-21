@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import {
   PhoneCall, Database, Upload, History,
-  Bluetooth, PlaySquare, Sun, Moon, LogOut, ShieldAlert, LayoutDashboard, Menu, Mail,
-  Play, Layers, Settings, Users, FileText,
+  Bluetooth, PlaySquare, Sun, Moon, ShieldAlert, LayoutDashboard, Menu, Mail,
+  Play, Layers, Settings, Users, FileText, Search,
   Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp,
   Target, Building2
 } from 'lucide-react';
@@ -30,7 +30,16 @@ import { GoogleProfileSetupModal } from './components/GoogleProfileSetupModal';
 import { TeamLeadDashboard } from './components/TeamLeadDashboard';
 import { SuperAdminPortal } from './components/SuperAdminPortal';
 import { CompanySettings } from './components/settings/CompanySettings';
+import { CustomerOnboardingModal } from './components/onboarding/CustomerOnboardingModal';
+import { InvitationAcceptanceModal } from './components/onboarding/InvitationAcceptanceModal';
+import { UserProfileMenu } from './components/UserProfileMenu';
 import type { Campaign } from './types';
+import {
+  type StructuralRole,
+  type AuthIdentity,
+  tryNormalizeStructuralRole,
+  getInitialIdentityHintFromToken
+} from './utils/roleUtils';
 
 const getBackendUrl = () => {
   if (import.meta.env.VITE_SERVER_URL) return import.meta.env.VITE_SERVER_URL;
@@ -47,13 +56,15 @@ const getBackendUrl = () => {
   return '';
 };
 
-const SERVER_URL = getBackendUrl();
+const WEB_API_BASE = getBackendUrl();
+const SERVER_URL = WEB_API_BASE;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs' | 'team-lead' | 'super-admin'>('dashboard');
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
-  const [lanServerUrl, setLanServerUrl] = useState<string>(SERVER_URL);
+  const [mobilePairingBaseUrl, setMobilePairingBaseUrl] = useState<string>(WEB_API_BASE);
+  const lanServerUrl = mobilePairingBaseUrl;
 
   // Auto-dismiss toast notification after 3 seconds
   useEffect(() => {
@@ -66,7 +77,21 @@ export default function App() {
 
   // ─── Auth state ─────────────────────────────────────────────────────────────
   const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem('octal_auth_token'));
-  const [authUser, setAuthUser] = useState<string | null>(() => localStorage.getItem('octal_auth_user'));
+  const [authIdentity, setAuthIdentity] = useState<AuthIdentity | null>(() => {
+    if (typeof window !== 'undefined') {
+      const token = sessionStorage.getItem('octal_impersonate_token') || localStorage.getItem('octal_auth_token');
+      return getInitialIdentityHintFromToken(token);
+    }
+    return null;
+  });
+  const [authUser, setAuthUser] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const token = sessionStorage.getItem('octal_impersonate_token') || localStorage.getItem('octal_auth_token');
+      const hint = getInitialIdentityHintFromToken(token);
+      return hint?.username || localStorage.getItem('octal_auth_user');
+    }
+    return null;
+  });
   const [authChecked, setAuthChecked] = useState(false);
   const [showProfileSetupModal, setShowProfileSetupModal] = useState<boolean>(false);
 
@@ -100,8 +125,8 @@ export default function App() {
   const isImpersonating = !!impersonateToken;
   const effectiveAuthToken = impersonateToken || authToken;
 
-  // ─── Permission & SaaS Scope state ──────────────────────────────────────────
-  const [userRole, setUserRole] = useState<'platform_admin' | 'admin' | 'team_lead' | 'agent'>('agent');
+  // ─── Permission & Canonical Structural Role ──────────────────────────────────
+  const userRole: StructuralRole | null = authIdentity?.role || null;
   const [customerType, setCustomerType] = useState<'COMPANY' | 'PERSONAL'>('COMPANY');
   const [userPermissions, setUserPermissions] = useState<Record<string, boolean>>({
     crm: false,
@@ -116,32 +141,7 @@ export default function App() {
   });
 
   // ─── UI Scale / Display Density State (Laptop & Desktop Adaptability) ─────
-  const [uiZoom, setUiZoom] = useState<string>(() => {
-    return localStorage.getItem('octal_ui_zoom') || '100%';
-  });
 
-  useEffect(() => {
-    try {
-      const zoomMap: Record<string, string> = {
-        '100%': '1',
-        '90%': '0.9',
-        '85%': '0.85',
-        '80%': '0.8'
-      };
-      const zoomVal = zoomMap[uiZoom] || '1';
-      (document.documentElement.style as any).zoom = zoomVal;
-      localStorage.setItem('octal_ui_zoom', uiZoom);
-    } catch (e) {
-      console.warn('CSS zoom not supported:', e);
-    }
-  }, [uiZoom]);
-
-  const cycleUiZoom = () => {
-    const zoomLevels = ['100%', '90%', '85%', '80%'];
-    const currentIndex = zoomLevels.indexOf(uiZoom);
-    const nextZoom = zoomLevels[(currentIndex + 1) % zoomLevels.length];
-    setUiZoom(nextZoom);
-  };
 
   // ─── Collapsible Hover & Pinned Navigation Drawer State ──────────
   const [isNavPinned, setIsNavPinned] = useState(() => {
@@ -235,9 +235,12 @@ export default function App() {
     }
   };
 
-  const handleLogin = (token: string, username: string) => {
+  const handleLogin = (token: string, identity: AuthIdentity) => {
     setAuthToken(token);
-    setAuthUser(username);
+    setAuthUser(identity.username);
+    setAuthIdentity(identity);
+    localStorage.setItem('octal_auth_token', token);
+    localStorage.setItem('octal_auth_user', identity.username);
   };
 
   const handleLogout = async () => {
@@ -250,7 +253,7 @@ export default function App() {
       return;
     }
     if (authToken) {
-      await fetch(`${SERVER_URL}/auth/logout`, {
+      await fetch(`${WEB_API_BASE}/auth/logout`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${authToken}` }
       }).catch(() => {});
@@ -260,7 +263,7 @@ export default function App() {
     localStorage.removeItem('octal_session_id');
     setAuthToken(null);
     setAuthUser(null);
-    setUserRole('agent');
+    setAuthIdentity(null);
     setCustomerType('COMPANY');
     setUserPermissions({} as any);
     setCampaigns([]);
@@ -304,6 +307,8 @@ export default function App() {
       setImpersonateToken(hashImpToken);
       setImpersonateTenant(hashImpTenant || 'Tenant Organization');
       currentToken = hashImpToken;
+      const hint = getInitialIdentityHintFromToken(hashImpToken);
+      if (hint) setAuthIdentity(hint);
       // Immediately clear fragment with replaceState, preserving search if any
       window.history.replaceState(null, document.title, window.location.pathname + window.location.search);
     } else if (oauthToken) {
@@ -312,6 +317,8 @@ export default function App() {
       setAuthToken(oauthToken);
       setAuthUser(oauthUser);
       currentToken = oauthToken;
+      const hint = getInitialIdentityHintFromToken(oauthToken);
+      if (hint) setAuthIdentity(hint);
       window.history.replaceState({}, document.title, window.location.pathname);
     } else if (authError) {
       setToast({ message: `Authentication notice: ${authError}`, type: 'info' });
@@ -326,7 +333,7 @@ export default function App() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3000);
       try {
-        const res = await fetch(`${SERVER_URL}/auth/verify`, {
+        const res = await fetch(`${WEB_API_BASE}/auth/verify`, {
           headers: { 'Authorization': `Bearer ${currentToken}` },
           signal: controller.signal
         });
@@ -334,6 +341,19 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           const preferredName = data.user?.displayName || data.user?.username;
+          const verifiedRole = tryNormalizeStructuralRole(data.user?.role || data.role);
+          if (verifiedRole) {
+            setAuthIdentity(prev => ({
+              username: preferredName || prev?.username || 'user',
+              role: verifiedRole,
+              displayName: preferredName || prev?.displayName,
+              tenantId: data.tenantId || prev?.tenantId,
+              userId: data.user?.id || prev?.userId,
+              email: data.user?.email || prev?.email,
+              needsOnboarding: data.needsOnboarding ?? (!data.tenantId && !data.pendingInvitation),
+              pendingInvitation: data.pendingInvitation
+            }));
+          }
           if (preferredName) {
             setAuthUser(preferredName);
             if (!sessionStorage.getItem('octal_impersonate_token')) {
@@ -351,6 +371,7 @@ export default function App() {
             localStorage.removeItem('octal_auth_user');
             setAuthToken(null);
             setAuthUser(null);
+            setAuthIdentity(null);
           }
         }
       } catch (err) {
@@ -363,20 +384,32 @@ export default function App() {
     verifyToken();
   }, []);
 
-  // Fetch user role and permissions
+  // Fetch user role and permissions using canonical WEB_API_BASE
   useEffect(() => {
     if (!effectiveAuthToken) return;
 
     const fetchUserData = async () => {
       try {
-        // Get user role
-        const res = await fetch(`${lanServerUrl}/auth/me`, {
+        // Get user role & profile
+        const res = await fetch(`${WEB_API_BASE}/auth/me`, {
           headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
         });
 
         if (res.ok) {
           const data = await res.json();
-          setUserRole(data.user.role);
+          const verifiedRole = tryNormalizeStructuralRole(data.user?.role || data.role);
+          if (verifiedRole) {
+            setAuthIdentity(prev => ({
+              username: data.user?.username || prev?.username || 'user',
+              role: verifiedRole,
+              displayName: data.user?.displayName || prev?.displayName,
+              tenantId: data.tenant?.id || prev?.tenantId,
+              userId: data.user?.id || prev?.userId,
+              email: data.user?.email || prev?.email,
+              needsOnboarding: data.needsOnboarding ?? (!data.tenant?.id && !data.pendingInvitation),
+              pendingInvitation: data.pendingInvitation
+            }));
+          }
           if (data.tenant) {
             if (data.tenant.customerType) setCustomerType(data.tenant.customerType);
           }
@@ -384,7 +417,7 @@ export default function App() {
             setShowProfileSetupModal(true);
           }
 
-          if (data.user.role === 'platform_admin') {
+          if (verifiedRole === 'platform_admin') {
             setUserPermissions({
               octalDialer: true,
               googleScraper: true,
@@ -397,8 +430,8 @@ export default function App() {
               reports: true
             });
           } else {
-            // Fetch module permissions
-            const permRes = await fetch(`${lanServerUrl}/auth/permissions`, {
+            // Fetch module permissions (authoritatively gated by company platform ceiling)
+            const permRes = await fetch(`${WEB_API_BASE}/auth/permissions`, {
               headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
             });
 
@@ -414,17 +447,17 @@ export default function App() {
     };
 
     fetchUserData();
-  }, [effectiveAuthToken, lanServerUrl]);
+  }, [effectiveAuthToken]);
 
-  // Fetch Server Info (Public Tunnel / LAN IP) on mount
+  // Fetch Server Info (Public Tunnel / LAN IP) on mount for mobile pairing only
   useEffect(() => {
-    fetch(`${SERVER_URL}/info`)
+    fetch(`${WEB_API_BASE}/info`)
       .then(res => res.json())
       .then(data => {
         if (data.serverUrl) {
-          setLanServerUrl(data.serverUrl);
+          setMobilePairingBaseUrl(data.serverUrl);
         } else if (data.localIP && data.localIP !== 'localhost') {
-          setLanServerUrl(`http://${data.localIP}:3000`);
+          setMobilePairingBaseUrl(`http://${data.localIP}:3000`);
         }
       })
       .catch(err => console.error('Error fetching server info:', err));
@@ -490,18 +523,62 @@ export default function App() {
     }
   }, [isLight]);
 
-  // ─── Gate: show spinner while checking stored token ──────────────────────────
-  if (!authChecked) {
+  // ─── Gate: show login screen if not authenticated ─────────────────────────────
+  if (!effectiveAuthToken) {
+    return <LoginScreen serverUrl={WEB_API_BASE} onLogin={handleLogin} />;
+  }
+
+  // ─── Gate: show spinner while checking stored token or resolving initial identity ───
+  if (!authChecked || !userRole) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <div className="text-slate-500 font-mono text-sm animate-pulse">Authenticating...</div>
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center space-y-3 select-none">
+        <div className="w-9 h-9 rounded-full border-2 border-amber-500/20 border-t-amber-500 animate-spin" />
+        <div className="text-slate-400 font-mono text-xs tracking-wider uppercase animate-pulse">
+          Loading workspace...
+        </div>
       </div>
     );
   }
 
-  // ─── Gate: show login screen if not authenticated ─────────────────────────────
-  if (!effectiveAuthToken) {
-    return <LoginScreen serverUrl={SERVER_URL} onLogin={handleLogin} />;
+  // ─── Gate: Pending Workspace Invitation Acceptance ─────────────────────────────
+  if (authIdentity?.pendingInvitation) {
+    return (
+      <InvitationAcceptanceModal
+        serverUrl={WEB_API_BASE}
+        authToken={effectiveAuthToken}
+        pendingInvitation={authIdentity.pendingInvitation}
+        currentUser={authIdentity}
+        onAccepted={(newToken, updatedIdentity, tenant) => {
+          setAuthToken(newToken);
+          setAuthUser(updatedIdentity.username);
+          setAuthIdentity(updatedIdentity);
+          if (tenant?.customerType) setCustomerType(tenant.customerType);
+          setToast({ message: `Welcome to ${tenant?.name || 'your workspace'}!`, type: 'success' });
+        }}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
+  // ─── Gate: Customer Workspace Onboarding Wizard (Company vs Just Me) ───────────
+  if (authIdentity?.needsOnboarding || (!authIdentity?.tenantId && userRole !== 'platform_admin')) {
+    return (
+      <CustomerOnboardingModal
+        serverUrl={WEB_API_BASE}
+        authToken={effectiveAuthToken}
+        currentUser={authIdentity}
+        onComplete={(newToken, updatedIdentity, tenant) => {
+          localStorage.setItem('octal_auth_token', newToken);
+          localStorage.setItem('octal_auth_user', updatedIdentity.username);
+          setAuthToken(newToken);
+          setAuthUser(updatedIdentity.username);
+          setAuthIdentity(updatedIdentity);
+          if (tenant?.customerType) setCustomerType(tenant.customerType);
+          setToast({ message: `Workspace "${tenant?.name}" ready! Welcome, Company Owner.`, type: 'success' });
+        }}
+        onLogout={handleLogout}
+      />
+    );
   }
 
   // Section 12: Dedicated Platform Owner shell: if platform_admin and NOT impersonating, render SuperAdminPortal directly without customer drawer
@@ -509,9 +586,9 @@ export default function App() {
     return (
       <div className={`min-h-screen w-full flex flex-col font-sans ${isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'}`}>
         <SuperAdminPortal
-          serverUrl={lanServerUrl}
+          serverUrl={WEB_API_BASE}
           authToken={effectiveAuthToken}
-          currentUser={authUser}
+          currentUser={authUser || 'Admin'}
           onLogout={handleLogout}
         />
       </div>
@@ -664,7 +741,9 @@ export default function App() {
             <div className="hidden md:flex items-center gap-2 pl-4 border-l border-slate-300 dark:border-slate-700/40 text-xs font-mono">
               <span className="text-slate-500 font-bold uppercase text-[10px] tracking-wider">WORKSPACE</span>
               <span className="text-slate-400">/</span>
-              <span className="text-amber-600 dark:text-amber-400 font-black capitalize">{activeTab.replace('-', ' ')}</span>
+              <span className="text-amber-600 dark:text-amber-400 font-black capitalize">
+                {activeTab === 'admin' ? 'Settings' : activeTab === 'team-lead' ? 'Team Workspace' : activeTab === 'super-admin' ? 'Platform Console' : activeTab.replace('-', ' ')}
+              </span>
             </div>
           </div>
 
@@ -689,14 +768,6 @@ export default function App() {
               <span>{socketData.phoneConnected ? `Phone Connected` : 'Phone Offline'}</span>
             </button>
 
-            {/* User Dropdown Pill (mohsin octal style) */}
-            <div className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full border text-xs font-bold ${
-              isLight ? 'bg-slate-100 border-slate-300 text-slate-900 shadow-sm' : 'bg-slate-900 border-slate-800 text-slate-200'
-            }`}>
-              <span className="capitalize">{authUser || 'mohsin octal'}</span>
-              <span className="text-slate-500 text-[10px] font-black">∨</span>
-            </div>
-
             {/* Quick Upload Action */}
             <button
               onClick={() => setActiveTab('upload')}
@@ -710,34 +781,25 @@ export default function App() {
               <Upload className="w-4 h-4" />
             </button>
 
-            {/* 🎤 Voice Search / Mic */}
+            {/* ⚙️ Workspace Settings */}
             <button
-              onClick={() => setActiveTab('dialer')}
-              title="Voice Search / Assistant"
-              className={`w-8 h-8 rounded-full flex items-center justify-center border text-xs transition-all cursor-pointer shadow-sm ${
-                isLight
-                  ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
-                  : 'bg-slate-900 border-slate-800 text-white hover:bg-slate-800'
+              id="topbar-settings-btn"
+              onClick={() => setActiveTab('admin')}
+              title="Workspace Settings"
+              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
+                activeTab === 'admin'
+                  ? isLight
+                    ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-md ring-2 ring-amber-400/50'
+                    : 'bg-amber-500 text-slate-950 border-amber-400 shadow-md ring-2 ring-amber-400/50'
+                  : isLight
+                    ? 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200 hover:text-amber-600'
+                    : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-amber-400 hover:bg-slate-800'
               }`}
             >
-              🎤
+              <Settings className="w-4 h-4" />
             </button>
 
-            {/* 🔍 Display Density / Scale Switcher */}
-            <button
-              onClick={cycleUiZoom}
-              title={`Display Scale: ${uiZoom} (Click to toggle 100% ➔ 90% ➔ 85% ➔ 80% for Laptops)`}
-              className={`h-8 px-2 rounded-full border text-[11px] font-mono font-bold flex items-center gap-1 transition-all cursor-pointer shadow-sm ${
-                isLight
-                  ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
-                  : 'bg-slate-900 border-slate-800 text-amber-400 hover:text-white'
-              }`}
-            >
-              <span className="text-[10px]">🔍</span>
-              <span>{uiZoom}</span>
-            </button>
-
-            {/* ⚙️ Settings / Theme Toggle Circle */}
+            {/* Theme Toggle Circle */}
             <button
               onClick={toggleTheme}
               className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
@@ -750,44 +812,17 @@ export default function App() {
               {isLight ? <Moon className="w-4 h-4 text-slate-800" /> : <Sun className="w-4 h-4 text-amber-400" />}
             </button>
 
-            {/* 👤 User Profile Avatar Circle with green online status dot */}
-            <div className="relative cursor-pointer" title={`Logged in as ${authUser}`}>
-              <div className={`w-8 h-8 rounded-full font-bold text-xs flex items-center justify-center border ${
-                isLight ? 'bg-slate-100 text-slate-900 border-slate-300' : 'bg-slate-900 text-amber-400 border-slate-800'
-              }`}>
-                👤
-              </div>
-              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00A651] border-2 border-white dark:border-slate-800" />
-            </div>
-
-            {/* Download APK Link for Mobile */}
-            <a
-              href="/download/apk"
-              title="Download Android Dialer APK"
-              className={`p-1.5 rounded-lg transition-all flex items-center justify-center cursor-pointer ${
-                isLight
-                  ? 'text-emerald-700 hover:text-emerald-950 hover:bg-emerald-50'
-                  : 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/30'
-              }`}
-            >
-              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
-                <path d="M17.5 12.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5m-11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5m10.3-4.72l1.9-3.29a.498.498 0 00-.18-.68.498.498 0 00-.68.18l-1.92 3.32C14.73 6.47 13.41 6 12 6s-2.73.47-3.92 1.31L6.16 3.99a.498.498 0 00-.68-.18.498.498 0 00-.18.68l1.9 3.29C4.54 9.17 3 11.9 3 15h18c0-3.1-1.54-5.83-4.2-7.22z"/>
-              </svg>
-            </a>
-
-            {/* Logout */}
-            <button
-              id="btn-logout"
-              onClick={handleLogout}
-              title="Sign out"
-              className={`p-1.5 rounded-lg transition-all cursor-pointer ${
-                isLight
-                  ? 'text-slate-700 hover:text-red-700 hover:bg-red-50'
-                  : 'text-slate-400 hover:text-red-400 hover:bg-red-950/30'
-              }`}
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+            {/* 👤 Octal Accounts User Profile Menu with Hover & Camera Modals */}
+            <UserProfileMenu
+              isLight={isLight}
+              serverUrl={WEB_API_BASE}
+              authToken={effectiveAuthToken}
+              authUser={authUser}
+              userRole={userRole}
+              showPill={true}
+              activeTab={activeTab}
+              onLogout={handleLogout}
+            />
           </div>
         </div>
       </header>
@@ -840,8 +875,8 @@ export default function App() {
                 {isNavExpanded && <span className="truncate">Dashboard</span>}
               </button>
 
-              {/* CRM Workspace (Gated by CRM permission or Admin) */}
-              {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.crm) && (
+              {/* CRM Workspace (Gated by CRM permission or Platform Admin) */}
+              {(userRole === 'platform_admin' || userPermissions.crm) && (
                 <button
                   onClick={() => setActiveTab('crm')}
                   title="CRM & Customer Intelligence"
@@ -860,8 +895,8 @@ export default function App() {
                 </button>
               )}
 
-              {/* Campaigns Workspace (Gated by Campaigns permission or Admin) */}
-              {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.campaigns) && (
+              {/* Campaigns Workspace (Gated by Campaigns permission or Platform Admin) */}
+              {(userRole === 'platform_admin' || userPermissions.campaigns) && (
                 <button
                   onClick={() => setActiveTab('campaigns')}
                   title="Campaigns Workspace"
@@ -880,8 +915,8 @@ export default function App() {
                 </button>
               )}
 
-              {/* Leads Database (Gated by Leads permission or Admin) */}
-              {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.leads) && (
+              {/* Leads Database (Gated by Leads permission or Platform Admin) */}
+              {(userRole === 'platform_admin' || userPermissions.leads) && (
                 <button
                   onClick={() => setActiveTab('leads')}
                   className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
@@ -899,23 +934,6 @@ export default function App() {
                 </button>
               )}
 
-              {/* Settings — Central Control Center for Company Owner, Team Lead, Member, and Personal Mode */}
-              <button
-                onClick={() => setActiveTab('admin')}
-                title="Settings"
-                className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
-                  activeTab === 'admin'
-                    ? isLight
-                      ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
-                      : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500 shadow-sm'
-                    : isLight
-                      ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
-                      : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
-                }`}
-              >
-                <Settings className={`w-4 h-4 shrink-0 ${activeTab === 'admin' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
-                {isNavExpanded && <span className="truncate">Settings</span>}
-              </button>
 
               {/* Billing & Subscription — STRICTLY MASTER ADMIN ONLY */}
               {userRole === 'platform_admin' && (
@@ -976,8 +994,8 @@ export default function App() {
                 </button>
               )}
 
-              {/* Reports & Analytics (Gated by Reports permission or Admin) */}
-              {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.reports) && (
+              {/* Reports & Analytics (Gated by Reports permission or Platform Admin) */}
+              {(userRole === 'platform_admin' || userPermissions.reports) && (
                 <button
                   onClick={() => setActiveTab('reports')}
                   title="Reports & Analytics"
@@ -1002,7 +1020,7 @@ export default function App() {
               <div className="space-y-3 text-left overflow-y-auto flex-1 min-h-0 pr-1 pt-2 no-scrollbar">
 
                 {/* OCTAL Dialer Group */}
-                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.octalDialer) && (
+                {(userRole === 'platform_admin' || userPermissions.octalDialer) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('octalDialer', e)}
@@ -1070,75 +1088,10 @@ export default function App() {
                 </div>
                 )}
 
-                {/* Google Scraper Group */}
-                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.googleScraper) && (
-                <div className="space-y-1">
-                  <button
-                    onClick={(e) => toggleAccordion('googleScraper', e)}
-                    className={`w-full flex items-center justify-between pl-2.5 pr-2 py-1.5 rounded-lg transition-all duration-300 cursor-pointer select-none ${
-                      openAccordion.googleScraper
-                        ? isLight
-                          ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30 shadow-sm'
-                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20 shadow-sm'
-                        : isLight
-                          ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
-                          : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Database className={`w-4 h-4 shrink-0 ${openAccordion.googleScraper ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
-                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-xs font-extrabold select-none">
-                        <span className={openAccordion.googleScraper ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
-                          GOOGLE
-                        </span>
-                        <span className="bg-gradient-to-r from-amber-500 to-amber-600 dark:from-amber-400 dark:to-amber-500 bg-clip-text text-transparent font-black">
-                          SCRAPER
-                        </span>
-                      </div>
-                    </div>
-                    <span className={`font-bold text-[10px] ${openAccordion.googleScraper ? 'text-amber-500' : (isLight ? 'text-slate-500' : 'text-slate-400')}`}>
-                      {openAccordion.googleScraper ? '−' : '+'}
-                    </span>
-                  </button>
-                  <div className={`grid transition-all duration-300 ease-in-out ${
-                    openAccordion.googleScraper ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'
-                  }`}>
-                    <div className="overflow-hidden">
-                      <div className="pl-2 space-y-1 border-l border-slate-300 dark:border-slate-800 ml-3 pt-1 pb-1.5">
-                        {[
-                          { id: 'scraper', label: 'Run Scraper', icon: Play },
-                          { id: 'scraper-import', label: 'File Manager', icon: Database },
-                          { id: 'scraper-settings', label: 'Settings', icon: Settings },
-                        ].map((item, idx) => {
-                          const Icon = item.icon;
-                          const active = activeTab === item.id;
-                          return (
-                            <button
-                              key={item.label + idx}
-                              onClick={() => setActiveTab(item.id as any)}
-                              className={`w-full flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md text-xs font-sans font-medium transition-all duration-300 cursor-pointer ${
-                                active
-                                  ? isLight
-                                    ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
-                                    : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500'
-                                  : isLight
-                                    ? 'text-slate-700 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5'
-                                    : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
-                              }`}
-                            >
-                              <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
-                              <span className="truncate">{item.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                )}
+
 
                 {/* Auto Emailer Group */}
-                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.autoEmailer) && (
+                {(userRole === 'platform_admin' || userPermissions.autoEmailer) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('autoEmailer', e)}
@@ -1205,74 +1158,10 @@ export default function App() {
                 </div>
                 )}
 
-                {/* Facebook Scraper Group */}
-                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.facebookScraper) && (
-                <div className="space-y-1">
-                  <button
-                    onClick={(e) => toggleAccordion('facebookScraper', e)}
-                    className={`w-full flex items-center justify-between pl-2.5 pr-2 py-1.5 rounded-lg transition-all duration-300 cursor-pointer select-none ${
-                      openAccordion.facebookScraper
-                        ? isLight
-                          ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30 shadow-sm'
-                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20 shadow-sm'
-                        : isLight
-                          ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
-                          : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Facebook className={`w-4 h-4 shrink-0 ${openAccordion.facebookScraper ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
-                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-xs font-extrabold select-none">
-                        <span className={openAccordion.facebookScraper ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
-                          FACEBOOK
-                        </span>
-                        <span className="bg-gradient-to-r from-amber-500 to-amber-600 dark:from-amber-400 dark:to-amber-500 bg-clip-text text-transparent font-black">
-                          SCRAPER
-                        </span>
-                      </div>
-                    </div>
-                    <span className={`font-bold text-[10px] ${openAccordion.facebookScraper ? 'text-amber-500' : (isLight ? 'text-slate-500' : 'text-slate-400')}`}>
-                      {openAccordion.facebookScraper ? '−' : '+'}
-                    </span>
-                  </button>
-                  <div className={`grid transition-all duration-300 ease-in-out ${
-                    openAccordion.facebookScraper ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'
-                  }`}>
-                    <div className="overflow-hidden">
-                      <div className="pl-2 space-y-1 border-l border-slate-300 dark:border-slate-800 ml-3 pt-1 pb-1.5">
-                        {[
-                          { id: 'fb-scraper', label: 'Run Scraper', icon: Play },
-                          { id: 'fb-scraper-files', label: 'File Manager', icon: Database },
-                        ].map((item, idx) => {
-                          const Icon = item.icon;
-                          const active = activeTab === item.id;
-                          return (
-                            <button
-                              key={item.label + idx}
-                              onClick={() => setActiveTab(item.id as any)}
-                              className={`w-full flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md text-xs font-sans font-medium transition-all duration-300 cursor-pointer ${
-                                active
-                                  ? isLight
-                                    ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
-                                    : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500'
-                                  : isLight
-                                    ? 'text-slate-700 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5'
-                                    : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
-                              }`}
-                            >
-                              <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
-                              <span className="truncate">{item.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                )}
+
 
                 {/* Facebook Poster Group */}
-                {(userRole === 'platform_admin' || userRole === 'admin' || userPermissions.facebookPoster) && (
+                {(userRole === 'platform_admin' || userPermissions.facebookPoster) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('facebookPoster', e)}
@@ -1342,7 +1231,7 @@ export default function App() {
               </div>
             ) : (
               /* Collapsed Icon-Only Vertical Docked Rail */
-              (userRole === 'platform_admin' || userRole === 'admin' || userPermissions.octalDialer) && (
+              (userRole === 'platform_admin' || userPermissions.octalDialer) && (
                 <div className="space-y-3 flex flex-col items-center pt-2">
                   {[
                     { id: 'dialer', label: 'Auto Dialer', icon: PlaySquare },
@@ -1424,12 +1313,13 @@ export default function App() {
           )}
 
           {activeTab === 'crm' && (
-            (userRole === 'platform_admin' || userRole === 'admin' || userPermissions.crm) ? (
+            (userRole === 'platform_admin' || userPermissions.crm) ? (
               <CRMWorkspacePage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken || ''}
                 campaigns={campaigns}
+                userRole={authIdentity?.role || userRole}
                 onDialLead={(phone, leadId, leadName) => {
                   socketData.dialLead(phone, leadName, 30, leadId);
                   setActiveTab('dialer');
@@ -1448,7 +1338,7 @@ export default function App() {
           )}
 
           {activeTab === 'campaigns' && (
-            (userRole === 'platform_admin' || userRole === 'admin' || userPermissions.campaigns) ? (
+            (userRole === 'platform_admin' || userPermissions.campaigns) ? (
               <CampaignWorkspacePage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
@@ -1469,12 +1359,13 @@ export default function App() {
           )}
 
           {activeTab === 'follow-ups' && (
-            (userRole === 'platform_admin' || userRole === 'admin' || userPermissions.crm) ? (
+            (userRole === 'platform_admin' || userPermissions.crm) ? (
               <CRMWorkspacePage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken || ''}
                 campaigns={campaigns}
+                userRole={authIdentity?.role || userRole}
                 initialSubTab="follow-ups"
                 onDialLead={(phone, leadId, leadName) => {
                   socketData.dialLead(phone, leadName, 30, leadId);
@@ -1494,7 +1385,7 @@ export default function App() {
           )}
 
           {activeTab === 'reports' && (
-            (userRole === 'platform_admin' || userRole === 'admin' || userPermissions.reports) ? (
+            (userRole === 'platform_admin' || userPermissions.reports) ? (
               <ReportsPage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
@@ -1515,10 +1406,10 @@ export default function App() {
           {activeTab === 'admin' && (
             <CompanySettings
               isLight={isLight}
-              serverUrl={lanServerUrl}
+              serverUrl={SERVER_URL}
               authToken={effectiveAuthToken || ''}
               currentUser={authUser || ''}
-              currentUserRole={userRole}
+              currentUserRole={userRole || 'user'}
               customerType={customerType}
               userPermissions={userPermissions}
               onNavigateTab={(tab) => setActiveTab(tab as any)}
@@ -1526,13 +1417,13 @@ export default function App() {
           )}
 
           {/* Diagnostic Administration Module (Retained for platform diagnostics & compatibility) */}
-          {false && <AdminPanel serverUrl={lanServerUrl} authToken={effectiveAuthToken || ''} currentUser={authUser || ''} />}
+          {false && <AdminPanel serverUrl={SERVER_URL} authToken={effectiveAuthToken || ''} currentUser={authUser || ''} />}
 
           {activeTab === 'billing' && (
             userRole === 'platform_admin' ? (
               <BillingPage
                 isLight={isLight}
-                serverUrl={lanServerUrl}
+                serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken || ''}
                 userRole={userRole}
               />
@@ -1550,7 +1441,7 @@ export default function App() {
           {activeTab === 'team-lead' && (
             (userRole === 'team_lead' || userRole === 'admin' || userRole === 'platform_admin') ? (
               <TeamLeadDashboard
-                serverUrl={lanServerUrl}
+                serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken}
                 onSelectCampaign={(_cId) => setActiveTab('campaigns')}
               />
@@ -1568,7 +1459,7 @@ export default function App() {
           {activeTab === 'super-admin' && (
             userRole === 'platform_admin' ? (
               <SuperAdminPortal
-                serverUrl={lanServerUrl}
+                serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken || authToken || ''}
                 currentUser={authUser}
                 onLogout={handleLogout}
@@ -1588,7 +1479,7 @@ export default function App() {
             (userRole === 'platform_admin' || userRole === 'admin' || userPermissions.leads) ? (
               <LeadsTable
                 isLight={isLight}
-                serverUrl={lanServerUrl}
+                serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken || ''}
 
               />
@@ -1722,23 +1613,64 @@ export default function App() {
             )
           )}
 
+          {['scraper', 'scraper-import', 'scraper-settings'].includes(activeTab) && (
+            <div className="space-y-4">
+              <div className={`p-4 rounded-xl border flex items-center justify-between ${isLight ? 'bg-amber-500/10 border-amber-300 text-amber-900' : 'bg-amber-500/10 border-amber-500/20 text-amber-400'}`}>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-amber-500/20">
+                    <Search className="w-5 h-5 text-amber-500" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold font-sans">Lead Generation Product Transition</h4>
+                    <p className="text-xs text-slate-500 font-mono">Google Maps Scraper is transitioning to a standalone Lead Generation product. For direct lead onboarding, use CSV import in CRM Workspace.</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveTab('crm')}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 transition"
+                >
+                  Go to CRM
+                </button>
+              </div>
+              <ScraperFilesPanel
+                isLight={isLight}
+                serverUrl={SERVER_URL}
+                authToken={effectiveAuthToken || ''}
+                activeSubTab={activeTab}
+                onImportSuccess={() => {
+                  fetchCampaigns();
+                  showToast('Scraped leads imported to CRM successfully.', 'success');
+                }}
+              />
+            </div>
+          )}
+
           {['fb-scraper', 'fb-scraper-files'].includes(activeTab) && (
-            (userRole === 'admin' || userRole === 'platform_admin' || userPermissions.facebookScraper) ? (
+            <div className="space-y-4">
+              <div className={`p-4 rounded-xl border flex items-center justify-between ${isLight ? 'bg-amber-500/10 border-amber-300 text-amber-900' : 'bg-amber-500/10 border-amber-500/20 text-amber-400'}`}>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-amber-500/20">
+                    <Facebook className="w-5 h-5 text-amber-500" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold font-sans">Lead Generation Product Transition</h4>
+                    <p className="text-xs text-slate-500 font-mono">Facebook Scraper is transitioning to our standalone Lead Generation product. Facebook Auto Poster remains active in Zestify Core.</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveTab('crm')}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 transition"
+                >
+                  Go to CRM
+                </button>
+              </div>
               <FacebookScraper
                 isLight={isLight}
                 serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken || ''}
                 activeSubTab={activeTab}
               />
-            ) : (
-              <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
-                <Facebook className="w-8 h-8 text-blue-500 mx-auto" />
-                <h3 className="text-base font-bold font-display">Facebook Scraper Restricted</h3>
-                <p className="text-xs font-mono text-slate-500 max-w-md mx-auto">
-                  Your user account does not currently have permissions enabled for the Facebook Scraper module. Contact your administrator to request access.
-                </p>
-              </div>
-            )
+            </div>
           )}
 
           {['fb-poster-accounts', 'fb-poster-campaigns', 'fb-poster-scheduler', 'fb-poster-joiner', 'fb-poster-logs'].includes(activeTab) && (

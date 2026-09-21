@@ -20,7 +20,7 @@ import crypto from 'crypto';
 import express from 'express';
 import * as jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
-import { db } from './databaseManager';
+import { db, getPendingInvitationForEmail } from './databaseManager';
 import {
   isValidEmailFormat,
   isDisposableEmail,
@@ -46,15 +46,27 @@ function getJWTSecret(): string {
 // JWT expires in 24 hours (86400 seconds)
 const JWT_EXPIRES_IN = 86400;
 
+export function issueAuthToken(user: { id: string; username: string; role: string; tenantId?: string | null }): string {
+  const payload = {
+    sub: user.id,
+    username: user.username,
+    role: user.role,
+    tenantId: user.tenantId || null
+  };
+  return jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
+}
+
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 export interface AuthUser {
   id: string;
   username: string;
   displayName?: string;
   role: string;
-  tenantId: string;
+  tenantId?: string | null;
   email?: string;
   roleId?: string | null;
+  needsOnboarding?: boolean;
+  pendingInvitation?: any;
 }
 
 export interface AuthSession {
@@ -193,11 +205,16 @@ export async function authenticateGoogleSignIn(profile: { googleId: string; emai
     throw err;
   }
 
+  const pendingInvitation = (!user.tenantId && user.email)
+    ? await getPendingInvitationForEmail(user.email)
+    : null;
+  const needsOnboarding = !user.tenantId && !pendingInvitation;
+
   const payload = {
     sub: user.id,
     username: user.username,
     role: user.role,
-    tenantId: user.tenantId
+    tenantId: user.tenantId || null
   };
   const token = jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
   return {
@@ -207,17 +224,22 @@ export async function authenticateGoogleSignIn(profile: { googleId: string; emai
       username: user.username,
       displayName: user.displayName || profile.name || user.username,
       role: user.role,
-      tenantId: user.tenantId,
-      email: user.email || email
+      tenantId: user.tenantId || null,
+      email: user.email || email,
+      needsOnboarding,
+      pendingInvitation: pendingInvitation || null
     },
     isNewUser: false
   };
 }
 
 /**
- * Google Sign Up: Creates a NEW Octal Dialer account if one does not already exist.
+ * Google Sign Up: Creates an identity only.
+ * DOES NOT create a tenant or auto-generate "[Name]'s Organization".
+ * If email matches a pending invitation, attaches invitation context.
+ * Else flags needsOnboarding: true so user enters the Customer Onboarding Wizard.
  */
-export async function registerGoogleSignUp(profile: { googleId: string; email: string; name?: string; picture?: string }): Promise<{ token: string; user: AuthUser; isNewUser: boolean }> {
+export async function registerGoogleSignUp(profile: { googleId: string; email: string; name?: string; picture?: string }): Promise<{ token: string; user: AuthUser; isNewUser: boolean; needsOnboarding: boolean; pendingInvitation?: any }> {
   const email = profile.email.toLowerCase().trim();
   const googleId = profile.googleId;
   const now = new Date().toISOString();
@@ -231,70 +253,128 @@ export async function registerGoogleSignUp(profile: { googleId: string; email: s
     throw err;
   }
 
-  // 2. New User Registration
+  // 2. New User Identity Creation (NO random tenant generated)
   const userId = 'user_' + crypto.randomBytes(8).toString('hex');
   const cleanBase = (profile.name || email.split('@')[0]).toLowerCase().replace(/[^a-z0-9_]/g, '');
   let candidateUsername = cleanBase.length >= 3 ? cleanBase : 'user';
   const existingWithUsername = await db.queryOne<any>(`SELECT id FROM users WHERE username = $1`, [candidateUsername]);
   const username = existingWithUsername ? `${candidateUsername}_${crypto.randomBytes(2).toString('hex')}` : candidateUsername;
   const displayName = profile.name || cleanBase;
-  const tenantId = 'tenant_' + crypto.randomBytes(8).toString('hex');
-  const tenantSlug = candidateUsername.substring(0, 30);
-  const companyName = profile.name ? `${profile.name}'s Organization` : `${candidateUsername}'s Team`;
   const { hash } = hashPassword(crypto.randomBytes(32).toString('hex'));
 
-  await db.withTransaction(async () => {
-    // 2a. Insert Tenant
-    await db.execute(`
-      INSERT INTO tenants (id, name, slug, country, "logoUrl", "ownerEmail", status, "createdAt", "updatedAt")
-      VALUES ($1, $2, $3, 'US', $4, $5, 'active', $6, $7)
-    `, [tenantId, companyName, `${tenantSlug}_${crypto.randomBytes(3).toString('hex')}`, profile.picture || null, email, now, now]);
+  // Check if identity has a pending workspace invitation
+  const pendingInvitation = await getPendingInvitationForEmail(email);
+  const needsOnboarding = !pendingInvitation;
 
-    // 2b. Insert User
-    await db.execute(`
-      INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "googleId", "authProvider", "emailVerified", "emailVerifiedAt", "needsProfileSetup", "createdAt", "updatedAt")
-      VALUES ($1, $2, $3, $4, $5, 'user', $6, $7, 'google', 1, $8, 1, $9, $10)
-    `, [userId, username, displayName, email, hash, tenantId, googleId, now, now, now]);
-
-    // 2c. Provision standard starter subscription
-    const subId = 'sub_' + crypto.randomBytes(8).toString('hex');
-    const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-    await db.execute(`
-      INSERT INTO subscriptions (id, "tenantId", "planId", status, "currentPeriodStart", "currentPeriodEnd", "createdAt", "updatedAt")
-      VALUES ($1, $2, 'plan_starter', 'active', $3, $4, $5, $6)
-    `, [subId, tenantId, now, periodEnd, now, now]);
-
-    // 2d. Provision standard default permissions
-    const modules = ['octalDialer', 'campaigns', 'leads', 'reports', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
-    for (const m of modules) {
-      await db.execute(`
-        INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
-        VALUES ($1, $2, $3, 1, 'SYSTEM_GOOGLE_SIGNUP', $4, $5)
-        ON CONFLICT ("id") DO NOTHING
-      `, [`perm_${userId}_${m}`, userId, m, tenantId, now]);
-    }
-  });
+  await db.execute(`
+    INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "googleId", "authProvider", "emailVerified", "emailVerifiedAt", "needsProfileSetup", "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, $5, 'user', NULL, $6, 'google', 1, $7, 0, $8, $9)
+  `, [userId, username, displayName, email, hash, googleId, now, now, now]);
 
   const authUser: AuthUser = {
     id: userId,
     username: username,
+    displayName: displayName,
     role: 'user',
-    tenantId: tenantId,
-    email: email
+    tenantId: null,
+    email: email,
+    needsOnboarding,
+    pendingInvitation: pendingInvitation || null
   };
 
   const payload = {
     sub: authUser.id,
     username: authUser.username,
     role: authUser.role,
-    tenantId: authUser.tenantId
+    tenantId: null
   };
   const token = jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
 
   return {
     token,
     user: authUser,
-    isNewUser: true
+    isNewUser: true,
+    needsOnboarding,
+    pendingInvitation: pendingInvitation || null
+  };
+}
+
+/**
+ * Customer Email + Password Registration:
+ * Creates user identity with tenantId: null and converges into the same onboarding / invitation flow.
+ */
+export async function registerCustomerWithEmail(params: {
+  fullName: string;
+  email: string;
+  password: string;
+  captchaToken?: string;
+  ip?: string;
+}): Promise<{ token: string; user: AuthUser; isNewUser: boolean; needsOnboarding: boolean; pendingInvitation?: any }> {
+  const email = (params.email || '').toLowerCase().trim();
+  const fullName = (params.fullName || '').trim();
+  const password = params.password || '';
+  const now = new Date().toISOString();
+
+  if (!isValidEmailFormat(email)) {
+    throw new Error('Please enter a valid work email address.');
+  }
+  if (password.length < 6) {
+    throw new Error('Password must be at least 6 characters long.');
+  }
+  if (!fullName || fullName.length < 2) {
+    throw new Error('Please enter your full name.');
+  }
+
+  // Duplicate safety check
+  const existing = await db.queryOne<any>(`SELECT id, email, username FROM users WHERE email = $1 OR username = $2`, [email, email]);
+  if (existing) {
+    const err: any = new Error('An account with this email already exists. Please sign in instead.');
+    err.code = 'ACCOUNT_EXISTS';
+    err.email = email;
+    throw err;
+  }
+
+  const userId = 'user_' + crypto.randomBytes(8).toString('hex');
+  const cleanBase = (fullName || email.split('@')[0]).toLowerCase().replace(/[^a-z0-9_]/g, '');
+  let candidateUsername = cleanBase.length >= 3 ? cleanBase : 'user';
+  const existingWithUsername = await db.queryOne<any>(`SELECT id FROM users WHERE username = $1`, [candidateUsername]);
+  const username = existingWithUsername ? `${candidateUsername}_${crypto.randomBytes(2).toString('hex')}` : candidateUsername;
+  const { hash } = hashPassword(password);
+
+  // Check if identity has a pending workspace invitation
+  const pendingInvitation = await getPendingInvitationForEmail(email);
+  const needsOnboarding = !pendingInvitation;
+
+  await db.execute(`
+    INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "googleId", "authProvider", "emailVerified", "emailVerifiedAt", "needsProfileSetup", "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, $5, 'user', NULL, NULL, 'local', 1, $6, 0, $7, $8)
+  `, [userId, username, fullName, email, hash, now, now, now]);
+
+  const authUser: AuthUser = {
+    id: userId,
+    username: username,
+    displayName: fullName,
+    role: 'user',
+    tenantId: null,
+    email: email,
+    needsOnboarding,
+    pendingInvitation: pendingInvitation || null
+  };
+
+  const payload = {
+    sub: authUser.id,
+    username: authUser.username,
+    role: authUser.role,
+    tenantId: null
+  };
+  const token = jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
+
+  return {
+    token,
+    user: authUser,
+    isNewUser: true,
+    needsOnboarding,
+    pendingInvitation: pendingInvitation || null
   };
 }
 
@@ -521,7 +601,7 @@ export async function verifyEmailCode(params: {
         VALUES ($1, $2, $3, $4, 'user', $5, 'local', 1, $6, $7, $8)
       `, [userId, pending.username, pending.email, pending.passwordHash, tenantId, nowIso, nowIso, nowIso]);
 
-      const modules = ['octalDialer', 'campaigns', 'leads', 'reports', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
+      const modules = ['crm', 'octalDialer', 'campaigns', 'leads', 'reports', 'autoEmailer', 'facebookPoster'];
       for (const m of modules) {
         await db.execute(`
           INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
@@ -680,22 +760,59 @@ export async function registerPublicUser(params: { username: string; email?: str
 
 // ─── Default admin bootstrap ──────────────────────────────────────────────────
 export async function ensureDefaultAdmin(): Promise<void> {
-  const existing = await db.queryOne("SELECT id FROM users WHERE role IN ('platform_admin', 'master_admin') LIMIT 1");
-  if (existing) return;
-  const username = process.env.BOOTSTRAP_ADMIN_USERNAME?.trim().toLowerCase();
-  const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
-  const password = process.env.BOOTSTRAP_ADMIN_PASSWORD?.trim();
-  if (!username || !email || !password || password.length < 16) {
-    throw new Error('No platform administrator exists. Provision BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_EMAIL and a password of at least 16 characters.');
-  }
-  const collision = await db.queryOne('SELECT id FROM users WHERE username = $1 OR email = $2', [username, email]);
-  if (collision) throw new Error('Bootstrap identity already exists. Explicit administrator recovery is required.');
   const now = new Date().toISOString();
-  const { hash } = hashPassword(password);
-  await db.execute(`INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
-    VALUES ($1, $2, $3, $4, 'platform_admin', 'tenant_default', 'local', 1, $5, $5)`,
-    ['user_' + crypto.randomUUID(), username, email, hash, now]);
-  console.log('[Auth Bootstrap] Provisioned administrator. Remove bootstrap credentials from the environment.');
+  try {
+    const existingTenant = await db.queryOne('SELECT id FROM tenants WHERE id = $1', ['tenant_default']);
+    if (!existingTenant) {
+      await db.execute(`
+        INSERT INTO tenants (id, name, slug, status, "createdAt", "updatedAt", "customerType", "maxTeamVisibility", "leadPoolMode", "maxAgents", tier)
+        VALUES ('tenant_default', 'Octal Primary Workspace', 'octal-primary', 'active', $1, $1, 'COMPANY', 'TEAM_COLLABORATE', 'shared', 50, 'enterprise')
+      `, [now]);
+    }
+  } catch (err) {
+    console.warn('[ensureDefaultAdmin] Notice checking tenant_default:', err);
+  }
+
+  const existing = await db.queryOne("SELECT id FROM users WHERE role IN ('platform_admin', 'master_admin') LIMIT 1");
+  if (!existing) {
+    const username = process.env.BOOTSTRAP_ADMIN_USERNAME?.trim().toLowerCase();
+    const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
+    const password = process.env.BOOTSTRAP_ADMIN_PASSWORD?.trim();
+    if (!username || !email || !password || password.length < 16) {
+      throw new Error('No platform administrator exists. Provision BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_EMAIL and a password of at least 16 characters.');
+    }
+    const collision = await db.queryOne('SELECT id FROM users WHERE username = $1 OR email = $2', [username, email]);
+    if (collision) throw new Error('Bootstrap identity already exists. Explicit administrator recovery is required.');
+    const { hash } = hashPassword(password);
+    await db.execute(`INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, 'platform_admin', 'tenant_default', 'local', 1, $5, $5)`,
+      ['user_' + crypto.randomUUID(), username, email, hash, now]);
+    console.log('[Auth Bootstrap] Provisioned administrator. Remove bootstrap credentials from the environment.');
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const existingOwner = await db.queryOne("SELECT id FROM users WHERE username = 'owner' LIMIT 1");
+      if (!existingOwner) {
+        const { hash } = hashPassword('OwnerPassword1234!');
+        await db.execute(`INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
+          VALUES ($1, 'owner', 'owner@octal.local', $2, 'admin', 'tenant_default', 'local', 1, $3, $3)`,
+          ['user_owner_' + crypto.randomUUID(), hash, now]);
+        console.log('[Auth Bootstrap] Provisioned dev company owner account (owner / OwnerPassword1234!).');
+      }
+
+      const existingAgent = await db.queryOne("SELECT id FROM users WHERE username = 'agent1' LIMIT 1");
+      if (!existingAgent) {
+        const { hash } = hashPassword('AgentPassword1234!');
+        await db.execute(`INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
+          VALUES ($1, 'agent1', 'agent1@octal.local', $2, 'agent', 'tenant_default', 'local', 1, $3, $3)`,
+          ['user_agent_' + crypto.randomUUID(), hash, now]);
+        console.log('[Auth Bootstrap] Provisioned dev agent account (agent1 / AgentPassword1234!).');
+      }
+    } catch (err) {
+      console.warn('[ensureDefaultAdmin] Notice provisioning dev accounts:', err);
+    }
+  }
 }
 
 // ─── Auth operations ──────────────────────────────────────────────────────────
@@ -869,9 +986,14 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
   try {
     const decoded = jwt.verify(token, getJWTSecret(), { algorithms: ['HS256'] }) as any;
 
-    if (decoded.sub && decoded.username && decoded.role && decoded.tenantId) {
+    if (decoded.sub && decoded.username && decoded.role) {
       const dbUser = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [decoded.sub]);
-      if (!dbUser || !dbUser.tenantId || dbUser.tenantId !== decoded.tenantId) {
+      if (!dbUser) {
+        return null;
+      }
+
+      // If token specifies a tenantId and dbUser has one, verify match
+      if (decoded.tenantId && dbUser.tenantId && dbUser.tenantId !== decoded.tenantId) {
         return null;
       }
 
@@ -880,9 +1002,11 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
         return null;
       }
 
-      const dbTenant = await db.queryOne<{ status: string }>(`SELECT status FROM tenants WHERE id = $1`, [dbUser.tenantId]);
-      if (dbTenant && dbTenant.status === 'suspended' && dbUser.role !== 'platform_admin' && dbUser.role !== 'master_admin') {
-        return null;
+      if (dbUser.tenantId) {
+        const dbTenant = await db.queryOne<{ status: string }>(`SELECT status FROM tenants WHERE id = $1`, [dbUser.tenantId]);
+        if (dbTenant && dbTenant.status === 'suspended' && dbUser.role !== 'platform_admin' && dbUser.role !== 'master_admin') {
+          return null;
+        }
       }
 
       return {
@@ -890,14 +1014,10 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
         username: dbUser.username,
         displayName: dbUser.displayName || dbUser.username,
         role: dbUser.role,
-        tenantId: dbUser.tenantId,
+        tenantId: dbUser.tenantId || null,
         email: dbUser.email,
         roleId: dbUser.roleId || null
       };
-    }
-    if (decoded.sub && !decoded.tenantId) {
-      console.warn('[Auth] Rejected JWT token missing tenantId claim.');
-      return null;
     }
   } catch (err) {
     // Fall through to legacy session check
@@ -1246,6 +1366,10 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
           permissions.add('leads:import');
           permissions.add('leads:edit');
         }
+        if (lp.moduleId === 'crm') {
+          permissions.add('crm:create');
+          permissions.add('crm:edit');
+        }
       }
     }
   } catch (err) {
@@ -1444,7 +1568,7 @@ export async function signupTenant(input: SignupInput): Promise<SignupResult> {
     `, [userId, username, email || null, hash, tenantId, now, now]);
 
     // 3c. Provision Default User Module Permissions
-    const modules = ['octalDialer', 'googleScraper', 'autoEmailer', 'facebookScraper', 'facebookPoster'];
+    const modules = ['crm', 'octalDialer', 'campaigns', 'leads', 'reports', 'autoEmailer', 'facebookPoster'];
     for (const moduleId of modules) {
       await db.execute(`
         INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")

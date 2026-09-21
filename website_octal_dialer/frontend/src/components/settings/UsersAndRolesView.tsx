@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Users, UserCheck, Shield, ChevronLeft, Search,
   Plus, Edit, Trash2, CheckCircle2, AlertCircle,
   Eye, RefreshCw, Layers, Target, ChevronRight, Key,
-  X, Check, Building2, UserPlus, Briefcase
+  X, Check, Building2, UserPlus, Briefcase, Lock, ShieldCheck, Info
 } from 'lucide-react';
 
 interface UserItem {
@@ -60,6 +60,26 @@ interface CustomRole {
   userCount?: number;
 }
 
+interface InvitationItem {
+  id: string;
+  email: string;
+  role: string;
+  teamId?: string;
+  status: 'PENDING' | 'ACCEPTED' | 'EXPIRED' | 'REVOKED';
+  expiresAt: string;
+  createdAt: string;
+  acceptedAt?: string;
+  teamName?: string;
+  inviterName?: string;
+}
+
+interface SeatUsage {
+  activeSeats: number;
+  pendingInvitations: number;
+  maxSeats: number;
+  availableSeats: number;
+}
+
 interface UsersAndRolesViewProps {
   isLight?: boolean;
   serverUrl: string;
@@ -75,9 +95,7 @@ const AVAILABLE_MODULES = [
   { id: 'octalDialer', label: 'OCTAL Dialer', icon: '📞', desc: 'GSM auto-dialer & telephony' },
   { id: 'leads', label: 'Leads Database', icon: '🗄️', desc: 'Contact explorer & imports' },
   { id: 'reports', label: 'Reports & Analytics', icon: '📊', desc: 'Call metrics & performance exports' },
-  { id: 'googleScraper', label: 'Google Scraper', icon: '🔍', desc: 'Google Maps B2B lead extractor' },
   { id: 'autoEmailer', label: 'Auto Emailer', icon: '✉️', desc: 'Cold email sequences & SMTP' },
-  { id: 'facebookScraper', label: 'Facebook Scraper', icon: '📘', desc: 'Facebook group member extractor' },
   { id: 'facebookPoster', label: 'FB Auto Poster', icon: '📤', desc: 'Scheduled Facebook postings' }
 ];
 
@@ -89,16 +107,38 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
   currentUserRole: _currentUserRole,
   onBack
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'team-leads' | 'teams' | 'roles' | 'access-review'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'team-leads' | 'teams' | 'invitations' | 'roles' | 'access-review'>('overview');
 
   // Core Data
   const [users, setUsers] = useState<UserItem[]>([]);
   const [teams, setTeams] = useState<TeamItem[]>([]);
   const [roles, setRoles] = useState<CustomRole[]>([]);
+  const [invitations, setInvitations] = useState<InvitationItem[]>([]);
+  const [seatUsage, setSeatUsage] = useState<SeatUsage | null>(null);
   const [tenantPolicy, setTenantPolicy] = useState<{ maxTeamVisibility?: string }>({ maxTeamVisibility: 'TEAM_COLLABORATE' });
+  const [companyEntitlements, setCompanyEntitlements] = useState<Record<string, boolean>>({});
+  const [companyModulesList, setCompanyModulesList] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Invite User Modal State
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<'team_lead' | 'user'>('user');
+  const [inviteTeamId, setInviteTeamId] = useState('');
+  const [inviteModules, setInviteModules] = useState<Record<string, boolean>>({
+    crm: true,
+    campaigns: true,
+    octalDialer: true,
+    leads: true,
+    reports: true,
+    autoEmailer: false,
+    facebookPoster: false
+  });
+  const [inviting, setInviting] = useState(false);
+  const [createdInviteUrl, setCreatedInviteUrl] = useState<string | null>(null);
+  const [copiedInvite, setCopiedInvite] = useState(false);
 
   // Filter & Search states
   const [userSearch, setUserSearch] = useState('');
@@ -168,13 +208,32 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
     setLoading(true);
     setError(null);
     try {
-      // 1. Users
+      // 0. Company Platform Entitlements
+      try {
+        const entRes = await fetch(`${serverUrl}/api/company/entitlements`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+        if (entRes.ok) {
+          const entData = await entRes.json();
+          if (entData?.entitlements) {
+            setCompanyEntitlements(entData.entitlements);
+            setCompanyModulesList(entData.enabledModules || []);
+          }
+        }
+      } catch (e) {
+        console.warn('Notice loading company entitlements:', e);
+      }
+
+      // 1. Users (Strictly customer organization only)
       const usersRes = await fetch(`${serverUrl}/api/admin/users`, {
         headers: { Authorization: `Bearer ${authToken}` }
       });
       if (usersRes.ok) {
         const data = await usersRes.json();
-        setUsers(Array.isArray(data) ? data : []);
+        const nonPlatformUsers = Array.isArray(data)
+          ? data.filter((u: any) => u.role !== 'platform_admin' && u.role !== 'master_admin')
+          : [];
+        setUsers(nonPlatformUsers);
       }
 
       // 2. Teams
@@ -205,6 +264,22 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
           setTenantPolicy(meData.tenant);
         }
       }
+
+      // 5. Invitations & Seat Usage
+      try {
+        const invRes = await fetch(`${serverUrl}/api/admin/invitations`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+        if (invRes.ok) {
+          const invData = await invRes.json();
+          setInvitations(Array.isArray(invData.invitations) ? invData.invitations : []);
+          if (invData.seatUsage) {
+            setSeatUsage(invData.seatUsage);
+          }
+        }
+      } catch (e) {
+        console.warn('Notice loading invitations:', e);
+      }
     } catch (err: any) {
       console.error('[UsersAndRolesView] Load error:', err);
       setError(err.message || 'Failed to load organization data.');
@@ -216,6 +291,39 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
   useEffect(() => {
     fetchData();
   }, [serverUrl, authToken]);
+
+  // ─── Module Entitlement Helpers (PLATFORM -> COMPANY -> TEAM -> USER) ─────
+  const isModuleCompanyEntitled = useCallback((moduleId: string): boolean => {
+    const normKey = moduleId === 'octalDialer' ? 'dialer' :
+                    moduleId === 'googleScraper' ? 'google_scraper' :
+                    moduleId === 'autoEmailer' ? 'auto_emailer' :
+                    moduleId === 'facebookScraper' ? 'facebook_scraper' :
+                    moduleId === 'facebookPoster' ? 'facebook_poster' : moduleId;
+    
+    if (companyEntitlements[normKey] !== undefined) return !!companyEntitlements[normKey];
+    if (companyEntitlements[moduleId] !== undefined) return !!companyEntitlements[moduleId];
+    
+    if (companyModulesList && companyModulesList.length > 0) {
+      return companyModulesList.includes(normKey) || companyModulesList.includes(moduleId);
+    }
+    return true; // Default fallback if not yet loaded
+  }, [companyEntitlements, companyModulesList]);
+
+  const companyAvailableCount = useMemo(() => {
+    return AVAILABLE_MODULES.filter(m => isModuleCompanyEntitled(m.id)).length;
+  }, [isModuleCompanyEntitled]);
+
+  const getUserEffectiveModulesCount = useCallback((user: UserItem): number => {
+    if (user.role === 'admin') {
+      return companyAvailableCount;
+    }
+    const assigned = AVAILABLE_MODULES.filter(m => {
+      const p = user.permissions?.find(x => x.moduleId === m.id || (m.id === 'octalDialer' && x.moduleId === 'dialer'));
+      const isAssigned = p ? p.enabled === 1 : false;
+      return isAssigned && isModuleCompanyEntitled(m.id);
+    });
+    return assigned.length;
+  }, [companyAvailableCount, isModuleCompanyEntitled]);
 
   // ─── Derived Metrics ──────────────────────────────────────────────────────
   const totalUsersCount = users.length;
@@ -294,6 +402,12 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
     setCreatingUser(true);
     setError(null);
     try {
+      // Filter out modules that exceed company entitlement ceiling
+      const sanitizedModules: Record<string, boolean> = {};
+      AVAILABLE_MODULES.forEach(m => {
+        sanitizedModules[m.id] = !!newModules[m.id] && isModuleCompanyEntitled(m.id);
+      });
+
       const res = await fetch(`${serverUrl}/api/admin/users`, {
         method: 'POST',
         headers: {
@@ -307,7 +421,7 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
           phone: newPhone.trim() || undefined,
           password: newPassword.trim(),
           role: newRole,
-          modules: newModules
+          modules: sanitizedModules
         })
       });
       const data = await res.json();
@@ -353,11 +467,12 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
     setEditStatus((user.status?.toLowerCase() === 'disabled' ? 'Disabled' : 'Active'));
     setEditPassword('');
 
-    // Pre-fill modules map
+    // Pre-fill modules map respecting company ceiling
     const modMap: Record<string, boolean> = {};
     AVAILABLE_MODULES.forEach(m => {
-      const p = user.permissions?.find(x => x.moduleId === m.id);
-      modMap[m.id] = p ? p.enabled === 1 : false;
+      const p = user.permissions?.find(x => x.moduleId === m.id || (m.id === 'octalDialer' && x.moduleId === 'dialer'));
+      const isAssigned = p ? p.enabled === 1 : false;
+      modMap[m.id] = user.role === 'admin' ? isModuleCompanyEntitled(m.id) : (isAssigned && isModuleCompanyEntitled(m.id));
     });
     setEditModules(modMap);
     setShowEditUserModal(true);
@@ -369,14 +484,27 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
     setSavingEdit(true);
     setError(null);
     try {
+      const targetUser = users.find(u => u.id === editingUserId);
+      const isTargetOwner = targetUser?.role === 'admin' || targetUser?.username === 'owner';
+
       const payload: any = {
         displayName: editDisplayName.trim(),
         email: editEmail.trim(),
         phone: editPhone.trim(),
-        role: editRole,
-        status: editStatus,
-        modules: editModules
+        status: editStatus
       };
+
+      // Role and Module edits only apply to non-owner members
+      if (!isTargetOwner) {
+        payload.role = editRole;
+        // Sanitize: members cannot be granted modules beyond company ceiling
+        const sanitizedModules: Record<string, boolean> = {};
+        AVAILABLE_MODULES.forEach(m => {
+          sanitizedModules[m.id] = !!editModules[m.id] && isModuleCompanyEntitled(m.id);
+        });
+        payload.modules = sanitizedModules;
+      }
+
       if (editPassword.trim()) {
         payload.password = editPassword.trim();
       }
@@ -427,6 +555,60 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
       setError(err.message || 'Failed to delete user');
     } finally {
       setDeletingUser(false);
+    }
+  };
+
+  const handleSendInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail.trim()) {
+      setError('Please provide an email address.');
+      return;
+    }
+    setInviting(true);
+    setError(null);
+    try {
+      const activeMods = Object.keys(inviteModules).filter(k => inviteModules[k]);
+      const res = await fetch(`${serverUrl}/api/admin/invitations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          email: inviteEmail.trim(),
+          role: inviteRole,
+          teamId: inviteTeamId || undefined,
+          initialModules: activeMods
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to create invitation.');
+
+      const inviteUrl = `${window.location.origin}/?inviteToken=${data.token}`;
+      setCreatedInviteUrl(inviteUrl);
+      notify(`Invitation generated for ${inviteEmail.trim()}`);
+      fetchData();
+    } catch (err: any) {
+      setError(err.message || 'Failed to send invitation.');
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const handleRevokeInvite = async (invitationId: string) => {
+    try {
+      const res = await fetch(`${serverUrl}/api/admin/invitations/${invitationId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to revoke invitation.');
+      }
+      notify('Invitation revoked.');
+      fetchData();
+    } catch (err: any) {
+      setError(err.message || 'Failed to revoke invitation.');
     }
   };
 
@@ -526,6 +708,49 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
 
   return (
     <div className={`space-y-6 text-left select-none transition-colors duration-200 ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+      {/* ── Seat Usage & Capacity Banner ── */}
+      {seatUsage && (
+        <div className={`border rounded-2xl p-4 shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all ${
+          isLight ? 'bg-white border-amber-300' : 'bg-[#0B0E14] border-amber-500/30 shadow-black/50'
+        }`}>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+              <Users className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+                  Company Seat Capacity
+                </span>
+                <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                  seatUsage.availableSeats > 0
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                }`}>
+                  {seatUsage.availableSeats > 0 ? `${seatUsage.availableSeats} Available` : 'Limit Reached'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Seats: <strong className="text-amber-400">{seatUsage.activeSeats}</strong> / <strong className="text-white">{seatUsage.maxSeats}</strong> used (<strong className="text-purple-400">{seatUsage.pendingInvitations}</strong> pending, <strong className="text-emerald-400">{seatUsage.availableSeats}</strong> available)
+              </p>
+            </div>
+          </div>
+          <button
+            id="invite-user-banner-btn"
+            onClick={() => {
+              setCreatedInviteUrl(null);
+              setInviteEmail('');
+              setShowInviteModal(true);
+            }}
+            disabled={seatUsage.availableSeats <= 0}
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow-md shadow-amber-500/20 flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>Invite User</span>
+          </button>
+        </div>
+      )}
+
       {/* ── Header Bar ── */}
       <div className={`border rounded-2xl p-5 shadow-2xl transition-colors ${
         isLight ? 'bg-white border-slate-200 shadow-slate-200/50' : 'bg-[#0B0E14] border-slate-800 shadow-black/60'
@@ -558,11 +783,17 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setShowCreateUserModal(true)}
-              className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
+              id="invite-user-header-btn"
+              onClick={() => {
+                setCreatedInviteUrl(null);
+                setInviteEmail('');
+                setShowInviteModal(true);
+              }}
+              disabled={seatUsage ? seatUsage.availableSeats <= 0 : false}
+              className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-amber-500/20 transition-all cursor-pointer disabled:opacity-50"
             >
               <UserPlus className="w-4 h-4" />
-              <span>Create User</span>
+              <span>Invite User</span>
             </button>
             <button
               onClick={fetchData}
@@ -625,6 +856,7 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
             { id: 'users', label: `Users (${users.length})`, icon: Users },
             { id: 'team-leads', label: `Team Leads (${teamLeadsList.length})`, icon: Target },
             { id: 'teams', label: `Teams (${teams.length})`, icon: Layers },
+            { id: 'invitations', label: `Invitations (${invitations.filter(i => i.status === 'PENDING').length})`, icon: UserPlus },
             { id: 'roles', label: 'Roles & Permissions', icon: Shield },
             { id: 'access-review', label: 'Access Review', icon: Key }
           ].map(tab => {
@@ -852,11 +1084,17 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
               </select>
 
               <button
-                onClick={() => setShowCreateUserModal(true)}
-                className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ml-auto"
+                id="invite-user-table-btn"
+                onClick={() => {
+                  setCreatedInviteUrl(null);
+                  setInviteEmail('');
+                  setShowInviteModal(true);
+                }}
+                disabled={seatUsage ? seatUsage.availableSeats <= 0 : false}
+                className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ml-auto disabled:opacity-50"
               >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add User</span>
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Invite User</span>
               </button>
             </div>
           </div>
@@ -885,7 +1123,6 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                   ) : (
                     filteredUsers.map(user => {
                       const userTeams = userTeamsMap.get(user.id) || [];
-                      const enabledModsCount = user.permissions?.filter(p => p.enabled === 1).length || 0;
                       const isActive = !user.status || user.status.toLowerCase() === 'active';
 
                       return (
@@ -948,9 +1185,15 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                           </td>
 
                           <td className="px-4 py-3.5">
-                            <span className="px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 text-[11px] font-mono border border-slate-700">
-                              {enabledModsCount} of {AVAILABLE_MODULES.length} active
-                            </span>
+                            {user.role === 'admin' ? (
+                              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-[11px] font-mono border border-emerald-500/20" title="Company Owner inherits all company-entitled modules">
+                                All Available ({companyAvailableCount} / {companyAvailableCount})
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 text-[11px] font-mono border border-slate-700" title={`Effective modules: ${getUserEffectiveModulesCount(user)} of ${companyAvailableCount} available under company ceiling`}>
+                                Assigned: {getUserEffectiveModulesCount(user)} / {companyAvailableCount} modules
+                              </span>
+                            )}
                           </td>
 
                           <td className="px-4 py-3.5 text-right" onClick={e => e.stopPropagation()}>
@@ -1156,6 +1399,132 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
       )}
 
       {/* ─────────────────────────────────────────────────────────────────── */}
+      {/* TAB: INVITATIONS                                                   */}
+      {/* ─────────────────────────────────────────────────────────────────── */}
+      {activeTab === 'invitations' && (
+        <div className="space-y-4">
+          <div className="p-4 rounded-2xl bg-[#0B0E14] border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <UserPlus className="w-4 h-4 text-amber-400" />
+                Workspace Invitations ({invitations.length})
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Invite employees to join your workspace as Team Leads or Members.
+              </p>
+            </div>
+            <button
+              id="invite-member-btn"
+              onClick={() => {
+                setCreatedInviteUrl(null);
+                setInviteEmail('');
+                setShowInviteModal(true);
+              }}
+              disabled={seatUsage ? seatUsage.availableSeats <= 0 : false}
+              className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Send New Invitation</span>
+            </button>
+          </div>
+
+          {invitations.length === 0 ? (
+            <div className="p-12 rounded-2xl bg-[#0B0E14] border border-slate-800 text-center space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto">
+                <UserPlus className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-white">No Invitations Yet</h4>
+                <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1">
+                  Invite your team leads and agents to collaborate in this workspace. They will receive an invitation to join immediately.
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setCreatedInviteUrl(null);
+                  setInviteEmail('');
+                  setShowInviteModal(true);
+                }}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow-md cursor-pointer transition-all inline-flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Invite First User</span>
+              </button>
+            </div>
+          ) : (
+            <div className="border border-slate-800 rounded-2xl bg-[#0B0E14] overflow-hidden shadow-xl">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800/80 bg-[#10141D]/80 text-slate-400 font-mono uppercase text-[10px]">
+                      <th className="px-4 py-3">Invited Email</th>
+                      <th className="px-4 py-3">Target Role</th>
+                      <th className="px-4 py-3">Assigned Team</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Sent Date</th>
+                      <th className="px-4 py-3">Expires</th>
+                      <th className="px-4 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/50">
+                    {invitations.map(inv => {
+                      const isPending = inv.status === 'PENDING';
+                      return (
+                        <tr key={inv.id} className="hover:bg-slate-900/40 transition-colors">
+                          <td className="px-4 py-3 font-semibold text-white font-mono">
+                            {inv.email}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                              inv.role === 'team_lead'
+                                ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
+                                : 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
+                            }`}>
+                              {inv.role === 'team_lead' ? 'Team Lead' : 'Member'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-slate-300">
+                            {inv.teamName || (inv.teamId ? 'Assigned' : 'None')}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                              inv.status === 'PENDING'
+                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                : inv.status === 'ACCEPTED'
+                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                : 'bg-slate-800 text-slate-400 border border-slate-700'
+                            }`}>
+                              {inv.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-slate-400 font-mono text-[11px]">
+                            {new Date(inv.createdAt).toLocaleDateString()}
+                          </td>
+                          <td className="px-4 py-3 text-slate-400 font-mono text-[11px]">
+                            {new Date(inv.expiresAt).toLocaleDateString()}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {isPending && (
+                              <button
+                                onClick={() => handleRevokeInvite(inv.id)}
+                                className="px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 font-semibold text-[11px] transition-all cursor-pointer"
+                              >
+                                Revoke
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────────── */}
       {/* TAB 5: ROLES & PERMISSIONS                                         */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {activeTab === 'roles' && (
@@ -1295,7 +1664,6 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                       : userTeams.length > 0
                       ? userTeams[0].effectiveVisibility || userTeams[0].settings?.leadVisibility || 'OWN'
                       : 'OWN';
-                    const modsCount = u.permissions?.filter(p => p.enabled === 1).length || 0;
                     const isActive = !u.status || u.status.toLowerCase() === 'active';
 
                     return (
@@ -1340,9 +1708,15 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                         </td>
 
                         <td className="px-4 py-3.5">
-                          <span className="text-slate-400 text-[11px]">
-                            {modsCount} of {AVAILABLE_MODULES.length} modules
-                          </span>
+                          {u.role === 'admin' ? (
+                            <span className="text-emerald-400 font-mono text-[11px] font-semibold">
+                              All {companyAvailableCount} / {companyAvailableCount} Entitled
+                            </span>
+                          ) : (
+                            <span className="text-slate-300 font-mono text-[11px]">
+                              {getUserEffectiveModulesCount(u)} / {companyAvailableCount} Available
+                            </span>
+                          )}
                         </td>
 
                         <td className="px-4 py-3.5">
@@ -1443,29 +1817,84 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
               </div>
             </div>
 
-            {/* Section 3: Module Access */}
+            {/* Section 3: Inherited Module Access Hierarchy */}
             <div className="space-y-2">
-              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
-                Enabled Enterprise Modules
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
+                  Inherited Module Entitlements
+                </div>
+                <div className="text-[10px] font-mono text-amber-400">
+                  Platform Ceiling ∩ User Assignment
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                {AVAILABLE_MODULES.map(m => {
-                  const perm = selectedUser.permissions?.find(p => p.moduleId === m.id);
-                  const isEnabled = perm ? perm.enabled === 1 : false;
-                  return (
-                    <div
-                      key={m.id}
-                      className={`p-2 rounded-lg border text-xs flex items-center justify-between ${
-                        isEnabled
-                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 font-medium'
-                          : 'bg-[#10141D] border-slate-800 text-slate-500'
-                      }`}
-                    >
-                      <span className="truncate">{m.label}</span>
-                      {isEnabled ? <Check className="w-3.5 h-3.5 shrink-0" /> : <X className="w-3.5 h-3.5 shrink-0" />}
-                    </div>
-                  );
-                })}
+
+              {selectedUser.role === 'admin' ? (
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+                  <div className="flex items-center gap-1.5 font-bold mb-1">
+                    <ShieldCheck className="w-4 h-4 text-amber-400" />
+                    <span>Company Owner Entitlement Root</span>
+                  </div>
+                  <p className="text-[11px] text-slate-300">
+                    This account possesses root administrative ownership. All {companyAvailableCount} modules provisioned by the Zestify Platform are automatically active with zero subordinate restrictions.
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="border border-slate-800 rounded-xl overflow-hidden bg-[#10141D]">
+                <table className="w-full text-left text-[11px]">
+                  <thead className="bg-slate-900/80 border-b border-slate-800 text-[10px] font-mono text-slate-400 uppercase">
+                    <tr>
+                      <th className="px-3 py-2">Module</th>
+                      <th className="px-2 py-2 text-center">Company Ceiling</th>
+                      <th className="px-2 py-2 text-center">User Assignment</th>
+                      <th className="px-3 py-2 text-right">Effective Access</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/50">
+                    {AVAILABLE_MODULES.map(m => {
+                      const companyEntitled = isModuleCompanyEntitled(m.id);
+                      const perm = selectedUser.permissions?.find(p => p.moduleId === m.id || (m.id === 'octalDialer' && p.moduleId === 'dialer'));
+                      const userAssigned = selectedUser.role === 'admin' ? true : (perm ? perm.enabled === 1 : false);
+                      const isEffective = selectedUser.role === 'admin' ? companyEntitled : (companyEntitled && userAssigned);
+
+                      return (
+                        <tr key={m.id} className="hover:bg-slate-800/30">
+                          <td className="px-3 py-2">
+                            <span className="mr-1.5">{m.icon}</span>
+                            <span className="font-medium text-slate-200">{m.label}</span>
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            {companyEntitled ? (
+                              <span className="text-emerald-400 font-mono text-[10px]">Allowed</span>
+                            ) : (
+                              <span className="text-rose-400 font-mono text-[10px]">Blocked</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            {selectedUser.role === 'admin' ? (
+                              <span className="text-amber-400 font-mono text-[10px]">Root</span>
+                            ) : userAssigned ? (
+                              <span className="text-emerald-400 font-mono text-[10px]">Assigned</span>
+                            ) : (
+                              <span className="text-slate-500 font-mono text-[10px]">Not Set</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {isEffective ? (
+                              <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono text-[10px] font-bold border border-emerald-500/20">
+                                Active
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-500 font-mono text-[10px] border border-slate-700/50">
+                                {!companyEntitled ? 'Ceiling Restrict' : 'Not Granted'}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
 
@@ -1794,28 +2223,58 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                 </div>
               </div>
 
-              {/* Module Toggles */}
+              {/* Module Toggles with Company Ceiling */}
               <div className="space-y-2 pt-2 border-t border-slate-800">
-                <label className="text-xs font-semibold text-slate-300">Enabled Modules</label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {AVAILABLE_MODULES.map(m => (
-                    <label
-                      key={m.id}
-                      className={`p-2 rounded-xl border text-xs flex items-center justify-between cursor-pointer transition-all ${
-                        newModules[m.id]
-                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 font-medium'
-                          : 'bg-[#10141D] border-slate-800 text-slate-500'
-                      }`}
-                    >
-                      <span className="truncate">{m.label}</span>
-                      <input
-                        type="checkbox"
-                        checked={!!newModules[m.id]}
-                        onChange={e => setNewModules({ ...newModules, [m.id]: e.target.checked })}
-                        className="rounded accent-amber-500"
-                      />
-                    </label>
-                  ))}
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-300">Module Access Assignments</label>
+                  <span className="text-[10px] font-mono text-amber-400">
+                    Ceiling: {companyAvailableCount} / {AVAILABLE_MODULES.length} Available
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {AVAILABLE_MODULES.map(m => {
+                    const entitled = isModuleCompanyEntitled(m.id);
+                    const isChecked = !!newModules[m.id];
+                    if (!entitled) {
+                      return (
+                        <div
+                          key={m.id}
+                          className="p-2 rounded-xl border border-slate-800/80 bg-slate-950/60 text-slate-500 text-xs flex items-center justify-between opacity-70 cursor-not-allowed"
+                          title="Disabled at Company Level — Not entitled by Platform Owner"
+                        >
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className="opacity-50">{m.icon}</span>
+                            <span className="line-through text-slate-500 truncate">{m.label}</span>
+                          </div>
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-500 shrink-0 flex items-center gap-1">
+                            <Lock className="w-2.5 h-2.5" />
+                            Blocked
+                          </span>
+                        </div>
+                      );
+                    }
+                    return (
+                      <label
+                        key={m.id}
+                        className={`p-2 rounded-xl border text-xs flex items-center justify-between cursor-pointer transition-all ${
+                          isChecked
+                            ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 font-medium'
+                            : 'bg-[#10141D] border-slate-800 text-slate-400'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5 truncate">
+                          <span>{m.icon}</span>
+                          <span className="truncate">{m.label}</span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={e => setNewModules({ ...newModules, [m.id]: e.target.checked })}
+                          className="rounded accent-amber-500 cursor-pointer"
+                        />
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1844,146 +2303,290 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* MODAL: EDIT USER & PERMISSIONS                                      */}
       {/* ─────────────────────────────────────────────────────────────────── */}
-      {showEditUserModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-fade-in">
-          <div
-            className="w-full max-w-lg bg-[#0B0E14] border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-5 text-left max-h-[90vh] overflow-y-auto"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between border-b border-slate-800 pb-3">
-              <div>
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  <Edit className="w-5 h-5 text-amber-400" />
-                  Edit User & Permissions
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Update role, contact details, status, or module access.
-                </p>
-              </div>
-              <button
-                onClick={() => setShowEditUserModal(false)}
-                className="p-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveEdit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-300">Display Name</label>
-                  <input
-                    type="text"
-                    value={editDisplayName}
-                    onChange={e => setEditDisplayName(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50"
-                  />
+      {showEditUserModal && (() => {
+        const targetEditingUser = users.find(u => u.id === editingUserId);
+        const isEditingOwner = targetEditingUser?.role === 'admin' || targetEditingUser?.username === 'owner';
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-fade-in">
+            <div
+              className="w-full max-w-lg bg-[#0B0E14] border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-5 text-left max-h-[90vh] overflow-y-auto"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between border-b border-slate-800 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    {isEditingOwner ? <ShieldCheck className="w-5 h-5 text-amber-400" /> : <Edit className="w-5 h-5 text-amber-400" />}
+                    {isEditingOwner ? 'Edit Company Owner & Credentials' : 'Edit User & Permissions'}
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {isEditingOwner
+                      ? 'Update contact details or credentials. Root owner inherits all company-entitled modules.'
+                      : 'Update role, contact details, status, or module access within company limits.'}
+                  </p>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-300">Email</label>
-                  <input
-                    type="email"
-                    value={editEmail}
-                    onChange={e => setEditEmail(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-300">Phone</label>
-                  <input
-                    type="tel"
-                    value={editPhone}
-                    onChange={e => setEditPhone(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-300">Reset Password (optional)</label>
-                  <input
-                    type="password"
-                    value={editPassword}
-                    onChange={e => setEditPassword(e.target.value)}
-                    placeholder="Leave empty to keep current"
-                    className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-300">Role</label>
-                  <select
-                    value={editRole}
-                    onChange={e => setEditRole(e.target.value as any)}
-                    className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50 cursor-pointer"
-                  >
-                    <option value="agent">Member / Agent</option>
-                    <option value="team_lead">Team Lead</option>
-                    <option value="admin">Company Owner</option>
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-300">Account Status</label>
-                  <select
-                    value={editStatus}
-                    onChange={e => setEditStatus(e.target.value as any)}
-                    className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50 cursor-pointer"
-                  >
-                    <option value="Active">Active</option>
-                    <option value="Disabled">Disabled</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Module Toggles */}
-              <div className="space-y-2 pt-2 border-t border-slate-800">
-                <label className="text-xs font-semibold text-slate-300">Module Access Rights</label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {AVAILABLE_MODULES.map(m => (
-                    <label
-                      key={m.id}
-                      className={`p-2 rounded-xl border text-xs flex items-center justify-between cursor-pointer transition-all ${
-                        editModules[m.id]
-                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 font-medium'
-                          : 'bg-[#10141D] border-slate-800 text-slate-500'
-                      }`}
-                    >
-                      <span className="truncate">{m.label}</span>
-                      <input
-                        type="checkbox"
-                        checked={!!editModules[m.id]}
-                        onChange={e => setEditModules({ ...editModules, [m.id]: e.target.checked })}
-                        className="rounded accent-amber-500"
-                      />
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
-                  type="button"
                   onClick={() => setShowEditUserModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                  className="p-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={savingEdit}
-                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  {savingEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                  <span>Save Changes</span>
+                  <X className="w-4 h-4" />
                 </button>
               </div>
-            </form>
+
+              <form onSubmit={handleSaveEdit} className="space-y-4">
+                {/* Section 1: Account Profile */}
+                <div className="space-y-3">
+                  <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
+                    1. Account Profile
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-300">Display Name</label>
+                      <input
+                        type="text"
+                        value={editDisplayName}
+                        onChange={e => setEditDisplayName(e.target.value)}
+                        className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-300">Email</label>
+                      <input
+                        type="email"
+                        value={editEmail}
+                        onChange={e => setEditEmail(e.target.value)}
+                        className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-300">Phone</label>
+                      <input
+                        type="tel"
+                        value={editPhone}
+                        onChange={e => setEditPhone(e.target.value)}
+                        className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-300">Reset Password (optional)</label>
+                      <input
+                        type="password"
+                        value={editPassword}
+                        onChange={e => setEditPassword(e.target.value)}
+                        placeholder="Leave empty to keep current"
+                        className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 2: Organization & Role Hierarchy */}
+                <div className="space-y-3 pt-2 border-t border-slate-800">
+                  <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
+                    2. Organization & Role Hierarchy
+                  </div>
+                  {isEditingOwner ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-slate-300">Company Role</label>
+                        <div className="w-full px-3 py-2 bg-[#141923] border border-amber-500/30 rounded-xl text-xs text-amber-300 font-bold flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <ShieldCheck className="w-4 h-4 text-amber-400" />
+                            Company Owner
+                          </span>
+                          <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400">
+                            Root
+                          </span>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-slate-300">Structural Scope</label>
+                        <div className="w-full px-3 py-2 bg-[#141923] border border-slate-800 rounded-xl text-xs text-slate-300 flex items-center justify-between">
+                          <span>Entire Company</span>
+                          <span className="text-[10px] font-mono text-emerald-400">TENANT_WIDE</span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-slate-300">Company Role</label>
+                        <select
+                          value={editRole}
+                          onChange={e => setEditRole(e.target.value as any)}
+                          className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50 cursor-pointer"
+                        >
+                          <option value="agent">Member / Agent</option>
+                          <option value="team_lead">Team Lead</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-slate-300">Account Status</label>
+                        <select
+                          value={editStatus}
+                          onChange={e => setEditStatus(e.target.value as any)}
+                          className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50 cursor-pointer"
+                        >
+                          <option value="Active">Active</option>
+                          <option value="Disabled">Disabled</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Section 3: Module Access Hierarchy */}
+                <div className="space-y-3 pt-2 border-t border-slate-800">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
+                      3. Inherited Module Access Rights
+                    </div>
+                    <span className="text-[10px] font-mono text-amber-400">
+                      Ceiling: {companyAvailableCount} / {AVAILABLE_MODULES.length} Available
+                    </span>
+                  </div>
+
+                  {isEditingOwner ? (
+                    <div className="space-y-3">
+                      <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs flex items-start gap-2.5">
+                        <Shield className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="font-bold text-amber-300">Managed by Zestify Platform</div>
+                          <div className="text-[11px] text-slate-300 mt-0.5">
+                            Module access for the Company Owner account is governed directly by your subscription contract and Platform Owner entitlements. Zero editable checkboxes — company owner automatically inherits all platform-enabled modules.
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {AVAILABLE_MODULES.map(m => {
+                          const entitled = isModuleCompanyEntitled(m.id);
+                          return (
+                            <div
+                              key={m.id}
+                              className={`p-2.5 rounded-xl border text-xs flex items-center justify-between ${
+                                entitled
+                                  ? 'bg-[#10141D] border-emerald-500/30 text-slate-200'
+                                  : 'bg-slate-950/60 border-slate-800/80 text-slate-500 opacity-60'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 truncate">
+                                <span>{m.icon}</span>
+                                <span className="font-medium truncate">{m.label}</span>
+                              </div>
+                              {entitled ? (
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold border border-emerald-500/20 flex items-center gap-1 shrink-0">
+                                  <Check className="w-3 h-3" />
+                                  Enabled by Platform
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full bg-slate-900 text-slate-500 text-[10px] font-semibold border border-slate-800 flex items-center gap-1 shrink-0">
+                                  <Lock className="w-3 h-3" />
+                                  Not Included
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="p-3 rounded-xl bg-[#141923] border border-slate-800 text-xs flex items-start gap-2.5">
+                        <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="font-semibold text-slate-200">
+                            Company Entitlement Ceiling ({companyAvailableCount} Modules Active)
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-0.5">
+                            Members cannot be granted modules that are not included in your company's platform contract. Lower layers may only restrict access, never elevate it.
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {AVAILABLE_MODULES.map(m => {
+                          const entitled = isModuleCompanyEntitled(m.id);
+                          const isChecked = !!editModules[m.id];
+                          if (!entitled) {
+                            return (
+                              <div
+                                key={m.id}
+                                className="p-2.5 rounded-xl border border-slate-800/80 bg-slate-950/60 text-slate-500 text-xs flex items-center justify-between opacity-70 cursor-not-allowed"
+                                title="Disabled at Company Level — Not entitled by Platform Owner"
+                              >
+                                <div className="flex items-center gap-2 truncate">
+                                  <span className="opacity-50">{m.icon}</span>
+                                  <div className="truncate">
+                                    <div className="font-medium line-through text-slate-500 truncate">{m.label}</div>
+                                    <div className="text-[10px] text-slate-600 flex items-center gap-1">
+                                      <Lock className="w-2.5 h-2.5" />
+                                      Disabled at Company Level
+                                    </div>
+                                  </div>
+                                </div>
+                                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-600 shrink-0">
+                                  Blocked
+                                </span>
+                              </div>
+                            );
+                          }
+                          return (
+                            <label
+                              key={m.id}
+                              className={`p-2.5 rounded-xl border text-xs flex items-center justify-between cursor-pointer transition-all ${
+                                isChecked
+                                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 font-medium'
+                                  : 'bg-[#10141D] border-slate-800 text-slate-400 hover:border-slate-700'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 truncate">
+                                <span>{m.icon}</span>
+                                <div className="truncate">
+                                  <div className="font-medium text-slate-200 truncate">{m.label}</div>
+                                  <div className="text-[10px] text-slate-400">
+                                    {isChecked ? 'Effective: Granted' : 'Effective: Not Assigned'}
+                                  </div>
+                                </div>
+                              </div>
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={e => setEditModules({ ...editModules, [m.id]: e.target.checked })}
+                                className="rounded accent-amber-500 w-4 h-4 cursor-pointer shrink-0"
+                              />
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowEditUserModal(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingEdit}
+                    className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {savingEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    <span>Save Changes</span>
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* MODAL: CREATE TEAM                                                  */}
@@ -2116,6 +2719,180 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                 <span>Permanently Delete</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* ─────────────────────────────────────────────────────────────────── */}
+      {/* MODAL: INVITE USER                                                  */}
+      {/* ─────────────────────────────────────────────────────────────────── */}
+      {showInviteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 animate-fade-in">
+          <div
+            className="w-full max-w-lg bg-[#0B0E14] border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4 text-left"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <UserPlus className="w-5 h-5 text-amber-400" />
+                  Invite Teammate to Workspace
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Send an invitation link to provision an employee into this workspace.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowInviteModal(false)}
+                className="p-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {createdInviteUrl ? (
+              <div className="space-y-4 py-2">
+                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 space-y-2 text-center">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto" />
+                  <h4 className="text-sm font-bold text-white">Invitation Link Generated!</h4>
+                  <p className="text-xs text-slate-300">
+                    Share this link with your teammate. When they open it or sign up with their email, they will automatically join your company.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Invitation URL:</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="created-invite-url-input"
+                      type="text"
+                      readOnly
+                      value={createdInviteUrl}
+                      className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-amber-300 font-mono focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      id="copy-invite-link-btn"
+                      onClick={() => {
+                        navigator.clipboard.writeText(createdInviteUrl);
+                        setCopiedInvite(true);
+                        setTimeout(() => setCopiedInvite(false), 3000);
+                      }}
+                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl transition-all cursor-pointer shrink-0"
+                    >
+                      {copiedInvite ? 'Copied!' : 'Copy Link'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowInviteModal(false);
+                      setCreatedInviteUrl(null);
+                    }}
+                    className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl cursor-pointer"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleSendInvite} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-300">Recipient Work Email *</label>
+                  <input
+                    id="invite-email-input"
+                    type="email"
+                    required
+                    value={inviteEmail}
+                    onChange={e => setInviteEmail(e.target.value)}
+                    placeholder="teammate@company.com"
+                    className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-amber-500/50 font-mono"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-300">Target Role *</label>
+                    <select
+                      id="invite-role-select"
+                      value={inviteRole}
+                      onChange={e => setInviteRole(e.target.value as any)}
+                      className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50 cursor-pointer"
+                    >
+                      <option value="user">Team Member</option>
+                      <option value="team_lead">Team Lead</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-300">Assign to Team</label>
+                    <select
+                      id="invite-team-select"
+                      value={inviteTeamId}
+                      onChange={e => setInviteTeamId(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#10141D] border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500/50 cursor-pointer"
+                    >
+                      <option value="">None (Unassigned)</option>
+                      {teams.map(t => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Core Module Entitlements */}
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-slate-300">Initial Core Modules:</label>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    {[
+                      { id: 'crm', label: 'CRM Workspace' },
+                      { id: 'octalDialer', label: 'OCTAL Dialer' },
+                      { id: 'campaigns', label: 'Campaigns' },
+                      { id: 'leads', label: 'Leads Database' },
+                      { id: 'reports', label: 'Reports & Analytics' },
+                      { id: 'autoEmailer', label: 'Auto Emailer' },
+                      { id: 'facebookPoster', label: 'FB Auto Poster' }
+                    ].map(mod => (
+                      <label key={mod.id} className="flex items-center gap-2 p-2 rounded-lg bg-[#10141D] border border-slate-800/80 cursor-pointer hover:border-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={!!inviteModules[mod.id]}
+                          onChange={e => setInviteModules({ ...inviteModules, [mod.id]: e.target.checked })}
+                          className="rounded border-slate-700 text-amber-500 focus:ring-0"
+                        />
+                        <span className="text-slate-300 text-[11px] font-medium">{mod.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-slate-800 flex items-center justify-between">
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    {seatUsage ? `${seatUsage.availableSeats} seats remaining` : ''}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowInviteModal(false)}
+                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      id="submit-invite-btn"
+                      disabled={inviting}
+                      className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {inviting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
+                      <span>Generate Invitation</span>
+                    </button>
+                  </div>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

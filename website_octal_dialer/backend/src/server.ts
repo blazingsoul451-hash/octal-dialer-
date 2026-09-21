@@ -22,6 +22,8 @@ process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]:', reason);
 });
 
+import { isValidEmailFormat } from './emailVerificationService';
+
 import {
   createCampaign,
   appendLeadsToCampaign,
@@ -83,8 +85,16 @@ import {
   getTeamEffectiveVisibility,
   getAllTenantsSummary,
   updateTenantLeadPoolMode,
+  getScopedCrmUserIds,
+  recordCrmNote,
   updateTenantStatus,
   getGlobalSuperAdminMetrics,
+  getGlobalPlatformOverview,
+  getDetailedTenantsList,
+  getTenantDetail,
+  getGlobalDevicesList,
+  getGlobalRecentActivity,
+  provisionWorkspaceOrganization,
   getTenantById,
   canAccessLead,
   canReadLead,
@@ -94,6 +104,18 @@ import {
   getScopedLogs,
   canDispositionLead,
   getScopedLockedLeads,
+  CANONICAL_MODULES,
+  normalizeModuleKey,
+  getTenantModuleEntitlements,
+  setTenantModuleEntitlement,
+  getTenantAccessMatrix,
+  getTenantSeatUsage,
+  getWorkspaceInvitations,
+  getWorkspaceInvitationByTokenHash,
+  getPendingInvitationForEmail,
+  createWorkspaceInvitation,
+  revokeWorkspaceInvitation,
+  acceptWorkspaceInvitation,
   db
 } from './databaseManager';
 import { dbAdapter } from './db/dbAdapter';
@@ -131,6 +153,7 @@ import {
   validateToken,
   changePassword,
   verifyUserPassword,
+  hashPassword,
   registerPublicUser,
   handleGoogleAuthWithIntent,
   verifyGoogleIdToken,
@@ -145,6 +168,8 @@ import {
   validateRoleBelongsToTenant,
   getTenantId,
   signupTenant,
+  registerCustomerWithEmail,
+  issueAuthToken,
   RevocationStorageUnavailableError,
   registerTokenRevocationHandler
 } from './authManager';
@@ -491,13 +516,30 @@ app.post(['/auth/login', '/api/auth/login'], async (req, res) => {
   res.json({ token, username: user.username, role: user.role, user });
 });
 
-// POST /auth/register & /api/auth/register — Public Email/Password Registration Disabled
-app.post(['/auth/register', '/api/auth/register'], (_req, res) => {
-  res.status(403).json({
-    success: false,
-    code: 'REGISTRATION_DISABLED',
-    error: 'Direct email/password registration is disabled. New accounts must sign up using Google OAuth.'
-  });
+// POST /auth/register & /api/auth/register — Public Customer Registration (Email + Password)
+app.post(['/auth/register', '/api/auth/register'], async (req, res) => {
+  try {
+    const { name, fullName, email, password, captchaToken } = req.body;
+    const finalName = (fullName || name || '').trim();
+    if (!finalName || !email || !password) {
+      res.status(400).json({ error: 'Full name, email, and password are required.' });
+      return;
+    }
+    const result = await registerCustomerWithEmail({
+      fullName: finalName,
+      email,
+      password,
+      captchaToken,
+      ip: req.ip
+    });
+    res.json(result);
+  } catch (err: any) {
+    if (err.code === 'ACCOUNT_EXISTS') {
+      res.status(409).json({ error: err.message, code: 'ACCOUNT_EXISTS' });
+      return;
+    }
+    res.status(400).json({ error: err.message || 'Registration failed.' });
+  }
 });
 
 // POST /auth/signup-tenant & /api/auth/signup-tenant
@@ -535,15 +577,33 @@ app.get(['/auth/verify', '/api/auth/verify'], async (req, res) => {
     res.status(401).json({ error: 'Token invalid or expired.' });
     return;
   }
+
+  let pendingInvitation: any = null;
+  let needsOnboarding = false;
+
+  if (!user.tenantId) {
+    if (user.email) {
+      pendingInvitation = await getPendingInvitationForEmail(user.email);
+    }
+    if (!pendingInvitation) {
+      needsOnboarding = true;
+    }
+  }
+
   res.json({
     valid: true,
     user: {
       id: user.id,
       username: user.username,
+      displayName: user.displayName,
       role: user.role,
-      tenantId: user.tenantId,
-      email: user.email
-    }
+      tenantId: user.tenantId || null,
+      email: user.email,
+      needsOnboarding,
+      pendingInvitation
+    },
+    needsOnboarding,
+    pendingInvitation
   });
 });
 
@@ -717,24 +777,40 @@ app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, async (req,
 
   // Resolve effective permissions
   const effectivePerms = await getEffectivePermissions(user);
-  const isFullAccess = effectivePerms.has('*') || effectivePerms.has('all') || user.role === 'platform_admin' || user.role === 'master_admin';
+  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const isFullAccess = effectivePerms.has('*') || effectivePerms.has('all') || isPlatform;
+
+  // Resolve company entitlement ceiling (Platform Admins have zero restrictions; tenant users are capped by company ceiling)
+  const companyEntitlements = (!isPlatform && user.tenantId)
+    ? await getTenantModuleEntitlements(user.tenantId)
+    : null;
 
   // Compute module visibility map expected by the frontend
   const modulePerms: Record<string, boolean> = {};
   for (const m of ALL_BUSINESS_MODULES) {
-    if (isFullAccess) {
-      modulePerms[m] = true;
+    let allowed = false;
+    if (isPlatform) {
+      allowed = true;
+    } else if (isFullAccess) {
+      allowed = true;
     } else {
       if (m === 'octalDialer') {
-        modulePerms[m] = Array.from(effectivePerms).some(p => p.startsWith('calls:'));
+        allowed = Array.from(effectivePerms).some(p => p.startsWith('calls:'));
       } else if (m === 'reports') {
-        modulePerms[m] = Array.from(effectivePerms).some(p => p.startsWith('reports:') || p.startsWith('history:'));
-      } else if (m === 'googleScraper' || m === 'autoEmailer' || m === 'facebookScraper' || m === 'facebookPoster') {
-        modulePerms[m] = effectivePerms.has(m) || effectivePerms.has(`${m}:view`);
+        allowed = Array.from(effectivePerms).some(p => p.startsWith('reports:') || p.startsWith('history:'));
+      } else if (m === 'autoEmailer' || m === 'facebookPoster') {
+        allowed = effectivePerms.has(m) || effectivePerms.has(`${m}:view`);
       } else {
-        modulePerms[m] = effectivePerms.has(`${m}:view`) || Array.from(effectivePerms).some(p => p.startsWith(`${m}:`));
+        allowed = effectivePerms.has(`${m}:view`) || Array.from(effectivePerms).some(p => p.startsWith(`${m}:`));
       }
     }
+
+    // Intersect with company entitlement ceiling: no tenant user (including Company Owner) may access unentitled modules
+    if (companyEntitlements && companyEntitlements[m] === false) {
+      allowed = false;
+    }
+
+    modulePerms[m] = allowed;
   }
 
   res.json({
@@ -869,10 +945,28 @@ app.post('/auth/change-password', requireAuth, async (req, res) => {
 app.get('/auth/me', requireAuth, async (req, res) => {
   const user = (req as any).user;
   let tenant: any = null;
+  let needsOnboarding = false;
+  let pendingInvitation: any = null;
+
   if (user?.tenantId) {
     tenant = await getTenantById(user.tenantId);
   }
-  res.json({ user, tenant });
+
+  if (!tenant) {
+    if (user.email) {
+      pendingInvitation = await getPendingInvitationForEmail(user.email);
+    }
+    if (!pendingInvitation) {
+      needsOnboarding = true;
+    }
+  }
+
+  res.json({
+    user,
+    tenant,
+    needsOnboarding,
+    pendingInvitation
+  });
 });
 
 // ─── User Profile & Account Management REST Endpoints ─────────────────────────
@@ -1720,6 +1814,604 @@ app.get('/api/crm/campaigns/:id/workspace', requireAuth, requirePermission(['cam
   }
 });
 
+// ============================================================================
+// CORE CRM WORKSPACE APIS (PHASE 1)
+// ============================================================================
+
+// 1. GET /api/crm/overview: Aggregated CRM metrics with date-range presets
+app.get('/api/crm/overview', requireAuth, requirePermission(['crm:view', 'leads:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const range = (req.query.range as string) || 'all';
+    const now = new Date();
+    let startDate: Date | null = null;
+    let endDate: Date | null = null;
+
+    if (range === 'today') {
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    } else if (range === 'yesterday') {
+      const y = new Date(now.getTime() - 86400000);
+      startDate = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 0, 0, 0);
+      endDate = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 23, 59, 59, 999);
+    } else if (range === '7d') {
+      startDate = new Date(now.getTime() - 7 * 86400000);
+      endDate = now;
+    } else if (range === '30d') {
+      startDate = new Date(now.getTime() - 30 * 86400000);
+      endDate = now;
+    } else if (range === 'this_month') {
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
+      endDate = now;
+    } else if (range === 'last_month') {
+      startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0);
+      endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    } else if (req.query.startDate && req.query.endDate) {
+      startDate = new Date(req.query.startDate as string);
+      endDate = new Date(req.query.endDate as string);
+    }
+
+    const scopedUserIds = await getScopedCrmUserIds(user, tenantId);
+
+    // Helpers to build scoping clause
+    const userScopeSql = (colName: string, params: any[]) => {
+      if (!scopedUserIds) return '';
+      const phs = scopedUserIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+      params.push(...scopedUserIds);
+      return ` AND (${colName} IN (${phs}) OR ${colName} IS NULL)`;
+    };
+
+    // 1. Companies count
+    const compParams: any[] = [tenantId];
+    let compSql = `SELECT COUNT(*) as count FROM crm_companies WHERE "tenantId" = $1`;
+    compSql += userScopeSql('"assignedUserId"', compParams);
+    const compRow = await db.queryOne<{ count: string | number }>(compSql, compParams);
+    const totalCompanies = parseInt(String(compRow?.count || '0'), 10);
+
+    // 2. Leads count
+    const leadParams: any[] = [tenantId];
+    let leadSql = `SELECT COUNT(*) as count FROM leads WHERE "tenantId" = $1`;
+    leadSql += userScopeSql('"assignedTo"', leadParams);
+    const leadRow = await db.queryOne<{ count: string | number }>(leadSql, leadParams);
+    const totalLeads = parseInt(String(leadRow?.count || '0'), 10);
+
+    // 3. Tasks counts (total, overdue, meetings, open)
+    const taskParams: any[] = [tenantId];
+    let taskSql = `SELECT * FROM crm_tasks WHERE "tenantId" = $1`;
+    taskSql += userScopeSql('"assignedUserId"', taskParams);
+    const tasks = await db.queryAll<any>(taskSql, taskParams);
+
+    const nowIso = now.toISOString();
+    const openTasks = tasks.filter(t => t.status === 'open');
+    const overdueTasks = openTasks.filter(t => t.dueAt < nowIso);
+    const meetings = tasks.filter(t => t.taskType === 'meeting' || t.taskType === 'online_meeting');
+
+    // Due today tasks
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString();
+    const dueTodayTasks = openTasks.filter(t => t.dueAt >= startOfToday && t.dueAt <= endOfToday);
+
+    // 4. Follow-ups (bridge)
+    const fuParams: any[] = [tenantId];
+    const fuRows = await db.queryAll<any>(`SELECT * FROM crm_follow_ups WHERE "tenantId" = $1`, fuParams);
+    const openFollowUps = fuRows.filter(f => f.status === 'pending');
+
+    // 5. Recent Activity Stream
+    const recentNotes = await db.queryAll<any>(`
+      SELECT id, category as "eventType", body as description, "createdByName" as username, "createdAt", 'NOTE' as source, "entityType", "entityId"
+      FROM crm_notes
+      WHERE "tenantId" = $1
+      ORDER BY "createdAt" DESC
+      LIMIT 10
+    `, [tenantId]);
+
+    res.json({
+      metrics: {
+        totalCompanies,
+        totalLeads,
+        openTasks: openTasks.length,
+        overdueTasks: overdueTasks.length,
+        totalMeetings: meetings.length,
+        dueTodayTasks: dueTodayTasks.length,
+        openFollowUps: openFollowUps.length
+      },
+      dueTodayTasks: dueTodayTasks.slice(0, 10),
+      recentActivity: recentNotes
+    });
+  } catch (err: any) {
+    console.error('Error fetching CRM overview:', err);
+    res.status(500).json({ error: 'Internal server error while fetching CRM overview' });
+  }
+});
+
+// 2. CRM COMPANIES CRUD
+// GET /api/crm/companies
+app.get('/api/crm/companies', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { status, paymentStatus, country, assignedUserId, search } = req.query as Record<string, string>;
+    const scopedUserIds = await getScopedCrmUserIds(user, tenantId);
+
+    let sql = `SELECT * FROM crm_companies WHERE "tenantId" = $1`;
+    const params: any[] = [tenantId];
+
+    if (status && status !== 'All') {
+      sql += ` AND status = $${params.length + 1}`;
+      params.push(status);
+    }
+    if (paymentStatus && paymentStatus !== 'All') {
+      sql += ` AND "paymentStatus" = $${params.length + 1}`;
+      params.push(paymentStatus);
+    }
+    if (country) {
+      sql += ` AND country = $${params.length + 1}`;
+      params.push(country);
+    }
+    if (assignedUserId) {
+      sql += ` AND "assignedUserId" = $${params.length + 1}`;
+      params.push(assignedUserId);
+    }
+    if (scopedUserIds) {
+      const phs = scopedUserIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+      sql += ` AND ("assignedUserId" IN (${phs}) OR "assignedUserId" IS NULL)`;
+      params.push(...scopedUserIds);
+    }
+    if (search && search.trim()) {
+      const q = `%${search.trim().toLowerCase()}%`;
+      sql += ` AND (LOWER(name) LIKE $${params.length + 1} OR LOWER(COALESCE(email, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(phone, '')) LIKE $${params.length + 1})`;
+      params.push(q);
+    }
+
+    sql += ` ORDER BY "createdAt" DESC LIMIT 200`;
+    const companies = await db.queryAll(sql, params);
+    res.json({ companies });
+  } catch (err: any) {
+    console.error('Error fetching CRM companies:', err);
+    res.status(500).json({ error: 'Internal server error while fetching CRM companies' });
+  }
+});
+
+// POST /api/crm/companies
+app.post('/api/crm/companies', requireAuth, requirePermission(['crm:edit', 'crm:create']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { name, industry, country, phone, email, website, address, status, paymentStatus, assignedUserId, metadata } = req.body;
+    if (!name || !name.trim()) {
+      res.status(400).json({ error: 'Company name is required.' });
+      return;
+    }
+
+    const id = `comp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+
+    await db.execute(`
+      INSERT INTO crm_companies (id, "tenantId", name, industry, country, phone, email, website, address, status, "paymentStatus", "assignedUserId", metadata, "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+    `, [
+      id,
+      tenantId,
+      name.trim(),
+      industry || null,
+      country || null,
+      phone || null,
+      email || null,
+      website || null,
+      address || null,
+      status || 'Active',
+      paymentStatus || 'Trial',
+      assignedUserId || user.id,
+      metadata ? JSON.stringify(metadata) : null,
+      now
+    ]);
+
+    if (req.body.initialContact && req.body.initialContact.name) {
+      const contactId = `cnt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      await db.execute(`
+        INSERT INTO crm_contacts (id, "tenantId", "crmCompanyId", name, email, phone, "roleTitle", notes, "assignedUserId", "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+      `, [
+        contactId,
+        tenantId,
+        id,
+        req.body.initialContact.name.trim(),
+        req.body.initialContact.email || null,
+        req.body.initialContact.phone || null,
+        req.body.initialContact.roleTitle || null,
+        req.body.initialContact.notes || null,
+        assignedUserId || user.id,
+        now
+      ]);
+    }
+
+    if (req.body.initialNote && req.body.initialNote.trim()) {
+      await recordCrmNote({
+        tenantId,
+        entityType: 'crm_company',
+        entityId: id,
+        category: 'general',
+        body: req.body.initialNote.trim(),
+        createdByUserId: user.id,
+        createdByName: user.username
+      });
+    } else {
+      await recordCrmNote({
+        tenantId,
+        entityType: 'crm_company',
+        entityId: id,
+        category: 'general',
+        body: `Company record created by ${user.username}`,
+        createdByUserId: user.id,
+        createdByName: user.username
+      });
+    }
+
+    const company = await db.queryOne(`SELECT * FROM crm_companies WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    res.json({ success: true, company });
+  } catch (err: any) {
+    console.error('Error creating CRM company:', err);
+    res.status(500).json({ error: 'Internal server error while creating company' });
+  }
+});
+
+// GET /api/crm/companies/:id
+app.get('/api/crm/companies/:id', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const companyId = req.params.id;
+    const company = await db.queryOne<any>(`SELECT * FROM crm_companies WHERE id = $1 AND "tenantId" = $2`, [companyId, tenantId]);
+    if (!company) {
+      res.status(404).json({ error: 'Company not found in your organization.' });
+      return;
+    }
+
+    const contacts = await db.queryAll(`SELECT * FROM crm_contacts WHERE "crmCompanyId" = $1 AND "tenantId" = $2 ORDER BY "createdAt" DESC`, [companyId, tenantId]);
+    const leads = await db.queryAll(`SELECT * FROM leads WHERE "crmCompanyId" = $1 AND "tenantId" = $2 ORDER BY "createdAt" DESC`, [companyId, tenantId]);
+    const tasks = await db.queryAll(`SELECT * FROM crm_tasks WHERE "crmCompanyId" = $1 AND "tenantId" = $2 ORDER BY "dueAt" ASC`, [companyId, tenantId]);
+    const notes = await db.queryAll(`SELECT * FROM crm_notes WHERE "entityId" = $1 AND "tenantId" = $2 ORDER BY "createdAt" DESC`, [companyId, tenantId]);
+
+    res.json({
+      company,
+      contacts,
+      leads,
+      tasks,
+      notes
+    });
+  } catch (err: any) {
+    console.error('Error fetching company details:', err);
+    res.status(500).json({ error: 'Internal server error while fetching company details' });
+  }
+});
+
+// PUT /api/crm/companies/:id
+app.put('/api/crm/companies/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const companyId = req.params.id;
+    const { name, industry, country, phone, email, website, address, status, paymentStatus, assignedUserId } = req.body;
+
+    const existing = await db.queryOne(`SELECT id FROM crm_companies WHERE id = $1 AND "tenantId" = $2`, [companyId, tenantId]);
+    if (!existing) {
+      res.status(404).json({ error: 'Company not found.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await db.execute(`
+      UPDATE crm_companies
+      SET name = COALESCE($1, name),
+          industry = COALESCE($2, industry),
+          country = COALESCE($3, country),
+          phone = COALESCE($4, phone),
+          email = COALESCE($5, email),
+          website = COALESCE($6, website),
+          address = COALESCE($7, address),
+          status = COALESCE($8, status),
+          "paymentStatus" = COALESCE($9, "paymentStatus"),
+          "assignedUserId" = COALESCE($10, "assignedUserId"),
+          "updatedAt" = $11
+      WHERE id = $12 AND "tenantId" = $13
+    `, [name, industry, country, phone, email, website, address, status, paymentStatus, assignedUserId, now, companyId, tenantId]);
+
+    const updated = await db.queryOne(`SELECT * FROM crm_companies WHERE id = $1 AND "tenantId" = $2`, [companyId, tenantId]);
+    res.json({ success: true, company: updated });
+  } catch (err: any) {
+    console.error('Error updating company:', err);
+    res.status(500).json({ error: 'Internal server error while updating company' });
+  }
+});
+
+// DELETE /api/crm/companies/:id
+app.delete('/api/crm/companies/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const companyId = req.params.id;
+    await db.execute(`DELETE FROM crm_companies WHERE id = $1 AND "tenantId" = $2`, [companyId, tenantId]);
+    res.json({ success: true, message: 'Company removed successfully.' });
+  } catch (err: any) {
+    console.error('Error deleting company:', err);
+    res.status(500).json({ error: 'Internal server error while deleting company' });
+  }
+});
+
+// 3. CRM CONTACTS CRUD
+// GET /api/crm/contacts
+app.get('/api/crm/contacts', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { crmCompanyId, search, assignedUserId } = req.query as Record<string, string>;
+    const scopedUserIds = await getScopedCrmUserIds(user, tenantId);
+
+    let sql = `
+      SELECT ct.*, co.name as "companyName"
+      FROM crm_contacts ct
+      LEFT JOIN crm_companies co ON ct."crmCompanyId" = co.id
+      WHERE ct."tenantId" = $1
+    `;
+    const params: any[] = [tenantId];
+
+    if (crmCompanyId) {
+      sql += ` AND ct."crmCompanyId" = $${params.length + 1}`;
+      params.push(crmCompanyId);
+    }
+    if (assignedUserId) {
+      sql += ` AND ct."assignedUserId" = $${params.length + 1}`;
+      params.push(assignedUserId);
+    }
+    if (scopedUserIds) {
+      const phs = scopedUserIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+      sql += ` AND (ct."assignedUserId" IN (${phs}) OR ct."assignedUserId" IS NULL)`;
+      params.push(...scopedUserIds);
+    }
+    if (search && search.trim()) {
+      const q = `%${search.trim().toLowerCase()}%`;
+      sql += ` AND (LOWER(ct.name) LIKE $${params.length + 1} OR LOWER(COALESCE(ct.email, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(ct.phone, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(co.name, '')) LIKE $${params.length + 1})`;
+      params.push(q);
+    }
+
+    sql += ` ORDER BY ct."createdAt" DESC LIMIT 200`;
+    const contacts = await db.queryAll(sql, params);
+    res.json({ contacts });
+  } catch (err: any) {
+    console.error('Error fetching contacts:', err);
+    res.status(500).json({ error: 'Internal server error while fetching contacts' });
+  }
+});
+
+// POST /api/crm/contacts
+app.post('/api/crm/contacts', requireAuth, requirePermission(['crm:edit', 'crm:create']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { crmCompanyId, name, email, phone, roleTitle, notes, assignedUserId } = req.body;
+    if (!name || !name.trim()) {
+      res.status(400).json({ error: 'Contact name is required.' });
+      return;
+    }
+
+    const id = `cnt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+
+    await db.execute(`
+      INSERT INTO crm_contacts (id, "tenantId", "crmCompanyId", name, email, phone, "roleTitle", notes, "assignedUserId", "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+    `, [
+      id,
+      tenantId,
+      crmCompanyId || null,
+      name.trim(),
+      email ? email.trim() : null,
+      phone ? phone.trim() : null,
+      roleTitle || null,
+      notes || null,
+      assignedUserId || user.id,
+      now
+    ]);
+
+    const contact = await db.queryOne(`
+      SELECT ct.*, co.name as "companyName"
+      FROM crm_contacts ct
+      LEFT JOIN crm_companies co ON ct."crmCompanyId" = co.id
+      WHERE ct.id = $1 AND ct."tenantId" = $2
+    `, [id, tenantId]);
+
+    res.json({ success: true, contact });
+  } catch (err: any) {
+    console.error('Error creating contact:', err);
+    res.status(500).json({ error: 'Internal server error while creating contact' });
+  }
+});
+
+// GET /api/crm/contacts/:id
+app.get('/api/crm/contacts/:id', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const contact = await db.queryOne<any>(`
+      SELECT ct.*, co.name as "companyName"
+      FROM crm_contacts ct
+      LEFT JOIN crm_companies co ON ct."crmCompanyId" = co.id
+      WHERE ct.id = $1 AND ct."tenantId" = $2
+    `, [id, tenantId]);
+
+    if (!contact) {
+      res.status(404).json({ error: 'Contact not found.' });
+      return;
+    }
+
+    const tasks = await db.queryAll(`SELECT * FROM crm_tasks WHERE "contactId" = $1 AND "tenantId" = $2 ORDER BY "dueAt" ASC`, [id, tenantId]);
+    const notes = await db.queryAll(`SELECT * FROM crm_notes WHERE "entityId" = $1 AND "tenantId" = $2 ORDER BY "createdAt" DESC`, [id, tenantId]);
+
+    res.json({ contact, tasks, notes });
+  } catch (err: any) {
+    console.error('Error fetching contact:', err);
+    res.status(500).json({ error: 'Internal server error while fetching contact' });
+  }
+});
+
+// PUT /api/crm/contacts/:id
+app.put('/api/crm/contacts/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const { name, email, phone, roleTitle, notes, crmCompanyId, assignedUserId } = req.body;
+
+    const now = new Date().toISOString();
+    await db.execute(`
+      UPDATE crm_contacts
+      SET name = COALESCE($1, name),
+          email = COALESCE($2, email),
+          phone = COALESCE($3, phone),
+          "roleTitle" = COALESCE($4, "roleTitle"),
+          notes = COALESCE($5, notes),
+          "crmCompanyId" = COALESCE($6, "crmCompanyId"),
+          "assignedUserId" = COALESCE($7, "assignedUserId"),
+          "updatedAt" = $8
+      WHERE id = $9 AND "tenantId" = $10
+    `, [name, email, phone, roleTitle, notes, crmCompanyId, assignedUserId, now, id, tenantId]);
+
+    const updated = await db.queryOne(`SELECT * FROM crm_contacts WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    res.json({ success: true, contact: updated });
+  } catch (err: any) {
+    console.error('Error updating contact:', err);
+    res.status(500).json({ error: 'Internal server error while updating contact' });
+  }
+});
+
+// DELETE /api/crm/contacts/:id
+app.delete('/api/crm/contacts/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    await db.execute(`DELETE FROM crm_contacts WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    res.json({ success: true, message: 'Contact deleted successfully.' });
+  } catch (err: any) {
+    console.error('Error deleting contact:', err);
+    res.status(500).json({ error: 'Internal server error while deleting contact' });
+  }
+});
+
+// 4. CANONICAL LEADS DIRECT CRM CREATION
+// POST /api/crm/leads
+app.post('/api/crm/leads', requireAuth, requirePermission(['leads:create', 'crm:create']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { name, phone, email, address, campaignId, crmCompanyId, contactId, requirement, country, assignedTo } = req.body;
+    if (!name || !phone) {
+      res.status(400).json({ error: 'Lead name and phone number are required.' });
+      return;
+    }
+
+    // Default campaign if none specified
+    let targetCampaignId = campaignId;
+    if (!targetCampaignId) {
+      const defaultCamp = await db.queryOne<{ id: string }>(`SELECT id FROM campaigns WHERE "tenantId" = $1 ORDER BY "createdAt" ASC LIMIT 1`, [tenantId]);
+      targetCampaignId = defaultCamp?.id || 'camp_default';
+    }
+
+    const leadId = `lead_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+    const cleanPhone = normalizePhone(phone);
+
+    await db.execute(`
+      INSERT INTO leads (id, "campaignId", name, phone, status, "createdAt", "tenantId", address, "crmCompanyId", "contactId", requirement, country, "assignedTo")
+      VALUES ($1, $2, $3, $4, 'PENDING', $5, $6, $7, $8, $9, $10, $11, $12)
+    `, [
+      leadId,
+      targetCampaignId,
+      name.trim(),
+      cleanPhone,
+      now,
+      tenantId,
+      address || null,
+      crmCompanyId || null,
+      contactId || null,
+      requirement || null,
+      country || null,
+      assignedTo || user.username
+    ]);
+
+    await recordLeadActivity({
+      leadId,
+      tenantId,
+      userId: user.id,
+      username: user.username,
+      eventType: 'LEAD_CREATED',
+      description: `Lead created manually via CRM${requirement ? ': ' + requirement : ''}`
+    });
+
+    const lead = await db.queryOne(`SELECT * FROM leads WHERE id = $1 AND "tenantId" = $2`, [leadId, tenantId]);
+    res.json({ success: true, lead });
+  } catch (err: any) {
+    console.error('Error creating CRM lead:', err);
+    res.status(500).json({ error: 'Internal server error while creating lead' });
+  }
+});
+
 // REST: CRM Lead authoritative profile, activities, call history, and follow-ups (protected)
 app.get('/api/crm/leads/:id/profile', requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
   try {
@@ -1730,9 +2422,11 @@ app.get('/api/crm/leads/:id/profile', requireAuth, requirePermission(['leads:vie
     }
     const leadId = req.params.id;
     const lead = await db.queryOne<any>(`
-      SELECT l.*, c.name as "campaignName"
+      SELECT l.*, c.name as "campaignName", co.name as "crmCompanyName", ct.name as "crmContactName"
       FROM leads l
       LEFT JOIN campaigns c ON l."campaignId" = c.id
+      LEFT JOIN crm_companies co ON l."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON l."contactId" = ct.id
       WHERE l.id = $1 AND l."tenantId" = $2
     `, [leadId, tenantId]);
 
@@ -1757,11 +2451,23 @@ app.get('/api/crm/leads/:id/profile', requireAuth, requirePermission(['leads:vie
       LIMIT 50
     `, [leadId, tenantId]);
 
+    const tasks = await db.queryAll<any>(`
+      SELECT * FROM crm_tasks
+      WHERE "leadId" = $1 AND "tenantId" = $2
+      ORDER BY "dueAt" ASC
+    `, [leadId, tenantId]);
+
     const followUps = await db.queryAll<any>(`
       SELECT id, "scheduledAt", status, notes, "assignedAgent"
       FROM crm_follow_ups
       WHERE "leadId" = $1 AND "tenantId" = $2
       ORDER BY "scheduledAt" ASC
+    `, [leadId, tenantId]);
+
+    const notes = await db.queryAll<any>(`
+      SELECT * FROM crm_notes
+      WHERE "entityId" = $1 AND "tenantId" = $2
+      ORDER BY "createdAt" DESC
     `, [leadId, tenantId]);
 
     res.json({
@@ -1777,11 +2483,20 @@ app.get('/api/crm/leads/:id/profile', requireAuth, requirePermission(['leads:vie
         status: lead.status,
         campaignName: lead.campaignName || 'Unknown Campaign',
         campaignId: lead.campaignId,
+        crmCompanyId: lead.crmCompanyId,
+        crmCompanyName: lead.crmCompanyName,
+        contactId: lead.contactId,
+        crmContactName: lead.crmContactName,
+        requirement: lead.requirement,
+        country: lead.country,
+        assignedTo: lead.assignedTo,
         createdAt: lead.createdAt
       },
       activities,
       callLogs,
-      followUps
+      tasks,
+      followUps,
+      notes
     });
   } catch (err: any) {
     console.error('Error fetching lead profile:', err);
@@ -1800,6 +2515,7 @@ app.post('/api/crm/leads/:id/notes', requireAuth, requirePermission(['leads:edit
     }
     const leadId = req.params.id;
     const note = (req.body?.note || '').trim();
+    const category = req.body?.category || 'general';
     if (!note) {
       res.status(400).json({ error: 'Note content is required.' });
       return;
@@ -1825,6 +2541,16 @@ app.post('/api/crm/leads/:id/notes', requireAuth, requirePermission(['leads:edit
       description: note
     });
 
+    await recordCrmNote({
+      tenantId,
+      entityType: 'lead',
+      entityId: leadId,
+      category,
+      body: note,
+      createdByUserId: user.id,
+      createdByName: user.username
+    });
+
     res.json({ success: true, message: 'Note recorded successfully.' });
   } catch (err: any) {
     console.error('Error recording note:', err);
@@ -1832,7 +2558,501 @@ app.post('/api/crm/leads/:id/notes', requireAuth, requirePermission(['leads:edit
   }
 });
 
-// REST: Get scheduled follow-ups for tenant (protected and scoped to caller visibility)
+// 5. CRM TASKS & LIFECYCLE WORKFLOWS
+// GET /api/crm/tasks
+app.get('/api/crm/tasks', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { status, taskType, assignedUserId, crmCompanyId, leadId, search } = req.query as Record<string, string>;
+    const scopedUserIds = await getScopedCrmUserIds(user, tenantId);
+
+    let sql = `
+      SELECT t.*, 
+             co.name as "companyName",
+             ct.name as "contactName",
+             l.name as "leadName",
+             l.phone as "leadPhone",
+             u.username as "assigneeName"
+      FROM crm_tasks t
+      LEFT JOIN crm_companies co ON t."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON t."contactId" = ct.id
+      LEFT JOIN leads l ON t."leadId" = l.id
+      LEFT JOIN users u ON t."assignedUserId" = u.id
+      WHERE t."tenantId" = $1
+    `;
+    const params: any[] = [tenantId];
+
+    if (status && status !== 'all') {
+      if (status === 'overdue') {
+        sql += ` AND t.status = 'open' AND t."dueAt" < $${params.length + 1}`;
+        params.push(new Date().toISOString());
+      } else {
+        sql += ` AND t.status = $${params.length + 1}`;
+        params.push(status);
+      }
+    }
+    if (taskType && taskType !== 'all') {
+      sql += ` AND t."taskType" = $${params.length + 1}`;
+      params.push(taskType);
+    }
+    if (assignedUserId) {
+      sql += ` AND t."assignedUserId" = $${params.length + 1}`;
+      params.push(assignedUserId);
+    }
+    if (scopedUserIds) {
+      const phs = scopedUserIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+      sql += ` AND (t."assignedUserId" IN (${phs}) OR t."assignedUserId" IS NULL)`;
+      params.push(...scopedUserIds);
+    }
+    if (crmCompanyId) {
+      sql += ` AND t."crmCompanyId" = $${params.length + 1}`;
+      params.push(crmCompanyId);
+    }
+    if (leadId) {
+      sql += ` AND t."leadId" = $${params.length + 1}`;
+      params.push(leadId);
+    }
+    if (search && search.trim()) {
+      const q = `%${search.trim().toLowerCase()}%`;
+      sql += ` AND (LOWER(t.title) LIKE $${params.length + 1} OR LOWER(COALESCE(t.description, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(co.name, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(l.name, '')) LIKE $${params.length + 1})`;
+      params.push(q);
+    }
+
+    sql += ` ORDER BY t."dueAt" ASC LIMIT 200`;
+    const tasks = await db.queryAll(sql, params);
+    res.json({ tasks });
+  } catch (err: any) {
+    console.error('Error fetching tasks:', err);
+    res.status(500).json({ error: 'Internal server error while fetching tasks' });
+  }
+});
+
+// POST /api/crm/tasks
+app.post('/api/crm/tasks', requireAuth, requirePermission(['crm:edit', 'crm:create']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { title, description, taskType, priority, dueAt, crmCompanyId, contactId, leadId, assignedUserId, assignedTeamId } = req.body;
+    if (!title || !title.trim() || !dueAt) {
+      res.status(400).json({ error: 'Task title and due date/time are required.' });
+      return;
+    }
+
+    const id = `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+
+    await db.execute(`
+      INSERT INTO crm_tasks (id, "tenantId", title, description, "taskType", status, priority, "dueAt", "crmCompanyId", "contactId", "leadId", "assignedUserId", "assignedTeamId", "createdByUserId", "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, 'open', $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+    `, [
+      id,
+      tenantId,
+      title.trim(),
+      description || null,
+      taskType || 'call',
+      priority || 'medium',
+      new Date(dueAt).toISOString(),
+      crmCompanyId || null,
+      contactId || null,
+      leadId || null,
+      assignedUserId || user.id,
+      assignedTeamId || null,
+      user.id,
+      now
+    ]);
+
+    // Also bridge to lead activity if attached to a lead
+    if (leadId) {
+      await recordLeadActivity({
+        leadId,
+        tenantId,
+        userId: user.id,
+        username: user.username,
+        eventType: 'TASK_CREATED',
+        description: `Task created: ${title} (${taskType || 'call'}) due ${new Date(dueAt).toLocaleString()}`
+      });
+    }
+
+    const task = await db.queryOne(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    res.json({ success: true, task });
+  } catch (err: any) {
+    console.error('Error creating task:', err);
+    res.status(500).json({ error: 'Internal server error while creating task' });
+  }
+});
+
+// POST /api/crm/tasks/:id/close
+app.post('/api/crm/tasks/:id/close', requireAuth, requirePermission(['crm:edit', 'calls:log_disposition']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const taskId = req.params.id;
+    const { outcome, outcomeRemarks, nextTask } = req.body;
+
+    const task = await db.queryOne<any>(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [taskId, tenantId]);
+    if (!task) {
+      res.status(404).json({ error: 'Task not found.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await db.execute(`
+      UPDATE crm_tasks
+      SET status = 'completed',
+          "completedAt" = $1,
+          outcome = $2,
+          "outcomeRemarks" = $3,
+          "updatedAt" = $1
+      WHERE id = $4 AND "tenantId" = $5
+    `, [now, outcome || 'Completed', outcomeRemarks || null, taskId, tenantId]);
+
+    // Record note / timeline event
+    const entityType = task.leadId ? 'lead' : task.crmCompanyId ? 'crm_company' : 'task';
+    const entityId = task.leadId || task.crmCompanyId || taskId;
+    await recordCrmNote({
+      tenantId,
+      entityType,
+      entityId,
+      category: 'task',
+      body: `Closed task "${task.title}": Outcome [${outcome || 'Completed'}]${outcomeRemarks ? ' - ' + outcomeRemarks : ''}`,
+      createdByUserId: user.id,
+      createdByName: user.username
+    });
+
+    if (task.leadId) {
+      await recordLeadActivity({
+        leadId: task.leadId,
+        tenantId,
+        userId: user.id,
+        username: user.username,
+        eventType: 'TASK_COMPLETED',
+        description: `Closed task "${task.title}": Outcome [${outcome || 'Completed'}]${outcomeRemarks ? ' - ' + outcomeRemarks : ''}`
+      });
+    }
+
+    // Optional follow-up / chained next action creation
+    let createdNextTask: any = null;
+    if (nextTask && nextTask.title && nextTask.dueAt) {
+      const nextId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      await db.execute(`
+        INSERT INTO crm_tasks (id, "tenantId", title, description, "taskType", status, priority, "dueAt", "crmCompanyId", "contactId", "leadId", "assignedUserId", "createdByUserId", "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, $4, $5, 'open', $6, $7, $8, $9, $10, $11, $12, $13, $13)
+      `, [
+        nextId,
+        tenantId,
+        nextTask.title.trim(),
+        nextTask.description || `Follow-up from closed task: ${task.title}`,
+        nextTask.taskType || 'call',
+        nextTask.priority || 'medium',
+        new Date(nextTask.dueAt).toISOString(),
+        task.crmCompanyId || null,
+        task.contactId || null,
+        task.leadId || null,
+        nextTask.assignedUserId || task.assignedUserId || user.id,
+        user.id,
+        now
+      ]);
+      createdNextTask = await db.queryOne(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [nextId, tenantId]);
+    }
+
+    const updated = await db.queryOne(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [taskId, tenantId]);
+    res.json({ success: true, message: 'Task closed successfully.', task: updated, nextTask: createdNextTask });
+  } catch (err: any) {
+    console.error('Error closing task:', err);
+    res.status(500).json({ error: 'Internal server error while closing task' });
+  }
+});
+
+// POST /api/crm/tasks/:id/reschedule
+app.post('/api/crm/tasks/:id/reschedule', requireAuth, requirePermission(['crm:edit', 'calls:log_disposition']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const taskId = req.params.id;
+    const dueAt = req.body.dueAt || req.body.newDueAt;
+    const { taskType, assignedUserId, remarks } = req.body;
+
+    if (!dueAt) {
+      res.status(400).json({ error: 'New due date and time is required to reschedule.' });
+      return;
+    }
+
+    const task = await db.queryOne<any>(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [taskId, tenantId]);
+    if (!task) {
+      res.status(404).json({ error: 'Task not found.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const newDueIso = new Date(dueAt).toISOString();
+
+    await db.execute(`
+      UPDATE crm_tasks
+      SET "dueAt" = $1,
+          "taskType" = COALESCE($2, "taskType"),
+          "assignedUserId" = COALESCE($3, "assignedUserId"),
+          status = 'open',
+          "outcomeRemarks" = COALESCE($4, "outcomeRemarks"),
+          "updatedAt" = $5
+      WHERE id = $6 AND "tenantId" = $7
+    `, [newDueIso, taskType || null, assignedUserId || null, remarks ? `Rescheduled: ${remarks}` : null, now, taskId, tenantId]);
+
+    const entityType = task.leadId ? 'lead' : task.crmCompanyId ? 'crm_company' : 'task';
+    const entityId = task.leadId || task.crmCompanyId || taskId;
+    await recordCrmNote({
+      tenantId,
+      entityType,
+      entityId,
+      category: 'meeting',
+      body: `Rescheduled task "${task.title}" to ${new Date(newDueIso).toLocaleString()}${remarks ? ': ' + remarks : ''}`,
+      createdByUserId: user.id,
+      createdByName: user.username
+    });
+
+    if (task.leadId) {
+      await recordLeadActivity({
+        leadId: task.leadId,
+        tenantId,
+        userId: user.id,
+        username: user.username,
+        eventType: 'TASK_RESCHEDULED',
+        description: `Rescheduled "${task.title}" to ${new Date(newDueIso).toLocaleString()}${remarks ? ': ' + remarks : ''}`
+      });
+    }
+
+    const updated = await db.queryOne(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [taskId, tenantId]);
+    res.json({ success: true, task: updated, message: 'Task rescheduled successfully.' });
+  } catch (err: any) {
+    console.error('Error rescheduling task:', err);
+    res.status(500).json({ error: 'Internal server error while rescheduling task' });
+  }
+});
+
+// POST /api/crm/tasks/:id/cancel
+app.post('/api/crm/tasks/:id/cancel', requireAuth, requirePermission(['crm:edit', 'calls:log_disposition']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const taskId = req.params.id;
+    const { cancellationReason, remarks } = req.body;
+
+    if (!cancellationReason || !cancellationReason.trim()) {
+      res.status(400).json({ error: 'Cancellation reason is mandatory.' });
+      return;
+    }
+
+    const task = await db.queryOne<any>(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [taskId, tenantId]);
+    if (!task) {
+      res.status(404).json({ error: 'Task not found.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await db.execute(`
+      UPDATE crm_tasks
+      SET status = 'cancelled',
+          "cancellationReason" = $1,
+          "outcomeRemarks" = $2,
+          "updatedAt" = $3
+      WHERE id = $4 AND "tenantId" = $5
+    `, [cancellationReason.trim(), remarks || null, now, taskId, tenantId]);
+
+    const entityType = task.leadId ? 'lead' : task.crmCompanyId ? 'crm_company' : 'task';
+    const entityId = task.leadId || task.crmCompanyId || taskId;
+    await recordCrmNote({
+      tenantId,
+      entityType,
+      entityId,
+      category: 'meeting',
+      body: `Cancelled task "${task.title}": Reason [${cancellationReason}]${remarks ? ' - ' + remarks : ''}`,
+      createdByUserId: user.id,
+      createdByName: user.username
+    });
+
+    if (task.leadId) {
+      await recordLeadActivity({
+        leadId: task.leadId,
+        tenantId,
+        userId: user.id,
+        username: user.username,
+        eventType: 'TASK_CANCELLED',
+        description: `Cancelled task "${task.title}": Reason [${cancellationReason}]${remarks ? ' - ' + remarks : ''}`
+      });
+    }
+
+    const updated = await db.queryOne(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [taskId, tenantId]);
+    res.json({ success: true, message: 'Task cancelled successfully.', task: updated });
+  } catch (err: any) {
+    console.error('Error cancelling task:', err);
+    res.status(500).json({ error: 'Internal server error while cancelling task' });
+  }
+});
+
+// 6. CROSS-ENTITY NOTES & UNIFIED ACTIVITY TIMELINE
+// GET /api/crm/notes
+app.get('/api/crm/notes', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const { entityType, entityId } = req.query as Record<string, string>;
+    if (!entityType || !entityId) {
+      res.status(400).json({ error: 'entityType and entityId are required.' });
+      return;
+    }
+
+    const notes = await db.queryAll(`
+      SELECT * FROM crm_notes
+      WHERE "entityType" = $1 AND "entityId" = $2 AND "tenantId" = $3
+      ORDER BY "createdAt" DESC LIMIT 100
+    `, [entityType, entityId, tenantId]);
+
+    res.json({ notes });
+  } catch (err: any) {
+    console.error('Error fetching CRM notes:', err);
+    res.status(500).json({ error: 'Internal server error while fetching notes' });
+  }
+});
+
+// POST /api/crm/notes
+app.post('/api/crm/notes', requireAuth, requirePermission(['crm:edit', 'crm:create']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { entityType, entityId, category, body } = req.body;
+    if (!entityType || !entityId || !body || !body.trim()) {
+      res.status(400).json({ error: 'entityType, entityId, and note body are required.' });
+      return;
+    }
+
+    const note = await recordCrmNote({
+      tenantId,
+      entityType,
+      entityId,
+      category: category || 'general',
+      body: body.trim(),
+      createdByUserId: user.id,
+      createdByName: user.username
+    });
+
+    res.json({ success: true, note });
+  } catch (err: any) {
+    console.error('Error saving CRM note:', err);
+    res.status(500).json({ error: 'Internal server error while saving note' });
+  }
+});
+
+// GET /api/crm/timeline: Unified activity stream
+app.get('/api/crm/timeline', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { entityType, entityId, limit } = req.query as Record<string, string>;
+    const maxLimit = Math.min(parseInt(limit || '50', 10), 100);
+
+    let timelineItems: any[] = [];
+
+    if (entityType && entityId) {
+      // 1. Fetch notes for this specific entity
+      const notes = await db.queryAll<any>(`
+        SELECT id, category as "eventType", body as description, "createdByName" as username, "createdAt", 'NOTE' as type
+        FROM crm_notes
+        WHERE "entityType" = $1 AND "entityId" = $2 AND "tenantId" = $3
+        ORDER BY "createdAt" DESC LIMIT $4
+      `, [entityType, entityId, tenantId, maxLimit]);
+      timelineItems.push(...notes);
+
+      // 2. If entity is a lead, also pull lead_activities and call_logs
+      if (entityType === 'lead') {
+        const activities = await db.queryAll<any>(`
+          SELECT id, "eventType", description, username, "createdAt", 'ACTIVITY' as type
+          FROM lead_activities
+          WHERE "leadId" = $1 AND "tenantId" = $2
+          ORDER BY "createdAt" DESC LIMIT $3
+        `, [entityId, tenantId, maxLimit]);
+        timelineItems.push(...activities);
+
+        const callLogs = await db.queryAll<any>(`
+          SELECT id, outcome as "eventType", ('Call outcome: ' || outcome || ' (' || duration || 's)') as description, 'System' as username, timestamp as "createdAt", 'CALL' as type
+          FROM call_logs
+          WHERE "leadId" = $1 AND "tenantId" = $2
+          ORDER BY timestamp DESC LIMIT $3
+        `, [entityId, tenantId, maxLimit]);
+        timelineItems.push(...callLogs);
+      }
+    } else {
+      // General tenant-wide timeline
+      const notes = await db.queryAll<any>(`
+        SELECT id, category as "eventType", body as description, "createdByName" as username, "createdAt", 'NOTE' as type, "entityType", "entityId"
+        FROM crm_notes
+        WHERE "tenantId" = $1
+        ORDER BY "createdAt" DESC LIMIT $2
+      `, [tenantId, maxLimit]);
+      timelineItems.push(...notes);
+
+      const activities = await db.queryAll<any>(`
+        SELECT id, "eventType", description, username, "createdAt", 'ACTIVITY' as type, 'lead' as "entityType", "leadId" as "entityId"
+        FROM lead_activities
+        WHERE "tenantId" = $1
+        ORDER BY "createdAt" DESC LIMIT $2
+      `, [tenantId, maxLimit]);
+      timelineItems.push(...activities);
+    }
+
+    // Normalize and sort descending by timestamp
+    const normalized = timelineItems.map(item => ({
+      ...item,
+      timestamp: item.timestamp || item.createdAt,
+      itemType: (item.itemType || item.type || item.eventType || 'note').toLowerCase(),
+      title: item.title || item.eventType || item.type || 'Activity',
+      userName: item.userName || item.username || item.createdByName || 'Operator'
+    }));
+    normalized.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    res.json({ timeline: normalized.slice(0, maxLimit), items: normalized.slice(0, maxLimit) });
+  } catch (err: any) {
+    console.error('Error fetching timeline:', err);
+    res.status(500).json({ error: 'Internal server error while fetching timeline' });
+  }
+});
+
+// REST: Get scheduled follow-ups for tenant (maintained for dialer compatibility)
 app.get('/api/crm/follow-ups', requireAuth, requirePermission(['crm:view', 'leads:view']), async (req, res) => {
   try {
     const user = (req as any).user;
@@ -1870,7 +3090,7 @@ app.get('/api/crm/follow-ups', requireAuth, requirePermission(['crm:view', 'lead
   }
 });
 
-// REST: Create scheduled follow-up (protected)
+// REST: Create scheduled follow-up (maintained for dialer compatibility)
 app.post('/api/crm/follow-ups', requireAuth, requirePermission(['crm:edit', 'crm:create', 'leads:edit']), async (req, res) => {
   try {
     const user = (req as any).user;
@@ -1925,15 +3145,1391 @@ app.post('/api/crm/follow-ups', requireAuth, requirePermission(['crm:edit', 'crm
   }
 });
 
+// 7. CRM MEETINGS API (Specialized view over crm_tasks where taskType IN ('meeting', 'online_meeting'))
+app.get('/api/crm/meetings', requireAuth, requirePermission(['crm:view', 'leads:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { status, range, assignedUserId, search } = req.query as Record<string, string>;
+    const scopedUserIds = await getScopedCrmUserIds(user, tenantId);
+
+    let sql = `
+      SELECT t.*, 
+             co.name as "companyName", 
+             ct.name as "contactName",
+             l.name as "leadName",
+             l.phone as "leadPhone",
+             u.username as "assignedUserName"
+      FROM crm_tasks t
+      LEFT JOIN crm_companies co ON t."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON t."contactId" = ct.id
+      LEFT JOIN leads l ON t."leadId" = l.id
+      LEFT JOIN users u ON t."assignedUserId" = u.id
+      WHERE t."tenantId" = $1 AND t."taskType" IN ('meeting', 'online_meeting')
+    `;
+    const params: any[] = [tenantId];
+
+    if (status && status !== 'all') {
+      sql += ` AND t.status = $${params.length + 1}`;
+      params.push(status);
+    }
+    if (assignedUserId) {
+      sql += ` AND t."assignedUserId" = $${params.length + 1}`;
+      params.push(assignedUserId);
+    }
+    if (scopedUserIds) {
+      const phs = scopedUserIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+      sql += ` AND (t."assignedUserId" IN (${phs}) OR t."assignedUserId" IS NULL)`;
+      params.push(...scopedUserIds);
+    }
+
+    const now = new Date();
+    if (range === 'today') {
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).toISOString();
+      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString();
+      sql += ` AND t."dueAt" >= $${params.length + 1} AND t."dueAt" <= $${params.length + 2}`;
+      params.push(start, end);
+    } else if (range === 'upcoming') {
+      sql += ` AND t."dueAt" >= $${params.length + 1} AND t.status = 'open'`;
+      params.push(now.toISOString());
+    } else if (range === 'past') {
+      sql += ` AND (t."dueAt" < $${params.length + 1} OR t.status != 'open')`;
+      params.push(now.toISOString());
+    }
+
+    if (search && search.trim()) {
+      const q = `%${search.trim().toLowerCase()}%`;
+      sql += ` AND (LOWER(t.title) LIKE $${params.length + 1} OR LOWER(COALESCE(co.name, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(ct.name, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(l.name, '')) LIKE $${params.length + 1})`;
+      params.push(q);
+    }
+
+    sql += ` ORDER BY t."dueAt" ASC LIMIT 200`;
+    const meetings = await db.queryAll(sql, params);
+    res.json({ meetings });
+  } catch (err: any) {
+    console.error('Error fetching CRM meetings:', err);
+    res.status(500).json({ error: 'Internal server error while fetching meetings' });
+  }
+});
+
+// 8. CRM CLIENT WORK ITEMS (Deliverables, Tickets, Onboarding & Projects)
+app.get('/api/crm/work-items', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { status, category, crmCompanyId, assignedUserId, search } = req.query as Record<string, string>;
+    const scopedUserIds = await getScopedCrmUserIds(user, tenantId);
+
+    let sql = `
+      SELECT w.*,
+             co.name as "companyName",
+             ct.name as "contactName",
+             l.name as "leadName",
+             u.username as "assignedUserName",
+             creator.username as "createdByName"
+      FROM crm_work_items w
+      LEFT JOIN crm_companies co ON w."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON w."contactId" = ct.id
+      LEFT JOIN leads l ON w."leadId" = l.id
+      LEFT JOIN users u ON w."assignedUserId" = u.id
+      LEFT JOIN users creator ON w."createdByUserId" = creator.id
+      WHERE w."tenantId" = $1
+    `;
+    const params: any[] = [tenantId];
+
+    if (status && status !== 'all') {
+      sql += ` AND w.status = $${params.length + 1}`;
+      params.push(status);
+    }
+    if (category && category !== 'all') {
+      sql += ` AND w.category = $${params.length + 1}`;
+      params.push(category);
+    }
+    if (crmCompanyId) {
+      sql += ` AND w."crmCompanyId" = $${params.length + 1}`;
+      params.push(crmCompanyId);
+    }
+    if (assignedUserId) {
+      sql += ` AND w."assignedUserId" = $${params.length + 1}`;
+      params.push(assignedUserId);
+    }
+    if (scopedUserIds) {
+      const phs = scopedUserIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+      sql += ` AND (w."assignedUserId" IN (${phs}) OR w."assignedUserId" IS NULL)`;
+      params.push(...scopedUserIds);
+    }
+    if (search && search.trim()) {
+      const q = `%${search.trim().toLowerCase()}%`;
+      sql += ` AND (LOWER(w.title) LIKE $${params.length + 1} OR LOWER(COALESCE(w.description, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(co.name, '')) LIKE $${params.length + 1})`;
+      params.push(q);
+    }
+
+    sql += ` ORDER BY CASE w.priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END, w."createdAt" DESC LIMIT 200`;
+    const workItems = await db.queryAll(sql, params);
+    res.json({ workItems });
+  } catch (err: any) {
+    console.error('Error fetching work items:', err);
+    res.status(500).json({ error: 'Internal server error while fetching work items' });
+  }
+});
+
+app.post('/api/crm/work-items', requireAuth, requirePermission(['crm:create', 'crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { title, description, category, subcategory, assignedTeamId, assignedUserId, priority, dueAt, crmCompanyId, contactId, leadId, status } = req.body;
+    if (!title || !title.trim()) {
+      res.status(400).json({ error: 'Title is required for work item.' });
+      return;
+    }
+
+    const id = `work_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+    const itemStatus = status || 'TODO';
+    const completedAt = itemStatus === 'COMPLETED' ? now : null;
+
+    await db.execute(`
+      INSERT INTO crm_work_items (
+        id, "tenantId", "crmCompanyId", "contactId", "leadId", title, description,
+        category, subcategory, "assignedTeamId", "assignedUserId", priority, status,
+        "dueAt", "completedAt", "createdByUserId", "createdAt", "updatedAt"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
+    `, [
+      id,
+      tenantId,
+      crmCompanyId || null,
+      contactId || null,
+      leadId || null,
+      title.trim(),
+      description || null,
+      category || 'General',
+      subcategory || null,
+      assignedTeamId || null,
+      assignedUserId || user.id,
+      priority || 'normal',
+      itemStatus,
+      dueAt ? new Date(dueAt).toISOString() : null,
+      completedAt,
+      user.id,
+      now
+    ]);
+
+    const entityType = leadId ? 'lead' : crmCompanyId ? 'crm_company' : null;
+    const entityId = leadId || crmCompanyId;
+    if (entityType && entityId) {
+      await recordCrmNote({
+        tenantId,
+        entityType,
+        entityId,
+        category: 'task',
+        body: `Created client work item: "${title.trim()}" [${category || 'General'} - Priority: ${priority || 'normal'}]`,
+        createdByUserId: user.id,
+        createdByName: user.username
+      });
+    }
+
+    const created = await db.queryOne(`
+      SELECT w.*, co.name as "companyName", ct.name as "contactName", l.name as "leadName", u.username as "assignedUserName"
+      FROM crm_work_items w
+      LEFT JOIN crm_companies co ON w."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON w."contactId" = ct.id
+      LEFT JOIN leads l ON w."leadId" = l.id
+      LEFT JOIN users u ON w."assignedUserId" = u.id
+      WHERE w.id = $1 AND w."tenantId" = $2
+    `, [id, tenantId]);
+
+    res.json({ success: true, workItem: created });
+  } catch (err: any) {
+    console.error('Error creating work item:', err);
+    res.status(500).json({ error: 'Internal server error while creating work item' });
+  }
+});
+
+app.get('/api/crm/work-items/:id', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const item = await db.queryOne<any>(`
+      SELECT w.*, co.name as "companyName", ct.name as "contactName", l.name as "leadName", u.username as "assignedUserName", creator.username as "createdByName"
+      FROM crm_work_items w
+      LEFT JOIN crm_companies co ON w."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON w."contactId" = ct.id
+      LEFT JOIN leads l ON w."leadId" = l.id
+      LEFT JOIN users u ON w."assignedUserId" = u.id
+      LEFT JOIN users creator ON w."createdByUserId" = creator.id
+      WHERE w.id = $1 AND w."tenantId" = $2
+    `, [id, tenantId]);
+
+    if (!item) {
+      res.status(404).json({ error: 'Work item not found.' });
+      return;
+    }
+
+    const notes = await db.queryAll(`
+      SELECT * FROM crm_notes 
+      WHERE "entityType" = 'crm_company' AND "entityId" = $1 AND "tenantId" = $2
+      ORDER BY "createdAt" DESC LIMIT 50
+    `, [item.crmCompanyId || id, tenantId]);
+
+    res.json({ workItem: item, notes });
+  } catch (err: any) {
+    console.error('Error fetching work item:', err);
+    res.status(500).json({ error: 'Internal server error while fetching work item' });
+  }
+});
+
+app.put('/api/crm/work-items/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const { title, description, category, subcategory, assignedTeamId, assignedUserId, priority, status, dueAt, crmCompanyId, contactId, leadId } = req.body;
+
+    const existing = await db.queryOne<any>(`SELECT * FROM crm_work_items WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    if (!existing) {
+      res.status(404).json({ error: 'Work item not found.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    let completedAt = existing.completedAt;
+    if (status === 'COMPLETED' && existing.status !== 'COMPLETED') {
+      completedAt = now;
+    } else if (status && status !== 'COMPLETED') {
+      completedAt = null;
+    }
+
+    await db.execute(`
+      UPDATE crm_work_items
+      SET title = COALESCE($1, title),
+          description = COALESCE($2, description),
+          category = COALESCE($3, category),
+          subcategory = COALESCE($4, subcategory),
+          "assignedTeamId" = COALESCE($5, "assignedTeamId"),
+          "assignedUserId" = COALESCE($6, "assignedUserId"),
+          priority = COALESCE($7, priority),
+          status = COALESCE($8, status),
+          "dueAt" = COALESCE($9, "dueAt"),
+          "completedAt" = $10,
+          "crmCompanyId" = COALESCE($11, "crmCompanyId"),
+          "contactId" = COALESCE($12, "contactId"),
+          "leadId" = COALESCE($13, "leadId"),
+          "updatedAt" = $14
+      WHERE id = $15 AND "tenantId" = $16
+    `, [
+      title ? title.trim() : null,
+      description !== undefined ? description : null,
+      category || null,
+      subcategory !== undefined ? subcategory : null,
+      assignedTeamId !== undefined ? assignedTeamId : null,
+      assignedUserId !== undefined ? assignedUserId : null,
+      priority || null,
+      status || null,
+      dueAt ? new Date(dueAt).toISOString() : null,
+      completedAt,
+      crmCompanyId !== undefined ? crmCompanyId : null,
+      contactId !== undefined ? contactId : null,
+      leadId !== undefined ? leadId : null,
+      now,
+      id,
+      tenantId
+    ]);
+
+    const updated = await db.queryOne(`
+      SELECT w.*, co.name as "companyName", ct.name as "contactName", l.name as "leadName", u.username as "assignedUserName"
+      FROM crm_work_items w
+      LEFT JOIN crm_companies co ON w."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON w."contactId" = ct.id
+      LEFT JOIN leads l ON w."leadId" = l.id
+      LEFT JOIN users u ON w."assignedUserId" = u.id
+      WHERE w.id = $1 AND w."tenantId" = $2
+    `, [id, tenantId]);
+
+    res.json({ success: true, workItem: updated });
+  } catch (err: any) {
+    console.error('Error updating work item:', err);
+    res.status(500).json({ error: 'Internal server error while updating work item' });
+  }
+});
+
+app.delete('/api/crm/work-items/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    await db.execute(`DELETE FROM crm_work_items WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    res.json({ success: true, message: 'Work item deleted successfully.' });
+  } catch (err: any) {
+    console.error('Error deleting work item:', err);
+    res.status(500).json({ error: 'Internal server error while deleting work item' });
+  }
+});
+
+// Default pricing definitions
+const DEFAULT_PACKAGES = [
+  {
+    id: 'pkg_starter',
+    name: 'Starter Tier',
+    description: 'Essential CRM and calling tools for growing teams',
+    priceMonthly: 49.00,
+    priceAnnual: 470.00,
+    includedUsers: 3,
+    maxCallsPerMonth: 1000,
+    features: ['Up to 3 Users', 'Basic CRM Pipeline', 'Lead Management', '1,000 Outbound Minutes']
+  },
+  {
+    id: 'pkg_pro',
+    name: 'Professional Tier',
+    description: 'Advanced sales automation, recording and analytics',
+    priceMonthly: 129.00,
+    priceAnnual: 1240.00,
+    includedUsers: 10,
+    maxCallsPerMonth: 5000,
+    features: ['Up to 10 Users', 'Full CRM Suite & Work Items', 'Automated Workflows', 'Call Recording', '5,000 Outbound Minutes']
+  },
+  {
+    id: 'pkg_enterprise',
+    name: 'Enterprise Tier',
+    description: 'Dedicated infrastructure, custom workflows & unlimited volume',
+    priceMonthly: 299.00,
+    priceAnnual: 2870.00,
+    includedUsers: 25,
+    maxCallsPerMonth: 25000,
+    features: ['Unlimited Users', 'Dedicated IP & Subdomain', 'Custom Pipelines', 'Priority Support', '25,000 Outbound Minutes']
+  }
+];
+
+const DEFAULT_ADDONS = [
+  { id: 'addon_phone', name: 'Extra Dedicated DID Phone Number', priceMonthly: 5.00, priceAnnual: 50.00, unit: 'number' },
+  { id: 'addon_ai_transcribe', name: 'AI Voice Transcription & Summary', priceMonthly: 29.00, priceAnnual: 290.00, unit: 'license' },
+  { id: 'addon_omnichannel', name: 'WhatsApp & SMS Outreach Gateway', priceMonthly: 49.00, priceAnnual: 490.00, unit: 'gateway' },
+  { id: 'addon_custom_domain', name: 'Custom Domain & White-label Portal', priceMonthly: 39.00, priceAnnual: 390.00, unit: 'branding' }
+];
+
+async function getOrCreateTenantPricingRules(tenantId: string, userId?: string) {
+  let rules = await db.queryOne<any>(`SELECT * FROM crm_pricing_rules WHERE "tenantId" = $1`, [tenantId]);
+  if (!rules) {
+    const id = `pr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+    await db.execute(`
+      INSERT INTO crm_pricing_rules (
+        id, "tenantId", currency, "taxRate", "agentMaxDiscountPct", "teamLeadMaxDiscountPct",
+        "packagesJson", "addonsJson", "perUserPriceMonthly", "perUserPriceAnnual", "updatedByUserId", "createdAt", "updatedAt"
+      ) VALUES ($1, $2, 'USD', 0, 10, 25, $3, $4, 15.00, 144.00, $5, $6, $6)
+    `, [id, tenantId, JSON.stringify(DEFAULT_PACKAGES), JSON.stringify(DEFAULT_ADDONS), userId || null, now]);
+    rules = await db.queryOne<any>(`SELECT * FROM crm_pricing_rules WHERE "tenantId" = $1`, [tenantId]);
+  }
+  return rules;
+}
+
+// 9. PRICING RULES APIS
+app.get('/api/crm/pricing-rules', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const rules = await getOrCreateTenantPricingRules(tenantId, user.id);
+    let packages = DEFAULT_PACKAGES;
+    let addons = DEFAULT_ADDONS;
+    try { packages = JSON.parse(rules.packagesJson); } catch {}
+    try { addons = JSON.parse(rules.addonsJson); } catch {}
+
+    res.json({
+      pricingRules: {
+        id: rules.id,
+        tenantId: rules.tenantId,
+        currency: rules.currency,
+        taxRate: Number(rules.taxRate),
+        agentMaxDiscountPct: Number(rules.agentMaxDiscountPct),
+        teamLeadMaxDiscountPct: Number(rules.teamLeadMaxDiscountPct),
+        perUserPriceMonthly: Number(rules.perUserPriceMonthly),
+        perUserPriceAnnual: Number(rules.perUserPriceAnnual),
+        packages,
+        addons,
+        updatedAt: rules.updatedAt
+      }
+    });
+  } catch (err: any) {
+    console.error('Error getting pricing rules:', err);
+    res.status(500).json({ error: 'Internal server error while fetching pricing rules' });
+  }
+});
+
+app.put('/api/crm/pricing-rules', requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    // Strictly Company Owner or Platform Admin only!
+    const isOwner = user.role === 'admin' || user.role === 'platform_admin' || user.role === 'master_admin';
+    if (!isOwner) {
+      res.status(403).json({ error: 'Forbidden: Only the Company Owner can configure sales pricing rules and discount policies.' });
+      return;
+    }
+
+    const { currency, taxRate, agentMaxDiscountPct, teamLeadMaxDiscountPct, packages, addons, perUserPriceMonthly, perUserPriceAnnual } = req.body;
+    const now = new Date().toISOString();
+
+    await getOrCreateTenantPricingRules(tenantId, user.id);
+
+    await db.execute(`
+      UPDATE crm_pricing_rules
+      SET currency = COALESCE($1, currency),
+          "taxRate" = COALESCE($2, "taxRate"),
+          "agentMaxDiscountPct" = COALESCE($3, "agentMaxDiscountPct"),
+          "teamLeadMaxDiscountPct" = COALESCE($4, "teamLeadMaxDiscountPct"),
+          "packagesJson" = COALESCE($5, "packagesJson"),
+          "addonsJson" = COALESCE($6, "addonsJson"),
+          "perUserPriceMonthly" = COALESCE($7, "perUserPriceMonthly"),
+          "perUserPriceAnnual" = COALESCE($8, "perUserPriceAnnual"),
+          "updatedByUserId" = $9,
+          "updatedAt" = $10
+      WHERE "tenantId" = $11
+    `, [
+      currency || null,
+      taxRate !== undefined ? Number(taxRate) : null,
+      agentMaxDiscountPct !== undefined ? Number(agentMaxDiscountPct) : null,
+      teamLeadMaxDiscountPct !== undefined ? Number(teamLeadMaxDiscountPct) : null,
+      packages ? JSON.stringify(packages) : null,
+      addons ? JSON.stringify(addons) : null,
+      perUserPriceMonthly !== undefined ? Number(perUserPriceMonthly) : null,
+      perUserPriceAnnual !== undefined ? Number(perUserPriceAnnual) : null,
+      user.id,
+      now,
+      tenantId
+    ]);
+
+    const updated = await getOrCreateTenantPricingRules(tenantId, user.id);
+    let pkgs = DEFAULT_PACKAGES;
+    let ads = DEFAULT_ADDONS;
+    try { pkgs = JSON.parse(updated.packagesJson); } catch {}
+    try { ads = JSON.parse(updated.addonsJson); } catch {}
+
+    res.json({
+      success: true,
+      pricingRules: {
+        id: updated.id,
+        tenantId: updated.tenantId,
+        currency: updated.currency,
+        taxRate: Number(updated.taxRate),
+        agentMaxDiscountPct: Number(updated.agentMaxDiscountPct),
+        teamLeadMaxDiscountPct: Number(updated.teamLeadMaxDiscountPct),
+        perUserPriceMonthly: Number(updated.perUserPriceMonthly),
+        perUserPriceAnnual: Number(updated.perUserPriceAnnual),
+        packages: pkgs,
+        addons: ads,
+        updatedAt: updated.updatedAt
+      }
+    });
+  } catch (err: any) {
+    console.error('Error updating pricing rules:', err);
+    res.status(500).json({ error: 'Internal server error while updating pricing rules' });
+  }
+});
+
+// Helper to compute quote calculations and enforce discount rules
+async function calculateQuoteInternal(tenantId: string, user: any, body: any) {
+  const rules = await getOrCreateTenantPricingRules(tenantId, user.id);
+  let packages = DEFAULT_PACKAGES;
+  let addons = DEFAULT_ADDONS;
+  try { packages = JSON.parse(rules.packagesJson); } catch {}
+  try { addons = JSON.parse(rules.addonsJson); } catch {}
+
+  const isOwner = user.role === 'admin' || user.role === 'platform_admin' || user.role === 'master_admin';
+  const isTeamLead = user.role === 'team_lead';
+  const maxDiscountPct = isOwner ? 100 : (isTeamLead ? Number(rules.teamLeadMaxDiscountPct) : Number(rules.agentMaxDiscountPct));
+
+  const requestedDiscountPct = Number(body.discountPct || 0);
+  if (requestedDiscountPct > maxDiscountPct) {
+    throw new Error(`Discount cannot exceed ${maxDiscountPct}% for your role (${user.role}).`);
+  }
+
+  const billingCycle = body.billingCycle === 'annual' ? 'annual' : 'monthly';
+  const userCount = Math.max(1, parseInt(String(body.userCount || 1), 10));
+
+  const pkg = packages.find((p: any) => p.id === body.packageId) || packages[0];
+  const pkgPrice = billingCycle === 'annual' ? Number(pkg.priceAnnual) : Number(pkg.priceMonthly);
+
+  const lineItems: any[] = [];
+  lineItems.push({
+    itemType: 'package',
+    name: `${pkg.name} (${billingCycle})`,
+    quantity: 1,
+    unitPrice: pkgPrice,
+    lineTotal: pkgPrice
+  });
+
+  // Additional users above included
+  const includedUsers = pkg.includedUsers || 1;
+  const extraUsers = Math.max(0, userCount - includedUsers);
+  if (extraUsers > 0) {
+    const seatPrice = billingCycle === 'annual' ? Number(rules.perUserPriceAnnual) : Number(rules.perUserPriceMonthly);
+    const seatTotal = extraUsers * seatPrice;
+    lineItems.push({
+      itemType: 'seat',
+      name: `Additional User Seats (${extraUsers} seat${extraUsers > 1 ? 's' : ''})`,
+      quantity: extraUsers,
+      unitPrice: seatPrice,
+      lineTotal: seatTotal
+    });
+  }
+
+  // Selected add-ons
+  const selectedAddons: any[] = Array.isArray(body.selectedAddons) ? body.selectedAddons : [];
+  for (const sel of selectedAddons) {
+    const addon = addons.find((a: any) => a.id === sel.addonId || a.id === sel.id);
+    if (addon) {
+      const qty = Math.max(1, parseInt(String(sel.quantity || 1), 10));
+      const uPrice = billingCycle === 'annual' ? Number(addon.priceAnnual) : Number(addon.priceMonthly);
+      const lTotal = qty * uPrice;
+      lineItems.push({
+        itemType: 'addon',
+        name: addon.name,
+        quantity: qty,
+        unitPrice: uPrice,
+        lineTotal: lTotal
+      });
+    }
+  }
+
+  const subtotal = lineItems.reduce((acc, item) => acc + item.lineTotal, 0);
+  const discountAmount = Math.round((subtotal * (requestedDiscountPct / 100)) * 100) / 100;
+  const taxableAmount = Math.max(0, subtotal - discountAmount);
+  const taxRate = Number(rules.taxRate || 0);
+  const taxAmount = Math.round((taxableAmount * (taxRate / 100)) * 100) / 100;
+  const totalAmount = Math.round((taxableAmount + taxAmount) * 100) / 100;
+
+  return {
+    package: pkg,
+    userCount,
+    billingCycle,
+    currency: rules.currency,
+    subtotal,
+    discountPct: requestedDiscountPct,
+    maxAllowedDiscountPct: maxDiscountPct,
+    discountAmount,
+    taxRate,
+    taxAmount,
+    totalAmount,
+    lineItems
+  };
+}
+
+// POST /api/crm/quotes/calculate
+app.post('/api/crm/quotes/calculate', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const calculation = await calculateQuoteInternal(tenantId, user, req.body);
+    res.json(calculation);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 10. CRM QUOTES CRUD
+app.get('/api/crm/quotes', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { status, crmCompanyId, assignedUserId, search } = req.query as Record<string, string>;
+    const scopedUserIds = await getScopedCrmUserIds(user, tenantId);
+
+    let sql = `
+      SELECT q.*,
+             co.name as "companyName",
+             ct.name as "contactName",
+             l.name as "leadName",
+             u.username as "assignedUserName",
+             creator.username as "createdByName"
+      FROM crm_quotes q
+      LEFT JOIN crm_companies co ON q."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON q."contactId" = ct.id
+      LEFT JOIN leads l ON q."leadId" = l.id
+      LEFT JOIN users u ON q."assignedUserId" = u.id
+      LEFT JOIN users creator ON q."createdByUserId" = creator.id
+      WHERE q."tenantId" = $1
+    `;
+    const params: any[] = [tenantId];
+
+    if (status && status !== 'all') {
+      sql += ` AND q.status = $${params.length + 1}`;
+      params.push(status);
+    }
+    if (crmCompanyId) {
+      sql += ` AND q."crmCompanyId" = $${params.length + 1}`;
+      params.push(crmCompanyId);
+    }
+    if (assignedUserId) {
+      sql += ` AND q."assignedUserId" = $${params.length + 1}`;
+      params.push(assignedUserId);
+    }
+    if (scopedUserIds) {
+      const phs = scopedUserIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+      sql += ` AND (q."assignedUserId" IN (${phs}) OR q."assignedUserId" IS NULL)`;
+      params.push(...scopedUserIds);
+    }
+    if (search && search.trim()) {
+      const q = `%${search.trim().toLowerCase()}%`;
+      sql += ` AND (LOWER(q."quoteNumber") LIKE $${params.length + 1} OR LOWER(COALESCE(co.name, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(q.notes, '')) LIKE $${params.length + 1})`;
+      params.push(q);
+    }
+
+    sql += ` ORDER BY q."createdAt" DESC LIMIT 200`;
+    const quotes = await db.queryAll(sql, params);
+    res.json({ quotes });
+  } catch (err: any) {
+    console.error('Error fetching quotes:', err);
+    res.status(500).json({ error: 'Internal server error while fetching quotes' });
+  }
+});
+
+app.post('/api/crm/quotes', requireAuth, requirePermission(['crm:create', 'crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { crmCompanyId, contactId, leadId, packageId, userCount, billingCycle, selectedAddons, discountPct, notes, validUntil, assignedUserId } = req.body;
+
+    const calc = await calculateQuoteInternal(tenantId, user, {
+      packageId,
+      userCount,
+      billingCycle,
+      selectedAddons,
+      discountPct
+    });
+
+    const quoteId = `qte_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const quoteNumber = `QTE-${Date.now().toString().slice(-6)}`;
+    const now = new Date().toISOString();
+
+    await db.execute(`
+      INSERT INTO crm_quotes (
+        id, "tenantId", "quoteNumber", "crmCompanyId", "contactId", "leadId",
+        "packageId", "packageName", "userCount", "billingCycle", currency,
+        subtotal, "discountPct", "discountAmount", "taxAmount", "totalAmount",
+        status, notes, "validUntil", "assignedUserId", "createdByUserId", "createdAt", "updatedAt"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'DRAFT', $17, $18, $19, $20, $21, $21)
+    `, [
+      quoteId,
+      tenantId,
+      quoteNumber,
+      crmCompanyId || null,
+      contactId || null,
+      leadId || null,
+      calc.package.id,
+      calc.package.name,
+      calc.userCount,
+      calc.billingCycle,
+      calc.currency,
+      calc.subtotal,
+      calc.discountPct,
+      calc.discountAmount,
+      calc.taxAmount,
+      calc.totalAmount,
+      notes || null,
+      validUntil ? new Date(validUntil).toISOString() : null,
+      assignedUserId || user.id,
+      user.id,
+      now
+    ]);
+
+    // Insert frozen quote items snapshot
+    for (const item of calc.lineItems) {
+      const itemId = `qi_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      await db.execute(`
+        INSERT INTO crm_quote_items (
+          id, "tenantId", "quoteId", "itemType", name, quantity, "unitPrice", "lineTotal", "createdAt"
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `, [
+        itemId,
+        tenantId,
+        quoteId,
+        item.itemType,
+        item.name,
+        item.quantity,
+        item.unitPrice,
+        item.lineTotal,
+        now
+      ]);
+    }
+
+    const entityType = leadId ? 'lead' : crmCompanyId ? 'crm_company' : null;
+    const entityId = leadId || crmCompanyId;
+    if (entityType && entityId) {
+      await recordCrmNote({
+        tenantId,
+        entityType,
+        entityId,
+        category: 'sales',
+        body: `Created Quote #${quoteNumber} for ${calc.package.name} (${calc.currency} ${calc.totalAmount.toFixed(2)})`,
+        createdByUserId: user.id,
+        createdByName: user.username
+      });
+    }
+
+    const created = await db.queryOne(`
+      SELECT q.*, co.name as "companyName", ct.name as "contactName", l.name as "leadName", u.username as "assignedUserName"
+      FROM crm_quotes q
+      LEFT JOIN crm_companies co ON q."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON q."contactId" = ct.id
+      LEFT JOIN leads l ON q."leadId" = l.id
+      LEFT JOIN users u ON q."assignedUserId" = u.id
+      WHERE q.id = $1 AND q."tenantId" = $2
+    `, [quoteId, tenantId]);
+
+    const items = await db.queryAll(`SELECT * FROM crm_quote_items WHERE "quoteId" = $1 AND "tenantId" = $2`, [quoteId, tenantId]);
+
+    res.json({ success: true, quote: created, items });
+  } catch (err: any) {
+    console.error('Error creating quote:', err);
+    res.status(400).json({ error: err.message || 'Internal server error while creating quote' });
+  }
+});
+
+app.get('/api/crm/quotes/:id', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const quote = await db.queryOne<any>(`
+      SELECT q.*, co.name as "companyName", ct.name as "contactName", l.name as "leadName", u.username as "assignedUserName", creator.username as "createdByName"
+      FROM crm_quotes q
+      LEFT JOIN crm_companies co ON q."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON q."contactId" = ct.id
+      LEFT JOIN leads l ON q."leadId" = l.id
+      LEFT JOIN users u ON q."assignedUserId" = u.id
+      LEFT JOIN users creator ON q."createdByUserId" = creator.id
+      WHERE q.id = $1 AND q."tenantId" = $2
+    `, [id, tenantId]);
+
+    if (!quote) {
+      res.status(404).json({ error: 'Quote not found.' });
+      return;
+    }
+
+    const items = await db.queryAll(`SELECT * FROM crm_quote_items WHERE "quoteId" = $1 AND "tenantId" = $2`, [id, tenantId]);
+    res.json({ quote, items });
+  } catch (err: any) {
+    console.error('Error fetching quote:', err);
+    res.status(500).json({ error: 'Internal server error while fetching quote' });
+  }
+});
+
+app.put('/api/crm/quotes/:id/status', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const { status } = req.body;
+    const allowed = ['DRAFT', 'SENT', 'ACCEPTED', 'REJECTED', 'EXPIRED'];
+    if (!allowed.includes(status)) {
+      res.status(400).json({ error: `Invalid status. Must be one of: ${allowed.join(', ')}` });
+      return;
+    }
+
+    const existing = await db.queryOne<any>(`SELECT * FROM crm_quotes WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    if (!existing) {
+      res.status(404).json({ error: 'Quote not found.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await db.execute(`
+      UPDATE crm_quotes
+      SET status = $1, "updatedAt" = $2
+      WHERE id = $3 AND "tenantId" = $4
+    `, [status, now, id, tenantId]);
+
+    const entityType = existing.leadId ? 'lead' : existing.crmCompanyId ? 'crm_company' : null;
+    const entityId = existing.leadId || existing.crmCompanyId;
+    if (entityType && entityId) {
+      await recordCrmNote({
+        tenantId,
+        entityType,
+        entityId,
+        category: 'sales',
+        body: `Updated Quote #${existing.quoteNumber} status to [${status}]`,
+        createdByUserId: user.id,
+        createdByName: user.username
+      });
+    }
+
+    const updated = await db.queryOne(`SELECT * FROM crm_quotes WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    res.json({ success: true, quote: updated });
+  } catch (err: any) {
+    console.error('Error updating quote status:', err);
+    res.status(500).json({ error: 'Internal server error while updating quote status' });
+  }
+});
+
+// 11. GENERAL TASK UPDATE (PUT /api/crm/tasks/:id)
+app.put('/api/crm/tasks/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const { title, description, taskType, priority, dueAt, assignedUserId, assignedTeamId, crmCompanyId, contactId, leadId, status } = req.body;
+
+    const existing = await db.queryOne<any>(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    if (!existing) {
+      res.status(404).json({ error: 'Task not found.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await db.execute(`
+      UPDATE crm_tasks
+      SET title = COALESCE($1, title),
+          description = COALESCE($2, description),
+          "taskType" = COALESCE($3, "taskType"),
+          priority = COALESCE($4, priority),
+          "dueAt" = COALESCE($5, "dueAt"),
+          "assignedUserId" = COALESCE($6, "assignedUserId"),
+          "assignedTeamId" = COALESCE($7, "assignedTeamId"),
+          "crmCompanyId" = COALESCE($8, "crmCompanyId"),
+          "contactId" = COALESCE($9, "contactId"),
+          "leadId" = COALESCE($10, "leadId"),
+          status = COALESCE($11, status),
+          "updatedAt" = $12
+      WHERE id = $13 AND "tenantId" = $14
+    `, [
+      title ? title.trim() : null,
+      description !== undefined ? description : null,
+      taskType || null,
+      priority || null,
+      dueAt ? new Date(dueAt).toISOString() : null,
+      assignedUserId || null,
+      assignedTeamId || null,
+      crmCompanyId !== undefined ? crmCompanyId : null,
+      contactId !== undefined ? contactId : null,
+      leadId !== undefined ? leadId : null,
+      status || null,
+      now,
+      id,
+      tenantId
+    ]);
+
+    const updated = await db.queryOne(`
+      SELECT t.*, co.name as "companyName", ct.name as "contactName", l.name as "leadName", u.username as "assignedUserName"
+      FROM crm_tasks t
+      LEFT JOIN crm_companies co ON t."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON t."contactId" = ct.id
+      LEFT JOIN leads l ON t."leadId" = l.id
+      LEFT JOIN users u ON t."assignedUserId" = u.id
+      WHERE t.id = $1 AND t."tenantId" = $2
+    `, [id, tenantId]);
+
+    res.json({ success: true, task: updated });
+  } catch (err: any) {
+    console.error('Error updating task:', err);
+    res.status(500).json({ error: 'Internal server error while updating task' });
+  }
+});
+
+// 12. CRM LEAD FIELDS UPDATE (PUT /api/crm/leads/:id)
+app.put('/api/crm/leads/:id', requireAuth, requirePermission(['leads:edit', 'crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const { name, phone, email, address, country, requirement, status, crmCompanyId, contactId, assignedTo } = req.body;
+
+    const existing = await db.queryOne<any>(`SELECT * FROM leads WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    if (!existing) {
+      res.status(404).json({ error: 'Lead not found.' });
+      return;
+    }
+
+    await db.execute(`
+      UPDATE leads
+      SET name = COALESCE($1, name),
+          phone = COALESCE($2, phone),
+          address = COALESCE($3, address),
+          country = COALESCE($4, country),
+          requirement = COALESCE($5, requirement),
+          status = COALESCE($6, status),
+          "crmCompanyId" = COALESCE($7, "crmCompanyId"),
+          "contactId" = COALESCE($8, "contactId"),
+          "assignedTo" = COALESCE($9, "assignedTo")
+      WHERE id = $10 AND "tenantId" = $11
+    `, [
+      name ? name.trim() : null,
+      phone ? phone.trim() : null,
+      address !== undefined ? address : null,
+      country !== undefined ? country : null,
+      requirement !== undefined ? requirement : null,
+      status || null,
+      crmCompanyId !== undefined ? crmCompanyId : null,
+      contactId !== undefined ? contactId : null,
+      assignedTo !== undefined ? assignedTo : null,
+      id,
+      tenantId
+    ]);
+
+    if (email && (contactId || existing.contactId)) {
+      await db.execute(`UPDATE crm_contacts SET email = $1 WHERE id = $2 AND "tenantId" = $3`, [email.trim(), contactId || existing.contactId, tenantId]);
+    }
+
+    const updated = await db.queryOne(`
+      SELECT l.*, co.name as "crmCompanyName", ct.name as "crmContactName", ct.email as "crmContactEmail"
+      FROM leads l
+      LEFT JOIN crm_companies co ON l."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON l."contactId" = ct.id
+      WHERE l.id = $1 AND l."tenantId" = $2
+    `, [id, tenantId]);
+
+    res.json({ success: true, lead: updated });
+  } catch (err: any) {
+    console.error('Error updating lead CRM fields:', err);
+    res.status(500).json({ error: 'Internal server error while updating lead' });
+  }
+});
+
+// 13. CRM PERFORMANCE DASHBOARD (Real KPIs scoped by role)
+app.get('/api/crm/performance', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const { range } = req.query as Record<string, string>;
+    const now = new Date();
+    let startDate: string | null = null;
+    let endDate: string | null = now.toISOString();
+
+    if (range === 'today') {
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).toISOString();
+    } else if (range === '7d') {
+      startDate = new Date(now.getTime() - 7 * 86400000).toISOString();
+    } else if (range === '30d') {
+      startDate = new Date(now.getTime() - 30 * 86400000).toISOString();
+    } else if (range === 'this_month') {
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0).toISOString();
+    }
+
+    const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+    const isOwner = isPlatform || user.role === 'admin';
+    const isTeamLead = user.role === 'team_lead';
+
+    const scopedUserIds = await getScopedCrmUserIds(user, tenantId);
+
+    // Fetch team users for breakdown if owner or team lead
+    let agentList: any[] = [];
+    if (isOwner) {
+      agentList = await db.queryAll(`SELECT id, username, email, role FROM users WHERE "tenantId" = $1 ORDER BY username ASC`, [tenantId]);
+    } else if (isTeamLead && scopedUserIds) {
+      const phs = scopedUserIds.map((_, i) => `$${2 + i}`).join(', ');
+      agentList = await db.queryAll(`SELECT id, username, email, role FROM users WHERE "tenantId" = $1 AND id IN (${phs}) ORDER BY username ASC`, [tenantId, ...scopedUserIds]);
+    } else {
+      agentList = [{ id: user.id, username: user.username, email: user.email, role: user.role }];
+    }
+
+    // Helper to filter by date
+    const dateClause = (col: string, params: any[]) => {
+      if (!startDate) return '';
+      params.push(startDate, endDate);
+      return ` AND (${col} >= $${params.length - 1} AND ${col} <= $${params.length})`;
+    };
+
+    // Calculate aggregated KPIs for the caller's view scope
+    const agentBreakdown: any[] = [];
+    let totalLeadsAssigned = 0;
+    let totalCalls = 0;
+    let totalAnsweredCalls = 0;
+    let totalTasksCompleted = 0;
+    let totalTasksOverdue = 0;
+    let totalMeetingsConducted = 0;
+    let totalWorkCompleted = 0;
+    let totalQuotesCreated = 0;
+    let totalQuotesWon = 0;
+    let totalQuotedValue = 0;
+    let totalWonValue = 0;
+
+    const nowIso = now.toISOString();
+
+    for (const agent of agentList) {
+      // 1. Leads assigned
+      const leadParams: any[] = [tenantId, agent.id];
+      let lSql = `SELECT COUNT(*) as count FROM leads WHERE "tenantId" = $1 AND "assignedTo" = $2`;
+      lSql += dateClause('"createdAt"', leadParams);
+      const lRow = await db.queryOne<{ count: string }>(lSql, leadParams);
+      const leadsCount = parseInt(lRow?.count || '0', 10);
+
+      // 2. Calls made from call_outcomes
+      const callParams: any[] = [tenantId, agent.id];
+      let cSql = `SELECT COUNT(*) as count, SUM(CASE WHEN answered = 1 OR duration > 0 THEN 1 ELSE 0 END) as answered FROM call_outcomes WHERE "tenantId" = $1 AND "userId" = $2`;
+      cSql += dateClause('"finalizedAt"', callParams);
+      const cRow = await db.queryOne<{ count: string; answered: string }>(cSql, callParams);
+      const callsCount = parseInt(cRow?.count || '0', 10);
+      const answeredCount = parseInt(cRow?.answered || '0', 10);
+
+      // 3. Tasks completed & overdue
+      const taskParams: any[] = [tenantId, agent.id];
+      let tSql = `
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+          SUM(CASE WHEN status = 'open' AND "dueAt" < '${nowIso}' THEN 1 ELSE 0 END) as overdue,
+          SUM(CASE WHEN "taskType" IN ('meeting', 'online_meeting') AND status = 'completed' THEN 1 ELSE 0 END) as meetings
+        FROM crm_tasks WHERE "tenantId" = $1 AND "assignedUserId" = $2
+      `;
+      tSql += dateClause('"createdAt"', taskParams);
+      const tRow = await db.queryOne<any>(tSql, taskParams);
+      const tasksCompleted = parseInt(tRow?.completed || '0', 10);
+      const tasksOverdue = parseInt(tRow?.overdue || '0', 10);
+      const meetingsConducted = parseInt(tRow?.meetings || '0', 10);
+
+      // 4. Work items completed
+      const workParams: any[] = [tenantId, agent.id];
+      let wSql = `SELECT COUNT(*) as completed FROM crm_work_items WHERE "tenantId" = $1 AND "assignedUserId" = $2 AND status = 'COMPLETED'`;
+      wSql += dateClause('"completedAt"', workParams);
+      const wRow = await db.queryOne<any>(wSql, workParams);
+      const workCompleted = parseInt(wRow?.completed || '0', 10);
+
+      // 5. Quotes generated & won
+      const qParams: any[] = [tenantId, agent.id];
+      let qSql = `
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'ACCEPTED' THEN 1 ELSE 0 END) as won,
+          COALESCE(SUM("totalAmount"), 0) as quoted_val,
+          COALESCE(SUM(CASE WHEN status = 'ACCEPTED' THEN "totalAmount" ELSE 0 END), 0) as won_val
+        FROM crm_quotes WHERE "tenantId" = $1 AND "assignedUserId" = $2
+      `;
+      qSql += dateClause('"createdAt"', qParams);
+      const qRow = await db.queryOne<any>(qSql, qParams);
+      const quotesCreated = parseInt(qRow?.total || '0', 10);
+      const quotesWon = parseInt(qRow?.won || '0', 10);
+      const quotedVal = parseFloat(qRow?.quoted_val || '0');
+      const wonVal = parseFloat(qRow?.won_val || '0');
+
+      // Accumulate totals
+      totalLeadsAssigned += leadsCount;
+      totalCalls += callsCount;
+      totalAnsweredCalls += answeredCount;
+      totalTasksCompleted += tasksCompleted;
+      totalTasksOverdue += tasksOverdue;
+      totalMeetingsConducted += meetingsConducted;
+      totalWorkCompleted += workCompleted;
+      totalQuotesCreated += quotesCreated;
+      totalQuotesWon += quotesWon;
+      totalQuotedValue += quotedVal;
+      totalWonValue += wonVal;
+
+      agentBreakdown.push({
+        userId: agent.id,
+        username: agent.username,
+        role: agent.role,
+        leadsAssigned: leadsCount,
+        callsMade: callsCount,
+        callsAnswered: answeredCount,
+        tasksCompleted,
+        tasksOverdue,
+        meetingsConducted,
+        workCompleted,
+        quotesCreated,
+        quotesWon,
+        quotedValue: quotedVal,
+        wonValue: wonVal,
+        conversionRate: quotesCreated > 0 ? Math.round((quotesWon / quotesCreated) * 100) : 0
+      });
+    }
+
+    res.json({
+      role: user.role,
+      isOwner,
+      isTeamLead,
+      period: range || 'all',
+      summary: {
+        totalLeadsAssigned,
+        totalCalls,
+        totalAnsweredCalls,
+        answerRate: totalCalls > 0 ? Math.round((totalAnsweredCalls / totalCalls) * 100) : 0,
+        totalTasksCompleted,
+        totalTasksOverdue,
+        totalMeetingsConducted,
+        totalWorkCompleted,
+        totalQuotesCreated,
+        totalQuotesWon,
+        totalQuotedValue: Math.round(totalQuotedValue * 100) / 100,
+        totalWonValue: Math.round(totalWonValue * 100) / 100,
+        conversionRate: totalQuotesCreated > 0 ? Math.round((totalQuotesWon / totalQuotesCreated) * 100) : 0
+      },
+      agentBreakdown: (isOwner || isTeamLead) ? agentBreakdown : []
+    });
+  } catch (err: any) {
+    console.error('Error fetching CRM performance:', err);
+    res.status(500).json({ error: 'Internal server error while fetching performance metrics' });
+  }
+});
+
+// 14. CRM GLOBAL CROSS-ENTITY SEARCH
+app.get('/api/crm/search', requireAuth, requirePermission(['crm:view', 'leads:view']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const query = (req.query.q as string || '').trim();
+    if (!query || query.length < 2) {
+      res.json({ results: [] });
+      return;
+    }
+
+    const q = `%${query.toLowerCase()}%`;
+    const scopedUserIds = await getScopedCrmUserIds(user, tenantId);
+
+    const results: any[] = [];
+
+    // Helper for role scoping
+    const userFilter = (col: string, params: any[]) => {
+      if (!scopedUserIds) return '';
+      const phs = scopedUserIds.map((_, i) => `$${params.length + 1 + i}`).join(', ');
+      params.push(...scopedUserIds);
+      return ` AND (${col} IN (${phs}) OR ${col} IS NULL)`;
+    };
+
+    // 1. Companies
+    const compParams: any[] = [tenantId, q];
+    let compSql = `SELECT id, name, industry, phone, email, status FROM crm_companies WHERE "tenantId" = $1 AND (LOWER(name) LIKE $2 OR LOWER(COALESCE(email, '')) LIKE $2 OR LOWER(COALESCE(phone, '')) LIKE $2)`;
+    compSql += userFilter('"assignedUserId"', compParams);
+    compSql += ` LIMIT 10`;
+    const companies = await db.queryAll<any>(compSql, compParams);
+    for (const c of companies) {
+      results.push({
+        type: 'company',
+        id: c.id,
+        title: c.name,
+        subtitle: `${c.industry || 'Company'} • ${c.phone || c.email || 'No contact info'}`,
+        status: c.status,
+        entityId: c.id
+      });
+    }
+
+    // 2. Contacts
+    const cntParams: any[] = [tenantId, q];
+    let cntSql = `SELECT ct.id, ct.name, ct.email, ct.phone, ct."roleTitle", co.name as "companyName" FROM crm_contacts ct LEFT JOIN crm_companies co ON ct."crmCompanyId" = co.id WHERE ct."tenantId" = $1 AND (LOWER(ct.name) LIKE $2 OR LOWER(COALESCE(ct.email, '')) LIKE $2 OR LOWER(COALESCE(ct.phone, '')) LIKE $2)`;
+    cntSql += userFilter('ct."assignedUserId"', cntParams);
+    cntSql += ` LIMIT 10`;
+    const contacts = await db.queryAll<any>(cntSql, cntParams);
+    for (const ct of contacts) {
+      results.push({
+        type: 'contact',
+        id: ct.id,
+        title: ct.name,
+        subtitle: `${ct.roleTitle ? ct.roleTitle + ' at ' : ''}${ct.companyName || 'Individual'} • ${ct.phone || ct.email || ''}`,
+        status: 'Active',
+        entityId: ct.id
+      });
+    }
+
+    // 3. Leads
+    const leadParams: any[] = [tenantId, q];
+    let leadSql = `
+      SELECT l.id, l.name, l.phone, l.status, co.name as "companyName", ct.email as "contactEmail"
+      FROM leads l
+      LEFT JOIN crm_companies co ON l."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON l."contactId" = ct.id
+      WHERE l."tenantId" = $1 AND (LOWER(l.name) LIKE $2 OR LOWER(COALESCE(l.phone, '')) LIKE $2 OR LOWER(COALESCE(ct.email, '')) LIKE $2)
+    `;
+    leadSql += userFilter('l."assignedTo"', leadParams);
+    leadSql += ` LIMIT 10`;
+    const leads = await db.queryAll<any>(leadSql, leadParams);
+    for (const l of leads) {
+      results.push({
+        type: 'lead',
+        id: l.id,
+        title: l.name,
+        subtitle: `Lead • ${l.companyName || l.phone || l.contactEmail || ''}`,
+        status: l.status,
+        entityId: l.id
+      });
+    }
+
+    // 4. Tasks & Meetings
+    const taskParams: any[] = [tenantId, q];
+    let taskSql = `SELECT id, title, "taskType", priority, status, "dueAt" FROM crm_tasks WHERE "tenantId" = $1 AND (LOWER(title) LIKE $2 OR LOWER(COALESCE(description, '')) LIKE $2)`;
+    taskSql += userFilter('"assignedUserId"', taskParams);
+    taskSql += ` LIMIT 10`;
+    const tasks = await db.queryAll<any>(taskSql, taskParams);
+    for (const t of tasks) {
+      results.push({
+        type: (t.taskType === 'meeting' || t.taskType === 'online_meeting') ? 'meeting' : 'task',
+        id: t.id,
+        title: t.title,
+        subtitle: `${t.taskType.toUpperCase()} • Due: ${new Date(t.dueAt).toLocaleDateString()}`,
+        status: t.status,
+        entityId: t.id
+      });
+    }
+
+    // 5. Work Items
+    const workParams: any[] = [tenantId, q];
+    let workSql = `SELECT id, title, category, priority, status FROM crm_work_items WHERE "tenantId" = $1 AND (LOWER(title) LIKE $2 OR LOWER(COALESCE(description, '')) LIKE $2 OR LOWER(category) LIKE $2)`;
+    workSql += userFilter('"assignedUserId"', workParams);
+    workSql += ` LIMIT 10`;
+    const work = await db.queryAll<any>(workSql, workParams);
+    for (const w of work) {
+      results.push({
+        type: 'work',
+        id: w.id,
+        title: w.title,
+        subtitle: `Client Work • ${w.category} • Priority: ${w.priority}`,
+        status: w.status,
+        entityId: w.id
+      });
+    }
+
+    // 6. Quotes
+    const qteParams: any[] = [tenantId, q];
+    let qteSql = `SELECT id, "quoteNumber", "packageName", "totalAmount", currency, status FROM crm_quotes WHERE "tenantId" = $1 AND (LOWER("quoteNumber") LIKE $2 OR LOWER(COALESCE(notes, '')) LIKE $2 OR LOWER("packageName") LIKE $2)`;
+    qteSql += userFilter('"assignedUserId"', qteParams);
+    qteSql += ` LIMIT 10`;
+    const quotes = await db.queryAll<any>(qteSql, qteParams);
+    for (const qte of quotes) {
+      results.push({
+        type: 'quote',
+        id: qte.id,
+        title: `Quote #${qte.quoteNumber}`,
+        subtitle: `${qte.packageName} • ${qte.currency} ${Number(qte.totalAmount).toFixed(2)}`,
+        status: qte.status,
+        entityId: qte.id
+      });
+    }
+
+    res.json({ results: results.slice(0, 30) });
+  } catch (err: any) {
+    console.error('Error performing global CRM search:', err);
+    res.status(500).json({ error: 'Internal server error while searching' });
+  }
+});
+
 // ============================================================================
 // PRODUCT SUPER ADMIN / GLOBAL BACKOFFICE APIS (admin.zestify7.online)
 // ============================================================================
 
-// GET /api/super-admin/telemetry: Aggregated platform-wide metrics
+export function emitPlatformEvent(event: string, payload: any) {
+  try {
+    io.to('platform_admins').emit(event, {
+      ...payload,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    console.error('[Platform Event] Error broadcasting to platform_admins:', event, err.message);
+  }
+}
+
+// GET /api/super-admin/overview: Authoritative snapshot of entire SaaS
+app.get('/api/super-admin/overview', requirePlatformAdmin, async (req, res) => {
+  try {
+    const overview = await getGlobalPlatformOverview();
+    const sessionList = Array.from(getSessions().values());
+    const liveCalls = sessionList.filter((s: Session) => s.status === 'CALLING' || s.phoneStatus === 'CONNECTED').length;
+    const connectedPhones = sessionList.filter((s: Session) => !!s.phoneSocketId).length;
+
+    let emailJobsRunning = 0;
+    let emailJobsFailed = 0;
+    tenantEmailerJobs.forEach(j => {
+      if (j.running) emailJobsRunning++;
+    });
+
+    res.json({
+      success: true,
+      overview: {
+        ...overview,
+        callsInProgress: liveCalls,
+        activeTelephonySockets: connectedPhones,
+        emailJobsRunning,
+        emailJobsFailed,
+        scraperJobsRunning: 0,
+        scraperJobsFailed: 0,
+        facebookJobsRunning: 0,
+        facebookJobsFailed: 0,
+        systemErrorsCount: (overview.pastDueTenants > 0 ? 1 : 0) + (overview.offlineDevices > 0 ? 1 : 0),
+        uptimeSeconds: Math.floor(process.uptime())
+      }
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Overview error:', err);
+    res.status(500).json({ error: 'Failed to retrieve platform overview', dataUnavailable: true });
+  }
+});
+
+// GET /api/super-admin/telemetry: Legacy alias for platform telemetry
 app.get('/api/super-admin/telemetry', requirePlatformAdmin, async (req, res) => {
   try {
     const metrics = await getGlobalSuperAdminMetrics();
-    // Also include live sessions count
     const sessionList = Array.from(getSessions().values());
     const liveCalls = sessionList.filter((s: Session) => s.status === 'CALLING' || s.phoneStatus === 'CONNECTED').length;
     const connectedPhones = sessionList.filter((s: Session) => !!s.phoneSocketId).length;
@@ -1955,14 +4551,148 @@ app.get('/api/super-admin/telemetry', requirePlatformAdmin, async (req, res) => 
   }
 });
 
-// GET /api/super-admin/tenants: List all organizations
+// GET /api/super-admin/tenants: List all organizations with search, filtering, and pagination
 app.get('/api/super-admin/tenants', requirePlatformAdmin, async (req, res) => {
   try {
-    const tenants = await getAllTenantsSummary();
-    res.json({ success: true, tenants });
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 25;
+    const search = (req.query.search as string) || '';
+    const type = (req.query.type as string) || 'all';
+    const status = (req.query.status as string) || 'all';
+    const health = (req.query.health as string) || 'all';
+
+    const result = await getDetailedTenantsList({ page, limit, search, type, status, health });
+    res.json({
+      success: true,
+      ...result
+    });
   } catch (err: any) {
     console.error('[Super Admin] Get tenants error:', err);
-    res.status(500).json({ error: 'Failed to retrieve tenants' });
+    res.status(500).json({ error: 'Failed to retrieve tenants', dataUnavailable: true });
+  }
+});
+
+// GET /api/super-admin/tenants/:id/detail: Consolidated tenant detail drawer snapshot
+app.get('/api/super-admin/tenants/:id/detail', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const detail = await getTenantDetail(tenantId);
+    if (!detail) {
+      res.status(404).json({ error: 'Tenant organization not found' });
+      return;
+    }
+    res.json({ success: true, detail });
+  } catch (err: any) {
+    console.error('[Super Admin] Get tenant detail error:', err);
+    res.status(500).json({ error: 'Failed to retrieve tenant detail' });
+  }
+});
+
+// GET /api/super-admin/devices: Global device and handset monitoring
+app.get('/api/super-admin/devices', requirePlatformAdmin, async (req, res) => {
+  try {
+    const dbDevices = await getGlobalDevicesList();
+    const sessionList = Array.from(getSessions().values());
+    const enriched = dbDevices.map(d => {
+      const liveSession = sessionList.find(s => s.phoneDeviceId === d.id || (s.phoneSocketId && s.tenantId === d.tenantId));
+      const hasAuthSocket = authenticatedPhoneSockets.has(d.id);
+      const activeCs = liveSession ? getCallSessionBySessionId(liveSession.id) : null;
+      return {
+        ...d,
+        isSocketConnected: hasAuthSocket || !!liveSession?.phoneSocketId,
+        activeCall: (activeCs && activeCs.state !== 'ENDED') ? activeCs.callId : null
+      };
+    });
+    res.json({ success: true, devices: enriched, count: enriched.length });
+  } catch (err: any) {
+    console.error('[Super Admin] Get devices error:', err);
+    res.status(500).json({ error: 'Failed to retrieve device monitoring' });
+  }
+});
+
+// GET /api/super-admin/jobs: Global automation job observability
+app.get('/api/super-admin/jobs', requirePlatformAdmin, async (req, res) => {
+  try {
+    const emailJobs: any[] = [];
+    tenantEmailerJobs.forEach((job, tenantId) => {
+      emailJobs.push({
+        module: 'autoEmailer',
+        tenantId,
+        jobId: `email_${tenantId}`,
+        status: job.running ? 'running' : 'idle',
+        logsCount: job.logs.length,
+        logs: job.logs.slice(-5)
+      });
+    });
+
+    res.json({
+      success: true,
+      jobs: {
+        scraper: [],
+        emailer: emailJobs,
+        facebook: []
+      },
+      summary: {
+        totalRunning: emailJobs.filter(j => j.status === 'running').length,
+        totalFailed: 0
+      }
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Get jobs error:', err);
+    res.status(500).json({ error: 'Failed to retrieve job status' });
+  }
+});
+
+// GET /api/super-admin/activity: Global operational platform audit feed
+app.get('/api/super-admin/activity', requirePlatformAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const activities = await getGlobalRecentActivity(limit);
+    res.json({ success: true, activities });
+  } catch (err: any) {
+    console.error('[Super Admin] Get activity error:', err);
+    res.status(500).json({ error: 'Failed to retrieve platform activity' });
+  }
+});
+
+// POST /api/super-admin/provision: 1-click workspace organization provisioning
+app.post('/api/super-admin/provision', requirePlatformAdmin, async (req, res) => {
+  try {
+    const { name, username, email, password } = req.body;
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ error: 'Company / Workspace Name is required.' });
+      return;
+    }
+    if (!username || typeof username !== 'string' || !username.trim()) {
+      res.status(400).json({ error: 'Primary Owner Username is required.' });
+      return;
+    }
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      res.status(400).json({ error: 'Initial password of at least 6 characters is required.' });
+      return;
+    }
+
+    const { hash } = hashPassword(password);
+    const result = await provisionWorkspaceOrganization({
+      name: name.trim(),
+      username: username.trim().toLowerCase(),
+      email: email ? email.trim().toLowerCase() : undefined,
+      passwordHash: hash
+    });
+
+    emitPlatformEvent('platform:tenant-created', {
+      tenantId: result.tenantId,
+      name: name.trim(),
+      username: result.username
+    });
+
+    res.status(201).json({
+      message: 'Workspace organization created successfully.',
+      ...result
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Provision error:', err);
+    res.status(500).json({ error: err.message || 'Failed to provision workspace' });
   }
 });
 
@@ -1977,10 +4707,125 @@ app.put('/api/super-admin/tenants/:id/mode', requirePlatformAdmin, async (req, r
     }
 
     await updateTenantLeadPoolMode(tenantId, leadPoolMode);
+    emitPlatformEvent('platform:tenant-updated', { tenantId, leadPoolMode });
     res.json({ success: true, message: `Tenant lead pool mode set to ${leadPoolMode}.` });
   } catch (err: any) {
     console.error('[Super Admin] Update mode error:', err);
     res.status(500).json({ error: 'Failed to update lead pool mode' });
+  }
+});
+
+// GET /api/super-admin/tenants/:id/entitlements: Fetch company module ceiling for tenant
+app.get('/api/super-admin/tenants/:id/entitlements', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant organization not found.' });
+      return;
+    }
+    const entitlements = await getTenantModuleEntitlements(tenantId);
+    res.json({
+      success: true,
+      tenantId,
+      tenantName: tenant.name,
+      modules: CANONICAL_MODULES,
+      entitlements
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Get entitlements error:', err);
+    res.status(500).json({ error: 'Failed to retrieve company entitlements.' });
+  }
+});
+
+// PUT /api/super-admin/tenants/:id/entitlements: Update company module ceiling
+app.put('/api/super-admin/tenants/:id/entitlements', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const caller = (req as any).user;
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant organization not found.' });
+      return;
+    }
+
+    const { moduleId, enabled, entitlements: bulkMap } = req.body;
+
+    if (bulkMap && typeof bulkMap === 'object') {
+      for (const [mId, isEn] of Object.entries(bulkMap)) {
+        await setTenantModuleEntitlement(tenantId, mId, Boolean(isEn), caller.username);
+      }
+    } else if (moduleId !== undefined) {
+      await setTenantModuleEntitlement(tenantId, moduleId, Boolean(enabled), caller.username);
+    } else {
+      res.status(400).json({ error: 'Must provide either moduleId + enabled or entitlements map.' });
+      return;
+    }
+
+    const updatedEntitlements = await getTenantModuleEntitlements(tenantId);
+    emitPlatformEvent('platform:tenant-entitlements-updated', { tenantId, entitlements: updatedEntitlements });
+
+    res.json({
+      success: true,
+      message: 'Company module entitlements updated successfully.',
+      entitlements: updatedEntitlements
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Update entitlements error:', err);
+    res.status(500).json({ error: 'Failed to update company entitlements.' });
+  }
+});
+
+// GET /api/super-admin/tenants/:id/access-matrix: Complete effective access inheritance matrix
+app.get('/api/super-admin/tenants/:id/access-matrix', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant organization not found.' });
+      return;
+    }
+    const matrix = await getTenantAccessMatrix(tenantId);
+    const entitlements = await getTenantModuleEntitlements(tenantId);
+    res.json({
+      success: true,
+      tenantId,
+      tenantName: tenant.name,
+      companyCeiling: CANONICAL_MODULES.filter(m => entitlements[m.id]).map(m => m.id),
+      matrix,
+      accessMatrix: {
+        users: matrix,
+        matrix
+      }
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Access matrix error:', err);
+    res.status(500).json({ error: 'Failed to retrieve tenant access matrix.' });
+  }
+});
+
+// GET /api/company/entitlements: Read-only company module ceiling for customer workspace
+app.get('/api/company/entitlements', requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const tenantId = caller.tenantId;
+    if (!tenantId) {
+      res.status(400).json({ error: 'No tenant organization assigned.' });
+      return;
+    }
+    const entitlements = await getTenantModuleEntitlements(tenantId);
+    const enabledModules = CANONICAL_MODULES.filter(m => entitlements[m.id]);
+
+    res.json({
+      success: true,
+      tenantId,
+      modules: CANONICAL_MODULES,
+      enabledModules: enabledModules.map(m => m.id),
+      entitlements
+    });
+  } catch (err: any) {
+    console.error('[Company] Get entitlements error:', err);
+    res.status(500).json({ error: 'Failed to retrieve company entitlements.' });
   }
 });
 
@@ -1995,6 +4840,7 @@ app.put('/api/super-admin/tenants/:id/status', requirePlatformAdmin, async (req,
     }
 
     await updateTenantStatus(tenantId, status);
+    emitPlatformEvent('platform:tenant-suspended', { tenantId, status });
     res.json({ success: true, message: `Tenant status set to ${status}.` });
   } catch (err: any) {
     console.error('[Super Admin] Update status error:', err);
@@ -2290,6 +5136,105 @@ app.get('/api/campaigns/:id/next-lead', requireAuth, async (req, res) => {
 
 registerScraperRoutes(app, requireAuth, io);
 
+// ─── LEAD GEN Z INTEGRATION BOUNDARY ───────────────────────────────
+// POST /api/integrations/leadgen/import — Ingests leads from LEAD GEN Z
+app.post('/api/integrations/leadgen/import', async (req: express.Request, res: express.Response) => {
+  try {
+    let tenantId = 'tenant_default';
+    let username = 'lead_gen_z';
+    
+    // 1. Check Bearer token if supplied
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (typeof req.query?.token === 'string' ? req.query.token : '');
+    if (token) {
+      const user = await validateToken(token);
+      if (user) {
+        tenantId = user.tenantId || tenantId;
+        username = user.username || username;
+      }
+    }
+    
+    // 2. Allow explicit tenant/workspace from body if valid
+    if (req.body.workspaceId && typeof req.body.workspaceId === 'string' && req.body.workspaceId.trim()) {
+      tenantId = req.body.workspaceId.trim();
+    }
+    
+    const {
+      records = [],
+      source = 'lead_gen_z',
+      campaignName,
+      crmCompanyId,
+      teamId,
+      assignedUserId,
+      tags = []
+    } = req.body;
+
+    if (!Array.isArray(records) || records.length === 0) {
+      res.status(400).json({ error: 'No lead records provided in payload.' });
+      return;
+    }
+
+    const finalCampaignName = (campaignName || `Lead Gen Z Import - ${new Date().toISOString().slice(0, 10)}`).trim();
+    
+    // Format and sanitize raw leads
+    const validLeads: { name: string; phone: string; address?: string; email?: string }[] = [];
+    let skippedCount = 0;
+    
+    for (const r of records) {
+      const rawPhone = String(r.phone || r.telephone || '').trim();
+      const digitsOnly = rawPhone.replace(/\D/g, '');
+      if (digitsOnly.length < 7) {
+        skippedCount++;
+        continue;
+      }
+      validLeads.push({
+        name: (r.name || r.businessName || 'Discovered Lead').trim(),
+        phone: rawPhone.replace(/[^0-9+]/g, '').trim(),
+        address: r.address ? String(r.address).trim() : undefined,
+        email: r.email ? String(r.email).trim() : undefined
+      });
+    }
+
+    if (validLeads.length === 0) {
+      res.status(400).json({ error: `No dialable business leads found (Skipped ${skippedCount} nondialable records).` });
+      return;
+    }
+
+    const result = await createCampaign(
+      finalCampaignName,
+      `lead_gen_z_${Date.now()}.json`,
+      validLeads,
+      tenantId,
+      {
+        allowSharedPhoneBranches: true,
+        idempotencyKey: `leadgen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      }
+    );
+
+    // Broadcast socket events so live Zestify UI updates instantly
+    io.to(`tenant_${tenantId}`).emit('leads:updated');
+    io.to(`tenant_${tenantId}`).emit('campaigns:updated');
+
+    res.json({
+      success: true,
+      message: `Successfully imported ${result.finalCount} leads into Zestify campaign "${result.campaign.name}".`,
+      campaignId: result.campaign.id,
+      campaignName: result.campaign.name,
+      importedCount: result.finalCount,
+      dedupedCount: result.dedupedCount,
+      skippedCount,
+      workspaceId: tenantId,
+      source,
+      tags,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    console.error('[Lead Gen Z Integration Error]:', err);
+    res.status(500).json({ error: err.message || 'Lead Gen Z import failed.' });
+  }
+});
+
+
 // ─── ADMIN AUTHORITY MASTER CONTROL REST ENDPOINTS ────────────────────────────
 
 // GET /api/admin/overview & /admin/platform/overview
@@ -2355,11 +5300,11 @@ app.get(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOr
                COALESCE(cr."roleName", CASE WHEN LOWER(u.role) = 'admin' THEN 'Administrator' WHEN LOWER(u.role) IN ('agent', 'user') THEN 'Agent' ELSE u.role END) AS "roleName"
         FROM users u
         LEFT JOIN custom_roles cr ON cr.id = u."roleId"
-        WHERE u."tenantId" = $1
+        WHERE u."tenantId" = $1 AND LOWER(u.role) NOT IN ('platform_admin', 'master_admin')
         ORDER BY u."createdAt" DESC
       `, [user.tenantId]) as any[];
 
-  // Attach module permissions for each user
+  // Attach module permissions & calculate effective modules for each user
   const perms = isPlatform
     ? await db.queryAll(`SELECT * FROM user_permissions`) as any[]
     : await db.queryAll(`SELECT * FROM user_permissions WHERE "tenantId" = $1`, [user.tenantId]) as any[];
@@ -2369,8 +5314,30 @@ app.get(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOr
     if (!permMap.has(p.userId)) permMap.set(p.userId, []);
     permMap.get(p.userId)!.push(p);
   }
+
+  // Resolve company entitlement ceiling for effective access calculation
+  const tenantId = user.tenantId;
+  const companyEntitlements = await getTenantModuleEntitlements(tenantId);
+  const enabledCompanyList = CANONICAL_MODULES.filter(m => companyEntitlements[m.id]).map(m => m.id);
+
   for (const u of users) {
-    u.permissions = permMap.get(u.id) || [];
+    const isOwner = u.role === 'admin';
+    const userPerms = permMap.get(u.id) || [];
+    u.permissions = userPerms;
+
+    let assignedList: string[];
+    if (isOwner) {
+      assignedList = enabledCompanyList;
+    } else {
+      assignedList = userPerms
+        .filter((p: any) => Number(p.enabled) === 1)
+        .map((p: any) => normalizeModuleKey(p.moduleId));
+    }
+
+    const effectiveList = assignedList.filter(m => companyEntitlements[m] === true);
+    u.assignedModules = assignedList;
+    u.effectiveModules = effectiveList;
+    u.companyCeiling = enabledCompanyList;
   }
 
   res.json(users);
@@ -2412,6 +5379,17 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
     }
 
     const tenantId = isPlatform ? (req.body.tenantId || caller.tenantId) : caller.tenantId;
+
+    if (!isPlatform) {
+      const seatUsage = await getTenantSeatUsage(tenantId);
+      if (seatUsage.availableSeats <= 0) {
+        res.status(400).json({
+          error: `Seat limit reached for this workspace plan (${seatUsage.activeSeats + seatUsage.pendingInvitations} of ${seatUsage.maxSeats} seats committed). Upgrade plan to add more members.`
+        });
+        return;
+      }
+    }
+
     if (roleId) {
       const isValidRole = await validateRoleBelongsToTenant(roleId, tenantId);
       if (!isValidRole) {
@@ -2437,15 +5415,36 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
       [computedDisplayName, phone || '', status || 'Active', ipRestrictions || '', roleId || null, result.user.id]
     );
 
-    // Insert initial module permissions if provided
-    if (Array.isArray(initialPermissions) && initialPermissions.length > 0) {
+    // Insert initial module permissions if provided with company ceiling validation
+    const rawModules = req.body.modules !== undefined ? req.body.modules : initialPermissions;
+    let requestedMods: string[] = [];
+    if (Array.isArray(rawModules)) {
+      requestedMods = rawModules;
+    } else if (rawModules && typeof rawModules === 'object') {
+      requestedMods = Object.entries(rawModules)
+        .filter(([_, v]) => Boolean(v))
+        .map(([k, _]) => k);
+    }
+
+    if (requestedMods.length > 0) {
+      const companyEntitlements = await getTenantModuleEntitlements(tenantId);
+      for (const modId of requestedMods) {
+        const canonical = normalizeModuleKey(modId);
+        if (companyEntitlements[canonical] === false) {
+          res.status(403).json({
+            error: `Forbidden: Cannot grant module '${canonical}'. It is not included in your company's platform entitlements ceiling.`
+          });
+          return;
+        }
+      }
       const now = new Date().toISOString();
-      for (const modId of initialPermissions) {
+      for (const modId of requestedMods) {
+        const canonical = normalizeModuleKey(modId);
         const permId = 'p_' + Math.random().toString(36).substring(2, 11);
         await db.execute(
           `INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "grantedAt", "tenantId")
            VALUES ($1, $2, $3, 1, $4, $5, $6)`,
-          [permId, result.user.id, modId, caller.username, now, tenantId]
+          [permId, result.user.id, canonical, caller.username, now, tenantId]
         );
       }
     }
@@ -2482,6 +5481,11 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
     return;
   }
 
+  if (!isPlatform && (targetUser.role === 'platform_admin' || targetUser.role === 'master_admin')) {
+    res.status(403).json({ error: 'Forbidden: Cannot modify platform administrator account through customer API.' });
+    return;
+  }
+
   const { role, roleId, newPassword, password, permissions, displayName, firstName, lastName, email, phone, status, ipRestrictions } = req.body;
 
   // Validate roleId if provided
@@ -2490,6 +5494,27 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
     const isValidRole = await validateRoleBelongsToTenant(roleId, targetTenantId);
     if (!isValidRole) {
       res.status(403).json({ error: 'Forbidden: Selected role does not belong to user\'s organization.' });
+      return;
+    }
+  }
+
+  // Owner Protection: Prevent disabling or demoting the final active Company Owner
+  if (targetUser.role === 'admin' && ((status && status !== 'Active') || (role && role !== 'admin'))) {
+    const remainingOwners = await db.queryOne<{ count: string | number }>(
+      `SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND role = 'admin' AND id != $2 AND status = 'Active'`,
+      [targetUser.tenantId, targetUser.id]
+    );
+    if (parseInt(String(remainingOwners?.count || '0'), 10) === 0) {
+      res.status(400).json({ error: 'Cannot disable or demote the final active Company Owner of this workspace.' });
+      return;
+    }
+  }
+
+  // Seat Limit: Prevent activating inactive user beyond plan seat capacity
+  if (status === 'Active' && targetUser.status !== 'Active') {
+    const seatUsage = await getTenantSeatUsage(targetUser.tenantId);
+    if (seatUsage.availableSeats <= 0) {
+      res.status(400).json({ error: `Cannot activate user. Workspace plan seat limit reached (${seatUsage.activeSeats + seatUsage.pendingInvitations} of ${seatUsage.maxSeats} seats committed).` });
       return;
     }
   }
@@ -2523,15 +5548,36 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
     await db.execute(`UPDATE users SET ${updates.join(', ')} WHERE id = $${idx}`, params);
   }
 
-  // 4. Update permissions map if provided
-  if (permissions && typeof permissions === 'object') {
+  // 4. Update permissions map if provided with strict company ceiling validation
+  const rawPerms = req.body.modules !== undefined ? req.body.modules : permissions;
+  if (rawPerms && typeof rawPerms === 'object') {
+    const permMap: Record<string, boolean> = Array.isArray(rawPerms)
+      ? rawPerms.reduce((acc: any, k: string) => { acc[k] = true; return acc; }, {})
+      : rawPerms;
+
     const tenantId = targetUser.tenantId || caller.tenantId;
+    const companyEntitlements = await getTenantModuleEntitlements(tenantId);
+
+    // Validate that caller cannot enable any module that is disabled in company entitlements
+    for (const [modId, enabled] of Object.entries(permMap)) {
+      if (Boolean(enabled)) {
+        const canonical = normalizeModuleKey(modId);
+        if (companyEntitlements[canonical] === false) {
+          res.status(403).json({
+            error: `Forbidden: Cannot enable module '${canonical}'. It is not included in your company's platform entitlements ceiling.`
+          });
+          return;
+        }
+      }
+    }
+
     const now = new Date().toISOString();
-    for (const [modId, enabled] of Object.entries(permissions)) {
+    for (const [modId, enabled] of Object.entries(permMap)) {
+      const canonical = normalizeModuleKey(modId);
       const enabledVal = enabled ? 1 : 0;
       const existing = await db.queryOne(
         `SELECT id FROM user_permissions WHERE "userId" = $1 AND "moduleId" = $2`,
-        [req.params.id, modId]
+        [req.params.id, canonical]
       ) as any;
       if (existing) {
         await db.execute(
@@ -2543,10 +5589,27 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
         await db.execute(
           `INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "grantedAt", "tenantId")
            VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [permId, req.params.id, modId, enabledVal, caller.username, now, tenantId]
+          [permId, req.params.id, canonical, enabledVal, caller.username, now, tenantId]
         );
       }
     }
+
+    // Audit log
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        caller.username || 'admin',
+        'USER_MODULE_PERMISSIONS_CHANGED',
+        'user',
+        req.params.id,
+        JSON.stringify({ caller: caller.username, changes: permissions }),
+        now,
+        tenantId
+      ]);
+    } catch {}
   }
 
   res.json({ success: true, message: 'User updated successfully.' });
@@ -2563,7 +5626,7 @@ app.post(['/api/admin/permissions', '/admin/permissions'], requireAuth, requireA
     }
 
     const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-    const targetUser = await db.queryOne(`SELECT id, "tenantId" FROM users WHERE id = $1`, [userId]) as any;
+    const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [userId]) as any;
     if (!targetUser) {
       res.status(404).json({ error: 'User not found.' });
       return;
@@ -2572,14 +5635,31 @@ app.post(['/api/admin/permissions', '/admin/permissions'], requireAuth, requireA
       res.status(403).json({ error: 'Forbidden: Cannot alter permissions for users in another organization.' });
       return;
     }
+    if (!isPlatform && (targetUser.role === 'platform_admin' || targetUser.role === 'master_admin')) {
+      res.status(403).json({ error: 'Forbidden: Cannot alter permissions for platform administrators.' });
+      return;
+    }
 
     const tenantId = targetUser.tenantId || caller.tenantId;
+    const canonical = normalizeModuleKey(moduleId);
+
+    // Validate against company entitlement ceiling
+    if (Boolean(enabled)) {
+      const companyEntitlements = await getTenantModuleEntitlements(tenantId);
+      if (companyEntitlements[canonical] === false) {
+        res.status(403).json({
+          error: `Forbidden: Cannot enable module '${canonical}'. It is not included in your company's platform entitlements ceiling.`
+        });
+        return;
+      }
+    }
+
     const enabledVal = enabled ? 1 : 0;
     const now = new Date().toISOString();
 
     const existing = await db.queryOne(
       `SELECT id FROM user_permissions WHERE "userId" = $1 AND "moduleId" = $2`,
-      [userId, moduleId]
+      [userId, canonical]
     ) as any;
 
     if (existing) {
@@ -2592,11 +5672,28 @@ app.post(['/api/admin/permissions', '/admin/permissions'], requireAuth, requireA
       await db.execute(
         `INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "grantedAt", "tenantId")
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [permId, userId, moduleId, enabledVal, caller.username, now, tenantId]
+        [permId, userId, canonical, enabledVal, caller.username, now, tenantId]
       );
     }
 
-    res.json({ success: true, message: `Permission updated for module ${moduleId}.` });
+    // Audit log
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        caller.username || 'admin',
+        'USER_MODULE_PERMISSIONS_CHANGED',
+        'user',
+        userId,
+        JSON.stringify({ caller: caller.username, moduleId: canonical, enabled: enabledVal }),
+        now,
+        tenantId
+      ]);
+    } catch {}
+
+    res.json({ success: true, message: `Permission updated for module ${canonical}.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2672,6 +5769,18 @@ app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCom
     return;
   }
 
+  // Owner Protection: A COMPANY workspace must retain at least one active Company Owner
+  if (targetUser.role === 'admin') {
+    const remainingOwners = await db.queryOne<{ count: string | number }>(
+      `SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND role = 'admin' AND id != $2 AND status = 'Active'`,
+      [targetUser.tenantId, req.params.id]
+    );
+    if (parseInt(String(remainingOwners?.count || '0'), 10) === 0) {
+      res.status(400).json({ error: 'Cannot delete the final Company Owner of this workspace. Assign another Company Owner first.' });
+      return;
+    }
+  }
+
   await db.execute(`DELETE FROM user_permissions WHERE "userId" = $1`, [req.params.id]);
   const info = isPlatform
     ? await db.execute(`DELETE FROM users WHERE id = $1`, [req.params.id])
@@ -2680,6 +5789,421 @@ app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCom
     res.json({ success: true, message: 'User deleted.' });
   } else {
     res.status(404).json({ error: 'User not found.' });
+  }
+});
+
+// ─── Customer Workspace Onboarding Endpoints ─────────────────────────────────
+
+// POST /api/onboarding/complete & /onboarding/complete — Completes customer onboarding
+app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const dbUser = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [caller.id]);
+    if (!dbUser) {
+      res.status(404).json({ error: 'User identity not found.' });
+      return;
+    }
+
+    // Idempotency: If user already belongs to a workspace, return existing without creating another
+    if (dbUser.tenantId) {
+      const existingTenant = await getTenantById(dbUser.tenantId);
+      if (existingTenant) {
+        res.json({
+          success: true,
+          alreadyCompleted: true,
+          tenant: existingTenant,
+          user: dbUser
+        });
+        return;
+      }
+    }
+
+    const {
+      workspaceType = 'COMPANY', // 'COMPANY' | 'PERSONAL'
+      companyName,
+      workspaceName,
+      fullName,
+      country = 'US',
+      timezone: _timezone = 'America/New_York',
+      teamSize: _teamSize,
+      phone,
+      industry: _industry,
+      planId = 'plan_starter'
+    } = req.body;
+
+    const rawName = workspaceType === 'COMPANY' ? companyName : (workspaceName || `${dbUser.username}'s Workspace`);
+    if (!rawName || !rawName.trim()) {
+      res.status(400).json({ error: 'Workspace / Organization name is required.' });
+      return;
+    }
+
+    const tenantId = 'tenant_' + crypto.randomBytes(8).toString('hex');
+    const slug = rawName.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 30) + '_' + crypto.randomBytes(3).toString('hex');
+    const now = new Date().toISOString();
+    const maxAgents = planId === 'plan_enterprise' ? 1000 : (planId === 'plan_pro' ? 20 : 5);
+
+    await db.withTransaction(async () => {
+      // 1. Create tenant
+      await db.execute(`
+        INSERT INTO tenants (id, name, slug, country, "ownerEmail", status, "leadPoolMode", "maxAgents", tier, "customerType", "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, $4, $5, 'active', 'shared', $6, $7, $8, $9, $10)
+      `, [tenantId, rawName.trim(), slug, country, dbUser.email || '', maxAgents, planId.replace('plan_', ''), workspaceType, now, now]);
+
+      // 2. Create subscription with trialing status
+      const subId = 'sub_' + crypto.randomBytes(8).toString('hex');
+      const periodEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+      await db.execute(`
+        INSERT INTO subscriptions (id, "tenantId", "planId", status, "currentPeriodStart", "currentPeriodEnd", "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, 'trialing', $4, $5, $6, $7)
+      `, [subId, tenantId, planId, now, periodEnd, now, now]);
+
+      // 3. Initialize Authoritative Tenant Module Entitlements
+      // Core Zestify products: CRM, OCTAL Dialer, Email Manager, Facebook Auto Poster
+      // Scrapers: STRICTLY 0 (Never granted to new Zestify workspaces)
+      const allowedModules = [
+        { id: 'crm', enabled: 1 },
+        { id: 'octalDialer', enabled: 1 },
+        { id: 'reports', enabled: 1 },
+        { id: 'leads', enabled: 1 },
+        { id: 'campaigns', enabled: 1 },
+        { id: 'autoEmailer', enabled: planId !== 'plan_starter' ? 1 : 0 },
+        { id: 'facebookPoster', enabled: planId !== 'plan_starter' ? 1 : 0 },
+        { id: 'googleScraper', enabled: 0 },
+        { id: 'facebookScraper', enabled: 0 }
+      ];
+
+      for (const mod of allowedModules) {
+        await db.execute(`
+          INSERT INTO tenant_module_entitlements (id, "tenantId", "moduleId", enabled, "updatedBy", "updatedAt")
+          VALUES ($1, $2, $3, $4, 'onboarding_system', $5)
+          ON CONFLICT ("tenantId", "moduleId") DO UPDATE SET enabled = $4, "updatedAt" = $5
+        `, [`tme_${tenantId}_${mod.id}`, tenantId, mod.id, mod.enabled, now]);
+      }
+
+      // 4. Update user to role 'admin' (Company Owner)
+      const updatedDisplayName = fullName?.trim() || dbUser.displayName || dbUser.username;
+      await db.execute(`
+        UPDATE users 
+        SET "tenantId" = $1, role = 'admin', "displayName" = $2, phone = COALESCE($3, phone), "needsProfileSetup" = 0, "updatedAt" = $4
+        WHERE id = $5
+      `, [tenantId, updatedDisplayName, phone || null, now, dbUser.id]);
+
+      // 5. Grant user permissions for enabled modules
+      for (const mod of allowedModules) {
+        if (mod.enabled === 1) {
+          await db.execute(`
+            INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
+            VALUES ($1, $2, $3, 1, 'ONBOARDING', $4, $5)
+            ON CONFLICT ("id") DO UPDATE SET enabled = 1
+          `, [`perm_${dbUser.id}_${mod.id}`, dbUser.id, mod.id, tenantId, now]);
+        }
+      }
+
+      // 6. Record audit log
+      await db.execute(`
+        INSERT INTO audit_logs (id, action, "entityType", "entityId", "performedBy", details, "timestamp", "tenantId")
+        VALUES ($1, 'WORKSPACE_CREATED', 'tenant', $2, $3, $4, $5, $6)
+      `, ['aud_' + crypto.randomBytes(8).toString('hex'), tenantId, dbUser.username, JSON.stringify({ workspaceType, planId, finalName: rawName.trim() }), now, tenantId]);
+    });
+
+    const updatedUser = {
+      id: dbUser.id,
+      username: dbUser.username,
+      displayName: fullName?.trim() || dbUser.displayName,
+      role: 'admin',
+      tenantId,
+      email: dbUser.email
+    };
+    const newToken = issueAuthToken(updatedUser);
+    const updatedTenant = await getTenantById(tenantId);
+
+    res.json({
+      success: true,
+      token: newToken,
+      tenant: updatedTenant,
+      user: updatedUser
+    });
+  } catch (err: any) {
+    console.error('[Onboarding Complete Error]:', err);
+    res.status(500).json({ error: err.message || 'Failed to complete workspace onboarding.' });
+  }
+});
+
+// ─── Workspace Invitations REST Endpoints ─────────────────────────────────────
+
+// GET /api/admin/invitations & /admin/invitations — List invitations & seat usage
+app.get(['/api/admin/invitations', '/admin/invitations'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const tenantId = isPlatform ? (req.query.tenantId as string || caller.tenantId) : caller.tenantId;
+
+    if (!tenantId) {
+      res.status(400).json({ error: 'Tenant identity required.' });
+      return;
+    }
+
+    const invitations = await getWorkspaceInvitations(tenantId);
+    const seatUsage = await getTenantSeatUsage(tenantId);
+
+    res.json({
+      invitations,
+      seatUsage
+    });
+  } catch (err: any) {
+    console.error('[Get Invitations Error]:', err);
+    res.status(500).json({ error: 'Failed to retrieve workspace invitations.' });
+  }
+});
+
+// POST /api/admin/invitations & /admin/invitations — Create workspace invitation
+app.post(['/api/admin/invitations', '/admin/invitations'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const tenantId = isPlatform ? (req.body.tenantId || caller.tenantId) : caller.tenantId;
+
+    if (!tenantId) {
+      res.status(400).json({ error: 'Tenant identity required.' });
+      return;
+    }
+
+    const { email, role = 'user', teamId, initialModules } = req.body;
+    if (!email || !isValidEmailFormat(email)) {
+      res.status(400).json({ error: 'A valid employee email address is required.' });
+      return;
+    }
+
+    const cleanRole = (role === 'team_lead' ? 'team_lead' : 'user');
+
+    // Seat limit enforcement: Check available seats before issuing invitation
+    const seatUsage = await getTenantSeatUsage(tenantId);
+    if (seatUsage.availableSeats <= 0) {
+      res.status(400).json({
+        error: `Workspace plan seat limit reached (${seatUsage.activeSeats + seatUsage.pendingInvitations} of ${seatUsage.maxSeats} seats committed). Upgrade plan to invite more members.`
+      });
+      return;
+    }
+
+    // Prevent duplicate pending invitation for same email in this tenant
+    const existing = await getPendingInvitationForEmail(email);
+    if (existing && existing.tenantId === tenantId) {
+      res.status(400).json({ error: 'A pending invitation for this email already exists in this workspace.' });
+      return;
+    }
+
+    // Generate secure cryptographic invitation token and hash
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const invId = 'inv_' + crypto.randomBytes(8).toString('hex');
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const invitation = await createWorkspaceInvitation({
+      id: invId,
+      tenantId,
+      email,
+      role: cleanRole,
+      teamId: teamId || null,
+      invitedByUserId: caller.id,
+      tokenHash,
+      initialModules: initialModules ? JSON.stringify(initialModules) : null,
+      expiresAt,
+      createdAt: now
+    });
+
+    const origin = req.headers.origin || `${req.protocol}://${req.get('host')}`;
+    const inviteUrl = `${origin}/?invite=${rawToken}`;
+
+    // Record audit log
+    await db.execute(`
+      INSERT INTO audit_logs (id, action, "entityType", "entityId", "performedBy", details, "timestamp", "tenantId")
+      VALUES ($1, 'INVITATION_CREATED', 'workspace_invitation', $2, $3, $4, $5, $6)
+    `, ['aud_' + crypto.randomBytes(8).toString('hex'), invId, caller.username, JSON.stringify({ email, role: cleanRole, teamId }), now, tenantId]);
+
+    res.status(201).json({
+      success: true,
+      token: rawToken,
+      inviteUrl,
+      invitation: {
+        ...invitation,
+        inviteUrl
+      }
+    });
+  } catch (err: any) {
+    console.error('[Create Invitation Error]:', err);
+    res.status(500).json({ error: err.message || 'Failed to create invitation.' });
+  }
+});
+
+// DELETE /api/admin/invitations/:id & /admin/invitations/:id — Revoke invitation
+app.delete(['/api/admin/invitations/:id', '/admin/invitations/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const tenantId = isPlatform ? (req.query.tenantId as string || caller.tenantId) : caller.tenantId;
+
+    const revoked = await revokeWorkspaceInvitation(req.params.id, tenantId);
+    if (!revoked) {
+      res.status(404).json({ error: 'Invitation not found or already processed.' });
+      return;
+    }
+
+    res.json({ success: true, message: 'Invitation revoked successfully.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to revoke invitation.' });
+  }
+});
+
+// GET /api/invitations/resolve & /invitations/resolve — Public invitation query
+app.get(['/api/invitations/resolve', '/invitations/resolve'], async (req, res) => {
+  try {
+    const token = req.query.token as string;
+    const email = req.query.email as string;
+
+    let invitation: any = null;
+    if (token) {
+      const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
+      invitation = await getWorkspaceInvitationByTokenHash(tokenHash);
+    } else if (email) {
+      invitation = await getPendingInvitationForEmail(email.trim());
+    }
+
+    if (!invitation) {
+      res.status(404).json({ error: 'Invitation not found or has expired.' });
+      return;
+    }
+
+    if (invitation.status !== 'PENDING') {
+      res.status(400).json({ error: `This invitation is ${invitation.status.toLowerCase()}.` });
+      return;
+    }
+
+    if (new Date(invitation.expiresAt) <= new Date()) {
+      res.status(400).json({ error: 'This invitation has expired. Please ask the company owner for a new invite.' });
+      return;
+    }
+
+    const tenant = await getTenantById(invitation.tenantId);
+    const inviter = await db.queryOne<any>(`SELECT "displayName", username FROM users WHERE id = $1`, [invitation.invitedByUserId]);
+
+    res.json({
+      success: true,
+      invitation: {
+        id: invitation.id,
+        email: invitation.email,
+        role: invitation.role,
+        teamId: invitation.teamId,
+        tenantId: invitation.tenantId,
+        tenantName: tenant?.name || 'Workspace',
+        inviterName: inviter?.displayName || inviter?.username || 'Team Owner'
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to resolve invitation.' });
+  }
+});
+
+// POST /api/invitations/accept & /invitations/accept — Attach user to invited workspace
+app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { token, invitationId } = req.body;
+
+    let invitation: any = null;
+    if (token) {
+      const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
+      invitation = await getWorkspaceInvitationByTokenHash(tokenHash);
+    } else if (invitationId) {
+      invitation = await db.queryOne<any>(`SELECT * FROM workspace_invitations WHERE id = $1`, [invitationId]);
+    } else if (caller.email) {
+      invitation = await getPendingInvitationForEmail(caller.email);
+    }
+
+    if (!invitation || invitation.status !== 'PENDING') {
+      res.status(400).json({ error: 'Valid pending invitation not found.' });
+      return;
+    }
+
+    if (new Date(invitation.expiresAt) <= new Date()) {
+      res.status(400).json({ error: 'This invitation has expired.' });
+      return;
+    }
+
+    // Seat limit enforcement: Check seat limit at moment of acceptance
+    const seatUsage = await getTenantSeatUsage(invitation.tenantId);
+    if (seatUsage.activeSeats >= seatUsage.maxSeats) {
+      res.status(400).json({ error: 'Workspace has reached its maximum active seat capacity.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const assignedRole = (invitation.role === 'team_lead' ? 'team_lead' : 'user');
+
+    await db.withTransaction(async () => {
+      // 1. Mark invitation accepted
+      await acceptWorkspaceInvitation(invitation.id, caller.id);
+
+      // 2. Attach user to tenant with assigned role (NO SELF-ELEVATION)
+      await db.execute(`
+        UPDATE users 
+        SET "tenantId" = $1, role = $2, "updatedAt" = $3
+        WHERE id = $4
+      `, [invitation.tenantId, assignedRole, now, caller.id]);
+
+      // 3. If team assignment specified in invitation, assign to team
+      if (invitation.teamId) {
+        const existingMember = await db.queryOne(`SELECT id FROM team_members WHERE "teamId" = $1 AND "userId" = $2`, [invitation.teamId, caller.id]);
+        const teamRole = assignedRole === 'team_lead' ? 'leader' : 'member';
+        if (existingMember) {
+          await db.execute(`UPDATE team_members SET "roleInTeam" = $1 WHERE id = $2`, [teamRole, (existingMember as any).id]);
+        } else {
+          const teamMemberId = 'tm_' + crypto.randomBytes(8).toString('hex');
+          await db.execute(`
+            INSERT INTO team_members (id, "teamId", "userId", "tenantId", "roleInTeam", "joinedAt")
+            VALUES ($1, $2, $3, $4, $5, $6)
+          `, [teamMemberId, invitation.teamId, caller.id, invitation.tenantId, teamRole, now]);
+        }
+      }
+
+      // 4. Provision standard member permissions
+      const standardModules = ['crm', 'octalDialer', 'campaigns', 'leads', 'reports'];
+      for (const mod of standardModules) {
+        await db.execute(`
+          INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
+          VALUES ($1, $2, $3, 1, 'INVITATION_ACCEPT', $4, $5)
+          ON CONFLICT ("id") DO NOTHING
+        `, [`perm_${caller.id}_${mod}`, caller.id, mod, invitation.tenantId, now]);
+      }
+
+      // 5. Record audit log
+      await db.execute(`
+        INSERT INTO audit_logs (id, action, "entityType", "entityId", "performedBy", details, "timestamp", "tenantId")
+        VALUES ($1, 'INVITATION_ACCEPTED', 'workspace_invitation', $2, $3, $4, $5, $6)
+      `, ['aud_' + crypto.randomBytes(8).toString('hex'), invitation.id, caller.username, JSON.stringify({ invitationId: invitation.id, tenantId: invitation.tenantId, role: assignedRole }), now, invitation.tenantId]);
+    });
+
+    const updatedUser = {
+      id: caller.id,
+      username: caller.username,
+      displayName: caller.displayName,
+      role: assignedRole,
+      tenantId: invitation.tenantId,
+      email: caller.email
+    };
+    const newToken = issueAuthToken(updatedUser);
+    const updatedTenant = await getTenantById(invitation.tenantId);
+
+    res.json({
+      success: true,
+      message: 'Workspace joined successfully.',
+      token: newToken,
+      tenant: updatedTenant,
+      user: updatedUser
+    });
+  } catch (err: any) {
+    console.error('[Accept Invitation Error]:', err);
+    res.status(500).json({ error: err.message || 'Failed to accept invitation.' });
   }
 });
 
@@ -3200,16 +6724,36 @@ app.put(['/api/teams/:id/settings', '/teams/:id/settings'], requireAuth, async (
   }
 });
 
-// PUT /api/admin/company/policy: Company Owner defines tenant-wide policies (maxTeamVisibility, customerType)
-app.put(['/api/admin/company/policy', '/admin/company/policy'], requireAuth, requireTenantAdmin, async (req, res) => {
+// PUT /api/admin/company/policy & /api/admin/company/profile: Company Owner defines tenant-wide policies and company profile
+app.put(['/api/admin/company/policy', '/admin/company/policy', '/api/admin/company/profile', '/admin/company/profile'], requireAuth, requireTenantAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
     const tenantId = caller.tenantId;
-    const { maxTeamVisibility, customerType } = req.body;
+    const { maxTeamVisibility, customerType, name, country, logoUrl, ownerEmail, timezone, phone, website, address } = req.body;
 
     const updates: string[] = [];
     const params: any[] = [];
     let idx = 1;
+
+    if (name && typeof name === 'string') {
+      updates.push(`"name" = $${idx++}`);
+      params.push(name.trim());
+    }
+
+    if (country && typeof country === 'string') {
+      updates.push(`"country" = $${idx++}`);
+      params.push(country.trim());
+    }
+
+    if (logoUrl !== undefined) {
+      updates.push(`"logoUrl" = $${idx++}`);
+      params.push(logoUrl || null);
+    }
+
+    if (ownerEmail !== undefined) {
+      updates.push(`"ownerEmail" = $${idx++}`);
+      params.push(ownerEmail ? ownerEmail.trim() : null);
+    }
 
     if (maxTeamVisibility) {
       const valid = ['OWN', 'TEAM_READ', 'TEAM_COLLABORATE'];
@@ -3236,8 +6780,65 @@ app.put(['/api/admin/company/policy', '/admin/company/policy'], requireAuth, req
       await db.execute(`UPDATE tenants SET ${updates.join(', ')} WHERE id = $${idx}`, params);
     }
 
+    // Save extended profile fields in system_settings if provided
+    if (timezone || phone || website || address) {
+      try {
+        const metaKey = `tenant_${tenantId}_profile_meta`;
+        const existingRow = await db.queryOne<{ settingValue: string }>(`SELECT "settingValue" FROM system_settings WHERE "settingKey" = $1`, [metaKey]);
+        let metaObj: any = {};
+        if (existingRow?.settingValue) {
+          try { metaObj = JSON.parse(existingRow.settingValue); } catch {}
+        }
+        if (timezone !== undefined) metaObj.timezone = timezone;
+        if (phone !== undefined) metaObj.phone = phone;
+        if (website !== undefined) metaObj.website = website;
+        if (address !== undefined) metaObj.address = address;
+
+        const valStr = JSON.stringify(metaObj);
+        if (existingRow) {
+          await db.execute(`UPDATE system_settings SET "settingValue" = $1 WHERE "settingKey" = $2`, [valStr, metaKey]);
+        } else {
+          await db.execute(`INSERT INTO system_settings ("settingKey", "settingValue") VALUES ($1, $2)`, [metaKey, valStr]);
+        }
+      } catch (metaErr) {
+        console.warn('[CompanyProfile] Meta storage notice:', metaErr);
+      }
+    }
+
     const updatedTenant = await getTenantById(tenantId);
-    res.json({ success: true, tenant: updatedTenant });
+    // Merge meta if present
+    let finalProfile: any = { ...updatedTenant };
+    try {
+      const metaKey = `tenant_${tenantId}_profile_meta`;
+      const metaRow = await db.queryOne<{ settingValue: string }>(`SELECT "settingValue" FROM system_settings WHERE "settingKey" = $1`, [metaKey]);
+      if (metaRow?.settingValue) {
+        const parsed = JSON.parse(metaRow.settingValue);
+        finalProfile = { ...finalProfile, ...parsed };
+      }
+    } catch {}
+
+    res.json({ success: true, tenant: finalProfile, profile: finalProfile });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/company/profile: Returns company profile for Company Owner
+app.get(['/api/admin/company/profile', '/admin/company/profile'], requireAuth, requireTenantAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const tenantId = caller.tenantId;
+    const tenant = await getTenantById(tenantId);
+    let finalProfile: any = { ...tenant };
+    try {
+      const metaKey = `tenant_${tenantId}_profile_meta`;
+      const metaRow = await db.queryOne<{ settingValue: string }>(`SELECT "settingValue" FROM system_settings WHERE "settingKey" = $1`, [metaKey]);
+      if (metaRow?.settingValue) {
+        const parsed = JSON.parse(metaRow.settingValue);
+        finalProfile = { ...finalProfile, ...parsed };
+      }
+    } catch {}
+    res.json({ success: true, profile: finalProfile });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -3810,6 +7411,27 @@ registerTokenRevocationHandler((revokedToken: string) => {
 io.on('connection', (socket) => {
   console.log(`[Socket] Connected: ${socket.id}`);
 
+  if (socket.data.user && (socket.data.user.role === 'platform_admin' || socket.data.user.role === 'master_admin')) {
+    socket.join('platform_admins');
+  }
+
+  // ─── PLATFORM ADMIN OBSERVABILITY SUBSCRIBER ────────────────────────────────
+  socket.on('platform:subscribe', async (data: { authToken: string }) => {
+    if (!data?.authToken) return;
+    try {
+      const user = await validateToken(data.authToken);
+      if (user && (user.role === 'platform_admin' || user.role === 'master_admin')) {
+        socket.join('platform_admins');
+        socket.emit('platform:subscribed', { success: true, timestamp: new Date().toISOString() });
+        console.log(`[Platform Socket] Socket ${socket.id} joined platform_admins live room.`);
+      } else {
+        socket.emit('platform:error', { error: 'Master / Platform Admin privilege required.' });
+      }
+    } catch (err: any) {
+      socket.emit('platform:error', { error: err.message });
+    }
+  });
+
   // ─── AUTHENTICATED PHONE REGISTRATION ──────────────────────────────────────────
   socket.on('phone:auth-register', async (data: {
     token: string;
@@ -3832,6 +7454,10 @@ io.on('connection', (socket) => {
     const user = await validateToken(data.token);
     if (!user) {
       socket.emit('phone:auth-error', { error: 'Invalid or expired session token. Please log in again.' });
+      return;
+    }
+    if (!user.tenantId) {
+      socket.emit('phone:auth-error', { error: 'Account does not belong to a valid workspace.' });
       return;
     }
 

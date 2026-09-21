@@ -185,7 +185,7 @@ export const AdminCommercial: React.FC<AdminCommercialProps> = ({
                 </div>
                 <div className="flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                  <span>Google & Facebook Scrapers</span>
+                  <span>Email Manager & Social Poster</span>
                 </div>
               </div>
             </div>

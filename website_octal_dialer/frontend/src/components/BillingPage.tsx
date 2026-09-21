@@ -458,11 +458,11 @@ export const BillingPage: React.FC<BillingProps> = ({ isLight, serverUrl, authTo
                     </div>
                     <div className="flex items-center gap-2">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                      <span>{plan.id === 'plan_starter' ? '1,000 Scraped Leads' : plan.id === 'plan_pro' ? '25,000 Scraped Leads' : '500,000 Scraped Leads'}</span>
+                      <span>{plan.id === 'plan_starter' ? '1,000 Managed Leads' : plan.id === 'plan_pro' ? '25,000 Managed Leads' : '500,000 Managed Leads'}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                      <span>{plan.id === 'plan_starter' ? 'OCTAL Dialer & Google Scraper' : 'All Scrapers + Auto Emailer + FB Poster'}</span>
+                      <span>{plan.id === 'plan_starter' ? 'OCTAL Dialer & CRM' : 'Full CRM + Auto Emailer + FB Poster'}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />

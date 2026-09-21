@@ -33,9 +33,7 @@ const MODULES = [
   { id: 'octalDialer', label: 'OCTAL DIALER', icon: '📞', description: 'GSM Auto-dialer & Campaign queue' },
   { id: 'leads', label: 'LEADS DATABASE', icon: '🗄️', description: 'Dedicated contact explorer and imports' },
   { id: 'reports', label: 'REPORTS & ANALYTICS', icon: '📊', description: 'Call analytics, performance charts, and exports' },
-  { id: 'googleScraper', label: 'GOOGLE SCRAPER', icon: '🔍', description: 'Google Maps B2B lead extractor' },
   { id: 'autoEmailer', label: 'AUTO EMAILER', icon: '✉️', description: 'SMTP rotation & cold email sequences' },
-  { id: 'facebookScraper', label: 'FACEBOOK SCRAPER', icon: '📘', description: 'Facebook group member extractor' },
   { id: 'facebookPoster', label: 'FB AUTO POSTER', icon: '📤', description: 'Facebook group scheduler & poster' }
 ];
 

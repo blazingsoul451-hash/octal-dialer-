@@ -68,13 +68,33 @@ export function initDatabasePool(customUrl?: string): Pool {
 
   console.log('[PostgreSQL] No DATABASE_URL found. Initializing in-memory PostgreSQL provider (pg-mem) for local testing...');
   try {
-    const { newDb } = require('pg-mem');
+    const { newDb, DataType } = require('pg-mem');
     const memDb = newDb();
     
     // Register common PostgreSQL functions
     memDb.public.registerFunction({
       name: 'now',
       implementation: () => new Date().toISOString()
+    });
+    memDb.public.registerFunction({
+      name: 'hashtext',
+      args: [DataType.text],
+      returns: DataType.integer,
+      implementation: (str: string) => {
+        let hash = 0;
+        const s = String(str || '');
+        for (let i = 0; i < s.length; i++) {
+          hash = ((hash << 5) - hash) + s.charCodeAt(i);
+          hash |= 0;
+        }
+        return hash;
+      }
+    });
+    memDb.public.registerFunction({
+      name: 'pg_advisory_xact_lock',
+      args: [DataType.integer, DataType.integer],
+      returns: DataType.null,
+      implementation: () => null
     });
 
     const pgAdapter = memDb.adapters.createPg();

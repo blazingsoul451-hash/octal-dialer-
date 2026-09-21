@@ -26,7 +26,7 @@ interface DashboardOverviewProps {
   phoneConnected: boolean;
   phoneDeviceName?: string | null;
   campaigns: Campaign[];
-  onNavigateTab: (tab: 'dialer' | 'upload' | 'scraper' | 'dnc' | 'pair' | 'history') => void;
+  onNavigateTab: (tab: 'dialer' | 'upload' | 'scraper' | 'dnc' | 'pair' | 'history' | 'crm') => void;
   onSelectCampaign: (campId: string) => void;
 }
 
@@ -553,13 +553,13 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               </button>
 
               <button
-                onClick={() => onNavigateTab('scraper')}
+                onClick={() => onNavigateTab('crm')}
                 className={`p-3.5 border rounded-xl text-left transition flex flex-col gap-1.5 cursor-pointer ${
                   isLight ? 'bg-slate-50 border-slate-200 hover:border-amber-400 text-slate-900' : 'bg-[#121215] border-[#27272a] hover:border-amber-500 text-white'
                 }`}
               >
-                <Layers className="w-4 h-4 text-amber-500" />
-                <span>Google Scraper</span>
+                <Users className="w-4 h-4 text-amber-500" />
+                <span>CRM Workspace</span>
               </button>
 
               <button
