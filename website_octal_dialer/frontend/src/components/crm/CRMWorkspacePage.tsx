@@ -2103,6 +2103,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
       {showCreateTask && (
         <CreateTaskModal
           isOpen={true}
+          defaultTaskType={activeSubTab === 'meetings' ? 'meeting' : 'follow_up'}
           companies={companies.map(c => ({ id: c.id, name: c.name }))}
           leads={leads.map(l => ({ id: l.id, name: l.name || l.businessName || 'Lead' }))}
           users={users}

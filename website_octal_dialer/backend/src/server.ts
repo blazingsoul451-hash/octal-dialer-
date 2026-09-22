@@ -999,6 +999,7 @@ app.get('/api/user/profile', requireAuth, async (req, res) => {
       email: user.email || '',
       phone: user.phone || '',
       role: user.role,
+      tenantId: user.tenantId || null,
       status: user.status || 'Active',
       accountNo,
       recordsPerPage: 25,
@@ -1531,7 +1532,7 @@ app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async
 });
 
 // REST: Global Leads search & pagination (protected)
-app.get(['/leads', '/api/leads'], requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
+app.get(['/leads', '/api/leads', '/api/crm/leads'], requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
   try {
     const tenantId = (req as any).user?.tenantId;
     if (!tenantId) {
@@ -2414,6 +2415,43 @@ app.post('/api/crm/leads', requireAuth, requirePermission(['leads:create', 'crm:
   }
 });
 
+// REST: Get single lead by ID with strict scoping guard (protected)
+app.get(['/leads/:id', '/api/leads/:id', '/api/crm/leads/:id'], requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
+  try {
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const leadId = req.params.id;
+    const lead = await db.queryOne<any>(`
+      SELECT l.*, c.name as "campaignName", co.name as "crmCompanyName", ct.name as "crmContactName"
+      FROM leads l
+      LEFT JOIN campaigns c ON l."campaignId" = c.id
+      LEFT JOIN crm_companies co ON l."crmCompanyId" = co.id
+      LEFT JOIN crm_contacts ct ON l."contactId" = ct.id
+      WHERE l.id = $1 AND l."tenantId" = $2
+    `, [leadId, tenantId]);
+
+    if (!lead) {
+      res.status(404).json({ error: 'Lead not found in your organization.' });
+      return;
+    }
+
+    const caller = (req as any).user;
+    const canRead = await canReadLead(caller, lead, tenantId);
+    if (!canRead) {
+      res.status(403).json({ error: 'Forbidden: You do not have permission to view this lead.' });
+      return;
+    }
+
+    res.json({ success: true, lead });
+  } catch (err: any) {
+    console.error('Error fetching lead:', err);
+    res.status(500).json({ error: 'Internal server error while fetching lead' });
+  }
+});
+
 // REST: CRM Lead authoritative profile, activities, call history, and follow-ups (protected)
 app.get('/api/crm/leads/:id/profile', requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
   try {
@@ -3220,7 +3258,7 @@ app.get('/api/crm/meetings', requireAuth, requirePermission(['crm:view', 'leads:
 });
 
 // 8. CRM CLIENT WORK ITEMS (Deliverables, Tickets, Onboarding & Projects)
-app.get('/api/crm/work-items', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+app.get(['/api/crm/work-items', '/api/crm/work'], requireAuth, requirePermission(['crm:view']), async (req, res) => {
   try {
     const user = (req as any).user;
     const tenantId = user?.tenantId;
@@ -3272,7 +3310,7 @@ app.get('/api/crm/work-items', requireAuth, requirePermission(['crm:view']), asy
     }
     if (search && search.trim()) {
       const q = `%${search.trim().toLowerCase()}%`;
-      sql += ` AND (LOWER(w.title) LIKE $${params.length + 1} OR LOWER(COALESCE(w.description, '')) LIKE $${params.length + 1} OR LOWER(COALESCE(co.name, '')) LIKE $${params.length + 1})`;
+      sql += ` AND (LOWER(w.title) LIKE $${params.length + 1} OR LOWER(COALESCE(w.description, '')) LIKE $${params.length + 1} OR LOWER(w.category) LIKE $${params.length + 1} OR LOWER(COALESCE(co.name, '')) LIKE $${params.length + 1})`;
       params.push(q);
     }
 
@@ -3285,7 +3323,7 @@ app.get('/api/crm/work-items', requireAuth, requirePermission(['crm:view']), asy
   }
 });
 
-app.post('/api/crm/work-items', requireAuth, requirePermission(['crm:create', 'crm:edit']), async (req, res) => {
+app.post(['/api/crm/work-items', '/api/crm/work'], requireAuth, requirePermission(['crm:create', 'crm:edit']), async (req, res) => {
   try {
     const user = (req as any).user;
     const tenantId = user?.tenantId;
@@ -3362,7 +3400,7 @@ app.post('/api/crm/work-items', requireAuth, requirePermission(['crm:create', 'c
   }
 });
 
-app.get('/api/crm/work-items/:id', requireAuth, requirePermission(['crm:view']), async (req, res) => {
+app.get(['/api/crm/work-items/:id', '/api/crm/work/:id'], requireAuth, requirePermission(['crm:view']), async (req, res) => {
   try {
     const user = (req as any).user;
     const tenantId = user?.tenantId;
@@ -3400,7 +3438,7 @@ app.get('/api/crm/work-items/:id', requireAuth, requirePermission(['crm:view']),
   }
 });
 
-app.put('/api/crm/work-items/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+app.put(['/api/crm/work-items/:id', '/api/crm/work/:id'], requireAuth, requirePermission(['crm:edit']), async (req, res) => {
   try {
     const user = (req as any).user;
     const tenantId = user?.tenantId;
@@ -3478,7 +3516,7 @@ app.put('/api/crm/work-items/:id', requireAuth, requirePermission(['crm:edit']),
   }
 });
 
-app.delete('/api/crm/work-items/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+app.delete(['/api/crm/work-items/:id', '/api/crm/work/:id'], requireAuth, requirePermission(['crm:edit']), async (req, res) => {
   try {
     const user = (req as any).user;
     const tenantId = user?.tenantId;
@@ -6100,8 +6138,8 @@ app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, asyn
         { id: 'reports', enabled: 1 },
         { id: 'leads', enabled: 1 },
         { id: 'campaigns', enabled: 1 },
-        { id: 'autoEmailer', enabled: planId !== 'plan_starter' ? 1 : 0 },
-        { id: 'facebookPoster', enabled: planId !== 'plan_starter' ? 1 : 0 },
+        { id: 'autoEmailer', enabled: 1 },
+        { id: 'facebookPoster', enabled: 1 },
         { id: 'googleScraper', enabled: 0 },
         { id: 'facebookScraper', enabled: 0 }
       ];
@@ -6400,14 +6438,36 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
         }
       }
 
-      // 4. Provision standard member permissions
-      const standardModules = ['crm', 'octalDialer', 'campaigns', 'leads', 'reports'];
-      for (const mod of standardModules) {
-        await db.execute(`
-          INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
-          VALUES ($1, $2, $3, 1, 'INVITATION_ACCEPT', $4, $5)
-          ON CONFLICT ("id") DO NOTHING
-        `, [`perm_${caller.id}_${mod}`, caller.id, mod, invitation.tenantId, now]);
+      // 4. Provision assigned member permissions (honor initialModules chosen by Company Owner)
+      let targetModules: string[] = ['crm', 'octalDialer', 'campaigns', 'leads', 'reports'];
+      if (invitation.initialModules) {
+        try {
+          const parsed = JSON.parse(invitation.initialModules);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            targetModules = parsed;
+          } else if (typeof parsed === 'object' && parsed !== null) {
+            targetModules = Object.keys(parsed).filter(k => !!parsed[k]);
+          }
+        } catch {
+          // fallback to default if parsing failed
+        }
+      }
+
+      // Check tenant entitlements to ensure ceiling is respected
+      const tenantEntitlements = await db.queryAll<any>(`
+        SELECT "moduleId", enabled FROM tenant_module_entitlements WHERE "tenantId" = $1 AND enabled = 1
+      `, [invitation.tenantId]);
+      const entitledSet = new Set(tenantEntitlements.map(e => e.moduleId));
+
+      for (const mod of targetModules) {
+        // Only grant if tenant is entitled or if it's a core workspace capability
+        if (entitledSet.size === 0 || entitledSet.has(mod) || ['crm', 'leads', 'reports'].includes(mod)) {
+          await db.execute(`
+            INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
+            VALUES ($1, $2, $3, 1, 'INVITATION_ACCEPT', $4, $5)
+            ON CONFLICT ("id") DO UPDATE SET enabled = 1
+          `, [`perm_${caller.id}_${mod}`, caller.id, mod, invitation.tenantId, now]);
+        }
       }
 
       // 5. Record audit log

@@ -49,6 +49,8 @@ reset_zakria.sql
 **/android/key.properties
 *.jks
 *.keystore
+local_pg_cluster/
+**/local_pg_cluster/**
 
 
 

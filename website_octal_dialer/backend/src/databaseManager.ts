@@ -2518,15 +2518,15 @@ export const CANONICAL_MODULES: CanonicalModule[] = [
   { id: 'crm', key: 'crm', label: 'CRM Workspace', icon: '👥', desc: 'Contacts & customer intelligence' },
   { id: 'campaigns', key: 'campaigns', label: 'Campaigns', icon: '📂', desc: 'Campaign pipelines & dialing queues' },
   { id: 'leads', key: 'leads', label: 'Leads Database', icon: '🗄️', desc: 'Contact explorer & imports' },
-  { id: 'dialer', key: 'dialer', aliases: ['octalDialer'], label: 'OCTAL Dialer', icon: '📞', desc: 'GSM auto-dialer & telephony' },
+  { id: 'octalDialer', key: 'octalDialer', aliases: ['dialer'], label: 'OCTAL Dialer', icon: '📞', desc: 'GSM auto-dialer & telephony' },
   { id: 'reports', key: 'reports', aliases: ['analytics'], label: 'Reports & Analytics', icon: '📊', desc: 'Call metrics & performance exports' },
-  { id: 'auto_emailer', key: 'auto_emailer', aliases: ['autoEmailer'], label: 'Email Manager', icon: '✉️', desc: 'Cold email sequences & SMTP' },
-  { id: 'facebook_poster', key: 'facebook_poster', aliases: ['facebookPoster'], label: 'FB Auto Poster', icon: '📤', desc: 'Scheduled Facebook postings' }
+  { id: 'autoEmailer', key: 'autoEmailer', aliases: ['auto_emailer'], label: 'Email Manager', icon: '✉️', desc: 'Cold email sequences & SMTP' },
+  { id: 'facebookPoster', key: 'facebookPoster', aliases: ['facebook_poster'], label: 'FB Auto Poster', icon: '📤', desc: 'Scheduled Facebook postings' }
 ];
 
 export const LEGACY_SCRAPER_MODULES: CanonicalModule[] = [
-  { id: 'google_scraper', key: 'google_scraper', aliases: ['googleScraper'], label: 'Google Scraper', icon: '🔍', desc: 'Google Maps B2B lead extractor (Lead-Gen)' },
-  { id: 'facebook_scraper', key: 'facebook_scraper', aliases: ['facebookScraper'], label: 'Facebook Scraper', icon: '📘', desc: 'Facebook group member extractor (Lead-Gen)' }
+  { id: 'googleScraper', key: 'googleScraper', aliases: ['google_scraper'], label: 'Google Scraper', icon: '🔍', desc: 'Google Maps B2B lead extractor (Lead-Gen)' },
+  { id: 'facebookScraper', key: 'facebookScraper', aliases: ['facebook_scraper'], label: 'Facebook Scraper', icon: '📘', desc: 'Facebook group member extractor (Lead-Gen)' }
 ];
 
 export const ALL_CANONICAL_MODULES: CanonicalModule[] = [

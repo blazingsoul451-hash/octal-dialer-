@@ -1324,6 +1324,63 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
     return permissions;
   }
 
+  // Check if user has explicit module permissions defined in user_permissions
+  let hasExplicitUserPermissions = false;
+  let legacyPerms: { moduleId: string; enabled: number | boolean }[] = [];
+  try {
+    legacyPerms = await db.queryAll<{ moduleId: string; enabled: number | boolean }>(
+      `SELECT "moduleId", enabled FROM user_permissions WHERE "userId" = $1 AND "tenantId" = $2`,
+      [user.id, user.tenantId]
+    );
+    if (legacyPerms && legacyPerms.length > 0) {
+      hasExplicitUserPermissions = true;
+    }
+  } catch (err) {
+    console.error(`[Auth] Error querying permissions for user ${user.id}:`, err);
+  }
+
+  if (user.role === 'team_lead') {
+    permissions.add('teams:view_own');
+    permissions.add('teams:manage_own');
+  }
+
+  if (hasExplicitUserPermissions) {
+    for (const lp of legacyPerms) {
+      if (lp.enabled === 1 || lp.enabled === true) {
+        permissions.add(lp.moduleId);
+        permissions.add(`${lp.moduleId}:view`);
+        if (lp.moduleId === 'octalDialer') {
+          permissions.add('calls:view_queue');
+          permissions.add('calls:dial_outbound');
+          permissions.add('calls:manual_keypad');
+          permissions.add('calls:log_disposition');
+        } else if (lp.moduleId === 'campaigns') {
+          permissions.add('campaigns:create');
+          permissions.add('campaigns:edit');
+        } else if (lp.moduleId === 'leads') {
+          permissions.add('leads:view');
+          permissions.add('leads:import');
+          permissions.add('leads:edit');
+        } else if (lp.moduleId === 'crm') {
+          permissions.add('crm:view');
+          permissions.add('crm:create');
+          permissions.add('crm:edit');
+        } else if (lp.moduleId === 'reports') {
+          permissions.add('reports:view');
+          permissions.add('history:view');
+        } else if (lp.moduleId === 'autoEmailer') {
+          permissions.add('autoEmailer');
+          permissions.add('autoEmailer:view');
+        } else if (lp.moduleId === 'facebookPoster') {
+          permissions.add('facebookPoster');
+          permissions.add('facebookPoster:view');
+        }
+      }
+    }
+    return permissions;
+  }
+
+  // Fallback for accounts with NO explicit user_permissions:
   if (user.role === 'team_lead') {
     // Standard unassigned Team Lead: calling, CRM, leads, and team scope permissions
     permissions.add('calls:view_queue');
@@ -1336,8 +1393,6 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
     permissions.add('crm:view');
     permissions.add('crm:edit');
     permissions.add('campaigns:view');
-    permissions.add('teams:view_own');
-    permissions.add('teams:manage_own');
     return permissions;
   }
 
@@ -1348,33 +1403,6 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
   permissions.add('calls:log_disposition');
   permissions.add('leads:view');
   permissions.add('crm:view');
-
-  // Also merge legacy user_permissions table for backward compatibility
-  try {
-    const legacyPerms = await db.queryAll<{ moduleId: string; enabled: number | boolean }>(
-      `SELECT "moduleId", enabled FROM user_permissions WHERE "userId" = $1 AND "tenantId" = $2`,
-      [user.id, user.tenantId]
-    );
-    for (const lp of legacyPerms) {
-      if (lp.enabled === 1 || lp.enabled === true) {
-        permissions.add(`${lp.moduleId}:view`);
-        if (lp.moduleId === 'campaigns') {
-          permissions.add('campaigns:create');
-          permissions.add('campaigns:edit');
-        }
-        if (lp.moduleId === 'leads') {
-          permissions.add('leads:import');
-          permissions.add('leads:edit');
-        }
-        if (lp.moduleId === 'crm') {
-          permissions.add('crm:create');
-          permissions.add('crm:edit');
-        }
-      }
-    }
-  } catch (err) {
-    console.error(`[Auth] Error querying legacy permissions for user ${user.id}:`, err);
-  }
 
   return permissions;
 }

@@ -1,0 +1,93 @@
+{
+  "success": true,
+  "tenantId": "tenant_97853f671dac2cb9",
+  "modules": [
+    {
+      "id": "crm",
+      "key": "crm",
+      "label": "CRM Workspace",
+      "icon": "👥",
+      "desc": "Contacts & customer intelligence"
+    },
+    {
+      "id": "campaigns",
+      "key": "campaigns",
+      "label": "Campaigns",
+      "icon": "📂",
+      "desc": "Campaign pipelines & dialing queues"
+    },
+    {
+      "id": "leads",
+      "key": "leads",
+      "label": "Leads Database",
+      "icon": "🗄️",
+      "desc": "Contact explorer & imports"
+    },
+    {
+      "id": "octalDialer",
+      "key": "octalDialer",
+      "aliases": [
+        "dialer"
+      ],
+      "label": "OCTAL Dialer",
+      "icon": "📞",
+      "desc": "GSM auto-dialer & telephony"
+    },
+    {
+      "id": "reports",
+      "key": "reports",
+      "aliases": [
+        "analytics"
+      ],
+      "label": "Reports & Analytics",
+      "icon": "📊",
+      "desc": "Call metrics & performance exports"
+    },
+    {
+      "id": "autoEmailer",
+      "key": "autoEmailer",
+      "aliases": [
+        "auto_emailer"
+      ],
+      "label": "Email Manager",
+      "icon": "✉️",
+      "desc": "Cold email sequences & SMTP"
+    },
+    {
+      "id": "facebookPoster",
+      "key": "facebookPoster",
+      "aliases": [
+        "facebook_poster"
+      ],
+      "label": "FB Auto Poster",
+      "icon": "📤",
+      "desc": "Scheduled Facebook postings"
+    }
+  ],
+  "enabledModules": [
+    "crm",
+    "campaigns",
+    "leads",
+    "octalDialer",
+    "reports",
+    "autoEmailer",
+    "facebookPoster"
+  ],
+  "entitlements": {
+    "crm": true,
+    "campaigns": true,
+    "leads": true,
+    "octalDialer": true,
+    "dialer": true,
+    "reports": true,
+    "analytics": true,
+    "autoEmailer": true,
+    "auto_emailer": true,
+    "facebookPoster": true,
+    "facebook_poster": true,
+    "googleScraper": false,
+    "google_scraper": true,
+    "facebookScraper": false,
+    "facebook_scraper": true
+  }
+}

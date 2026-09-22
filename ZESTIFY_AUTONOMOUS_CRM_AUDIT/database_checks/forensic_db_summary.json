@@ -1,0 +1,225 @@
+{
+  "tenantId": "tenant_97853f671dac2cb9",
+  "auditTimestamp": "2026-09-22T21:11:55.250Z",
+  "databaseEngine": "PostgreSQL 18.4 (Native Local PostgreSQL Engine)",
+  "databaseHost": "127.0.0.1",
+  "databasePort": 54330,
+  "databaseName": "zestify_local_dev",
+  "pgVersion": "PostgreSQL 18.4 on x86_64-windows, compiled by msvc-19.44.35226, 64-bit",
+  "entitlementsCount": 9,
+  "entitlements": [
+    {
+      "id": "tme_tenant_97853f671dac2cb9_autoEmailer",
+      "tenantId": "tenant_97853f671dac2cb9",
+      "moduleId": "autoEmailer",
+      "enabled": 1,
+      "updatedBy": "onboarding_system",
+      "updatedAt": "2026-09-22T21:11:31.193Z"
+    },
+    {
+      "id": "tme_tenant_97853f671dac2cb9_campaigns",
+      "tenantId": "tenant_97853f671dac2cb9",
+      "moduleId": "campaigns",
+      "enabled": 1,
+      "updatedBy": "onboarding_system",
+      "updatedAt": "2026-09-22T21:11:31.193Z"
+    },
+    {
+      "id": "tme_tenant_97853f671dac2cb9_crm",
+      "tenantId": "tenant_97853f671dac2cb9",
+      "moduleId": "crm",
+      "enabled": 1,
+      "updatedBy": "onboarding_system",
+      "updatedAt": "2026-09-22T21:11:31.193Z"
+    },
+    {
+      "id": "tme_tenant_97853f671dac2cb9_facebookPoster",
+      "tenantId": "tenant_97853f671dac2cb9",
+      "moduleId": "facebookPoster",
+      "enabled": 1,
+      "updatedBy": "onboarding_system",
+      "updatedAt": "2026-09-22T21:11:31.193Z"
+    },
+    {
+      "id": "tme_tenant_97853f671dac2cb9_facebookScraper",
+      "tenantId": "tenant_97853f671dac2cb9",
+      "moduleId": "facebookScraper",
+      "enabled": 0,
+      "updatedBy": "onboarding_system",
+      "updatedAt": "2026-09-22T21:11:31.193Z"
+    },
+    {
+      "id": "tme_tenant_97853f671dac2cb9_googleScraper",
+      "tenantId": "tenant_97853f671dac2cb9",
+      "moduleId": "googleScraper",
+      "enabled": 0,
+      "updatedBy": "onboarding_system",
+      "updatedAt": "2026-09-22T21:11:31.193Z"
+    },
+    {
+      "id": "tme_tenant_97853f671dac2cb9_leads",
+      "tenantId": "tenant_97853f671dac2cb9",
+      "moduleId": "leads",
+      "enabled": 1,
+      "updatedBy": "onboarding_system",
+      "updatedAt": "2026-09-22T21:11:31.193Z"
+    },
+    {
+      "id": "tme_tenant_97853f671dac2cb9_octalDialer",
+      "tenantId": "tenant_97853f671dac2cb9",
+      "moduleId": "octalDialer",
+      "enabled": 1,
+      "updatedBy": "onboarding_system",
+      "updatedAt": "2026-09-22T21:11:31.193Z"
+    },
+    {
+      "id": "tme_tenant_97853f671dac2cb9_reports",
+      "tenantId": "tenant_97853f671dac2cb9",
+      "moduleId": "reports",
+      "enabled": 1,
+      "updatedBy": "onboarding_system",
+      "updatedAt": "2026-09-22T21:11:31.193Z"
+    }
+  ],
+  "usersCount": 5,
+  "users": [
+    {
+      "id": "user_a9daa777caf25062",
+      "username": "zacharyowner_6c5c",
+      "email": "qa_owner_1790111486224@zestifyqa.com",
+      "role": "admin",
+      "tenantId": "tenant_97853f671dac2cb9"
+    },
+    {
+      "id": "user_6ee441123105a1e0",
+      "username": "alex_lead_6659",
+      "email": "alex_lead_1790111496659@zestifyqa.com",
+      "role": "team_lead",
+      "tenantId": "tenant_97853f671dac2cb9"
+    },
+    {
+      "id": "user_7064bb878438be2c",
+      "username": "sam_member_6719",
+      "email": "sam_member_1790111496719@zestifyqa.com",
+      "role": "user",
+      "tenantId": "tenant_97853f671dac2cb9"
+    },
+    {
+      "id": "user_734c34a007afcc14",
+      "username": "ben_beta_6757",
+      "email": "ben_beta_1790111496757@zestifyqa.com",
+      "role": "user",
+      "tenantId": "tenant_97853f671dac2cb9"
+    },
+    {
+      "id": "user_31b4ab7c60f4f278",
+      "username": "inviteduser_ea0c",
+      "email": "invite_test_1790111498047@zestifyqa.com",
+      "role": "user",
+      "tenantId": "tenant_97853f671dac2cb9"
+    }
+  ],
+  "teamsCount": 2,
+  "teams": [
+    {
+      "id": "team_1790111496635_91h5l",
+      "name": "Team Alpha",
+      "leaderId": null,
+      "tenantId": "tenant_97853f671dac2cb9"
+    },
+    {
+      "id": "team_1790111496655_6eme6",
+      "name": "Team Beta",
+      "leaderId": null,
+      "tenantId": "tenant_97853f671dac2cb9"
+    }
+  ],
+  "teamMembersCount": 1,
+  "crmCompaniesCount": 2,
+  "companies": [
+    {
+      "id": "comp_1790111514990_j4yuu",
+      "name": "Injected Malicious Company",
+      "status": "Active",
+      "tenantId": "tenant_97853f671dac2cb9"
+    },
+    {
+      "id": "comp_1790111499937_aauqw",
+      "name": "Apex QA Logistics",
+      "status": "active",
+      "tenantId": "tenant_97853f671dac2cb9"
+    }
+  ],
+  "crmContactsCount": 1,
+  "contacts": [
+    {
+      "id": "cnt_1790111499951_xhdrt",
+      "name": "John Test",
+      "crmCompanyId": "comp_1790111499937_aauqw",
+      "tenantId": "tenant_97853f671dac2cb9"
+    }
+  ],
+  "leadsCount": 2,
+  "leads": [
+    {
+      "id": "lead_1790111499957_utqah",
+      "name": "John Test Lead",
+      "crmCompanyId": "comp_1790111499937_aauqw",
+      "contactId": "cnt_1790111499951_xhdrt",
+      "assignedTo": "zacharyowner_6c5c",
+      "tenantId": "tenant_97853f671dac2cb9"
+    },
+    {
+      "id": "lead_1790111511639_nsf1c",
+      "name": "Confidential Beta Defense Contract",
+      "crmCompanyId": null,
+      "contactId": null,
+      "assignedTo": "zacharyowner_6c5c",
+      "tenantId": "tenant_97853f671dac2cb9"
+    }
+  ],
+  "tasksCount": 2,
+  "tasks": [
+    {
+      "id": "task_1790111499964_inpov",
+      "title": "Follow up with John on Technical Specs",
+      "taskType": "follow_up",
+      "priority": "high",
+      "status": "open",
+      "tenantId": "tenant_97853f671dac2cb9"
+    },
+    {
+      "id": "task_1790111499968_23uhx",
+      "title": "Product Demo & Architecture Walkthrough",
+      "taskType": "online_meeting",
+      "priority": "urgent",
+      "status": "open",
+      "tenantId": "tenant_97853f671dac2cb9"
+    }
+  ],
+  "quotesCount": 1,
+  "quotes": [
+    {
+      "id": "qte_1790111499978_vraga",
+      "quoteNumber": "QTE-499978",
+      "packageName": "Starter Tier",
+      "totalAmount": "49.00",
+      "tenantId": "tenant_97853f671dac2cb9"
+    }
+  ],
+  "workItemsCount": 1,
+  "workItems": [
+    {
+      "id": "work_1790111499987_f9m2s",
+      "title": "Deploy SIP Trunk & Agent Routing",
+      "status": "IN_PROGRESS",
+      "tenantId": "tenant_97853f671dac2cb9"
+    }
+  ],
+  "forensicIntegrityChecks": {
+    "orphanCompanies": 0,
+    "orphanLeads": 0,
+    "crossTenantMembers": 0,
+    "platformAdminInTenant": 1
+  }
+}

@@ -1515,6 +1515,7 @@ interface CreateTaskModalProps extends ModalBaseProps {
   defaultEntityType?: 'company' | 'contact' | 'lead';
   defaultEntityId?: string;
   defaultEntityName?: string;
+  defaultTaskType?: CrmTaskType;
   companies?: Array<{ id: string; name: string }>;
   contacts?: Array<{ id: string; name: string }>;
   leads?: Array<{ id: string; name: string }>;
@@ -1527,6 +1528,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   defaultEntityType,
   defaultEntityId,
   defaultEntityName,
+  defaultTaskType = 'follow_up',
   companies = [],
   contacts: _contacts = [],
   leads = [],
@@ -1537,7 +1539,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   authToken
 }) => {
   const [title, setTitle] = useState('');
-  const [taskType, setTaskType] = useState<CrmTaskType>('meeting');
+  const [taskType, setTaskType] = useState<CrmTaskType>(defaultTaskType);
   const [priority, setPriority] = useState<CrmTaskPriority>('normal');
   const [dueAt, setDueAt] = useState('');
   const [description, setDescription] = useState('');
@@ -1554,7 +1556,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setTitle('');
-      setTaskType('meeting');
+      setTaskType(defaultTaskType || 'follow_up');
       setPriority('normal');
       setDescription('');
       setError(null);
@@ -1585,7 +1587,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       tmrw.setMinutes(tmrw.getMinutes() - tmrw.getTimezoneOffset());
       setDueAt(tmrw.toISOString().slice(0, 16));
     }
-  }, [isOpen, defaultEntityType, defaultEntityId]);
+  }, [isOpen, defaultEntityType, defaultEntityId, defaultTaskType]);
 
   if (!isOpen) return null;
 
@@ -1651,9 +1653,11 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
               <CalendarCheck className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-black text-white tracking-tight">Create Task / Action</h2>
+              <h2 className="text-base font-black text-white tracking-tight">
+                {(taskType === 'meeting' || taskType === 'online_meeting') ? 'Schedule Meeting Agenda' : 'Create Task / Action'}
+              </h2>
               <p className="text-xs text-zinc-400">
-                {defaultEntityName ? `Linked to ${defaultEntityName}` : 'Schedule call, meeting, payment, or follow-up'}
+                {defaultEntityName ? `Linked to ${defaultEntityName}` : (taskType === 'meeting' || taskType === 'online_meeting' ? 'Set up calendar meeting, attendees, and agenda' : 'Schedule call, task, payment, or follow-up')}
               </p>
             </div>
           </div>

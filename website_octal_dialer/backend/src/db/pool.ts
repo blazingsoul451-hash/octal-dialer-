@@ -46,7 +46,7 @@ export function initDatabasePool(customUrl?: string): Pool {
       connectionString: dbUrl,
       max: parseInt(process.env.PG_MAX_CONNECTIONS || '20', 10),
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 15000,
     });
 
     pool.on('error', (err) => {

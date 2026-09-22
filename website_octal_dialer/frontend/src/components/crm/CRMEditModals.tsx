@@ -853,8 +853,12 @@ export const EditTaskModal: React.FC<EditTaskModalProps> = ({
               <Calendar className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-black text-white tracking-tight">Edit Task / Meeting</h2>
-              <p className="text-xs text-zinc-400">Modify schedule, priority, or assigned agent</p>
+              <h2 className="text-base font-black text-white tracking-tight">
+                {(task.taskType === 'meeting' || task.taskType === 'online_meeting') ? 'Edit Meeting Agenda' : 'Edit Task Details'}
+              </h2>
+              <p className="text-xs text-zinc-400">
+                {(task.taskType === 'meeting' || task.taskType === 'online_meeting') ? 'Update meeting schedule, agenda, or attendees' : 'Modify schedule, priority, or assigned agent'}
+              </p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg border border-[#27272a] text-zinc-400 hover:text-white hover:bg-[#1f1f23]">
