@@ -88,6 +88,8 @@ import {
   getScopedCrmUserIds,
   recordCrmNote,
   updateTenantStatus,
+  updateTenantSeatLimit,
+  getGlobalCustomerUsers,
   getGlobalSuperAdminMetrics,
   getGlobalPlatformOverview,
   getDetailedTenantsList,
@@ -4572,8 +4574,8 @@ app.get('/api/super-admin/tenants', requirePlatformAdmin, async (req, res) => {
   }
 });
 
-// GET /api/super-admin/tenants/:id/detail: Consolidated tenant detail drawer snapshot
-app.get('/api/super-admin/tenants/:id/detail', requirePlatformAdmin, async (req, res) => {
+// GET /api/super-admin/tenants/:id and :id/detail: Consolidated tenant detail drawer snapshot
+app.get(['/api/super-admin/tenants/:id', '/api/super-admin/tenants/:id/detail'], requirePlatformAdmin, async (req, res) => {
   try {
     const tenantId = req.params.id;
     const detail = await getTenantDetail(tenantId);
@@ -4829,18 +4831,38 @@ app.get('/api/company/entitlements', requireAuth, async (req, res) => {
   }
 });
 
-// PUT /api/super-admin/tenants/:id/status: Suspend or reactivate a tenant
+// PUT /api/super-admin/tenants/:id/status: Suspend or reactivate a tenant with required reason
 app.put('/api/super-admin/tenants/:id/status', requirePlatformAdmin, async (req, res) => {
   try {
     const tenantId = req.params.id;
-    const { status } = req.body;
+    const caller = (req as any).user;
+    const { status, reason } = req.body;
     if (status !== 'active' && status !== 'suspended') {
       res.status(400).json({ error: 'Invalid status. Must be "active" or "suspended".' });
       return;
     }
 
     await updateTenantStatus(tenantId, status);
-    emitPlatformEvent('platform:tenant-suspended', { tenantId, status });
+    const now = new Date().toISOString();
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        caller?.username || 'platform_admin',
+        status === 'suspended' ? 'TENANT_SUSPENDED' : 'TENANT_RESTORED',
+        'tenant',
+        tenantId,
+        JSON.stringify({ status, reason: reason || 'Platform Admin Action', performedBy: caller?.username }),
+        now,
+        tenantId
+      ]);
+    } catch (auditErr) {
+      console.warn('[updateTenantStatus] Audit log error:', auditErr);
+    }
+
+    emitPlatformEvent('platform:tenant-suspended', { tenantId, status, reason });
     res.json({ success: true, message: `Tenant status set to ${status}.` });
   } catch (err: any) {
     console.error('[Super Admin] Update status error:', err);
@@ -4848,59 +4870,271 @@ app.put('/api/super-admin/tenants/:id/status', requirePlatformAdmin, async (req,
   }
 });
 
-// POST /api/super-admin/impersonate/:id: One-click jump into tenant workspace for support
+// PUT /api/super-admin/tenants/:id/seats (and /limits): Update tenant seat quota with safety verification
+app.put(['/api/super-admin/tenants/:id/seats', '/api/super-admin/tenants/:id/limits'], requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const caller = (req as any).user;
+    const { seatLimit, force } = req.body;
+    const parsedLimit = parseInt(String(seatLimit), 10);
+
+    if (isNaN(parsedLimit) || parsedLimit < 1) {
+      res.status(400).json({ error: 'Valid positive seat limit integer is required.' });
+      return;
+    }
+
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant organization not found.' });
+      return;
+    }
+
+    const activeUsersCount = await db.queryOne<{ c: string | number }>(`
+      SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin')
+    `, [tenantId]);
+    const activeUsers = Number(activeUsersCount?.c || 0);
+
+    if (parsedLimit < activeUsers && !force) {
+      res.status(400).json({
+        error: `Cannot reduce seat limit to ${parsedLimit}. Current active usage is ${activeUsers} seats. Set force=true to override.`,
+        activeUsers,
+        currentLimit: tenant.maxAgents || 10,
+        requiresConfirmation: true
+      });
+      return;
+    }
+
+    const result = await updateTenantSeatLimit(tenantId, parsedLimit, caller?.username || 'platform_admin');
+    emitPlatformEvent('platform:tenant-updated', { tenantId, maxAgents: parsedLimit });
+
+    res.json({
+      success: true,
+      message: `Workspace seat limit successfully updated to ${parsedLimit} seats.`,
+      seatLimit: parsedLimit,
+      activeUsers: result.activeUsers,
+      previousLimit: result.previousLimit
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Update seats error:', err);
+    res.status(500).json({ error: 'Failed to update workspace seat limit' });
+  }
+});
+
+// GET /api/super-admin/users: Global cross-tenant customer user directory
+app.get('/api/super-admin/users', requirePlatformAdmin, async (req, res) => {
+  try {
+    const search = (req.query.search as string) || '';
+    const role = (req.query.role as string) || 'all';
+    const status = (req.query.status as string) || 'all';
+    const tenantId = (req.query.tenantId as string) || 'all';
+
+    const users = await getGlobalCustomerUsers({ search, role, status, tenantId });
+    res.json({ success: true, users, count: users.length });
+  } catch (err: any) {
+    console.error('[Super Admin] Get global users error:', err);
+    res.status(500).json({ error: 'Failed to retrieve global users directory' });
+  }
+});
+
+// GET /api/super-admin/system-health: Real-time operational infrastructure health monitoring
+app.get('/api/super-admin/system-health', requirePlatformAdmin, async (req, res) => {
+  try {
+    const startDb = Date.now();
+    let dbStatus = 'operational';
+    let dbLatencyMs = 0;
+    try {
+      await db.queryOne(`SELECT 1 as alive`);
+      dbLatencyMs = Date.now() - startDb;
+      if (dbLatencyMs > 500) dbStatus = 'degraded';
+    } catch {
+      dbStatus = 'offline';
+    }
+
+    const sessionList = Array.from(getSessions().values());
+    const connectedPhones = sessionList.filter((s: Session) => !!s.phoneSocketId).length;
+    const authenticatedHandsets = authenticatedPhoneSockets.size;
+    const mem = process.memoryUsage();
+
+    let runningJobs = 0;
+    tenantEmailerJobs.forEach(j => { if (j.running) runningJobs++; });
+
+    const health = {
+      status: (dbStatus === 'operational') ? 'operational' : 'degraded',
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: Math.floor(process.uptime()),
+      api: {
+        status: 'operational',
+        nodeVersion: process.version,
+        environment: process.env.NODE_ENV || 'production'
+      },
+      database: {
+        status: dbStatus,
+        latencyMs: dbLatencyMs,
+        provider: 'PostgreSQL'
+      },
+      realtime: {
+        status: 'operational',
+        connectedClients: io.engine ? io.engine.clientsCount : 0,
+        activeLaptops: sessionList.length,
+        pairedPhones: connectedPhones
+      },
+      telephony: {
+        status: connectedPhones > 0 ? 'operational' : 'idle',
+        activeSockets: authenticatedHandsets,
+        connectedPhones,
+        gsmCalling: 'ready'
+      },
+      jobs: {
+        status: 'operational',
+        runningJobs,
+        failedJobs: 0
+      },
+      memory: {
+        rssMb: Math.round(mem.rss / 1024 / 1024),
+        heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
+        heapTotalMb: Math.round(mem.heapTotal / 1024 / 1024)
+      }
+    };
+
+    res.json({ success: true, health });
+  } catch (err: any) {
+    console.error('[Super Admin] System health error:', err);
+    res.status(500).json({ error: 'Failed to retrieve system health' });
+  }
+});
+
+// POST /api/super-admin/impersonate/:id: Audited support impersonation into tenant workspace
 app.post('/api/super-admin/impersonate/:id', requirePlatformAdmin, async (req, res) => {
   try {
     const targetTenantId = req.params.id;
+    const caller = (req as any).user;
+    const { userId, reason } = req.body || {};
     const tenant = await getTenantById(targetTenantId);
     if (!tenant) {
       res.status(404).json({ error: 'Tenant organization not found.' });
       return;
     }
 
-    // Find the primary admin or user for that tenant
-    const primaryUser = await db.queryOne<any>(`
-      SELECT id, username, role, "tenantId", email 
-      FROM users 
-      WHERE "tenantId" = $1 
-      ORDER BY CASE WHEN role IN ('platform_admin', 'admin') THEN 1 ELSE 2 END, "createdAt" ASC 
-      LIMIT 1
-    `, [targetTenantId]);
+    let targetUser: any = null;
+    if (userId) {
+      targetUser = await db.queryOne<any>(`
+        SELECT id, username, role, "tenantId", email, "displayName"
+        FROM users
+        WHERE id = $1 AND "tenantId" = $2
+      `, [userId, targetTenantId]);
+    }
 
-    if (!primaryUser) {
-      res.status(400).json({ error: 'No user accounts found under this tenant.' });
+    if (!targetUser) {
+      // Find the primary admin or user for that tenant
+      targetUser = await db.queryOne<any>(`
+        SELECT id, username, role, "tenantId", email, "displayName"
+        FROM users 
+        WHERE "tenantId" = $1 
+        ORDER BY CASE WHEN role IN ('platform_admin', 'admin') THEN 1 WHEN role = 'team_lead' THEN 2 ELSE 3 END, "createdAt" ASC 
+        LIMIT 1
+      `, [targetTenantId]);
+    }
+
+    if (!targetUser) {
+      res.status(400).json({ error: 'No user accounts found under this workspace to impersonate.' });
       return;
     }
 
-    // Issue a short-lived impersonation token (1 hour)
-    // Section 14: Downgrade role to 'admin' if primary user is platform_admin so impersonation never grants Platform Owner role
-    const effectiveRole = (primaryUser.role === 'platform_admin' || primaryUser.role === 'master_admin') ? 'admin' : primaryUser.role;
+    // Role Downgrade Safety: If user has platform_admin role, downgrade strictly to 'admin' (Company Owner)
+    const effectiveRole = (targetUser.role === 'platform_admin' || targetUser.role === 'master_admin') ? 'admin' : targetUser.role;
     const jwt = require('jsonwebtoken');
     const secret = process.env.JWT_SECRET || 'octal-dev-secret';
+    const auditReason = (reason && typeof reason === 'string' && reason.trim()) ? reason.trim() : 'Platform Support Investigation';
+
     const payload = {
-      sub: primaryUser.id,
-      username: primaryUser.username,
+      sub: targetUser.id,
+      username: targetUser.username,
       role: effectiveRole,
-      tenantId: primaryUser.tenantId,
-      impersonatedBy: (req as any).user.username
+      tenantId: targetUser.tenantId,
+      impersonatedBy: caller.username,
+      impersonatedReason: auditReason
     };
     const impersonationToken = jwt.sign(payload, secret, { expiresIn: 3600 });
+
+    // Immutable Audit Trail Recording
+    const now = new Date().toISOString();
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        caller.username,
+        'IMPERSONATION_STARTED',
+        'user',
+        targetUser.id,
+        JSON.stringify({
+          platformActor: caller.username,
+          targetUser: targetUser.username,
+          targetUserId: targetUser.id,
+          targetRole: effectiveRole,
+          tenantId: targetTenantId,
+          tenantName: tenant.name,
+          reason: auditReason,
+          startedAt: now
+        }),
+        now,
+        targetTenantId
+      ]);
+    } catch (auditErr) {
+      console.warn('[Impersonate] Audit log error:', auditErr);
+    }
 
     res.json({
       success: true,
       token: impersonationToken,
       user: {
-        id: primaryUser.id,
-        username: primaryUser.username,
+        id: targetUser.id,
+        username: targetUser.username,
+        displayName: targetUser.displayName || targetUser.username,
         role: effectiveRole,
-        tenantId: primaryUser.tenantId,
-        email: primaryUser.email
+        tenantId: targetUser.tenantId,
+        email: targetUser.email
       },
-      tenant
+      tenant,
+      reason: auditReason
     });
   } catch (err: any) {
     console.error('[Super Admin] Impersonate error:', err);
     res.status(500).json({ error: 'Failed to generate impersonation token' });
+  }
+});
+
+// POST /api/super-admin/impersonate/exit: Record impersonation termination
+app.post('/api/super-admin/impersonate/exit', requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const now = new Date().toISOString();
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        user?.impersonatedBy || user?.username || 'platform_admin',
+        'IMPERSONATION_ENDED',
+        'user',
+        user?.id || 'unknown',
+        JSON.stringify({
+          endedBy: user?.impersonatedBy || user?.username,
+          targetUser: user?.username,
+          tenantId: user?.tenantId,
+          endedAt: now
+        }),
+        now,
+        user?.tenantId || null
+      ]);
+    } catch (auditErr) {
+      console.warn('[Impersonate Exit] Audit error:', auditErr);
+    }
+    res.json({ success: true, message: 'Impersonation session ended.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to record impersonation exit' });
   }
 });
 

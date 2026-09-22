@@ -61,6 +61,7 @@ const SERVER_URL = WEB_API_BASE;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs' | 'team-lead' | 'super-admin'>('dashboard');
+  const [settingsSubView, setSettingsSubView] = useState<'overview' | 'company-profile' | 'users-roles' | 'account' | 'billing'>('overview');
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
   const [mobilePairingBaseUrl, setMobilePairingBaseUrl] = useState<string>(WEB_API_BASE);
@@ -602,18 +603,33 @@ export default function App() {
 
       {/* 🛡️ Platform Support Impersonation Banner */}
       {isImpersonating && (
-        <div className="bg-gradient-to-r from-amber-600 to-rose-600 text-white px-4 py-2.5 flex items-center justify-between text-xs font-bold shadow-lg z-50 sticky top-0 border-b border-rose-400/40">
-          <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-white animate-pulse" />
-            <span>IMPERSONATING WORKSPACE: <span className="underline font-mono text-amber-200">{impersonateTenant || 'Tenant Organization'}</span> (Platform Support Mode)</span>
+        <div className="bg-[#141210] text-white px-5 py-2.5 flex items-center justify-between text-xs font-bold shadow-xl z-50 sticky top-0 border-b border-amber-500/40">
+          <div className="flex items-center gap-3">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            <div className="flex items-center gap-2 font-mono">
+              <span className="text-amber-400 font-bold uppercase tracking-wider text-[11px] bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
+                AUDITED IMPERSONATION ACTIVE
+              </span>
+              <span className="text-zinc-300">
+                Acting as <strong className="text-white font-sans">{typeof window !== 'undefined' ? (sessionStorage.getItem('octal_impersonate_user') || 'Company User') : 'Company User'}</strong> ({typeof window !== 'undefined' ? (sessionStorage.getItem('octal_impersonate_role') || 'Company Owner') : 'Company Owner'}) in <strong className="text-amber-300 font-sans">{impersonateTenant || 'Workspace'}</strong>
+              </span>
+            </div>
           </div>
           <button
-            onClick={() => {
+            onClick={async () => {
+              try {
+                await fetch(`${WEB_API_BASE}/api/super-admin/impersonate/exit`, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
+                });
+              } catch {}
               sessionStorage.removeItem('octal_impersonate_token');
               sessionStorage.removeItem('octal_impersonate_tenant');
+              sessionStorage.removeItem('octal_impersonate_user');
+              sessionStorage.removeItem('octal_impersonate_role');
               window.location.href = window.location.origin;
             }}
-            className="px-3 py-1 bg-white text-slate-950 font-bold rounded-lg hover:bg-amber-100 transition font-mono text-[11px] cursor-pointer shadow-sm"
+            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-lg transition font-mono text-xs cursor-pointer shadow-md shadow-amber-500/20"
           >
             Exit Impersonation
           </button>
@@ -784,7 +800,10 @@ export default function App() {
             {/* ⚙️ Workspace Settings */}
             <button
               id="topbar-settings-btn"
-              onClick={() => setActiveTab('admin')}
+              onClick={() => {
+                setSettingsSubView('overview');
+                setActiveTab('admin');
+              }}
               title="Workspace Settings"
               className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
                 activeTab === 'admin'
@@ -821,6 +840,10 @@ export default function App() {
               userRole={userRole}
               showPill={true}
               activeTab={activeTab}
+              onNavigateAccount={() => {
+                setSettingsSubView('account');
+                setActiveTab('admin');
+              }}
               onLogout={handleLogout}
             />
           </div>
@@ -1412,6 +1435,7 @@ export default function App() {
               currentUserRole={userRole || 'user'}
               customerType={customerType}
               userPermissions={userPermissions}
+              initialSubView={settingsSubView}
               onNavigateTab={(tab) => setActiveTab(tab as any)}
             />
           )}

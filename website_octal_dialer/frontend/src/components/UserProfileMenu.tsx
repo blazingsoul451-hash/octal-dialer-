@@ -13,6 +13,7 @@ interface UserProfileMenuProps {
   userRole?: string | null;
   showPill?: boolean;
   activeTab?: string;
+  onNavigateAccount?: () => void;
   onLogout: () => void;
 }
 
@@ -40,6 +41,7 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
   userRole,
   showPill = true,
   activeTab,
+  onNavigateAccount,
   onLogout
 }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -535,11 +537,21 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
           }`}
         >
           {/* Top Banner with Silhouette Avatar */}
-          <div className={`pt-6 pb-4 px-4 text-center border-b ${
-            isLight
-              ? 'bg-gradient-to-b from-sky-50/70 to-white border-slate-100'
-              : 'bg-gradient-to-b from-zinc-900 to-[#09090b] border-[#18181b]'
-          }`}>
+          <div
+            onClick={() => {
+              setDropdownOpen(false);
+              if (onNavigateAccount) {
+                onNavigateAccount();
+              } else {
+                handleOpenProfileModal();
+              }
+            }}
+            className={`pt-6 pb-4 px-4 text-center border-b cursor-pointer transition-colors ${
+              isLight
+                ? 'bg-gradient-to-b from-sky-50/70 to-white border-slate-100 hover:bg-slate-50'
+                : 'bg-gradient-to-b from-zinc-900 to-[#09090b] border-[#18181b] hover:bg-zinc-900/60'
+            }`}
+          >
             <div className="w-16 h-16 mx-auto rounded-full bg-slate-300 dark:bg-zinc-700 flex items-center justify-center text-slate-500 dark:text-zinc-300 shadow-inner mb-3 overflow-hidden border-2 border-white/40">
               {activeAvatar ? (
                 <img src={activeAvatar} alt="Profile" className="w-full h-full object-cover" />
@@ -560,7 +572,14 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
           {/* Menu Items */}
           <div className="p-2 space-y-1">
             <button
-              onClick={handleOpenProfileModal}
+              onClick={() => {
+                setDropdownOpen(false);
+                if (onNavigateAccount) {
+                  onNavigateAccount();
+                } else {
+                  handleOpenProfileModal();
+                }
+              }}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                 isLight
                   ? 'hover:bg-slate-100 text-slate-700'
@@ -572,7 +591,14 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
             </button>
 
             <button
-              onClick={handleOpenPasswordModal}
+              onClick={() => {
+                setDropdownOpen(false);
+                if (onNavigateAccount) {
+                  onNavigateAccount();
+                } else {
+                  handleOpenPasswordModal();
+                }
+              }}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                 isLight
                   ? 'hover:bg-slate-100 text-slate-700'

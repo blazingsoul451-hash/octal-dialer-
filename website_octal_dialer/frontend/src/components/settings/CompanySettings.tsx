@@ -4,7 +4,7 @@ import {
   ChevronRight, ChevronLeft, CheckCircle2, AlertCircle,
   RefreshCw, X, Lock, ShieldCheck, Eye, EyeOff,
   Globe, Mail, Phone, MapPin, ArrowUpRight,
-  ShieldAlert, Check
+  ShieldAlert, Check, Camera
 } from 'lucide-react';
 import { UsersAndRolesView } from './UsersAndRolesView';
 import {
@@ -22,6 +22,7 @@ interface CompanySettingsProps {
   currentUserRole?: StructuralRole | string;
   customerType?: 'COMPANY' | 'PERSONAL';
   userPermissions?: Record<string, boolean>;
+  initialSubView?: 'overview' | 'company-profile' | 'users-roles' | 'account' | 'billing';
   onNavigateTab?: (tab: string) => void;
 }
 
@@ -57,15 +58,22 @@ export const CompanySettings: React.FC<CompanySettingsProps> = ({
   serverUrl,
   authToken,
   currentUser,
-  currentUserRole = 'admin'
+  currentUserRole = 'admin',
+  initialSubView
 }) => {
   const normalizedRole = tryNormalizeStructuralRole(currentUserRole) || 'user';
   const isCompanyOwner = checkCompanyOwner(normalizedRole);
 
   // Subviews: 'overview' | 'company-profile' | 'users-roles' | 'account' | 'billing'
   const [subView, setSubView] = useState<'overview' | 'company-profile' | 'users-roles' | 'account' | 'billing'>(
-    isCompanyOwner ? 'overview' : 'account'
+    initialSubView || (isCompanyOwner ? 'overview' : 'account')
   );
+
+  useEffect(() => {
+    if (initialSubView) {
+      setSubView(initialSubView);
+    }
+  }, [initialSubView]);
 
   // Loading & notification states
   const [loading, setLoading] = useState<boolean>(true);
@@ -276,6 +284,39 @@ export const CompanySettings: React.FC<CompanySettingsProps> = ({
     } finally {
       setSavingAccount(false);
     }
+  };
+
+  // ─── Avatar Upload Handling ──────────────────────────────────────────────────
+  const handleAvatarFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('Please select a valid image file.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const dataUrl = event.target?.result as string;
+      if (dataUrl) {
+        setUserAccount(prev => ({ ...prev, avatarUrl: dataUrl }));
+        try {
+          const res = await fetch(`${serverUrl}/api/user/avatar`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`
+            },
+            body: JSON.stringify({ avatarUrl: dataUrl })
+          });
+          if (res.ok) {
+            notify('Profile photo updated successfully!');
+          }
+        } catch (err: any) {
+          console.error('Failed to save avatar:', err);
+        }
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   // ─── Change Password ────────────────────────────────────────────────────────
@@ -874,6 +915,40 @@ export const CompanySettings: React.FC<CompanySettingsProps> = ({
                 <User className="w-4 h-4 text-emerald-400" />
                 <span>Personal Information</span>
               </h3>
+
+              {/* Avatar Photo Preview and Upload */}
+              <div className="flex items-center gap-4 py-2 border-b border-slate-800/80">
+                <div className="relative group">
+                  <div className="w-14 h-14 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center text-slate-300 overflow-hidden shadow-md">
+                    {userAccount.avatarUrl ? (
+                      <img src={userAccount.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                    ) : (
+                      <User className="w-7 h-7 text-slate-400" />
+                    )}
+                  </div>
+                  <label
+                    htmlFor="account-avatar-file"
+                    className="absolute bottom-0 right-0 w-5 h-5 rounded-full bg-amber-500 hover:bg-amber-400 text-black flex items-center justify-center shadow cursor-pointer transition-transform group-hover:scale-110"
+                    title="Change Photo"
+                  >
+                    <Camera className="w-3 h-3" />
+                    <input
+                      id="account-avatar-file"
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleAvatarFileUpload}
+                    />
+                  </label>
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-white capitalize">{userAccount.displayName || currentUser}</div>
+                  <p className="text-[11px] text-slate-400 font-mono mt-0.5">{userAccount.email || 'user@company.com'}</p>
+                  <label htmlFor="account-avatar-file" className="text-[11px] text-amber-400 hover:text-amber-300 font-semibold cursor-pointer inline-block mt-0.5">
+                    Click to change profile picture
+                  </label>
+                </div>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>

@@ -2101,6 +2101,150 @@ export async function updateTenantStatus(tenantId: string, status: 'active' | 's
   `, [status, now, tenantId]);
 }
 
+export async function updateTenantSeatLimit(tenantId: string, seatLimit: number, updatedBy: string): Promise<{ success: boolean; activeUsers: number; previousLimit: number }> {
+  const now = new Date().toISOString();
+  const currentTenant = await db.queryOne<any>(`SELECT "maxAgents" FROM tenants WHERE id = $1`, [tenantId]);
+  const activeUsersCount = await db.queryOne<{ c: string | number }>(`
+    SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin')
+  `, [tenantId]);
+  const activeUsers = Number(activeUsersCount?.c || 0);
+  const previousLimit = Number(currentTenant?.maxAgents || 10);
+
+  await db.execute(`
+    UPDATE tenants
+    SET "maxAgents" = $1, "updatedAt" = $2
+    WHERE id = $3
+  `, [seatLimit, now, tenantId]);
+
+  try {
+    await db.execute(`
+      INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
+      'audit_' + crypto.randomUUID(),
+      updatedBy || 'platform_admin',
+      'TENANT_SEAT_LIMIT_CHANGED',
+      'tenant',
+      tenantId,
+      JSON.stringify({ previousLimit, newLimit: seatLimit, activeUsers, updatedBy }),
+      now,
+      tenantId
+    ]);
+  } catch (auditErr) {
+    console.warn('[updateTenantSeatLimit] Failed writing audit log:', auditErr);
+  }
+
+  return { success: true, activeUsers, previousLimit };
+}
+
+export async function getGlobalCustomerUsers(options: {
+  search?: string;
+  role?: string;
+  status?: string;
+  tenantId?: string;
+} = {}): Promise<any[]> {
+  let query = `
+    SELECT 
+      u.id, 
+      u.username, 
+      u."displayName", 
+      u.email, 
+      u.role, 
+      u.status, 
+      u."tenantId", 
+      t.name as "tenantName", 
+      t.slug as "tenantSlug", 
+      COALESCE(t."customerType", 'COMPANY') as "customerType",
+      u."createdAt", 
+      u."updatedAt"
+    FROM users u
+    LEFT JOIN tenants t ON t.id = u."tenantId"
+    WHERE LOWER(u.role) NOT IN ('platform_admin', 'master_admin')
+  `;
+  const params: any[] = [];
+
+  if (options.search && options.search.trim()) {
+    const s = `%${options.search.trim().toLowerCase()}%`;
+    params.push(s);
+    query += ` AND (LOWER(u.username) LIKE $${params.length} OR LOWER(COALESCE(u."displayName", '')) LIKE $${params.length} OR LOWER(COALESCE(u.email, '')) LIKE $${params.length} OR LOWER(COALESCE(t.name, '')) LIKE $${params.length})`;
+  }
+
+  if (options.role && options.role !== 'all') {
+    params.push(options.role);
+    query += ` AND u.role = $${params.length}`;
+  }
+
+  if (options.status && options.status !== 'all') {
+    params.push(options.status);
+    query += ` AND u.status = $${params.length}`;
+  }
+
+  if (options.tenantId && options.tenantId !== 'all') {
+    params.push(options.tenantId);
+    query += ` AND u."tenantId" = $${params.length}`;
+  }
+
+  query += ` ORDER BY u."createdAt" DESC LIMIT 200`;
+
+  const users = await db.queryAll<any>(query, params);
+
+  const teamMap = new Map<string, string[]>();
+  const permMap = new Map<string, string[]>();
+
+  if (users.length > 0) {
+    try {
+      const teamMembers = await db.queryAll<any>(`
+        SELECT tm."userId", t.name as "teamName"
+        FROM team_members tm
+        JOIN teams t ON t.id = tm."teamId"
+      `);
+      teamMembers.forEach(tm => {
+        if (!teamMap.has(tm.userId)) teamMap.set(tm.userId, []);
+        teamMap.get(tm.userId)!.push(tm.teamName);
+      });
+
+      const perms = await db.queryAll<any>(`
+        SELECT "userId", "moduleId"
+        FROM user_permissions
+        WHERE enabled = 1
+      `);
+      perms.forEach(p => {
+        if (!permMap.has(p.userId)) permMap.set(p.userId, []);
+        permMap.get(p.userId)!.push(p.moduleId);
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  return users.map(u => {
+    const isOwner = u.role === 'admin';
+    const isTeamLead = u.role === 'team_lead';
+    const roleDisplay = isOwner ? 'Company Owner' : (isTeamLead ? 'Team Lead' : 'Member');
+    const teams = teamMap.get(u.id) || [];
+    const teamDisplay = isOwner ? 'Entire Company' : (teams.length > 0 ? teams.join(', ') : 'Unassigned');
+    const assignedModules = isOwner ? ['crm', 'octalDialer', 'autoEmailer', 'facebookPoster'] : (permMap.get(u.id) || ['crm']);
+
+    return {
+      id: u.id,
+      username: u.username,
+      displayName: u.displayName || u.username,
+      email: u.email || '—',
+      role: u.role,
+      roleDisplay,
+      status: u.status || 'Active',
+      tenantId: u.tenantId,
+      tenantName: u.tenantName || 'Unassigned',
+      tenantSlug: u.tenantSlug || '',
+      customerType: u.customerType || 'COMPANY',
+      teamDisplay,
+      teams,
+      modules: assignedModules,
+      createdAt: u.createdAt
+    };
+  });
+}
+
 export async function getGlobalSuperAdminMetrics(): Promise<{
   totalTenants: number;
   totalUsers: number;
