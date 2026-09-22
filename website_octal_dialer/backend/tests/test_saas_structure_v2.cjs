@@ -201,6 +201,7 @@ async function runAllTests() {
 
   const dbMgr = load('databaseManager.ts', {
     './db/dbAdapter': { dbAdapter: mockDbAdapter, db: mockDbAdapter },
+    './db/pool': { isInMemoryDatabase: () => false },
     './authManager': authMgr,
     './entitlementManager': { checkLimit: () => ({ allowed: true }), initializeCatalogPlans: () => {} },
     './sessionManager': { getSessionById: id => memSessions.get(id) },
@@ -606,7 +607,8 @@ async function runAllTests() {
 
   await check(29, 'Impersonation down-roles platform_admin to admin and cleanup preserves base platform token', async () => {
     const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
-    assert.ok(serverCode.includes("const effectiveRole = (primaryUser.role === 'platform_admin' || primaryUser.role === 'master_admin') ? 'admin' : primaryUser.role;"));
+    assert.ok(serverCode.includes("const effectiveRole = (targetUser.role === 'platform_admin' || targetUser.role === 'master_admin') ? 'admin' : targetUser.role;") ||
+              serverCode.includes("const effectiveRole = (primaryUser.role === 'platform_admin' || primaryUser.role === 'master_admin') ? 'admin' : primaryUser.role;"));
 
     const appCode = fs.readFileSync(path.join(root, '../../frontend/src/App.tsx'), 'utf8');
     assert.ok(appCode.includes("sessionStorage.removeItem('octal_impersonate_token');"));
@@ -676,9 +678,8 @@ async function runAllTests() {
     assert.ok(serverCode.includes("res.json(await getScopedLogs(caller, tenantId));"));
 
     const dbCode = fs.readFileSync(path.join(root, 'databaseManager.ts'), 'utf8');
-    assert.ok(dbCode.includes("export async function getScopedLogs(actor: any, tenantId: string): Promise<CallLog[]>"));
-    assert.ok(dbCode.includes("const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';"));
-    assert.ok(dbCode.includes("const isCompanyAdmin = actor?.role === 'admin';"));
+    assert.ok(dbCode.includes("const isPlatform = isPlatformRole(actor?.role);") || dbCode.includes("const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';"));
+    assert.ok(dbCode.includes("const isCompanyAdmin = isCompanyOwner(actor);") || dbCode.includes("const isCompanyAdmin = actor?.role === 'admin';"));
     assert.ok(dbCode.includes("getTeamLeadScopedUserIds(actor.id, tenantId);"));
     assert.ok(dbCode.includes("getUserTeamPeerVisibilitySets(actor.id, tenantId);"));
   });

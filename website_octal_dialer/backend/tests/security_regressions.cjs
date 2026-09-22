@@ -164,7 +164,7 @@ async function main() {
     await handler({ body: { credential: 'forged' } }, response); assert.equal(called, false);
     await handler({ body: { credential: 'verified-token' } }, response); assert.equal(called, true);
   });
-  const manager = load('databaseManager.ts', { './entitlementManager': { initializeCatalogPlans: async () => {} }, './db/dbAdapter': { dbAdapter: db } });
+  const manager = load('databaseManager.ts', { './entitlementManager': { initializeCatalogPlans: async () => {} }, './db/dbAdapter': { dbAdapter: db }, './db/pool': pool, './authManager': auth });
   await check('foreign team references fail before destructive membership replacement', async () => {
     let writes = 0; execute = async () => { writes++; return { rowCount: 1 }; };
     await assert.rejects(manager.setTeamMembers('foreign-team', 'tenant', ['user']));

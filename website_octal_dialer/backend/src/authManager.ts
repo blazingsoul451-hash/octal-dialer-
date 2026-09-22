@@ -56,6 +56,35 @@ export function issueAuthToken(user: { id: string; username: string; role: strin
   return jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
 }
 
+// ─── Canonical Role Recognition & Authority Isolation ────────────────────────
+export function isPlatformRole(role?: string | null): boolean {
+  if (!role) return false;
+  const r = role.toLowerCase().trim();
+  return r === 'platform_admin' || r === 'master_admin' || r === 'super_admin';
+}
+
+export function isPlatformAdmin(user?: { role?: string | null } | null): boolean {
+  return isPlatformRole(user?.role);
+}
+
+export function isCompanyOwner(userOrRole?: any): boolean {
+  const role = typeof userOrRole === 'string' ? userOrRole : userOrRole?.role;
+  return (role || '').toLowerCase().trim() === 'admin';
+}
+
+export function isTeamLead(userOrRole?: any): boolean {
+  const role = typeof userOrRole === 'string' ? userOrRole : userOrRole?.role;
+  return (role || '').toLowerCase().trim() === 'team_lead';
+}
+
+export function isTenantMember(userOrRole?: any): boolean {
+  const role = typeof userOrRole === 'string' ? userOrRole : userOrRole?.role;
+  const r = (role || '').toLowerCase().trim();
+  return r === 'user' || r === 'agent';
+}
+
+export const SQL_EXCLUDE_PLATFORM_ROLES = "LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')";
+
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 export interface AuthUser {
   id: string;
@@ -208,7 +237,7 @@ export async function authenticateGoogleSignIn(profile: { googleId: string; emai
   const pendingInvitation = (!user.tenantId && user.email)
     ? await getPendingInvitationForEmail(user.email)
     : null;
-  const needsOnboarding = !user.tenantId && !pendingInvitation;
+  const needsOnboarding = !user.tenantId && !pendingInvitation && !isPlatformRole(user.role);
 
   const payload = {
     sub: user.id,
@@ -761,6 +790,20 @@ export async function registerPublicUser(params: { username: string; email?: str
 // ─── Default admin bootstrap ──────────────────────────────────────────────────
 export async function ensureDefaultAdmin(): Promise<void> {
   const now = new Date().toISOString();
+
+  // 1. Strict platform admin detachment: ensure platform admin accounts have tenantId = NULL
+  try {
+    await db.execute(`
+      UPDATE users 
+      SET "tenantId" = NULL 
+      WHERE LOWER(role) IN ('platform_admin', 'master_admin', 'super_admin') 
+        AND "tenantId" IS NOT NULL
+    `);
+  } catch (err) {
+    console.warn('[ensureDefaultAdmin] Notice detaching platform admins from tenants:', err);
+  }
+
+  // 2. Ensure customer default tenant exists for customer workspaces
   try {
     const existingTenant = await db.queryOne('SELECT id FROM tenants WHERE id = $1', ['tenant_default']);
     if (!existingTenant) {
@@ -773,7 +816,8 @@ export async function ensureDefaultAdmin(): Promise<void> {
     console.warn('[ensureDefaultAdmin] Notice checking tenant_default:', err);
   }
 
-  const existing = await db.queryOne("SELECT id FROM users WHERE role IN ('platform_admin', 'master_admin') LIMIT 1");
+  // 3. Ensure bootstrap platform admin identity exists (strictly detached from any customer workspace: tenantId = NULL)
+  const existing = await db.queryOne("SELECT id FROM users WHERE LOWER(role) IN ('platform_admin', 'master_admin', 'super_admin') LIMIT 1");
   if (!existing) {
     const username = process.env.BOOTSTRAP_ADMIN_USERNAME?.trim().toLowerCase();
     const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
@@ -785,9 +829,9 @@ export async function ensureDefaultAdmin(): Promise<void> {
     if (collision) throw new Error('Bootstrap identity already exists. Explicit administrator recovery is required.');
     const { hash } = hashPassword(password);
     await db.execute(`INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
-      VALUES ($1, $2, $3, $4, 'platform_admin', 'tenant_default', 'local', 1, $5, $5)`,
+      VALUES ($1, $2, $3, $4, 'platform_admin', NULL, 'local', 1, $5, $5)`,
       ['user_' + crypto.randomUUID(), username, email, hash, now]);
-    console.log('[Auth Bootstrap] Provisioned administrator. Remove bootstrap credentials from the environment.');
+    console.log('[Auth Bootstrap] Provisioned administrator (detached from customer tenancy).');
   }
 
   if (process.env.NODE_ENV !== 'production') {
@@ -824,7 +868,7 @@ export async function login(identifier: string, password: string): Promise<strin
   if (!user) return null;
   if (!verifyPassword(password, user.passwordHash)) return null;
 
-  if (!user.tenantId) {
+  if (!user.tenantId && !isPlatformRole(user.role)) {
     console.error(`[Auth] User ${identifier} has no associated tenantId. Login rejected.`);
     return null;
   }
@@ -836,7 +880,7 @@ export async function login(identifier: string, password: string): Promise<strin
     sub: user.id,
     username: user.username,
     role: user.role,
-    tenantId: user.tenantId
+    tenantId: user.tenantId || null
   };
 
   const token = jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
@@ -1004,7 +1048,7 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
 
       if (dbUser.tenantId) {
         const dbTenant = await db.queryOne<{ status: string }>(`SELECT status FROM tenants WHERE id = $1`, [dbUser.tenantId]);
-        if (dbTenant && dbTenant.status === 'suspended' && dbUser.role !== 'platform_admin' && dbUser.role !== 'master_admin') {
+        if (dbTenant && dbTenant.status === 'suspended' && !isPlatformRole(dbUser.role)) {
           return null;
         }
       }
@@ -1033,7 +1077,7 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
     }
 
     const user = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [session.userId]);
-    if (!user || !user.tenantId || user.status === 'suspended') {
+    if (!user || (!user.tenantId && !isPlatformRole(user.role)) || user.status === 'suspended') {
       return null;
     }
 
@@ -1120,10 +1164,10 @@ export async function resetPasswordWithToken(resetToken: string, newPassword: st
  * - Team Lead / Member: strictly forbidden from changing user roles.
  */
 export async function updateUserRole(executorUser: AuthUser, targetUserId: string, newRole: string): Promise<{ success: boolean; user: any }> {
-  const isPlatform = executorUser.role === 'platform_admin' || executorUser.role === 'master_admin';
-  const isCompanyOwner = executorUser.role === 'admin';
+  const isPlatform = isPlatformRole(executorUser.role);
+  const isCompanyOwnerRole = isCompanyOwner(executorUser.role);
 
-  if (!isPlatform && !isCompanyOwner) {
+  if (!isPlatform && !isCompanyOwnerRole) {
     throw new Error('Forbidden: Only Platform Owners and Company Owners can change user roles.');
   }
 
@@ -1143,7 +1187,7 @@ export async function updateUserRole(executorUser: AuthUser, targetUserId: strin
   }
 
   // Protect platform owner accounts against modification or demotion
-  if ((target.username === 'mohsin1' || target.role === 'platform_admin' || target.role === 'master_admin')) {
+  if (isPlatformRole(target.role) || target.username === 'mohsin1') {
     throw new Error('Forbidden: Platform Owner accounts cannot be modified or demoted.');
   }
 
@@ -1155,7 +1199,7 @@ export async function updateUserRole(executorUser: AuthUser, targetUserId: strin
     if (!['admin', 'team_lead', 'user'].includes(normalizedRole)) {
       throw new Error('Invalid role. Platform Owners may assign admin, team_lead, or user.');
     }
-  } else if (isCompanyOwner) {
+  } else if (isCompanyOwnerRole) {
     if (!['team_lead', 'user'].includes(normalizedRole)) {
       throw new Error('Forbidden: Company Owners may only assign team_lead or user roles.');
     }
@@ -1186,7 +1230,7 @@ export async function requirePlatformAdmin(req: express.Request, res: express.Re
     return;
   }
 
-  if (user.role !== 'platform_admin' && user.role !== 'master_admin') {
+  if (!isPlatformRole(user.role)) {
     res.status(403).json({ error: 'Forbidden. Master Admin access required.' });
     return;
   }
@@ -1208,7 +1252,7 @@ export async function requireTenantAdmin(req: express.Request, res: express.Resp
     return;
   }
 
-  if (user.role !== 'admin' && user.role !== 'platform_admin' && user.role !== 'master_admin') {
+  if (!isCompanyOwner(user) && !isPlatformRole(user.role)) {
     res.status(403).json({ error: 'Forbidden. Admin access required.' });
     return;
   }
@@ -1230,7 +1274,7 @@ export async function requireTeamLeadOrAdmin(req: express.Request, res: express.
     return;
   }
 
-  if (user.role !== 'team_lead' && user.role !== 'admin' && user.role !== 'platform_admin' && user.role !== 'master_admin') {
+  if (!isTeamLead(user) && !isCompanyOwner(user) && !isPlatformRole(user.role)) {
     res.status(403).json({ error: 'Forbidden. Team Lead or Admin access required.' });
     return;
   }
@@ -1247,13 +1291,13 @@ export async function requireTeamLeadOrAdmin(req: express.Request, res: express.
  * - user / agent -> OWN
  */
 export function resolveAccessScope(user: AuthUser): 'PLATFORM' | 'TENANT' | 'TEAM' | 'OWN' {
-  if (user.role === 'platform_admin' || user.role === 'master_admin') {
+  if (isPlatformRole(user.role)) {
     return 'PLATFORM';
   }
-  if (user.role === 'admin') {
+  if (isCompanyOwner(user)) {
     return 'TENANT';
   }
-  if (user.role === 'team_lead') {
+  if (isTeamLead(user)) {
     return 'TEAM';
   }
   return 'OWN';
@@ -1275,7 +1319,7 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
   const permissions = new Set<string>();
 
   // 1. Platform / Master Admins have full access
-  if (user.role === 'platform_admin' || user.role === 'master_admin') {
+  if (isPlatformRole(user.role)) {
     permissions.add('*');
     return permissions;
   }
@@ -1423,7 +1467,7 @@ export function requirePermission(requiredPerm: string | string[]) {
     }
 
     // Platform / master admin bypass
-    if (user.role === 'platform_admin' || user.role === 'master_admin') {
+    if (isPlatformRole(user.role)) {
       return next();
     }
 
@@ -1464,6 +1508,11 @@ export async function validateRoleBelongsToTenant(roleId: string, tenantId: stri
 export function getTenantId(req: express.Request): string {
   const user = (req as any).user as AuthUser | undefined;
   if (!user || !user.tenantId) {
+    const headerTenant = req.headers['x-tenant-id'] as string;
+    const queryTenant = req.query?.tenantId as string;
+    if (user && isPlatformRole(user.role) && (headerTenant || queryTenant)) {
+      return (headerTenant || queryTenant).trim();
+    }
     throw new Error('Unauthorized: missing tenant identity');
   }
   return user.tenantId;
@@ -1483,7 +1532,7 @@ export function requireModule(moduleId: string) {
 
     (req as any).user = user;
 
-    if (user.role === 'platform_admin' || user.role === 'master_admin') {
+    if (isPlatformRole(user.role)) {
       return next();
     }
 

@@ -26,6 +26,13 @@ dbAdapter.init().then(async () => {
   console.error('[DatabaseManager] PostgreSQL initialization notice:', err);
 });
 
+// ─── Platform Role Helper ─────────────────────────────────────────────────────
+export function isPlatformRole(role?: string | null): boolean {
+  if (!role) return false;
+  const r = role.toLowerCase().trim();
+  return r === 'platform_admin' || r === 'master_admin' || r === 'super_admin';
+}
+
 // ─── TypeScript interfaces (unchanged from old implementation) ────────────────
 export interface Campaign {
   id: string;
@@ -131,7 +138,7 @@ export async function getTenantSeatUsage(tenantId: string): Promise<TenantSeatUs
   }
 
   const activeRow = await db.queryOne<{ count: string | number }>(
-    `SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND role NOT IN ('platform_admin', 'master_admin') AND status = 'Active'`,
+    `SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin') AND status = 'Active'`,
     [tenantId]
   );
   const activeSeats = parseInt(String(activeRow?.count || '0'), 10);
@@ -1410,8 +1417,11 @@ async function assertTenantRecords(table: 'teams' | 'users' | 'campaigns', ids: 
   if (!tenantId) throw new Error('Tenant identity is required.');
   for (const id of new Set(ids)) {
     if (typeof id !== 'string' || !id) throw new Error('Invalid record ID.');
-    const row = await db.queryOne(`SELECT id FROM "${table}" WHERE id = $1 AND "tenantId" = $2 FOR UPDATE`, [id, tenantId]);
-    if (!row) throw new Error('Record not found in your tenant.');
+    const query = table === 'users'
+      ? `SELECT id FROM "users" WHERE id = $1 AND "tenantId" = $2 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin') FOR UPDATE`
+      : `SELECT id FROM "${table}" WHERE id = $1 AND "tenantId" = $2 FOR UPDATE`;
+    const row = await db.queryOne(query, [id, tenantId]);
+    if (!row) throw new Error(`Record not found in your tenant${table === 'users' ? ' (platform administrators cannot be assigned to customer teams)' : ''}.`);
   }
 }
 
@@ -1764,7 +1774,7 @@ export async function canAccessLead(
   tenantId: string
 ): Promise<boolean> {
   if (!actor || !tenantId) return false;
-  const isPlatform = actor.role === 'platform_admin' || actor.role === 'master_admin';
+  const isPlatform = isPlatformRole(actor?.role);
   if (!isPlatform && actor.tenantId !== tenantId) return false;
 
   let lead: { id?: string; assignedTo?: string | null; tenantId?: string } | null | undefined = null;
@@ -1834,7 +1844,7 @@ export async function getScopedLeadFilterSql(
   tableAlias: string = 'l',
   startParamIndex: number = 1
 ): Promise<{ sql: string; params: any[] }> {
-  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
+  const isPlatform = isPlatformRole(actor?.role);
   if (isPlatform || actor?.role === 'admin') {
     return { sql: '', params: [] };
   }
@@ -1871,7 +1881,7 @@ export async function getScopedLeadFilterSql(
  */
 export async function getScopedLogs(actor: any, tenantId: string): Promise<CallLog[]> {
   if (!tenantId) return [];
-  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
+  const isPlatform = isPlatformRole(actor?.role);
   const isCompanyAdmin = actor?.role === 'admin';
 
   if (isPlatform || isCompanyAdmin) {
@@ -1933,7 +1943,13 @@ export async function canDispositionLead(caller: any, lead: any, tenantId: strin
     } catch (_) {}
   }
 
-  // 2. Check call dispatch journal for pre-dispatch record
+  // 2. Historical call evidence ONLY applies to unassigned leads in a shared pool.
+  // If the lead is explicitly assigned to another user, historical callers MUST NOT disposition it.
+  if (lead.assignedTo && lead.assignedTo !== userId) {
+    return false;
+  }
+
+  // 3. Check call dispatch journal for pre-dispatch record
   try {
     const journalEntry = await db.queryOne<{ callId: string }>(
       `SELECT "callId" FROM call_dispatch_journal WHERE "leadId" = $1 AND "tenantId" = $2 AND "userId" = $3 LIMIT 1`,
@@ -1942,7 +1958,7 @@ export async function canDispositionLead(caller: any, lead: any, tenantId: strin
     if (journalEntry) return true;
   } catch (_) {}
 
-  // 3. Check call outcomes for completed call outcome record
+  // 4. Check call outcomes for completed call outcome record
   try {
     const outcomeEntry = await db.queryOne<{ id: string }>(
       `SELECT id FROM call_outcomes WHERE "leadId" = $1 AND "tenantId" = $2 AND "userId" = $3 LIMIT 1`,
@@ -1962,7 +1978,7 @@ export async function canDispositionLead(caller: any, lead: any, tenantId: strin
  */
 export async function getScopedLockedLeads(actor: any, tenantId?: string): Promise<Lead[]> {
   if (!tenantId) return [];
-  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
+  const isPlatform = isPlatformRole(actor?.role);
   const isCompanyAdmin = actor?.role === 'admin';
 
   const allLocked = await getLockedLeads(tenantId);
@@ -2105,7 +2121,7 @@ export async function updateTenantSeatLimit(tenantId: string, seatLimit: number,
   const now = new Date().toISOString();
   const currentTenant = await db.queryOne<any>(`SELECT "maxAgents" FROM tenants WHERE id = $1`, [tenantId]);
   const activeUsersCount = await db.queryOne<{ c: string | number }>(`
-    SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin')
+    SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
   `, [tenantId]);
   const activeUsers = Number(activeUsersCount?.c || 0);
   const previousLimit = Number(currentTenant?.maxAgents || 10);
@@ -2159,7 +2175,7 @@ export async function getGlobalCustomerUsers(options: {
       u."updatedAt"
     FROM users u
     LEFT JOIN tenants t ON t.id = u."tenantId"
-    WHERE LOWER(u.role) NOT IN ('platform_admin', 'master_admin')
+    WHERE LOWER(u.role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
   `;
   const params: any[] = [];
 
@@ -2348,10 +2364,10 @@ export async function getGlobalPlatformOverview(): Promise<GlobalPlatformOvervie
       const c = Number(r.cnt) || 0;
       if (r.role === 'admin') companyOwners += c;
       else if (r.role === 'team_lead') teamLeads += c;
-      else if (r.role === 'platform_admin' || r.role === 'master_admin') platformAdmins += c;
+      else if (isPlatformRole(r.role)) platformAdmins += c;
       else members += c;
     });
-    // Customer total users excludes platform_admin & master_admin
+    // Customer total users excludes platform administrators
     totalUsers = companyOwners + teamLeads + members;
   } catch (err) {
     console.error('[Observability] Users query error:', err);
@@ -2563,7 +2579,7 @@ export async function getTenantModuleEntitlements(tenantId: string): Promise<Rec
       const canonical = normalizeModuleKey(r.moduleId);
       const isEnabled = Number(r.enabled) === 1;
       result[canonical] = isEnabled;
-      const modDef = CANONICAL_MODULES.find(m => m.id === canonical);
+      const modDef = ALL_CANONICAL_MODULES.find(m => m.id === canonical);
       if (modDef?.aliases) {
         modDef.aliases.forEach(a => { result[a] = isEnabled; });
       }
@@ -2620,7 +2636,7 @@ export async function getTenantAccessMatrix(tenantId: string): Promise<any[]> {
   const users = await db.queryAll<any>(`
     SELECT id, username, "displayName", email, role, status, "createdAt"
     FROM users
-    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin')
+    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
     ORDER BY CASE WHEN role = 'admin' THEN 1 WHEN role = 'team_lead' THEN 2 ELSE 3 END, "createdAt" ASC
   `, [tenantId]);
 
@@ -2778,7 +2794,7 @@ export async function getDetailedTenantsList(options: {
     `);
     userRows.forEach(u => {
       if (u.tenantId && userStatsMap[u.tenantId]) {
-        if (u.role === 'platform_admin' || u.role === 'master_admin') {
+        if (isPlatformRole(u.role)) {
           // Strictly exclude platform administrators from customer organization metrics
           return;
         }
@@ -2993,7 +3009,7 @@ export async function getTenantDetail(tenantId: string): Promise<any> {
   const users = await db.queryAll<any>(`
     SELECT id, username, email, "displayName", role, status, "createdAt", "updatedAt"
     FROM users
-    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin')
+    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
     ORDER BY CASE WHEN role = 'admin' THEN 1 WHEN role = 'team_lead' THEN 2 ELSE 3 END, "createdAt" ASC
   `, [tenantId]);
 
@@ -3312,7 +3328,7 @@ export interface CrmNote {
 }
 
 export async function getScopedCrmUserIds(actor: any, tenantId: string): Promise<string[] | null> {
-  const isPlatform = actor?.role === 'platform_admin' || actor?.role === 'master_admin';
+  const isPlatform = isPlatformRole(actor?.role);
   if (isPlatform || actor?.role === 'admin') {
     return null; // Null means unrestricted access to all tenant records
   }

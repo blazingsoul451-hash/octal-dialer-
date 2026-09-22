@@ -173,7 +173,13 @@ import {
   registerCustomerWithEmail,
   issueAuthToken,
   RevocationStorageUnavailableError,
-  registerTokenRevocationHandler
+  registerTokenRevocationHandler,
+  isPlatformRole,
+  isPlatformAdmin,
+  isCompanyOwner,
+  isTeamLead,
+  isTenantMember,
+  SQL_EXCLUDE_PLATFORM_ROLES
 } from './authManager';
 
 import { registerScraperRoutes } from './scraperRoutes';
@@ -301,7 +307,7 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
 
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const user = (req as any).user;
-  if (!user || (user.role !== 'admin' && user.role !== 'platform_admin')) {
+  if (!user || (!isCompanyOwner(user) && !isPlatformRole(user.role))) {
     res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
     return;
   }
@@ -310,7 +316,7 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
 
 function requireCompanyOwnerOrPlatformAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const user = (req as any).user;
-  if (!user || (user.role !== 'admin' && user.role !== 'platform_admin' && user.role !== 'master_admin')) {
+  if (!user || (!isCompanyOwner(user) && !isPlatformRole(user.role))) {
     res.status(403).json({ error: 'Forbidden: Company Owner or Platform Administrator privileges required.' });
     return;
   }
@@ -583,7 +589,8 @@ app.get(['/auth/verify', '/api/auth/verify'], async (req, res) => {
   let pendingInvitation: any = null;
   let needsOnboarding = false;
 
-  if (!user.tenantId) {
+  const isPlatform = isPlatformRole(user.role);
+  if (!user.tenantId && !isPlatform) {
     if (user.email) {
       pendingInvitation = await getPendingInvitationForEmail(user.email);
     }
@@ -1681,9 +1688,9 @@ app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, requirePermission(['lea
       return;
     }
 
-    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-    const isCompanyAdmin = caller.role === 'admin';
-    const isTeamLead = caller.role === 'team_lead';
+    const isPlatform = isPlatformRole(caller.role);
+    const isCompanyAdmin = isCompanyOwner(caller);
+    const isLeadSupervisor = isTeamLead(caller);
 
     // Verify access to update this specific lead
     const targetLead = await db.queryOne<{ id: string; assignedTo?: string; campaignId?: string }>(
@@ -1698,11 +1705,21 @@ app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, requirePermission(['lea
     // Reassignment guard: Only Platform Owner, Company Owner, or Team Lead can reassign leads.
     // Standard members can NEVER change assignedTo (neither reassign nor set to null).
     if (assignedTo !== undefined) {
-      if (!isPlatform && !isCompanyAdmin && !isTeamLead) {
+      if (!isPlatform && !isCompanyAdmin && !isLeadSupervisor) {
         res.status(403).json({ error: 'Forbidden: Standard members cannot reassign leads.' });
         return;
       }
-      if (isTeamLead) {
+      if (assignedTo && typeof assignedTo === 'string' && assignedTo.trim() !== '') {
+        const targetUser = await db.queryOne<{ id: string; tenantId: string }>(
+          `SELECT id, "tenantId" FROM users WHERE id = $1 AND "tenantId" = $2 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')`,
+          [assignedTo.trim(), tenantId]
+        );
+        if (!targetUser) {
+          res.status(400).json({ error: 'Invalid assigned user: user not found in this workspace or is a platform administrator.' });
+          return;
+        }
+      }
+      if (isLeadSupervisor) {
         // Team Lead must assign to a real user in a team they lead; unassignment (null/empty) is forbidden
         if (!assignedTo || typeof assignedTo !== 'string' || assignedTo.trim() === '') {
           res.status(400).json({ error: 'Team Lead cannot unassign leads. A valid member ID from a team you lead is required.' });
@@ -1711,14 +1728,6 @@ app.patch(['/leads/:id', '/api/leads/:id'], requireAuth, requirePermission(['lea
         const teamUserIds = await getTeamLeadScopedUserIds(caller.id, tenantId);
         if (!teamUserIds.includes(assignedTo)) {
           res.status(403).json({ error: 'Forbidden: Team Lead cannot reassign leads to users outside their led teams.' });
-          return;
-        }
-        const targetUser = await db.queryOne<{ id: string; tenantId: string }>(
-          `SELECT id, "tenantId" FROM users WHERE id = $1 AND "tenantId" = $2`,
-          [assignedTo, tenantId]
-        );
-        if (!targetUser) {
-          res.status(404).json({ error: 'Target user not found in your organization.' });
           return;
         }
       }
@@ -2689,6 +2698,22 @@ app.post('/api/crm/tasks', requireAuth, requirePermission(['crm:edit', 'crm:crea
       return;
     }
 
+    let finalAssignedUserId = assignedUserId || user.id;
+    if (finalAssignedUserId) {
+      const validTaskUser = await db.queryOne<{ id: string }>(
+        `SELECT id FROM users WHERE id = $1 AND "tenantId" = $2 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')`,
+        [finalAssignedUserId, tenantId]
+      );
+      if (!validTaskUser) {
+        if (assignedUserId) {
+          res.status(400).json({ error: 'Invalid assigned user: user not found in this workspace or is a platform administrator.' });
+          return;
+        } else {
+          finalAssignedUserId = null;
+        }
+      }
+    }
+
     const id = `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date().toISOString();
 
@@ -2706,7 +2731,7 @@ app.post('/api/crm/tasks', requireAuth, requirePermission(['crm:edit', 'crm:crea
       crmCompanyId || null,
       contactId || null,
       leadId || null,
-      assignedUserId || user.id,
+      finalAssignedUserId || null,
       assignedTeamId || null,
       user.id,
       now
@@ -4077,6 +4102,17 @@ app.put('/api/crm/tasks/:id', requireAuth, requirePermission(['crm:edit']), asyn
       return;
     }
 
+    if (assignedUserId) {
+      const validTaskUser = await db.queryOne<{ id: string }>(
+        `SELECT id FROM users WHERE id = $1 AND "tenantId" = $2 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')`,
+        [assignedUserId, tenantId]
+      );
+      if (!validTaskUser) {
+        res.status(400).json({ error: 'Invalid assigned user: user not found in this workspace or is a platform administrator.' });
+        return;
+      }
+    }
+
     const now = new Date().toISOString();
     await db.execute(`
       UPDATE crm_tasks
@@ -4928,7 +4964,7 @@ app.put(['/api/super-admin/tenants/:id/seats', '/api/super-admin/tenants/:id/lim
     }
 
     const activeUsersCount = await db.queryOne<{ c: string | number }>(`
-      SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin')
+      SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
     `, [tenantId]);
     const activeUsers = Number(activeUsersCount?.c || 0);
 
@@ -5558,28 +5594,35 @@ app.get(['/api/admin/overview', '/admin/platform/overview', '/admin/overview'], 
 // GET /api/admin/users & /admin/users
 app.get(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:view'), async (req, res) => {
   const user = (req as any).user;
-  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
-  const users = isPlatform
+  const isPlatform = isPlatformRole(user.role);
+  const targetTenantId = (isPlatform && (req.query.tenantId as string)) || user.tenantId;
+
+  const users = targetTenantId
     ? await db.queryAll(`
         SELECT u.id, u.username, u."displayName", u.phone, u.email, u.role, u.status, u."ipRestrictions", u."tenantId", u."createdAt", u."updatedAt", u."roleId",
                COALESCE(cr."roleName", CASE WHEN LOWER(u.role) = 'admin' THEN 'Administrator' WHEN LOWER(u.role) IN ('agent', 'user') THEN 'Agent' ELSE u.role END) AS "roleName"
         FROM users u
         LEFT JOIN custom_roles cr ON cr.id = u."roleId"
+        WHERE u."tenantId" = $1 AND LOWER(u.role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
         ORDER BY u."createdAt" DESC
-      `) as any[]
-    : await db.queryAll(`
-        SELECT u.id, u.username, u."displayName", u.phone, u.email, u.role, u.status, u."ipRestrictions", u."tenantId", u."createdAt", u."updatedAt", u."roleId",
-               COALESCE(cr."roleName", CASE WHEN LOWER(u.role) = 'admin' THEN 'Administrator' WHEN LOWER(u.role) IN ('agent', 'user') THEN 'Agent' ELSE u.role END) AS "roleName"
-        FROM users u
-        LEFT JOIN custom_roles cr ON cr.id = u."roleId"
-        WHERE u."tenantId" = $1 AND LOWER(u.role) NOT IN ('platform_admin', 'master_admin')
-        ORDER BY u."createdAt" DESC
-      `, [user.tenantId]) as any[];
+      `, [targetTenantId]) as any[]
+    : isPlatform
+      ? await db.queryAll(`
+          SELECT u.id, u.username, u."displayName", u.phone, u.email, u.role, u.status, u."ipRestrictions", u."tenantId", u."createdAt", u."updatedAt", u."roleId",
+                 COALESCE(cr."roleName", CASE WHEN LOWER(u.role) = 'admin' THEN 'Administrator' WHEN LOWER(u.role) IN ('agent', 'user') THEN 'Agent' ELSE u.role END) AS "roleName"
+          FROM users u
+          LEFT JOIN custom_roles cr ON cr.id = u."roleId"
+          WHERE LOWER(u.role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
+          ORDER BY u."createdAt" DESC
+        `) as any[]
+      : [];
 
   // Attach module permissions & calculate effective modules for each user
-  const perms = isPlatform
-    ? await db.queryAll(`SELECT * FROM user_permissions`) as any[]
-    : await db.queryAll(`SELECT * FROM user_permissions WHERE "tenantId" = $1`, [user.tenantId]) as any[];
+  const perms = targetTenantId
+    ? await db.queryAll(`SELECT * FROM user_permissions WHERE "tenantId" = $1`, [targetTenantId]) as any[]
+    : isPlatform
+      ? await db.queryAll(`SELECT * FROM user_permissions`) as any[]
+      : [];
 
   const permMap = new Map<string, any[]>();
   for (const p of perms) {
@@ -5619,10 +5662,10 @@ app.get(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOr
 app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:add'), async (req, res) => {
   try {
     const caller = (req as any).user;
-    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-    const isCompanyOwner = caller.role === 'admin';
+    const isPlatform = isPlatformRole(caller.role);
+    const isCompanyOwnerRole = isCompanyOwner(caller);
 
-    if (!isPlatform && !isCompanyOwner) {
+    if (!isPlatform && !isCompanyOwnerRole) {
       res.status(403).json({ error: 'Forbidden: Only Platform Owners and Company Owners can create users.' });
       return;
     }
@@ -5634,6 +5677,11 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
     }
 
     const roleRaw = (role || 'user').toLowerCase().trim();
+    if (isPlatformRole(roleRaw)) {
+      res.status(403).json({ error: 'Forbidden: Platform Administrator accounts cannot be created through customer user management.' });
+      return;
+    }
+
     let normalizedRole: string;
     if (roleRaw === 'agent' || roleRaw === 'user') {
       normalizedRole = 'user';
@@ -5651,6 +5699,10 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
     }
 
     const tenantId = isPlatform ? (req.body.tenantId || caller.tenantId) : caller.tenantId;
+    if (!tenantId) {
+      res.status(400).json({ error: 'Tenant organization identity is required to create a workspace user.' });
+      return;
+    }
 
     if (!isPlatform) {
       const seatUsage = await getTenantSeatUsage(tenantId);
@@ -5740,7 +5792,7 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
 // PUT /api/admin/users/:id & /admin/users/:id (Unified update for role, password, and permissions)
 app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:edit'), async (req, res) => {
   const caller = (req as any).user;
-  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+  const isPlatform = isPlatformRole(caller.role);
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
 
   if (!targetUser) {
@@ -5753,12 +5805,17 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
     return;
   }
 
-  if (!isPlatform && (targetUser.role === 'platform_admin' || targetUser.role === 'master_admin')) {
+  if (isPlatformRole(targetUser.role)) {
     res.status(403).json({ error: 'Forbidden: Cannot modify platform administrator account through customer API.' });
     return;
   }
 
   const { role, roleId, newPassword, password, permissions, displayName, firstName, lastName, email, phone, status, ipRestrictions } = req.body;
+
+  if (role && isPlatformRole(role)) {
+    res.status(403).json({ error: 'Forbidden: Cannot promote user to platform administrator through customer API.' });
+    return;
+  }
 
   // Validate roleId if provided
   if (roleId) {
@@ -5993,7 +6050,7 @@ app.put(['/api/admin/users/:id/role', '/admin/users/:id/role'], requireAuth, req
 // POST /api/admin/users/:id/password
 app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:edit'), async (req, res) => {
   const caller = (req as any).user;
-  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+  const isPlatform = isPlatformRole(caller.role);
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
 
   if (!targetUser) {
@@ -6006,8 +6063,8 @@ app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], require
     return;
   }
 
-  if (!isPlatform && (targetUser.role === 'platform_admin' || targetUser.role === 'master_admin')) {
-    res.status(403).json({ error: 'Forbidden: Cannot reset password for platform administrators.' });
+  if (isPlatformRole(targetUser.role)) {
+    res.status(403).json({ error: 'Forbidden: Cannot reset password for platform administrators through customer API.' });
     return;
   }
 
@@ -6023,7 +6080,7 @@ app.post(['/api/admin/users/:id/password', '/admin/users/:id/password'], require
 // DELETE /api/admin/users/:id
 app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:delete'), async (req, res) => {
   const caller = (req as any).user;
-  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+  const isPlatform = isPlatformRole(caller.role);
   const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
 
   if (!targetUser) {
@@ -6036,8 +6093,8 @@ app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCom
     return;
   }
 
-  if (!isPlatform && (targetUser.role === 'platform_admin' || targetUser.role === 'master_admin')) {
-    res.status(403).json({ error: 'Forbidden: Cannot delete platform administrators.' });
+  if (isPlatformRole(targetUser.role)) {
+    res.status(403).json({ error: 'Forbidden: Cannot delete platform administrators through customer API.' });
     return;
   }
 
