@@ -112,6 +112,7 @@ async function main() {
   }
 
   const rootFiles = [
+    'README_FOR_GPT_REVIEW.md',
     'PLATFORM_CUSTOMER_AUTHORITY_FINAL_AUDIT.md',
     'GPT_CODE_REVIEW_MANIFEST.md',
     'package.json',
