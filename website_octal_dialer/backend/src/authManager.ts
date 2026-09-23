@@ -96,6 +96,8 @@ export interface AuthUser {
   roleId?: string | null;
   needsOnboarding?: boolean;
   pendingInvitation?: any;
+  impersonatedBy?: string;
+  impersonatedReason?: string;
 }
 
 export interface AuthSession {
@@ -557,7 +559,7 @@ export async function initiateEmailSignup(params: {
 
   await db.execute(`
     INSERT INTO pending_signups (id, email, username, "passwordHash", "codeHash", attempts, "resendCount", "lastSentAt", "expiresAt", ip, "tenantId", "createdAt")
-    VALUES ($1, $2, $3, $4, $5, 0, 0, $6, $7, $8, 'tenant_default', $9)
+    VALUES ($1, $2, $3, $4, $5, 0, 0, $6, $7, $8, NULL, $9)
   `, [signupId, email, username, passwordHash, codeHash, nowIso, expiresIso, params.ip || 'unknown', nowIso]);
 
   await sendVerificationEmail(email, otpCode);
@@ -622,7 +624,7 @@ export async function verifyEmailCode(params: {
 
   if (!user) {
     const userId = 'user_' + crypto.randomBytes(8).toString('hex');
-    const tenantId = pending.tenantId || 'tenant_default';
+    const tenantId = pending.tenantId || null;
 
     await db.withTransaction(async () => {
       await db.execute(`
@@ -630,13 +632,15 @@ export async function verifyEmailCode(params: {
         VALUES ($1, $2, $3, $4, 'user', $5, 'local', 1, $6, $7, $8)
       `, [userId, pending.username, pending.email, pending.passwordHash, tenantId, nowIso, nowIso, nowIso]);
 
-      const modules = ['crm', 'octalDialer', 'campaigns', 'leads', 'reports', 'autoEmailer', 'facebookPoster'];
-      for (const m of modules) {
-        await db.execute(`
-          INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
-          VALUES ($1, $2, $3, 1, 'SYSTEM_VERIFIED_SIGNUP', $4, $5)
-          ON CONFLICT ("id") DO NOTHING
-        `, [`perm_${userId}_${m}`, userId, m, tenantId, nowIso]);
+      if (tenantId) {
+        const modules = ['crm', 'octalDialer', 'campaigns', 'leads', 'reports', 'autoEmailer', 'facebookPoster'];
+        for (const m of modules) {
+          await db.execute(`
+            INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
+            VALUES ($1, $2, $3, 1, 'SYSTEM_VERIFIED_SIGNUP', $4, $5)
+            ON CONFLICT ("id") DO NOTHING
+          `, [`perm_${userId}_${m}`, userId, m, tenantId, nowIso]);
+        }
       }
     });
 
@@ -655,8 +659,9 @@ export async function verifyEmailCode(params: {
     id: user.id,
     username: user.username,
     role: user.role,
-    tenantId: user.tenantId,
-    email: user.email
+    tenantId: user.tenantId || null,
+    email: user.email,
+    needsOnboarding: !user.tenantId
   };
 
   const payload = {
@@ -1053,14 +1058,19 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
         }
       }
 
+      // If the JWT payload contains impersonation claims, preserve the claims and the downgraded/effective role from the token
+      const effectiveRole = decoded.impersonatedBy ? (decoded.role || dbUser.role) : dbUser.role;
+
       return {
         id: dbUser.id,
         username: dbUser.username,
         displayName: dbUser.displayName || dbUser.username,
-        role: dbUser.role,
+        role: effectiveRole,
         tenantId: dbUser.tenantId || null,
         email: dbUser.email,
-        roleId: dbUser.roleId || null
+        roleId: dbUser.roleId || null,
+        impersonatedBy: decoded.impersonatedBy || undefined,
+        impersonatedReason: decoded.impersonatedReason || undefined
       };
     }
   } catch (err) {
@@ -1187,7 +1197,7 @@ export async function updateUserRole(executorUser: AuthUser, targetUserId: strin
   }
 
   // Protect platform owner accounts against modification or demotion
-  if (isPlatformRole(target.role) || target.username === 'mohsin1') {
+  if (isPlatformRole(target.role)) {
     throw new Error('Forbidden: Platform Owner accounts cannot be modified or demoted.');
   }
 
@@ -1337,7 +1347,7 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
   // 3. If roleId is set, authoritative source is custom_roles
   if (roleId) {
     const role = await db.queryOne<{ permissions: string; status: string }>(
-      `SELECT permissions, status FROM custom_roles WHERE id = $1 AND ("tenantId" = $2 OR "tenantId" = 'tenant_default')`,
+      `SELECT permissions, status FROM custom_roles WHERE id = $1 AND "tenantId" = $2`,
       [roleId, user.tenantId]
     );
 
@@ -1495,7 +1505,7 @@ export function requirePermission(requiredPerm: string | string[]) {
 export async function validateRoleBelongsToTenant(roleId: string, tenantId: string): Promise<boolean> {
   if (!roleId || !tenantId) return false;
   const role = await db.queryOne<{ id: string }>(
-    `SELECT id FROM custom_roles WHERE id = $1 AND ("tenantId" = $2 OR "tenantId" = 'tenant_default')`,
+    `SELECT id FROM custom_roles WHERE id = $1 AND "tenantId" = $2`,
     [roleId, tenantId]
   );
   return !!role;
@@ -1634,8 +1644,8 @@ export async function signupTenant(input: SignupInput): Promise<SignupResult> {
     // 3a. Insert Tenant
     const country = (input.country || 'US').trim().toUpperCase();
     await db.execute(`
-      INSERT INTO tenants (id, name, slug, country, "logoUrl", "ownerEmail", status, "createdAt", "updatedAt")
-      VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8)
+      INSERT INTO tenants (id, name, slug, country, "logoUrl", "ownerEmail", status, "customerType", "maxAgents", "maxTeamVisibility", "leadPoolMode", "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6, 'active', 'COMPANY', 10, 'TEAM_COLLABORATE', 'shared', $7, $8)
     `, [tenantId, companyName, slug, country, input.logoUrl || null, email || null, now, now]);
 
     // 3b. Insert First Tenant User (admin)
@@ -1643,6 +1653,26 @@ export async function signupTenant(input: SignupInput): Promise<SignupResult> {
       INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "createdAt", "updatedAt")
       VALUES ($1, $2, $3, $4, 'admin', $5, 'local', $6, $7)
     `, [userId, username, email || null, hash, tenantId, now, now]);
+
+    // Seed Authoritative Tenant Module Entitlements
+    const defaultProvisionModules = [
+      { id: 'crm', enabled: 1 },
+      { id: 'octalDialer', enabled: 1 },
+      { id: 'reports', enabled: 1 },
+      { id: 'leads', enabled: 1 },
+      { id: 'campaigns', enabled: 1 },
+      { id: 'autoEmailer', enabled: 1 },
+      { id: 'facebookPoster', enabled: 1 },
+      { id: 'googleScraper', enabled: 0 },
+      { id: 'facebookScraper', enabled: 0 }
+    ];
+    for (const mod of defaultProvisionModules) {
+      await db.execute(`
+        INSERT INTO tenant_module_entitlements (id, "tenantId", "moduleId", enabled, "updatedBy", "updatedAt")
+        VALUES ($1, $2, $3, $4, 'signup_system', $5)
+        ON CONFLICT ("tenantId", "moduleId") DO UPDATE SET enabled = $4, "updatedAt" = $5
+      `, [`tme_${tenantId}_${mod.id}`, tenantId, mod.id, mod.enabled, now]);
+    }
 
     // 3c. Provision Default User Module Permissions
     const modules = ['crm', 'octalDialer', 'campaigns', 'leads', 'reports', 'autoEmailer', 'facebookPoster'];

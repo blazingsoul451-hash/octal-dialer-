@@ -81,7 +81,7 @@ async function runTests() {
   assert.ok(superEntRes.data.entitlements, 'Entitlements map must exist');
   assert.strictEqual(superEntRes.data.entitlements.crm, true, 'CRM should be entitled by default');
   assert.strictEqual(superEntRes.data.entitlements.auto_emailer, true, 'Auto Emailer should be entitled by default');
-  assert.strictEqual(superEntRes.data.entitlements.google_scraper, true, 'Google Scraper should be entitled by default');
+  assert.strictEqual(superEntRes.data.entitlements.google_scraper, false, 'Google Scraper should be disabled by default');
 
   const compEntRes = await get('/api/company/entitlements', ownerToken);
   assert.strictEqual(compEntRes.status, 200, 'Company Owner can fetch company platform entitlements');

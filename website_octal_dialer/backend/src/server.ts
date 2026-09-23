@@ -283,9 +283,10 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
   const authHeader = req.headers['authorization'] || '';
-  let token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!token && typeof req.query?.token === 'string') {
-    token = req.query.token;
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!token) {
+    res.status(401).json({ error: 'Unauthorized. Missing Bearer authorization token.' });
+    return;
   }
   try {
     const user = await validateToken(token);
@@ -5077,6 +5078,43 @@ app.get('/api/super-admin/system-health', requirePlatformAdmin, async (req, res)
   }
 });
 
+// POST /api/super-admin/impersonate/exit: Record impersonation termination
+app.post('/api/super-admin/impersonate/exit', requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    if (!user?.impersonatedBy) {
+      res.status(400).json({ error: 'No active impersonation session to exit.' });
+      return;
+    }
+    const now = new Date().toISOString();
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        user?.impersonatedBy || user?.username || 'platform_admin',
+        'IMPERSONATION_ENDED',
+        'user',
+        user?.id || 'unknown',
+        JSON.stringify({
+          endedBy: user?.impersonatedBy || user?.username,
+          targetUser: user?.username,
+          tenantId: user?.tenantId,
+          endedAt: now
+        }),
+        now,
+        user?.tenantId || null
+      ]);
+    } catch (auditErr) {
+      console.warn('[Impersonate Exit] Audit error:', auditErr);
+    }
+    res.json({ success: true, message: 'Impersonation session ended.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to record impersonation exit' });
+  }
+});
+
 // POST /api/super-admin/impersonate/:id: Audited support impersonation into tenant workspace
 app.post('/api/super-admin/impersonate/:id', requirePlatformAdmin, async (req, res) => {
   try {
@@ -5176,39 +5214,6 @@ app.post('/api/super-admin/impersonate/:id', requirePlatformAdmin, async (req, r
   } catch (err: any) {
     console.error('[Super Admin] Impersonate error:', err);
     res.status(500).json({ error: 'Failed to generate impersonation token' });
-  }
-});
-
-// POST /api/super-admin/impersonate/exit: Record impersonation termination
-app.post('/api/super-admin/impersonate/exit', requireAuth, async (req, res) => {
-  try {
-    const user = (req as any).user;
-    const now = new Date().toISOString();
-    try {
-      await db.execute(`
-        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      `, [
-        'audit_' + crypto.randomUUID(),
-        user?.impersonatedBy || user?.username || 'platform_admin',
-        'IMPERSONATION_ENDED',
-        'user',
-        user?.id || 'unknown',
-        JSON.stringify({
-          endedBy: user?.impersonatedBy || user?.username,
-          targetUser: user?.username,
-          tenantId: user?.tenantId,
-          endedAt: now
-        }),
-        now,
-        user?.tenantId || null
-      ]);
-    } catch (auditErr) {
-      console.warn('[Impersonate Exit] Audit error:', auditErr);
-    }
-    res.json({ success: true, message: 'Impersonation session ended.' });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Failed to record impersonation exit' });
   }
 });
 
@@ -5446,25 +5451,34 @@ registerScraperRoutes(app, requireAuth, io);
 
 // ─── LEAD GEN Z INTEGRATION BOUNDARY ───────────────────────────────
 // POST /api/integrations/leadgen/import — Ingests leads from LEAD GEN Z
-app.post('/api/integrations/leadgen/import', async (req: express.Request, res: express.Response) => {
+app.post('/api/integrations/leadgen/import', requireAuth, async (req: express.Request, res: express.Response) => {
   try {
-    let tenantId = 'tenant_default';
-    let username = 'lead_gen_z';
-    
-    // 1. Check Bearer token if supplied
-    const authHeader = req.headers['authorization'] || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (typeof req.query?.token === 'string' ? req.query.token : '');
-    if (token) {
-      const user = await validateToken(token);
-      if (user) {
-        tenantId = user.tenantId || tenantId;
-        username = user.username || username;
+    const caller = (req as any).user;
+    let tenantId: string;
+    const username = caller.username || 'lead_gen_z';
+
+    if (isPlatformRole(caller.role)) {
+      const targetWorkspaceId = (req.body.workspaceId || '').trim();
+      if (!targetWorkspaceId) {
+        res.status(400).json({ error: 'Platform Administrator must specify a valid target workspaceId.' });
+        return;
       }
-    }
-    
-    // 2. Allow explicit tenant/workspace from body if valid
-    if (req.body.workspaceId && typeof req.body.workspaceId === 'string' && req.body.workspaceId.trim()) {
-      tenantId = req.body.workspaceId.trim();
+      const tenantRow = await db.queryOne<{ id: string }>(`SELECT id FROM tenants WHERE id = $1`, [targetWorkspaceId]);
+      if (!tenantRow) {
+        res.status(400).json({ error: 'Target workspace not found.' });
+        return;
+      }
+      tenantId = tenantRow.id;
+    } else {
+      if (!caller.tenantId) {
+        res.status(403).json({ error: 'Forbidden: User is not associated with an active workspace.' });
+        return;
+      }
+      if (req.body.workspaceId && req.body.workspaceId.trim() !== caller.tenantId) {
+        res.status(403).json({ error: 'Forbidden: Cross-tenant lead injection is strictly prohibited.' });
+        return;
+      }
+      tenantId = caller.tenantId;
     }
     
     const {
@@ -5721,25 +5735,7 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
         return;
       }
     }
-    const result = await registerPublicUser({
-      username,
-      password,
-      email,
-      requestedRole: normalizedRole,
-      tenantId
-    });
-    if (normalizedRole !== 'user') {
-      await db.execute(`UPDATE users SET role = $1 WHERE id = $2`, [normalizedRole, result.user.id]);
-    }
-
-    // Save extended fields: displayName, phone, status, ipRestrictions, roleId
-    const computedDisplayName = (req.body.displayName || `${firstName || ''} ${lastName || ''}`.trim()) || username;
-    await db.execute(
-      `UPDATE users SET "displayName" = $1, phone = $2, status = $3, "ipRestrictions" = $4, "roleId" = $5 WHERE id = $6`,
-      [computedDisplayName, phone || '', status || 'Active', ipRestrictions || '', roleId || null, result.user.id]
-    );
-
-    // Insert initial module permissions if provided with company ceiling validation
+    // Pre-validate initial module permissions if provided with company ceiling validation BEFORE creating user
     const rawModules = req.body.modules !== undefined ? req.body.modules : initialPermissions;
     let requestedMods: string[] = [];
     if (Array.isArray(rawModules)) {
@@ -5761,7 +5757,31 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
           return;
         }
       }
-      const now = new Date().toISOString();
+    }
+
+    let result: any;
+    const computedDisplayName = (req.body.displayName || `${firstName || ''} ${lastName || ''}`.trim()) || username;
+    const now = new Date().toISOString();
+
+    await db.withTransaction(async () => {
+      result = await registerPublicUser({
+        username,
+        password,
+        email,
+        requestedRole: normalizedRole,
+        tenantId
+      });
+      if (normalizedRole !== 'user') {
+        await db.execute(`UPDATE users SET role = $1 WHERE id = $2`, [normalizedRole, result.user.id]);
+      }
+
+      // Save extended fields: displayName, phone, status, ipRestrictions, roleId
+      await db.execute(
+        `UPDATE users SET "displayName" = $1, phone = $2, status = $3, "ipRestrictions" = $4, "roleId" = $5 WHERE id = $6`,
+        [computedDisplayName, phone || '', status || 'Active', ipRestrictions || '', roleId || null, result.user.id]
+      );
+
+      // Insert initial module permissions inside transaction
       for (const modId of requestedMods) {
         const canonical = normalizeModuleKey(modId);
         const permId = 'p_' + Math.random().toString(36).substring(2, 11);
@@ -5771,7 +5791,7 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
           [permId, result.user.id, canonical, caller.username, now, tenantId]
         );
       }
-    }
+    });
 
     res.json({
       success: true,
@@ -5791,14 +5811,15 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
 
 // PUT /api/admin/users/:id & /admin/users/:id (Unified update for role, password, and permissions)
 app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:edit'), async (req, res) => {
-  const caller = (req as any).user;
-  const isPlatform = isPlatformRole(caller.role);
-  const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
+  try {
+    const caller = (req as any).user;
+    const isPlatform = isPlatformRole(caller.role);
+    const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
 
-  if (!targetUser) {
-    res.status(404).json({ error: 'User not found.' });
-    return;
-  }
+    if (!targetUser) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
 
   if (!isPlatform && targetUser.tenantId !== caller.tenantId) {
     res.status(403).json({ error: 'Forbidden: Cannot edit a user from another organization.' });
@@ -5848,47 +5869,20 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
     }
   }
 
-  // 1. Update role if provided — enforce canonical role transition matrix
-  if (role) {
-    await updateUserRole(caller, req.params.id, role);
-  }
-
-  // 2. Update password if provided
-  const pwdToSet = newPassword || password;
-  if (pwdToSet && typeof pwdToSet === 'string' && pwdToSet.length >= 4) {
-    await changePassword(req.params.id, pwdToSet);
-  }
-
-  // 3. Update user profile fields (displayName, phone, status, ipRestrictions, email, roleId)
-  const computedDisplayName = displayName || (firstName || lastName ? `${firstName || ''} ${lastName || ''}`.trim() : undefined);
-  const updates: string[] = [];
-  const params: any[] = [];
-  let idx = 1;
-
-  if (computedDisplayName !== undefined) { updates.push(`"displayName" = $${idx++}`); params.push(computedDisplayName); }
-  if (email !== undefined) { updates.push(`email = $${idx++}`); params.push(email); }
-  if (phone !== undefined) { updates.push(`phone = $${idx++}`); params.push(phone); }
-  if (status !== undefined) { updates.push(`status = $${idx++}`); params.push(status); }
-  if (ipRestrictions !== undefined) { updates.push(`"ipRestrictions" = $${idx++}`); params.push(ipRestrictions); }
-  if (roleId !== undefined) { updates.push(`"roleId" = $${idx++}`); params.push(roleId || null); }
-
-  if (updates.length > 0) {
-    params.push(req.params.id);
-    await db.execute(`UPDATE users SET ${updates.join(', ')} WHERE id = $${idx}`, params);
-  }
-
-  // 4. Update permissions map if provided with strict company ceiling validation
+  // Pre-validate permissions map BEFORE any mutations if provided
   const rawPerms = req.body.modules !== undefined ? req.body.modules : permissions;
+  let permMap: Record<string, boolean> | null = null;
+  const tenantId = targetUser.tenantId || caller.tenantId;
+
   if (rawPerms && typeof rawPerms === 'object') {
-    const permMap: Record<string, boolean> = Array.isArray(rawPerms)
+    const activePermMap: Record<string, boolean> = Array.isArray(rawPerms)
       ? rawPerms.reduce((acc: any, k: string) => { acc[k] = true; return acc; }, {})
       : rawPerms;
+    permMap = activePermMap;
 
-    const tenantId = targetUser.tenantId || caller.tenantId;
     const companyEntitlements = await getTenantModuleEntitlements(tenantId);
-
     // Validate that caller cannot enable any module that is disabled in company entitlements
-    for (const [modId, enabled] of Object.entries(permMap)) {
+    for (const [modId, enabled] of Object.entries(activePermMap)) {
       if (Boolean(enabled)) {
         const canonical = normalizeModuleKey(modId);
         if (companyEntitlements[canonical] === false) {
@@ -5899,29 +5893,65 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
         }
       }
     }
+  }
 
-    const now = new Date().toISOString();
-    for (const [modId, enabled] of Object.entries(permMap)) {
-      const canonical = normalizeModuleKey(modId);
-      const enabledVal = enabled ? 1 : 0;
-      const existing = await db.queryOne(
-        `SELECT id FROM user_permissions WHERE "userId" = $1 AND "moduleId" = $2`,
-        [req.params.id, canonical]
-      ) as any;
-      if (existing) {
-        await db.execute(
-          `UPDATE user_permissions SET enabled = $1, "grantedBy" = $2, "grantedAt" = $3 WHERE id = $4`,
-          [enabledVal, caller.username, now, existing.id]
-        );
-      } else {
-        const permId = 'p_' + Math.random().toString(36).substring(2, 11);
-        await db.execute(
-          `INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "grantedAt", "tenantId")
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [permId, req.params.id, canonical, enabledVal, caller.username, now, tenantId]
-        );
+  const pwdToSet = newPassword || password;
+  const computedDisplayName = displayName || (firstName || lastName ? `${firstName || ''} ${lastName || ''}`.trim() : undefined);
+  const updates: string[] = [];
+  const updateParams: any[] = [];
+  let idx = 1;
+
+  if (computedDisplayName !== undefined) { updates.push(`"displayName" = $${idx++}`); updateParams.push(computedDisplayName); }
+  if (email !== undefined) { updates.push(`email = $${idx++}`); updateParams.push(email); }
+  if (phone !== undefined) { updates.push(`phone = $${idx++}`); updateParams.push(phone); }
+  if (status !== undefined) { updates.push(`status = $${idx++}`); updateParams.push(status); }
+  if (ipRestrictions !== undefined) { updates.push(`"ipRestrictions" = $${idx++}`); updateParams.push(ipRestrictions); }
+  if (roleId !== undefined) { updates.push(`"roleId" = $${idx++}`); updateParams.push(roleId || null); }
+
+  const now = new Date().toISOString();
+
+  await db.withTransaction(async () => {
+    // 1. Update role if provided — enforce canonical role transition matrix
+    if (role) {
+      await updateUserRole(caller, req.params.id, role);
+    }
+
+    // 2. Update password if provided
+    if (pwdToSet && typeof pwdToSet === 'string' && pwdToSet.length >= 4) {
+      await changePassword(req.params.id, pwdToSet);
+    }
+
+    // 3. Update user profile fields (displayName, phone, status, ipRestrictions, email, roleId)
+    if (updates.length > 0) {
+      updateParams.push(req.params.id);
+      await db.execute(`UPDATE users SET ${updates.join(', ')} WHERE id = $${idx}`, updateParams);
+    }
+
+    // 4. Update permissions map
+    if (permMap) {
+      for (const [modId, enabled] of Object.entries(permMap)) {
+        const canonical = normalizeModuleKey(modId);
+        const enabledVal = enabled ? 1 : 0;
+        const existing = await db.queryOne(
+          `SELECT id FROM user_permissions WHERE "userId" = $1 AND "moduleId" = $2`,
+          [req.params.id, canonical]
+        ) as any;
+        if (existing) {
+          await db.execute(
+            `UPDATE user_permissions SET enabled = $1, "grantedBy" = $2, "grantedAt" = $3 WHERE id = $4`,
+            [enabledVal, caller.username, now, existing.id]
+          );
+        } else {
+          const permId = 'p_' + Math.random().toString(36).substring(2, 11);
+          await db.execute(
+            `INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "grantedAt", "tenantId")
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [permId, req.params.id, canonical, enabledVal, caller.username, now, tenantId]
+          );
+        }
       }
     }
+  });
 
     // Audit log
     try {
@@ -5939,9 +5969,11 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
         tenantId
       ]);
     } catch {}
-  }
 
-  res.json({ success: true, message: 'User updated successfully.' });
+    res.json({ success: true, message: 'User updated successfully.' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // POST /api/admin/permissions & /admin/permissions
@@ -6133,6 +6165,11 @@ app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, asyn
       return;
     }
 
+    if (isPlatformRole(caller.role) || isPlatformRole(dbUser.role)) {
+      res.status(403).json({ error: 'Forbidden: Platform administrators cannot complete customer onboarding or own tenant workspaces.' });
+      return;
+    }
+
     // Idempotency: If user already belongs to a workspace, return existing without creating another
     if (dbUser.tenantId) {
       const existingTenant = await getTenantById(dbUser.tenantId);
@@ -6213,7 +6250,7 @@ app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, asyn
       const updatedDisplayName = fullName?.trim() || dbUser.displayName || dbUser.username;
       await db.execute(`
         UPDATE users 
-        SET "tenantId" = $1, role = 'admin', "displayName" = $2, phone = COALESCE($3, phone), "needsProfileSetup" = 0, "updatedAt" = $4
+        SET "tenantId" = $1, role = 'admin', "roleId" = NULL, "displayName" = $2, phone = COALESCE($3, phone), "needsProfileSetup" = 0, "updatedAt" = $4
         WHERE id = $5
       `, [tenantId, updatedDisplayName, phone || null, now, dbUser.id]);
 
@@ -6459,6 +6496,36 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
       return;
     }
 
+    // Platform Role Guard: Platform Admins cannot accept workspace invitations
+    if (isPlatformRole(caller.role)) {
+      res.status(403).json({ error: 'Forbidden: Platform administrators cannot accept workspace invitations.' });
+      return;
+    }
+
+    // Invitation Identity Binding: Caller email MUST match the invitation recipient email
+    if (!caller.email || caller.email.toLowerCase().trim() !== invitation.email.toLowerCase().trim()) {
+      res.status(403).json({ error: 'Forbidden: Invitation email does not match authenticated user email.' });
+      return;
+    }
+
+    // Cross-tenant Protection: Users already belonging to a different tenant cannot switch tenants via invitation
+    if (caller.tenantId && caller.tenantId !== invitation.tenantId) {
+      res.status(403).json({ error: 'Forbidden: Account is already associated with another workspace.' });
+      return;
+    }
+
+    // Team Tenant Validation: Ensure assigned team strictly belongs to the target workspace
+    if (invitation.teamId) {
+      const teamCheck = await db.queryOne<{ id: string }>(
+        `SELECT id FROM teams WHERE id = $1 AND "tenantId" = $2`,
+        [invitation.teamId, invitation.tenantId]
+      );
+      if (!teamCheck) {
+        res.status(400).json({ error: 'Assigned team does not belong to the target workspace or does not exist.' });
+        return;
+      }
+    }
+
     // Seat limit enforcement: Check seat limit at moment of acceptance
     const seatUsage = await getTenantSeatUsage(invitation.tenantId);
     if (seatUsage.activeSeats >= seatUsage.maxSeats) {
@@ -6495,7 +6562,7 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
         }
       }
 
-      // 4. Provision assigned member permissions (honor initialModules chosen by Company Owner)
+      // 4. Provision assigned member permissions (honor initialModules chosen by Company Owner, bounded by tenant entitlements)
       let targetModules: string[] = ['crm', 'octalDialer', 'campaigns', 'leads', 'reports'];
       if (invitation.initialModules) {
         try {
@@ -6510,20 +6577,17 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
         }
       }
 
-      // Check tenant entitlements to ensure ceiling is respected
-      const tenantEntitlements = await db.queryAll<any>(`
-        SELECT "moduleId", enabled FROM tenant_module_entitlements WHERE "tenantId" = $1 AND enabled = 1
-      `, [invitation.tenantId]);
-      const entitledSet = new Set(tenantEntitlements.map(e => e.moduleId));
+      // Authoritative tenant entitlements ceiling (fail-closed)
+      const tenantEntitlements = await getTenantModuleEntitlements(invitation.tenantId);
 
       for (const mod of targetModules) {
-        // Only grant if tenant is entitled or if it's a core workspace capability
-        if (entitledSet.size === 0 || entitledSet.has(mod) || ['crm', 'leads', 'reports'].includes(mod)) {
+        const canonical = normalizeModuleKey(mod);
+        if (tenantEntitlements[canonical] === true) {
           await db.execute(`
             INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
             VALUES ($1, $2, $3, 1, 'INVITATION_ACCEPT', $4, $5)
             ON CONFLICT ("id") DO UPDATE SET enabled = 1
-          `, [`perm_${caller.id}_${mod}`, caller.id, mod, invitation.tenantId, now]);
+          `, [`perm_${caller.id}_${canonical}`, caller.id, canonical, invitation.tenantId, now]);
         }
       }
 
@@ -6563,7 +6627,7 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
 // GET /api/admin/roles & /admin/roles
 app.get(['/api/admin/roles', '/admin/roles'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('roles:view'), async (req, res) => {
   const user = (req as any).user;
-  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const isPlatform = isPlatformRole(user.role);
   const roles = isPlatform
     ? await db.queryAll(`
         SELECT r.id, r."roleName", r.description, r.permissions, r.status, r."createdBy", r."createdAt", r."tenantId",
@@ -6578,21 +6642,24 @@ app.get(['/api/admin/roles', '/admin/roles'], requireAuth, requireCompanyOwnerOr
                COUNT(u.id)::int AS "userCount"
         FROM custom_roles r
         LEFT JOIN users u ON (u."roleId" = r.id OR (u."roleId" IS NULL AND LOWER(u.role) = LOWER(r."roleName")))
-        WHERE (r."tenantId" = $1 OR r."tenantId" = 'tenant_default')
+        WHERE r."tenantId" = $1
         GROUP BY r.id, r."roleName", r.description, r.permissions, r.status, r."createdBy", r."createdAt", r."tenantId"
         ORDER BY r."createdAt" ASC
       `, [user.tenantId]) as any[];
 
   // If no custom roles exist yet, seed and return the standard roles matching the UI mock
   if (roles.length === 0) {
-    const tenant = user.tenantId || 'tenant_default';
+    const tenant = user.tenantId;
+    if (!tenant) {
+      return res.json([]);
+    }
     const now = new Date().toISOString();
     const defaults = [
-      { id: '1', roleName: 'Administrator', description: 'Full access to organization and settings', permissions: JSON.stringify(['all']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 1 },
-      { id: '2', roleName: 'Supervisor', description: 'Campaign oversight, lead queue and call monitoring', permissions: JSON.stringify(['campaigns:view', 'campaigns:create', 'campaigns:edit', 'leads:view', 'leads:import', 'reports:cdr_view']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 },
-      { id: '3', roleName: 'Agent', description: 'Direct dialing and call disposition logging', permissions: JSON.stringify(['calls:view_queue', 'calls:dial_outbound', 'calls:manual_keypad', 'calls:log_disposition']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 },
-      { id: '4', roleName: 'Auditor', description: 'Read-only access to audit records and reporting', permissions: JSON.stringify(['reports:cdr_view', 'reports:cdr_export']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 },
-      { id: '5', roleName: 'Custom', description: 'Custom tenant configuration', permissions: JSON.stringify([]), status: 'Inactive', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 }
+      { id: `${tenant}_1`, roleName: 'Administrator', description: 'Full access to organization and settings', permissions: JSON.stringify(['all']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 1 },
+      { id: `${tenant}_2`, roleName: 'Supervisor', description: 'Campaign oversight, lead queue and call monitoring', permissions: JSON.stringify(['campaigns:view', 'campaigns:create', 'campaigns:edit', 'leads:view', 'leads:import', 'reports:cdr_view']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 },
+      { id: `${tenant}_3`, roleName: 'Agent', description: 'Direct dialing and call disposition logging', permissions: JSON.stringify(['calls:view_queue', 'calls:dial_outbound', 'calls:manual_keypad', 'calls:log_disposition']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 },
+      { id: `${tenant}_4`, roleName: 'Auditor', description: 'Read-only access to audit records and reporting', permissions: JSON.stringify(['reports:cdr_view', 'reports:cdr_export']), status: 'Active', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 },
+      { id: `${tenant}_5`, roleName: 'Custom', description: 'Custom tenant configuration', permissions: JSON.stringify([]), status: 'Inactive', createdBy: 'system', createdAt: now, tenantId: tenant, userCount: 0 }
     ];
     for (const r of defaults) {
       await db.execute(

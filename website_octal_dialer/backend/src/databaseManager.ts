@@ -33,6 +33,12 @@ export function isPlatformRole(role?: string | null): boolean {
   return r === 'platform_admin' || r === 'master_admin' || r === 'super_admin';
 }
 
+export function isCompanyOwner(userOrRole?: any): boolean {
+  if (!userOrRole) return false;
+  const role = typeof userOrRole === 'string' ? userOrRole : userOrRole.role;
+  return (role || '').toLowerCase().trim() === 'admin';
+}
+
 // ─── TypeScript interfaces (unchanged from old implementation) ────────────────
 export interface Campaign {
   id: string;
@@ -125,7 +131,8 @@ export async function getTenantSeatUsage(tenantId: string): Promise<TenantSeatUs
     `SELECT "planId" FROM subscriptions WHERE "tenantId" = $1 AND status IN ('active', 'trialing') ORDER BY "createdAt" DESC LIMIT 1`,
     [tenantId]
   );
-  let maxSeats = tenant?.maxAgents || 10;
+  const platformCeiling = tenant?.maxAgents !== undefined && tenant?.maxAgents !== null ? Number(tenant.maxAgents) : 10;
+  let maxSeats = platformCeiling;
   if (sub?.planId) {
     const pf = await db.queryOne<{ value: string }>(
       `SELECT value FROM plan_features WHERE "planId" = $1 AND "featureKey" = 'maxUsers'`,
@@ -133,12 +140,15 @@ export async function getTenantSeatUsage(tenantId: string): Promise<TenantSeatUs
     );
     if (pf?.value) {
       const parsed = parseInt(pf.value, 10);
-      if (!isNaN(parsed) && parsed > 0) maxSeats = parsed;
+      if (!isNaN(parsed) && parsed > 0) {
+        // Platform ceiling is the HARD MAXIMUM: subscription plan can reduce, but NEVER raise beyond platform ceiling
+        maxSeats = Math.min(platformCeiling, parsed);
+      }
     }
   }
 
   const activeRow = await db.queryOne<{ count: string | number }>(
-    `SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin') AND status = 'Active'`,
+    `SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin') AND LOWER(status) = 'active'`,
     [tenantId]
   );
   const activeSeats = parseInt(String(activeRow?.count || '0'), 10);
@@ -1562,9 +1572,9 @@ export async function isTeamLeader(userId: string, teamId: string, tenantId: str
 
 export async function canAccessTeam(actor: any, teamId: string, tenantId: string): Promise<boolean> {
   if (!actor || !teamId || !tenantId) return false;
-  if (actor.role === 'platform_admin' || actor.role === 'master_admin') return true;
+  if (isPlatformRole(actor.role)) return true;
   if (actor.tenantId !== tenantId) return false;
-  if (actor.role === 'admin') return true;
+  if (isCompanyOwner(actor)) return true;
   if (actor.role === 'team_lead') {
     return await isTeamLeader(actor.id, teamId, tenantId);
   }
@@ -1576,9 +1586,9 @@ export async function canAccessTeam(actor: any, teamId: string, tenantId: string
 
 export async function canAccessUser(actor: any, targetUserId: string, tenantId: string): Promise<boolean> {
   if (!actor || !targetUserId || !tenantId) return false;
-  if (actor.role === 'platform_admin' || actor.role === 'master_admin') return true;
+  if (isPlatformRole(actor.role)) return true;
   if (actor.tenantId !== tenantId) return false;
-  if (actor.role === 'admin') return true;
+  if (isCompanyOwner(actor)) return true;
   if (actor.id === targetUserId) return true;
   if (actor.role === 'team_lead') {
     const ledTeams = await getTeamsLedByUser(actor.id, tenantId);
@@ -2562,9 +2572,9 @@ export function normalizeModuleKey(rawKey: string): string {
 export async function getTenantModuleEntitlements(tenantId: string): Promise<Record<string, boolean>> {
   const result: Record<string, boolean> = {};
   ALL_CANONICAL_MODULES.forEach(m => {
-    result[m.id] = true;
+    result[m.id] = false;
     if (m.aliases) {
-      m.aliases.forEach(a => { result[a] = true; });
+      m.aliases.forEach(a => { result[a] = false; });
     }
   });
 
@@ -2585,7 +2595,14 @@ export async function getTenantModuleEntitlements(tenantId: string): Promise<Rec
       }
     }
   } catch (err) {
-    console.error(`[getTenantModuleEntitlements] Error querying entitlements for ${tenantId}:`, err);
+    console.error(`[getTenantModuleEntitlements] Error querying entitlements for ${tenantId} (failing closed):`, err);
+    // Explicit fail-closed on database error
+    ALL_CANONICAL_MODULES.forEach(m => {
+      result[m.id] = false;
+      if (m.aliases) {
+        m.aliases.forEach(a => { result[a] = false; });
+      }
+    });
   }
 
   return result;
@@ -3245,6 +3262,35 @@ export async function provisionWorkspaceOrganization(data: {
     INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
     VALUES ($1, $2, $3, $4, 'admin', $5, 'local', 1, $6, $6)
   `, [userId, data.username.trim().toLowerCase(), data.email ? data.email.trim().toLowerCase() : null, data.passwordHash, tenantId, now]);
+
+  // Seed Authoritative Tenant Module Entitlements
+  const defaultProvisionModules = [
+    { id: 'crm', enabled: 1 },
+    { id: 'octalDialer', enabled: 1 },
+    { id: 'reports', enabled: 1 },
+    { id: 'leads', enabled: 1 },
+    { id: 'campaigns', enabled: 1 },
+    { id: 'autoEmailer', enabled: 1 },
+    { id: 'facebookPoster', enabled: 1 },
+    { id: 'googleScraper', enabled: 0 },
+    { id: 'facebookScraper', enabled: 0 }
+  ];
+
+  for (const mod of defaultProvisionModules) {
+    await db.execute(`
+      INSERT INTO tenant_module_entitlements (id, "tenantId", "moduleId", enabled, "updatedBy", "updatedAt")
+      VALUES ($1, $2, $3, $4, 'provisioning_system', $5)
+      ON CONFLICT ("tenantId", "moduleId") DO UPDATE SET enabled = $4, "updatedAt" = $5
+    `, [`tme_${tenantId}_${mod.id}`, tenantId, mod.id, mod.enabled, now]);
+
+    if (mod.enabled === 1) {
+      await db.execute(`
+        INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
+        VALUES ($1, $2, $3, 1, 'PROVISIONING', $4, $5)
+        ON CONFLICT ("id") DO UPDATE SET enabled = 1
+      `, [`perm_${userId}_${mod.id}`, userId, mod.id, tenantId, now]);
+    }
+  }
 
   // Insert default audit log
   try {

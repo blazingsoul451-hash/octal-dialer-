@@ -112,6 +112,7 @@ async function main() {
   }
 
   const rootFiles = [
+    'AUTHORITY_SECURITY_CLOSEOUT_REPORT.md',
     'README_FOR_GPT_REVIEW.md',
     'PLATFORM_CUSTOMER_AUTHORITY_FINAL_AUDIT.md',
     'GPT_CODE_REVIEW_MANIFEST.md',
@@ -135,10 +136,18 @@ async function main() {
   console.log('\nCompressing into sanitized ZIP archive...');
   execSync(`powershell -NoProfile -Command "Compress-Archive -Path '${STAGING_DIR}\\*' -DestinationPath '${DEST_ZIP}' -CompressionLevel Optimal -Force"`, { stdio: 'inherit' });
 
+  const closeoutZip = path.join(ROOT_DIR, 'ZESTIFY_AUTHORITY_SECURITY_CLOSEOUT_SOURCE.zip');
+  if (fs.existsSync(closeoutZip)) {
+    fs.unlinkSync(closeoutZip);
+  }
+  fs.copyFileSync(DEST_ZIP, closeoutZip);
+
   fs.rmSync(STAGING_DIR, { recursive: true, force: true });
 
   const stats = fs.statSync(DEST_ZIP);
-  console.log(`\n🎉 Packaging complete: ${DEST_ZIP} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+  console.log(`\n🎉 Packaging complete:`);
+  console.log(`  - ${DEST_ZIP} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+  console.log(`  - ${closeoutZip} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
 }
 
 main().catch(err => {

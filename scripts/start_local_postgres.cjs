@@ -3,9 +3,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const backendNodeModules = path.join(__dirname, '../website_octal_dialer/backend/node_modules');
-const { Client } = require(path.join(backendNodeModules, 'pg'));
-const EmbeddedPostgres = require(path.join(backendNodeModules, 'embedded-postgres')).default;
+const { createRequire } = require('module');
+const backendRequire = createRequire(path.join(__dirname, '../website_octal_dialer/backend/package.json'));
+const { Client } = backendRequire('pg');
+const EmbeddedPostgres = backendRequire('embedded-postgres').default;
 
 const DB_DIR = path.join(__dirname, '../website_octal_dialer/backend/local_pg_cluster');
 const PORT = 54330;

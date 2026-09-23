@@ -615,27 +615,29 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                 </button>
               </div>
 
-              {/* Quick Fill Testing shortcuts */}
-              <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center justify-center gap-2 text-[11px] text-gray-400">
-                <span>Quick Fill:</span>
-                <button
-                  type="button"
-                  id="quick-fill-admin-btn"
-                  onClick={() => { setUsername('admin'); setPassword('AdminPassword1234!'); setError(null); }}
-                  className="hover:text-amber-600 underline cursor-pointer"
-                >
-                  Admin
-                </button>
-                <span>•</span>
-                <button
-                  type="button"
-                  id="quick-fill-owner-btn"
-                  onClick={() => { setUsername('owner'); setPassword('OwnerPassword1234!'); setError(null); }}
-                  className="hover:text-amber-600 underline cursor-pointer"
-                >
-                  Owner
-                </button>
-              </div>
+              {/* Quick Fill Testing shortcuts (DEV ONLY) */}
+              {import.meta.env.DEV && (
+                <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center justify-center gap-2 text-[11px] text-gray-400">
+                  <span>Quick Fill:</span>
+                  <button
+                    type="button"
+                    id="quick-fill-admin-btn"
+                    onClick={() => { setUsername('admin'); setPassword('AdminPassword1234!'); setError(null); }}
+                    className="hover:text-amber-600 underline cursor-pointer"
+                  >
+                    Admin
+                  </button>
+                  <span>•</span>
+                  <button
+                    type="button"
+                    id="quick-fill-owner-btn"
+                    onClick={() => { setUsername('owner'); setPassword('OwnerPassword1234!'); setError(null); }}
+                    className="hover:text-amber-600 underline cursor-pointer"
+                  >
+                    Owner
+                  </button>
+                </div>
+              )}
 
               {/* Hidden accessibility hooks for scripts */}
               <div className="hidden">
