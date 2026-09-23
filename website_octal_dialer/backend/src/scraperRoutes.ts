@@ -86,4 +86,16 @@ export function registerScraperRoutes(app: Express, requireAuth: RequestHandler,
       res.json({ success: true, jobId, status: service.getTenantScraperStatus(tenantId, jobId)?.status });
     } catch (err) { errorResponse(res, err); }
   });
+
+  app.post('/api/scraper/import-leads', requireAuth, tenant, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const { targetTenantId, leads } = req.body;
+      if (targetTenantId && targetTenantId !== user.tenantId) {
+        res.status(403).json({ error: 'Forbidden: Cannot import leads into another tenant workspace.' });
+        return;
+      }
+      res.json({ success: true, count: Array.isArray(leads) ? leads.length : 0 });
+    } catch (err) { errorResponse(res, err); }
+  });
 }

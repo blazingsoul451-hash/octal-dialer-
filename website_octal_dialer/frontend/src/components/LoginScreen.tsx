@@ -217,8 +217,15 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         pendingInvitation: data.pendingInvitation
       };
 
-      localStorage.setItem('octal_auth_token', data.token);
-      localStorage.setItem('octal_auth_user', identity.username);
+      if (normalizedRole === 'platform_admin') {
+        localStorage.setItem('octal_platform_auth_token', data.token);
+        localStorage.setItem('octal_platform_auth_user', identity.username);
+      } else {
+        localStorage.setItem('octal_customer_auth_token', data.token);
+        localStorage.setItem('octal_customer_auth_user', identity.username);
+        localStorage.setItem('octal_auth_token', data.token);
+        localStorage.setItem('octal_auth_user', identity.username);
+      }
       onLogin(data.token, identity);
     } catch (err: any) {
       setError(err.message || 'Google authentication failed.');
@@ -411,8 +418,15 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         pendingInvitation: data.pendingInvitation
       };
 
-      localStorage.setItem('octal_auth_token', token);
-      localStorage.setItem('octal_auth_user', returnedUser);
+      if (normalizedRole === 'platform_admin') {
+        localStorage.setItem('octal_platform_auth_token', token);
+        localStorage.setItem('octal_platform_auth_user', returnedUser);
+      } else {
+        localStorage.setItem('octal_customer_auth_token', token);
+        localStorage.setItem('octal_customer_auth_user', returnedUser);
+        localStorage.setItem('octal_auth_token', token);
+        localStorage.setItem('octal_auth_user', returnedUser);
+      }
       onLogin(token, identity);
     } catch (err: any) {
       setError(err.message || 'Cannot reach server. Make sure the backend is active.');

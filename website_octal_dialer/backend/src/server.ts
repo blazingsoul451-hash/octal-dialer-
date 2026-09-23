@@ -525,6 +525,33 @@ app.post(['/auth/login', '/api/auth/login'], async (req, res) => {
   res.json({ token, username: user.username, role: user.role, user });
 });
 
+// POST /admin/login & /api/admin/login — Dedicated Platform Administrator Authentication
+app.post(['/admin/login', '/api/admin/login'], async (req, res) => {
+  const username = (req.body?.username || req.body?.identifier || '').trim();
+  const password = req.body?.password || '';
+  if (!username || !password) {
+    res.status(400).json({ error: 'Username and password required.' });
+    return;
+  }
+  const token = await login(username, password);
+  if (!token) {
+    res.status(401).json({ error: 'Invalid username or password, or account suspended.' });
+    return;
+  }
+  const user = await validateToken(token);
+  if (!user) {
+    res.status(401).json({ error: 'Session validation failed.' });
+    return;
+  }
+  if (!isPlatformRole(user.role)) {
+    res.status(403).json({
+      error: 'Access denied: Customer accounts cannot authenticate through the Platform Admin portal. Please log in at /login.'
+    });
+    return;
+  }
+  res.json({ token, username: user.username, role: user.role, user });
+});
+
 // POST /auth/register & /api/auth/register — Public Customer Registration (Email + Password)
 app.post(['/auth/register', '/api/auth/register'], async (req, res) => {
   try {
@@ -1831,6 +1858,22 @@ app.get('/api/crm/campaigns/:id/workspace', requireAuth, requirePermission(['cam
 // CORE CRM WORKSPACE APIS (PHASE 1)
 // ============================================================================
 
+async function validateTenantAssignee(assignedUserId: string | null | undefined, tenantId: string): Promise<string | null> {
+  if (!assignedUserId || typeof assignedUserId !== 'string' || !assignedUserId.trim()) {
+    return null;
+  }
+  const cleanId = assignedUserId.trim();
+  const row = await db.queryOne<{ id: string }>(
+    `SELECT id FROM users WHERE id = $1 AND "tenantId" = $2 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')`,
+    [cleanId, tenantId]
+  );
+  if (!row) {
+    throw new Error('Invalid assigned user: user not found in this workspace or is a platform administrator.');
+  }
+  return row.id;
+}
+
+
 // 1. GET /api/crm/overview: Aggregated CRM metrics with date-range presets
 app.get('/api/crm/overview', requireAuth, requirePermission(['crm:view', 'leads:view']), async (req, res) => {
   try {
@@ -2012,6 +2055,14 @@ app.post('/api/crm/companies', requireAuth, requirePermission(['crm:edit', 'crm:
       return;
     }
 
+    let finalAssignedUserId: string | null = null;
+    try {
+      finalAssignedUserId = assignedUserId ? await validateTenantAssignee(assignedUserId, tenantId) : (!isPlatformRole(user.role) ? user.id : null);
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+      return;
+    }
+
     const id = `comp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date().toISOString();
 
@@ -2030,7 +2081,7 @@ app.post('/api/crm/companies', requireAuth, requirePermission(['crm:edit', 'crm:
       address || null,
       status || 'Active',
       paymentStatus || 'Trial',
-      assignedUserId || user.id,
+      finalAssignedUserId,
       metadata ? JSON.stringify(metadata) : null,
       now
     ]);
@@ -2049,7 +2100,7 @@ app.post('/api/crm/companies', requireAuth, requirePermission(['crm:edit', 'crm:
         req.body.initialContact.phone || null,
         req.body.initialContact.roleTitle || null,
         req.body.initialContact.notes || null,
-        assignedUserId || user.id,
+        finalAssignedUserId,
         now
       ]);
     }
@@ -2136,6 +2187,16 @@ app.put('/api/crm/companies/:id', requireAuth, requirePermission(['crm:edit']), 
       return;
     }
 
+    let finalAssignedUserId = assignedUserId;
+    if (assignedUserId !== undefined && assignedUserId !== null && assignedUserId !== '') {
+      try {
+        finalAssignedUserId = await validateTenantAssignee(assignedUserId, tenantId);
+      } catch (e: any) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
+    }
+
     const now = new Date().toISOString();
     await db.execute(`
       UPDATE crm_companies
@@ -2151,7 +2212,7 @@ app.put('/api/crm/companies/:id', requireAuth, requirePermission(['crm:edit']), 
           "assignedUserId" = COALESCE($10, "assignedUserId"),
           "updatedAt" = $11
       WHERE id = $12 AND "tenantId" = $13
-    `, [name, industry, country, phone, email, website, address, status, paymentStatus, assignedUserId, now, companyId, tenantId]);
+    `, [name, industry, country, phone, email, website, address, status, paymentStatus, finalAssignedUserId, now, companyId, tenantId]);
 
     const updated = await db.queryOne(`SELECT * FROM crm_companies WHERE id = $1 AND "tenantId" = $2`, [companyId, tenantId]);
     res.json({ success: true, company: updated });
@@ -2245,6 +2306,14 @@ app.post('/api/crm/contacts', requireAuth, requirePermission(['crm:edit', 'crm:c
       return;
     }
 
+    let finalAssignedUserId: string | null = null;
+    try {
+      finalAssignedUserId = assignedUserId ? await validateTenantAssignee(assignedUserId, tenantId) : (!isPlatformRole(user.role) ? user.id : null);
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+      return;
+    }
+
     const id = `cnt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date().toISOString();
 
@@ -2260,7 +2329,7 @@ app.post('/api/crm/contacts', requireAuth, requirePermission(['crm:edit', 'crm:c
       phone ? phone.trim() : null,
       roleTitle || null,
       notes || null,
-      assignedUserId || user.id,
+      finalAssignedUserId,
       now
     ]);
 
@@ -2322,6 +2391,16 @@ app.put('/api/crm/contacts/:id', requireAuth, requirePermission(['crm:edit']), a
     const id = req.params.id;
     const { name, email, phone, roleTitle, notes, crmCompanyId, assignedUserId } = req.body;
 
+    let finalAssignedUserId = assignedUserId;
+    if (assignedUserId !== undefined && assignedUserId !== null && assignedUserId !== '') {
+      try {
+        finalAssignedUserId = await validateTenantAssignee(assignedUserId, tenantId);
+      } catch (e: any) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
+    }
+
     const now = new Date().toISOString();
     await db.execute(`
       UPDATE crm_contacts
@@ -2334,7 +2413,7 @@ app.put('/api/crm/contacts/:id', requireAuth, requirePermission(['crm:edit']), a
           "assignedUserId" = COALESCE($7, "assignedUserId"),
           "updatedAt" = $8
       WHERE id = $9 AND "tenantId" = $10
-    `, [name, email, phone, roleTitle, notes, crmCompanyId, assignedUserId, now, id, tenantId]);
+    `, [name, email, phone, roleTitle, notes, crmCompanyId, finalAssignedUserId, now, id, tenantId]);
 
     const updated = await db.queryOne(`SELECT * FROM crm_contacts WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
     res.json({ success: true, contact: updated });
@@ -2814,6 +2893,13 @@ app.post('/api/crm/tasks/:id/close', requireAuth, requirePermission(['crm:edit',
     // Optional follow-up / chained next action creation
     let createdNextTask: any = null;
     if (nextTask && nextTask.title && nextTask.dueAt) {
+      let nextAssignedUserId: string | null = null;
+      try {
+        nextAssignedUserId = nextTask.assignedUserId ? await validateTenantAssignee(nextTask.assignedUserId, tenantId) : (task.assignedUserId || (!isPlatformRole(user.role) ? user.id : null));
+      } catch (e: any) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
       const nextId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       await db.execute(`
         INSERT INTO crm_tasks (id, "tenantId", title, description, "taskType", status, priority, "dueAt", "crmCompanyId", "contactId", "leadId", "assignedUserId", "createdByUserId", "createdAt", "updatedAt")
@@ -2829,7 +2915,7 @@ app.post('/api/crm/tasks/:id/close', requireAuth, requirePermission(['crm:edit',
         task.crmCompanyId || null,
         task.contactId || null,
         task.leadId || null,
-        nextTask.assignedUserId || task.assignedUserId || user.id,
+        nextAssignedUserId,
         user.id,
         now
       ]);
@@ -2868,6 +2954,16 @@ app.post('/api/crm/tasks/:id/reschedule', requireAuth, requirePermission(['crm:e
       return;
     }
 
+    let finalAssignedUserId = assignedUserId;
+    if (assignedUserId !== undefined && assignedUserId !== null && assignedUserId !== '') {
+      try {
+        finalAssignedUserId = await validateTenantAssignee(assignedUserId, tenantId);
+      } catch (e: any) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
+    }
+
     const now = new Date().toISOString();
     const newDueIso = new Date(dueAt).toISOString();
 
@@ -2880,7 +2976,7 @@ app.post('/api/crm/tasks/:id/reschedule', requireAuth, requirePermission(['crm:e
           "outcomeRemarks" = COALESCE($4, "outcomeRemarks"),
           "updatedAt" = $5
       WHERE id = $6 AND "tenantId" = $7
-    `, [newDueIso, taskType || null, assignedUserId || null, remarks ? `Rescheduled: ${remarks}` : null, now, taskId, tenantId]);
+    `, [newDueIso, taskType || null, finalAssignedUserId || null, remarks ? `Rescheduled: ${remarks}` : null, now, taskId, tenantId]);
 
     const entityType = task.leadId ? 'lead' : task.crmCompanyId ? 'crm_company' : 'task';
     const entityId = task.leadId || task.crmCompanyId || taskId;
@@ -3364,6 +3460,14 @@ app.post(['/api/crm/work-items', '/api/crm/work'], requireAuth, requirePermissio
       return;
     }
 
+    let finalAssignedUserId: string | null = null;
+    try {
+      finalAssignedUserId = assignedUserId ? await validateTenantAssignee(assignedUserId, tenantId) : (!isPlatformRole(user.role) ? user.id : null);
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+      return;
+    }
+
     const id = `work_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date().toISOString();
     const itemStatus = status || 'TODO';
@@ -3386,7 +3490,7 @@ app.post(['/api/crm/work-items', '/api/crm/work'], requireAuth, requirePermissio
       category || 'General',
       subcategory || null,
       assignedTeamId || null,
-      assignedUserId || user.id,
+      finalAssignedUserId,
       priority || 'normal',
       itemStatus,
       dueAt ? new Date(dueAt).toISOString() : null,
@@ -3481,6 +3585,16 @@ app.put(['/api/crm/work-items/:id', '/api/crm/work/:id'], requireAuth, requirePe
       return;
     }
 
+    let finalAssignedUserId = assignedUserId;
+    if (assignedUserId !== undefined && assignedUserId !== null && assignedUserId !== '') {
+      try {
+        finalAssignedUserId = await validateTenantAssignee(assignedUserId, tenantId);
+      } catch (e: any) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
+    }
+
     const now = new Date().toISOString();
     let completedAt = existing.completedAt;
     if (status === 'COMPLETED' && existing.status !== 'COMPLETED') {
@@ -3512,7 +3626,7 @@ app.put(['/api/crm/work-items/:id', '/api/crm/work/:id'], requireAuth, requirePe
       category || null,
       subcategory !== undefined ? subcategory : null,
       assignedTeamId !== undefined ? assignedTeamId : null,
-      assignedUserId !== undefined ? assignedUserId : null,
+      finalAssignedUserId !== undefined ? finalAssignedUserId : null,
       priority || null,
       status || null,
       dueAt ? new Date(dueAt).toISOString() : null,
@@ -3905,6 +4019,14 @@ app.post('/api/crm/quotes', requireAuth, requirePermission(['crm:create', 'crm:e
 
     const { crmCompanyId, contactId, leadId, packageId, userCount, billingCycle, selectedAddons, discountPct, notes, validUntil, assignedUserId } = req.body;
 
+    let finalAssignedUserId: string | null = null;
+    try {
+      finalAssignedUserId = assignedUserId ? await validateTenantAssignee(assignedUserId, tenantId) : (!isPlatformRole(user.role) ? user.id : null);
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+      return;
+    }
+
     const calc = await calculateQuoteInternal(tenantId, user, {
       packageId,
       userCount,
@@ -3943,7 +4065,7 @@ app.post('/api/crm/quotes', requireAuth, requirePermission(['crm:create', 'crm:e
       calc.totalAmount,
       notes || null,
       validUntil ? new Date(validUntil).toISOString() : null,
-      assignedUserId || user.id,
+      finalAssignedUserId,
       user.id,
       now
     ]);
@@ -4568,7 +4690,7 @@ export function emitPlatformEvent(event: string, payload: any) {
 }
 
 // GET /api/super-admin/overview: Authoritative snapshot of entire SaaS
-app.get('/api/super-admin/overview', requirePlatformAdmin, async (req, res) => {
+app.get(['/api/super-admin/overview', '/api/admin/platform/overview', '/admin/platform/overview'], requirePlatformAdmin, async (req, res) => {
   try {
     const overview = await getGlobalPlatformOverview();
     const sessionList = Array.from(getSessions().values());
@@ -4789,6 +4911,28 @@ app.put('/api/super-admin/tenants/:id/mode', requirePlatformAdmin, async (req, r
   } catch (err: any) {
     console.error('[Super Admin] Update mode error:', err);
     res.status(500).json({ error: 'Failed to update lead pool mode' });
+  }
+});
+
+// PATCH /api/tenant/lead-pool-mode: Customer workspace lead routing mode (Company Owner only)
+app.patch(['/api/tenant/lead-pool-mode', '/api/tenant/settings/lead-pool-mode'], requireTenantAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const tenantId = caller.tenantId;
+    if (!tenantId) {
+      res.status(400).json({ error: 'Tenant identity is required.' });
+      return;
+    }
+    const { leadPoolMode } = req.body;
+    if (leadPoolMode !== 'shared' && leadPoolMode !== 'assigned') {
+      res.status(400).json({ error: 'Invalid leadPoolMode. Must be "shared" or "assigned".' });
+      return;
+    }
+    await updateTenantLeadPoolMode(tenantId, leadPoolMode);
+    emitPlatformEvent('platform:tenant-updated', { tenantId, leadPoolMode });
+    res.json({ success: true, message: `Tenant lead pool mode set to ${leadPoolMode}.`, leadPoolMode });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -5559,8 +5703,8 @@ app.post('/api/integrations/leadgen/import', requireAuth, async (req: express.Re
 
 // ─── ADMIN AUTHORITY MASTER CONTROL REST ENDPOINTS ────────────────────────────
 
-// GET /api/admin/overview & /admin/platform/overview
-app.get(['/api/admin/overview', '/admin/platform/overview', '/admin/overview'], requireAuth, requireAdmin, async (req, res) => {
+// GET /api/admin/overview & /admin/overview
+app.get(['/api/admin/overview', '/admin/overview'], requireAuth, requireAdmin, async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const tenantId = user.tenantId;
@@ -5606,7 +5750,7 @@ app.get(['/api/admin/overview', '/admin/platform/overview', '/admin/overview'], 
 });
 
 // GET /api/admin/users & /admin/users
-app.get(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:view'), async (req, res) => {
+const handleGetUsers = async (req: express.Request, res: express.Response) => {
   const user = (req as any).user;
   const isPlatform = isPlatformRole(user.role);
   const targetTenantId = (isPlatform && (req.query.tenantId as string)) || user.tenantId;
@@ -5670,10 +5814,12 @@ app.get(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOr
   }
 
   res.json(users);
-});
+};
+app.get(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:view'), handleGetUsers);
+app.get(['/api/users', '/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:view'), handleGetUsers);
 
 // POST /api/admin/users & /admin/users
-app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:add'), async (req, res) => {
+const handleCreateUser = async (req: express.Request, res: express.Response) => {
   try {
     const caller = (req as any).user;
     const isPlatform = isPlatformRole(caller.role);
@@ -5750,7 +5896,7 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
       const companyEntitlements = await getTenantModuleEntitlements(tenantId);
       for (const modId of requestedMods) {
         const canonical = normalizeModuleKey(modId);
-        if (companyEntitlements[canonical] === false) {
+        if (!companyEntitlements || !companyEntitlements[canonical]) {
           res.status(403).json({
             error: `Forbidden: Cannot grant module '${canonical}'. It is not included in your company's platform entitlements ceiling.`
           });
@@ -5807,7 +5953,9 @@ app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerO
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
-});
+};
+app.post(['/api/admin/users', '/admin/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:add'), handleCreateUser);
+app.post(['/api/users', '/users'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:add'), handleCreateUser);
 
 // PUT /api/admin/users/:id & /admin/users/:id (Unified update for role, password, and permissions)
 app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('users:edit'), async (req, res) => {
@@ -6298,7 +6446,7 @@ app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, asyn
 // ─── Workspace Invitations REST Endpoints ─────────────────────────────────────
 
 // GET /api/admin/invitations & /admin/invitations — List invitations & seat usage
-app.get(['/api/admin/invitations', '/admin/invitations'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
+app.get(['/api/admin/invitations', '/admin/invitations', '/api/invitations', '/invitations'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
     const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
@@ -6323,7 +6471,7 @@ app.get(['/api/admin/invitations', '/admin/invitations'], requireAuth, requireCo
 });
 
 // POST /api/admin/invitations & /admin/invitations — Create workspace invitation
-app.post(['/api/admin/invitations', '/admin/invitations'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
+app.post(['/api/admin/invitations', '/admin/invitations', '/api/invitations', '/invitations'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
     const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
@@ -6393,6 +6541,7 @@ app.post(['/api/admin/invitations', '/admin/invitations'], requireAuth, requireC
       inviteUrl,
       invitation: {
         ...invitation,
+        token: rawToken,
         inviteUrl
       }
     });
@@ -6789,7 +6938,7 @@ app.delete(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requireCom
 // ─── Teams & Scoping Endpoints ───────────────────────────────────────────────
 
 // GET /api/admin/teams & /admin/teams
-app.get(['/api/admin/teams', '/admin/teams'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:view', 'users:view', 'settings:view']), async (req, res) => {
+app.get(['/api/admin/teams', '/admin/teams', '/api/teams', '/teams'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:view', 'users:view', 'settings:view']), async (req, res) => {
   try {
     const caller = (req as any).user;
     const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
@@ -6818,7 +6967,7 @@ app.get(['/api/admin/teams', '/admin/teams'], requireAuth, requireCompanyOwnerOr
 });
 
 // GET /api/admin/teams/:id & /admin/teams/:id
-app.get(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:view', 'users:view', 'settings:view']), async (req, res) => {
+app.get(['/api/admin/teams/:id', '/admin/teams/:id', '/api/teams/:id', '/teams/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:view', 'users:view', 'settings:view']), async (req, res) => {
   try {
     const caller = (req as any).user;
     const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
@@ -6847,7 +6996,7 @@ app.get(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requireCompan
 });
 
 // POST /api/admin/teams & /admin/teams
-app.post(['/api/admin/teams', '/admin/teams'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:edit', 'users:edit', 'users:add']), async (req, res) => {
+app.post(['/api/admin/teams', '/admin/teams', '/api/teams', '/teams'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:edit', 'users:edit', 'users:add']), async (req, res) => {
   try {
     const caller = (req as any).user;
     const { name, description = '', leaderId, memberIds = [], campaignIds = [], status = 'active' } = req.body;
@@ -6858,6 +7007,25 @@ app.post(['/api/admin/teams', '/admin/teams'], requireAuth, requireCompanyOwnerO
     const tenantId = (caller.role === 'platform_admin' || caller.role === 'master_admin')
       ? (req.body.tenantId || caller.tenantId)
       : caller.tenantId;
+
+    if (leaderId) {
+      try {
+        await validateTenantAssignee(leaderId, tenantId);
+      } catch (e: any) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
+    }
+    if (Array.isArray(memberIds) && memberIds.length > 0) {
+      for (const mId of memberIds) {
+        try {
+          await validateTenantAssignee(mId, tenantId);
+        } catch (e: any) {
+          res.status(400).json({ error: e.message });
+          return;
+        }
+      }
+    }
 
     const team = await createTeam({
       name: String(name).trim(),
@@ -6886,12 +7054,13 @@ app.post(['/api/admin/teams', '/admin/teams'], requireAuth, requireCompanyOwnerO
     });
   } catch (err: any) {
     console.error('[TEAMS API] POST team error:', err);
-    res.status(500).json({ error: 'Failed to create team: ' + err.message });
+    const status = err.message && (err.message.includes('not found') || err.message.includes('cannot be assigned')) ? 400 : 500;
+    res.status(status).json({ error: 'Failed to create team: ' + err.message });
   }
 });
 
 // PUT /api/admin/teams/:id & /admin/teams/:id
-app.put(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:edit', 'users:edit']), async (req, res) => {
+app.put(['/api/admin/teams/:id', '/admin/teams/:id', '/api/teams/:id', '/teams/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:edit', 'users:edit']), async (req, res) => {
   try {
     const caller = (req as any).user;
     const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
@@ -6904,6 +7073,25 @@ app.put(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requireCompan
       return;
     }
     const effectiveTenantId = existing ? existing.tenantId : tenantId;
+
+    if (leaderId) {
+      try {
+        await validateTenantAssignee(leaderId, effectiveTenantId);
+      } catch (e: any) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
+    }
+    if (Array.isArray(memberIds) && memberIds.length > 0) {
+      for (const mId of memberIds) {
+        try {
+          await validateTenantAssignee(mId, effectiveTenantId);
+        } catch (e: any) {
+          res.status(400).json({ error: e.message });
+          return;
+        }
+      }
+    }
 
     await updateTeam(req.params.id, effectiveTenantId, {
       name: name ? String(name).trim() : undefined,
@@ -6932,12 +7120,13 @@ app.put(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requireCompan
     });
   } catch (err: any) {
     console.error('[TEAMS API] PUT team error:', err);
-    res.status(500).json({ error: 'Failed to update team: ' + err.message });
+    const status = err.message && (err.message.includes('not found') || err.message.includes('cannot be assigned')) ? 400 : 500;
+    res.status(status).json({ error: 'Failed to update team: ' + err.message });
   }
 });
 
 // DELETE /api/admin/teams/:id & /admin/teams/:id
-app.delete(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:delete', 'users:delete']), async (req, res) => {
+app.delete(['/api/admin/teams/:id', '/admin/teams/:id', '/api/teams/:id', '/teams/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:delete', 'users:delete']), async (req, res) => {
   try {
     const caller = (req as any).user;
     const tenantId = caller.tenantId;
@@ -6954,7 +7143,7 @@ app.delete(['/api/admin/teams/:id', '/admin/teams/:id'], requireAuth, requireCom
 });
 
 // GET /api/admin/teams/:id/members
-app.get(['/api/admin/teams/:id/members', '/admin/teams/:id/members'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:view', 'users:view']), async (req, res) => {
+app.get(['/api/admin/teams/:id/members', '/admin/teams/:id/members', '/api/teams/:id/members', '/teams/:id/members'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:view', 'users:view']), async (req, res) => {
   try {
     const caller = (req as any).user;
     const members = await getTeamMembers(req.params.id, caller.tenantId);
@@ -6965,13 +7154,31 @@ app.get(['/api/admin/teams/:id/members', '/admin/teams/:id/members'], requireAut
 });
 
 // POST /api/admin/teams/:id/members
-app.post(['/api/admin/teams/:id/members', '/admin/teams/:id/members'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:edit', 'users:edit']), async (req, res) => {
+app.post(['/api/admin/teams/:id/members', '/admin/teams/:id/members', '/api/teams/:id/members', '/teams/:id/members'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:edit', 'users:edit']), async (req, res) => {
   try {
     const caller = (req as any).user;
     const { userIds, leaderId } = req.body;
     if (!Array.isArray(userIds)) {
       res.status(400).json({ error: 'userIds must be an array.' });
       return;
+    }
+    if (leaderId) {
+      try {
+        await validateTenantAssignee(leaderId, caller.tenantId);
+      } catch (e: any) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
+    }
+    if (Array.isArray(userIds) && userIds.length > 0) {
+      for (const uId of userIds) {
+        try {
+          await validateTenantAssignee(uId, caller.tenantId);
+        } catch (e: any) {
+          res.status(400).json({ error: e.message });
+          return;
+        }
+      }
     }
     await setTeamMembers(req.params.id, caller.tenantId, userIds, leaderId);
     const members = await getTeamMembers(req.params.id, caller.tenantId);

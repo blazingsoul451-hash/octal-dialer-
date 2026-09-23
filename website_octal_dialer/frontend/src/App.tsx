@@ -76,20 +76,42 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  // ─── Auth state ─────────────────────────────────────────────────────────────
-  const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem('octal_auth_token'));
+  const isAdminRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/admin');
+
+  const [authToken, setAuthToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const imp = sessionStorage.getItem('octal_impersonate_token');
+      if (imp) return imp;
+      const isAdmin = window.location.pathname.startsWith('/admin');
+      if (isAdmin) {
+        return localStorage.getItem('octal_platform_auth_token');
+      }
+      return localStorage.getItem('octal_customer_auth_token') || localStorage.getItem('octal_auth_token');
+    }
+    return null;
+  });
   const [authIdentity, setAuthIdentity] = useState<AuthIdentity | null>(() => {
     if (typeof window !== 'undefined') {
-      const token = sessionStorage.getItem('octal_impersonate_token') || localStorage.getItem('octal_auth_token');
+      const imp = sessionStorage.getItem('octal_impersonate_token');
+      const isAdmin = window.location.pathname.startsWith('/admin');
+      const token = imp || (isAdmin
+        ? localStorage.getItem('octal_platform_auth_token')
+        : (localStorage.getItem('octal_customer_auth_token') || localStorage.getItem('octal_auth_token')));
       return getInitialIdentityHintFromToken(token);
     }
     return null;
   });
   const [authUser, setAuthUser] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
-      const token = sessionStorage.getItem('octal_impersonate_token') || localStorage.getItem('octal_auth_token');
+      const imp = sessionStorage.getItem('octal_impersonate_token');
+      const isAdmin = window.location.pathname.startsWith('/admin');
+      const token = imp || (isAdmin
+        ? localStorage.getItem('octal_platform_auth_token')
+        : (localStorage.getItem('octal_customer_auth_token') || localStorage.getItem('octal_auth_token')));
       const hint = getInitialIdentityHintFromToken(token);
-      return hint?.username || localStorage.getItem('octal_auth_user');
+      return hint?.username || (isAdmin
+        ? localStorage.getItem('octal_platform_auth_user')
+        : (localStorage.getItem('octal_customer_auth_user') || localStorage.getItem('octal_auth_user')));
     }
     return null;
   });
@@ -240,8 +262,18 @@ export default function App() {
     setAuthToken(token);
     setAuthUser(identity.username);
     setAuthIdentity(identity);
-    localStorage.setItem('octal_auth_token', token);
-    localStorage.setItem('octal_auth_user', identity.username);
+    if (identity.role === 'platform_admin') {
+      localStorage.setItem('octal_platform_auth_token', token);
+      localStorage.setItem('octal_platform_auth_user', identity.username);
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/admin')) {
+        window.history.pushState({}, '', '/admin');
+      }
+    } else {
+      localStorage.setItem('octal_customer_auth_token', token);
+      localStorage.setItem('octal_customer_auth_user', identity.username);
+      localStorage.setItem('octal_auth_token', token);
+      localStorage.setItem('octal_auth_user', identity.username);
+    }
   };
 
   const handleLogout = async () => {
@@ -259,8 +291,15 @@ export default function App() {
         headers: { 'Authorization': `Bearer ${authToken}` }
       }).catch(() => {});
     }
-    localStorage.removeItem('octal_auth_token');
-    localStorage.removeItem('octal_auth_user');
+    if (isAdminRoute || authIdentity?.role === 'platform_admin') {
+      localStorage.removeItem('octal_platform_auth_token');
+      localStorage.removeItem('octal_platform_auth_user');
+    } else {
+      localStorage.removeItem('octal_customer_auth_token');
+      localStorage.removeItem('octal_customer_auth_user');
+      localStorage.removeItem('octal_auth_token');
+      localStorage.removeItem('octal_auth_user');
+    }
     localStorage.removeItem('octal_session_id');
     setAuthToken(null);
     setAuthUser(null);
@@ -579,6 +618,37 @@ export default function App() {
         }}
         onLogout={handleLogout}
       />
+    );
+  }
+
+  // Guard: If accessing /admin with a customer account, block with dedicated notice
+  if (isAdminRoute && userRole !== 'platform_admin' && !isImpersonating) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-950 text-white font-sans">
+        <div className="max-w-md w-full bg-slate-900 border border-amber-500/50 rounded-2xl p-6 shadow-2xl text-center space-y-4">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-amber-500/20 text-amber-400 mx-auto">
+            <ShieldAlert className="w-6 h-6" />
+          </div>
+          <h2 className="text-xl font-bold text-white">Platform Console Restricted</h2>
+          <p className="text-sm text-slate-300">
+            You are signed in as a customer account (<span className="text-amber-400 font-semibold">{authUser || 'Customer'}</span>). The Platform Admin Console is strictly reserved for Software Owners.
+          </p>
+          <div className="pt-2 flex flex-col gap-2">
+            <button
+              onClick={() => { window.location.href = window.location.origin; }}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl transition-all cursor-pointer"
+            >
+              Go to Customer Workspace
+            </button>
+            <button
+              onClick={handleLogout}
+              className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2 rounded-xl transition-all cursor-pointer text-xs"
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 

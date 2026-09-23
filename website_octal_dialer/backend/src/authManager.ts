@@ -760,7 +760,10 @@ export async function registerPublicUser(params: { username: string; email?: str
   }
 
   const role = 'user';
-  const tenantId = params.tenantId || 'tenant_default';
+  if (!params.tenantId) {
+    throw new Error('Tenant ID is required for user registration.');
+  }
+  const tenantId = params.tenantId;
   const userId = 'user_' + crypto.randomBytes(8).toString('hex');
   const { hash } = hashPassword(password);
   const now = new Date().toISOString();
