@@ -6967,6 +6967,52 @@ app.get(['/api/admin/teams', '/admin/teams', '/api/teams', '/teams'], requireAut
   }
 });
 
+// GET /api/teams/my-teams: Returns teams led by current Team Lead or all teams for Admin
+app.get(['/api/teams/my-teams', '/teams/my-teams'], requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
+    const tenantId = caller.tenantId;
+
+    if (caller.role !== 'team_lead' && caller.role !== 'admin' && !isPlatform) {
+      res.status(403).json({ error: 'Forbidden: Access restricted to Team Leads and Administrators.' });
+      return;
+    }
+
+    let teams: any[];
+    if (caller.role === 'admin' || isPlatform) {
+      teams = await getTeams(tenantId);
+    } else {
+      teams = await getTeamsLedByUser(caller.id, tenantId);
+    }
+
+    const tenant = await getTenantById(tenantId);
+    const companyMaxVisibility = tenant?.maxTeamVisibility || 'TEAM_COLLABORATE';
+
+    const enriched = await Promise.all(teams.map(async (t) => {
+      const members = await getTeamMembers(t.id, tenantId);
+      const campaigns = await getTeamCampaigns(t.id, tenantId);
+      const settings = await getTeamSettings(t.id, tenantId);
+      const effectiveVisibility = await getTeamEffectiveVisibility(tenantId, t.id);
+      return {
+        ...t,
+        members,
+        campaigns,
+        settings,
+        effectiveVisibility,
+        companyMaxVisibility,
+        memberCount: members.length,
+        campaignCount: campaigns.length
+      };
+    }));
+
+    res.json(enriched);
+  } catch (err: any) {
+    console.error('[TEAMS API] GET my-teams error:', err);
+    res.status(500).json({ error: 'Failed to retrieve user teams: ' + err.message });
+  }
+});
+
 // GET /api/admin/teams/:id & /admin/teams/:id
 app.get(['/api/admin/teams/:id', '/admin/teams/:id', '/api/teams/:id', '/teams/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:view', 'users:view', 'settings:view']), async (req, res) => {
   try {
@@ -7218,52 +7264,6 @@ app.post(['/api/admin/teams/:id/campaigns', '/admin/teams/:id/campaigns'], requi
 });
 
 // ─── SaaS Structure v2: Team Lead & Team Policy Endpoints ────────────────────
-
-// GET /api/teams/my-teams: Returns teams led by current Team Lead or all teams for Admin
-app.get(['/api/teams/my-teams', '/teams/my-teams'], requireAuth, async (req, res) => {
-  try {
-    const caller = (req as any).user;
-    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-    const tenantId = caller.tenantId;
-
-    if (caller.role !== 'team_lead' && caller.role !== 'admin' && !isPlatform) {
-      res.status(403).json({ error: 'Forbidden: Access restricted to Team Leads and Administrators.' });
-      return;
-    }
-
-    let teams: any[];
-    if (caller.role === 'admin' || isPlatform) {
-      teams = await getTeams(tenantId);
-    } else {
-      teams = await getTeamsLedByUser(caller.id, tenantId);
-    }
-
-    const tenant = await getTenantById(tenantId);
-    const companyMaxVisibility = tenant?.maxTeamVisibility || 'TEAM_COLLABORATE';
-
-    const enriched = await Promise.all(teams.map(async (t) => {
-      const members = await getTeamMembers(t.id, tenantId);
-      const campaigns = await getTeamCampaigns(t.id, tenantId);
-      const settings = await getTeamSettings(t.id, tenantId);
-      const effectiveVisibility = await getTeamEffectiveVisibility(tenantId, t.id);
-      return {
-        ...t,
-        members,
-        campaigns,
-        settings,
-        effectiveVisibility,
-        companyMaxVisibility,
-        memberCount: members.length,
-        campaignCount: campaigns.length
-      };
-    }));
-
-    res.json(enriched);
-  } catch (err: any) {
-    console.error('[TEAMS API] GET my-teams error:', err);
-    res.status(500).json({ error: 'Failed to retrieve user teams: ' + err.message });
-  }
-});
 
 // GET /api/teams/:id/settings: Retrieves team visibility policy
 app.get(['/api/teams/:id/settings', '/teams/:id/settings'], requireAuth, async (req, res) => {
