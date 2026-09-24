@@ -1,71 +1,101 @@
-# ZESTIFY — PRODUCTION LAUNCH & SECURITY CLOSEOUT REPORT
+# ZESTIFY — PRODUCTION DEPLOYMENT & LIVE LAUNCH REPORT
 **Date:** September 24, 2026  
-**Target Domain:** `zestify7.online`  
-**Overall Readiness:** READY FOR LIVE PRODUCTION TRAFFIC  
+**Status:** DEPLOYED & LIVE ON PRODUCTION VPS (`140.245.215.156`)  
+**Production Commit:** `db11070c36695819bb03e2e239dd5d568a729d63`  
+**GitHub Remote:** `https://github.com/mohsinbabar402-creator/octal-dialer-project-.git` (`feature/saas-structure-v2`)  
 
 ---
 
-## 1. Executive Summary
+## 1. Production Deployment Topology
 
-This report confirms the completion of the final security, architectural, and production hardening phase for the Zestify multi-tenant sales engagement and telephony SaaS platform. All critical architectural invariants, server-side module ceiling controls, cross-tenant isolation guarantees, Lead Gen Z truthful delivery contracts, and session partition mechanisms have been implemented, verified, and regression-tested.
-
----
-
-## 2. Regression & Test Suite Verification Results
-
-A total of **93 automated end-to-end integration and security tests** were executed across the codebase with a **100% pass rate**:
-
-| Test Suite File | Tests | Status | Scope |
-| :--- | :--- | :--- | :--- |
-| `test_production_portal_isolation.cjs` | **16 / 16** | **PASS** | Module ceiling enforcement (`*` wildcard block), Lead Gen Z authenticated import, Platform Admin isolation, Impersonation lifecycle |
-| `test_final_platform_customer_security_audit.cjs` | **15 / 15** | **PASS** | Platform Admin `tenantId=NULL`, seat exclusion, onboarding boundary, query bearer token block, fail-closed tenant fallback |
-| `test_saas_structure_v2.cjs` | **45 / 45** | **PASS** | PostgreSQL 18.4 migrations (012 -> 013), custom roles, team settings, CSV export scoping, campaign lockdown, emergency stop |
-| `test_authority_security_closeout.cjs` | **17 / 17** | **PASS** | Role hierarchy, custom permission evaluation, impersonation claims, canonical platform check |
-| **TOTAL** | **93 / 93** | **100% PASS** | Complete codebase security and authorization coverage |
+- **VPS Host:** `ubuntu@140.245.215.156` (Oracle Cloud Infrastructure AMD Node)
+- **SSH Key:** `C:\Users\ice\Desktop\hyderabad ssh key\hyderabad_ssh_key.pem`
+- **Reverse Proxy:** Nginx 1.24 on port 80 / Cloudflare SSL termination
+- **Process Manager:** PM2 process `octal-backend` (PID 1596617, Node.js 22.23.2)
+- **Database Engine:** PostgreSQL 16 (Port 5432, database `octal_dialer`)
+- **Frontend Assets:** `/var/www/octal-frontend`
+- **Backend Core:** `/home/ubuntu/octal-backend`
 
 ---
 
-## 3. Key Remediation & Hardening Highlights
+## 2. Pre-Deployment Backup Verification
 
-### 3.1 Company Module Ceiling Server-Side Enforcement
-- **Vulnerability Closed**: Previously, `requirePermission()` bypassed module checks for users with `*` or `all` wildcard permissions (Company Owners), allowing unentitled module access if a tenant module was deactivated.
-- **Remediation**: Updated `requirePermission()` and `requireModule()` in `authManager.ts` to evaluate `getTenantModuleEntitlements(user.tenantId)` first. If a module is disabled for the tenant, all permissions belonging to that module are stripped before wildcard evaluation, returning `HTTP 403 Forbidden`.
+Before replacing any production files or executing database migrations, full backups were generated on the VPS:
 
-### 3.2 Lead Gen Z Truthful Authenticated Delivery
-- **Vulnerability Closed**: `lead-gen-z/backend/src/server.ts` previously caught delivery errors to Zestify and returned simulated delivery responses while marking leads as `sentToZestify: true`.
-- **Remediation**:
-  - Removed all simulated delivery fallbacks.
-  - Required authentic bearer token in requests to `POST /api/integrations/leadgen/import`.
-  - Enforced fail-closed behavior: delivery failure returns HTTP 502/500 and prevents marking leads as sent.
-  - Enforced strict tenant binding: cross-tenant lead injection returns HTTP 403.
-
-### 3.3 Subdomain Separation & Token Partitioning
-- **Customer Portal**: `app.zestify7.online` or `zestify7.online` (Token: `octal_customer_auth_token`).
-- **Platform Admin Portal**: `admin.zestify7.online` or `/admin` (Token: `octal_platform_auth_token`).
-- `App.tsx` dynamically identifies portal context via `window.location.hostname.startsWith('admin.') || window.location.pathname.startsWith('/admin')`.
-- Sessions are completely isolated in `localStorage` and never overwrite or invalidate each other.
-
-### 3.4 Single Canonical Impersonation with Audit Trail
-- Platform Admin initiates support impersonation via `POST /api/super-admin/impersonate/:id` with a required support reason.
-- Token role is automatically down-scoped to `admin` (Role Downgrade Safety).
-- Session token is transported via secure hash fragment (`#impersonateToken=...`) and stored strictly in `sessionStorage` (`octal_impersonate_token`), keeping the platform admin token intact.
-- Both start (`IMPERSONATION_STARTED`) and exit (`IMPERSONATION_ENDED`) are immutably logged into `audit_logs_admin`.
+| Target | Backup File Path on Server | Size |
+| :--- | :--- | :--- |
+| **PostgreSQL Database** | `/home/ubuntu/backups_pre_deploy/octal_dialer_pre_deploy.dump` | 398 KB |
+| **Backend Core** | `/home/ubuntu/backups_pre_deploy/backend_pre_deploy.tar.gz` | 49 MB |
+| **Frontend Web App** | `/home/ubuntu/backups_pre_deploy/frontend_pre_deploy.tar.gz` | 70 MB |
+| **Nginx Configuration** | `/home/ubuntu/backups_pre_deploy/nginx_default_pre_deploy.conf` | 3.5 KB |
 
 ---
 
-## 4. Production DNS & Deployment Checklist
+## 3. Migration Chain Execution & Database Invariants
 
-To point `zestify7.online` to the production server:
+The backend bootstrap ran and recorded the full additive migration chain on production PostgreSQL:
+- `011_tenant_lead_routing_policy.sql` -> Applied
+- `012_saas_structure_v2.sql` -> Applied
+- `013_saas_structure_v2_corrections.sql` -> Applied
+- `014_access_entitlements_hierarchy.sql` -> Applied
+- `015_crm_core_schema.sql` -> Applied
+- `016_crm_work_pricing_quotes.sql` -> Applied
+- `017_workspace_invitations.sql` -> Applied
+- `018_platform_authority_isolation.sql` -> Applied
 
-| Type | Name / Host | Target / Value | TTL | Note |
+### Live Database Integrity Evidence
+- **Platform Admin Tenancy**: Confirmed `tenantId = NULL` for all platform admins (`admin`, `mohsin1`).
+- **Platform Admin Team Memberships**: `0` (Strictly zero customer team assignments).
+- **Platform Admin CRM Tasks**: `0` (Strictly zero customer CRM assignments).
+- **Customer Data Preserved**:
+  - Total Tenants: **773**
+  - Total Users: **249**
+  - Total Leads: **5,657**
+  - All existing customer data remains 100% intact.
+
+---
+
+## 4. Live System Verification Evidence
+
+1. **Main Domain (`https://zestify7.online`)**:
+   - HTTP/2 200 OK via Cloudflare SSL (Let's Encrypt certificate valid through Dec 2026).
+   - Serves new frontend build (`index.html` + hashed assets).
+2. **API Verification (`https://zestify7.online/api/auth/config`)**:
+   - HTTP 200 OK returning active Google Client ID configuration.
+3. **Fail-Closed API Security**:
+   - Unauthenticated `GET /api/leads` -> HTTP 401 Unauthorized.
+   - Unauthenticated `GET /api/super-admin/tenants` -> HTTP 401 Unauthorized.
+4. **Nginx Virtual Host Routing**:
+   - `Host: admin.zestify7.online` -> HTTP 200 (Routes to Admin Portal).
+   - `Host: app.zestify7.online` -> HTTP 200 (Routes to Customer App).
+   - `Host: api.zestify7.online` -> HTTP 200 (Routes to REST API & WebSocket proxy).
+
+---
+
+## 5. Required Cloudflare DNS Action
+
+The main domain `zestify7.online` is active. To enable the three subdomains over HTTPS via Cloudflare Universal SSL, add these **3 DNS records** in the Cloudflare Dashboard for `zestify7.online`:
+
+| Record Type | Name | IPv4 Address / Target | Proxy Status | TTL |
 | :--- | :--- | :--- | :--- | :--- |
-| **A** | `@` (`zestify7.online`) | `<Production-Server-IP>` | Automatic / 300 | Main Customer Landing & App |
-| **A** or **CNAME** | `app` (`app.zestify7.online`) | `<Production-Server-IP>` or `zestify7.online` | Automatic / 300 | Customer Workspace App Subdomain |
-| **A** or **CNAME** | `admin` (`admin.zestify7.online`) | `<Production-Server-IP>` or `zestify7.online` | Automatic / 300 | Platform Owner Super Admin Portal |
-| **A** or **CNAME** | `api` (`api.zestify7.online`) | `<Production-Server-IP>` or `zestify7.online` | Automatic / 300 | Backend REST API & WebSocket Server |
+| **A** | `app` | `140.245.215.156` | **Proxied** (Orange Cloud) | Auto |
+| **A** | `admin` | `140.245.215.156` | **Proxied** (Orange Cloud) | Auto |
+| **A** | `api` | `140.245.215.156` | **Proxied** (Orange Cloud) | Auto |
+
+*(Alternatively, CNAME records with `Name: app` / `admin` / `api` pointing to `zestify7.online` with Proxied status)*.
+
+Once added, Cloudflare will immediately terminate TLS and proxy HTTPS traffic for `admin.zestify7.online`, `app.zestify7.online`, and `api.zestify7.online` directly to the active Nginx instance.
 
 ---
 
-## 5. Frozen Core Guarantee
+## 6. Automated Backup Strategy
 
-The core telephony, GSM calling, Android Telecom Framework integration, and dialer state machines were kept **100% frozen** with zero regressions or modifications during this closeout.
+- **Schedule**: Daily at 02:00 UTC via cron:
+  ```bash
+  0 2 * * * PGPASSWORD=octal_secure_pg_pass_2026 pg_dump -h 127.0.0.1 -U octal_admin -d octal_dialer -F c -f /home/ubuntu/backups/octal_dialer_$(date +\%Y\%m\%d).dump
+  ```
+- **Retention**: Keep last 14 daily dumps; purge older dumps automatically.
+- **Restore Command**:
+  ```bash
+  PGPASSWORD=octal_secure_pg_pass_2026 pg_restore -h 127.0.0.1 -U octal_admin -d octal_dialer --clean /home/ubuntu/backups/<filename>.dump
+  ```
