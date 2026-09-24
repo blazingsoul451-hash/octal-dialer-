@@ -20,7 +20,7 @@ import crypto from 'crypto';
 import express from 'express';
 import * as jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
-import { db, getPendingInvitationForEmail } from './databaseManager';
+import { db, getPendingInvitationForEmail, getTenantModuleEntitlements, normalizeModuleKey } from './databaseManager';
 import {
   isValidEmailFormat,
   isDisposableEmail,
@@ -1465,11 +1465,33 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
 }
 
 /**
+ * Map permission name/prefix to canonical module ID if applicable.
+ * Returns null for system/workspace permissions not bound to an optional feature module.
+ */
+export function getCanonicalModuleForPermission(perm: string): string | null {
+  const clean = (perm || '').trim();
+  if (!clean) return null;
+
+  if (clean === 'crm' || clean.startsWith('crm:')) return 'crm';
+  if (clean === 'campaigns' || clean.startsWith('campaigns:')) return 'campaigns';
+  if (clean === 'leads' || clean.startsWith('leads:')) return 'leads';
+  if (clean === 'octalDialer' || clean === 'dialer' || clean.startsWith('calls:') || clean.startsWith('dialer:') || clean.startsWith('octalDialer:')) return 'octalDialer';
+  if (clean === 'reports' || clean === 'analytics' || clean.startsWith('reports:') || clean.startsWith('analytics:') || clean.startsWith('history:')) return 'reports';
+  if (clean === 'autoEmailer' || clean === 'auto_emailer' || clean.startsWith('autoEmailer:') || clean.startsWith('auto_emailer:')) return 'autoEmailer';
+  if (clean === 'facebookPoster' || clean === 'facebook_poster' || clean.startsWith('facebookPoster:') || clean.startsWith('facebook_poster:')) return 'facebookPoster';
+  if (clean === 'googleScraper' || clean === 'google_scraper' || clean.startsWith('googleScraper:') || clean.startsWith('google_scraper:')) return 'googleScraper';
+  if (clean === 'facebookScraper' || clean === 'facebook_scraper' || clean.startsWith('facebookScraper:') || clean.startsWith('facebook_scraper:')) return 'facebookScraper';
+
+  return null;
+}
+
+/**
  * Reusable backend authorization guard: requirePermission(permKey | permKeys[])
  * 1. Requires authenticated user (req.user must be set via requireAuth).
- * 2. Resolves effective permissions via getEffectivePermissions(user).
- * 3. Allows request if user has '*', 'all', or any of the required permissions.
- * 4. Rejects with 403 Forbidden if unauthorized.
+ * 2. Enforces strict Company Module Ceiling (company_entitlements) — disabled modules cannot be accessed,
+ *    even if Company Owner has '*' wildcard.
+ * 3. Enforces Employee Assignment (effective = company_entitlements ∩ employee_assignments).
+ * 4. Allows request if authorized, rejects with 403 Forbidden if unauthorized.
  */
 export function requirePermission(requiredPerm: string | string[]) {
   return async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
@@ -1484,13 +1506,40 @@ export function requirePermission(requiredPerm: string | string[]) {
       return next();
     }
 
-    const effective = await getEffectivePermissions(user);
-    if (effective.has('*') || effective.has('all')) {
-      return next();
+    if (!user.tenantId) {
+      res.status(403).json({ error: 'Forbidden: No organization context associated with user.' });
+      return;
     }
 
     const perms = Array.isArray(requiredPerm) ? requiredPerm : [requiredPerm];
-    const hasAny = perms.some(p => effective.has(p));
+    const entitlements = await getTenantModuleEntitlements(user.tenantId);
+
+    // 1. Company Entitlement Ceiling:
+    // A permission is allowed under the company ceiling if:
+    // - it does not map to any optional module (core/system tenant permissions), OR
+    // - its mapped module is enabled in tenant entitlements.
+    const companyAllowedPerms = perms.filter(p => {
+      const mod = getCanonicalModuleForPermission(p);
+      if (!mod) return true;
+      const canonical = normalizeModuleKey(mod);
+      return entitlements[canonical] === true || entitlements[mod] === true;
+    });
+
+    if (companyAllowedPerms.length === 0) {
+      res.status(403).json({
+        error: `Forbidden: The requested feature is disabled for your organization.`
+      });
+      return;
+    }
+
+    // 2. Employee Assignment Check (effective = company_entitlements ∩ employee_assignments):
+    const effective = await getEffectivePermissions(user);
+    if (effective.has('*') || effective.has('all')) {
+      // Company Owner wildcard grants access ONLY to company-allowed permissions
+      return next();
+    }
+
+    const hasAny = companyAllowedPerms.some(p => effective.has(p));
     if (hasAny) {
       return next();
     }
@@ -1531,30 +1580,69 @@ export function getTenantId(req: express.Request): string {
   return user.tenantId;
 }
 
-/** Middleware: require specific business module permission */
-export function requireModule(moduleId: string) {
+/** Middleware: require specific business module permission with company ceiling enforcement */
+export function requireModule(moduleId: string | string[]) {
   return async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
-    const authHeader = req.headers['authorization'] || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    const user = await validateToken(token);
+    let user = (req as any).user;
+    if (!user) {
+      const authHeader = req.headers['authorization'] || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      user = await validateToken(token);
+      if (user) {
+        (req as any).user = user;
+      }
+    }
 
     if (!user) {
       res.status(401).json({ error: 'Unauthorized. Please log in.' });
       return;
     }
 
-    (req as any).user = user;
-
     if (isPlatformRole(user.role)) {
       return next();
     }
 
+    if (!user.tenantId) {
+      res.status(403).json({ error: 'Forbidden: No organization context associated with user.' });
+      return;
+    }
+
+    const modules = Array.isArray(moduleId) ? moduleId : [moduleId];
+    const entitlements = await getTenantModuleEntitlements(user.tenantId);
+
+    // 1. Company Ceiling Check
+    const companyAllowedModules = modules.filter(m => {
+      const canonical = normalizeModuleKey(m);
+      return entitlements[canonical] === true || entitlements[m] === true;
+    });
+
+    if (companyAllowedModules.length === 0) {
+      res.status(403).json({
+        error: `Forbidden: Module '${modules.join(' or ')}' is disabled for your organization.`
+      });
+      return;
+    }
+
+    // 2. Employee Assignment Check
     const effective = await getEffectivePermissions(user);
-    if (effective.has('*') || effective.has('all') || effective.has(`${moduleId}:view`) || Array.from(effective).some(p => p.startsWith(`${moduleId}:`))) {
+    if (effective.has('*') || effective.has('all')) {
       return next();
     }
 
-    res.status(403).json({ error: `Forbidden. You do not have permission to access the ${moduleId} module.` });
+    const hasAny = companyAllowedModules.some(m => {
+      const canonical = normalizeModuleKey(m);
+      return effective.has(m) ||
+             effective.has(canonical) ||
+             effective.has(`${m}:view`) ||
+             effective.has(`${canonical}:view`) ||
+             Array.from(effective).some(p => p.startsWith(`${m}:`) || p.startsWith(`${canonical}:`));
+    });
+
+    if (hasAny) {
+      return next();
+    }
+
+    res.status(403).json({ error: `Forbidden. You do not have permission to access the ${modules.join(' or ')} module.` });
   };
 }
 

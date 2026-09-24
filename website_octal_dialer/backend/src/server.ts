@@ -778,7 +778,7 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
     const profile = await verifyGoogleIdToken(tokenData.id_token);
     const result = await handleGoogleAuthWithIntent(profile, authIntent);
 
-    res.redirect(`${clientOrigin}/?token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&displayName=${encodeURIComponent((result.user as any).displayName || result.user.username)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
+    res.redirect(`${clientOrigin}/#token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&displayName=${encodeURIComponent((result.user as any).displayName || result.user.username)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
   } catch (err: any) {
     console.error('[Google OAuth Callback Error]:', err);
     const code = err.code || 'GOOGLE_AUTH_FAILED';
@@ -5690,6 +5690,7 @@ app.post('/api/integrations/leadgen/import', requireAuth, async (req: express.Re
       dedupedCount: result.dedupedCount,
       skippedCount,
       workspaceId: tenantId,
+      tenantId: tenantId,
       source,
       tags,
       timestamp: new Date().toISOString()

@@ -364,6 +364,7 @@ CREATE TABLE IF NOT EXISTS "ota_versions" (
   "isActive" INTEGER NOT NULL DEFAULT 0,
   "uploadedAt" TEXT NOT NULL DEFAULT ''
 );
+CREATE UNIQUE INDEX IF NOT EXISTS "idx_ota_versions_version" ON "ota_versions" ("version");
 
 -- Table: email_leads
 CREATE TABLE IF NOT EXISTS "email_leads" (

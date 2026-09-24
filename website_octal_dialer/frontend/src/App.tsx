@@ -76,14 +76,13 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const isAdminRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/admin');
+  const isAdminRoute = typeof window !== 'undefined' && (window.location.pathname.startsWith('/admin') || window.location.hostname.startsWith('admin.'));
 
   const [authToken, setAuthToken] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       const imp = sessionStorage.getItem('octal_impersonate_token');
       if (imp) return imp;
-      const isAdmin = window.location.pathname.startsWith('/admin');
-      if (isAdmin) {
+      if (isAdminRoute) {
         return localStorage.getItem('octal_platform_auth_token');
       }
       return localStorage.getItem('octal_customer_auth_token') || localStorage.getItem('octal_auth_token');
@@ -93,8 +92,7 @@ export default function App() {
   const [authIdentity, setAuthIdentity] = useState<AuthIdentity | null>(() => {
     if (typeof window !== 'undefined') {
       const imp = sessionStorage.getItem('octal_impersonate_token');
-      const isAdmin = window.location.pathname.startsWith('/admin');
-      const token = imp || (isAdmin
+      const token = imp || (isAdminRoute
         ? localStorage.getItem('octal_platform_auth_token')
         : (localStorage.getItem('octal_customer_auth_token') || localStorage.getItem('octal_auth_token')));
       return getInitialIdentityHintFromToken(token);
@@ -104,12 +102,11 @@ export default function App() {
   const [authUser, setAuthUser] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       const imp = sessionStorage.getItem('octal_impersonate_token');
-      const isAdmin = window.location.pathname.startsWith('/admin');
-      const token = imp || (isAdmin
+      const token = imp || (isAdminRoute
         ? localStorage.getItem('octal_platform_auth_token')
         : (localStorage.getItem('octal_customer_auth_token') || localStorage.getItem('octal_auth_token')));
       const hint = getInitialIdentityHintFromToken(token);
-      return hint?.username || (isAdmin
+      return hint?.username || (isAdminRoute
         ? localStorage.getItem('octal_platform_auth_user')
         : (localStorage.getItem('octal_customer_auth_user') || localStorage.getItem('octal_auth_user')));
     }
@@ -265,7 +262,7 @@ export default function App() {
     if (identity.role === 'platform_admin') {
       localStorage.setItem('octal_platform_auth_token', token);
       localStorage.setItem('octal_platform_auth_user', identity.username);
-      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/admin')) {
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/admin') && !window.location.hostname.startsWith('admin.')) {
         window.history.pushState({}, '', '/admin');
       }
     } else {
@@ -326,17 +323,22 @@ export default function App() {
   useEffect(() => {
     // Check URL parameters for OAuth tokens or auth errors
     const urlParams = new URLSearchParams(window.location.search);
-    const oauthToken = urlParams.get('token');
-    const oauthUser = urlParams.get('displayName') || urlParams.get('username') || urlParams.get('user') || 'Google User';
+    let oauthToken = urlParams.get('token');
+    let oauthUser = urlParams.get('displayName') || urlParams.get('username') || urlParams.get('user') || 'Google User';
     const authError = urlParams.get('auth_error');
 
     // Check URL fragment/hash for impersonation token and tenant (#impersonateToken=...&impersonateTenant=...)
+    // Also supports secure fragment-based OAuth tokens (#token=...) to avoid query string exposure
     let hashImpToken: string | null = null;
     let hashImpTenant: string | null = null;
     if (typeof window !== 'undefined' && window.location.hash && window.location.hash.startsWith('#')) {
       const hashParams = new URLSearchParams(window.location.hash.slice(1));
       hashImpToken = hashParams.get('impersonateToken');
       hashImpTenant = hashParams.get('impersonateTenant');
+      if (hashParams.get('token')) {
+        oauthToken = hashParams.get('token');
+        oauthUser = hashParams.get('displayName') || hashParams.get('username') || hashParams.get('user') || 'Google User';
+      }
     }
 
     let currentToken = effectiveAuthToken;
