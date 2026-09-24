@@ -38,7 +38,8 @@ import {
   type StructuralRole,
   type AuthIdentity,
   tryNormalizeStructuralRole,
-  getInitialIdentityHintFromToken
+  getInitialIdentityHintFromToken,
+  isPlatformRole
 } from './utils/roleUtils';
 
 const getBackendUrl = () => {
@@ -448,7 +449,7 @@ export default function App() {
               tenantId: data.tenant?.id || prev?.tenantId,
               userId: data.user?.id || prev?.userId,
               email: data.user?.email || prev?.email,
-              needsOnboarding: data.needsOnboarding ?? (!data.tenant?.id && !data.pendingInvitation),
+              needsOnboarding: isPlatformRole(verifiedRole) ? false : (data.needsOnboarding ?? (!data.tenant?.id && !data.pendingInvitation)),
               pendingInvitation: data.pendingInvitation
             }));
           }
@@ -582,49 +583,27 @@ export default function App() {
     );
   }
 
-  // ─── Gate: Pending Workspace Invitation Acceptance ─────────────────────────────
-  if (authIdentity?.pendingInvitation) {
+  const isPlatformUser = isPlatformRole(userRole);
+
+  // ─── GATE 1 (HIGHEST PRIORITY): Dedicated Platform Owner Console ─────────────
+  // Platform roles (platform_admin, master_admin, super_admin) must NEVER see customer onboarding
+  // If not impersonating a customer workspace, render Platform SuperAdminPortal directly!
+  if (isPlatformUser && !isImpersonating) {
     return (
-      <InvitationAcceptanceModal
-        serverUrl={WEB_API_BASE}
-        authToken={effectiveAuthToken}
-        pendingInvitation={authIdentity.pendingInvitation}
-        currentUser={authIdentity}
-        onAccepted={(newToken, updatedIdentity, tenant) => {
-          setAuthToken(newToken);
-          setAuthUser(updatedIdentity.username);
-          setAuthIdentity(updatedIdentity);
-          if (tenant?.customerType) setCustomerType(tenant.customerType);
-          setToast({ message: `Welcome to ${tenant?.name || 'your workspace'}!`, type: 'success' });
-        }}
-        onLogout={handleLogout}
-      />
+      <div className={`min-h-screen w-full flex flex-col font-sans ${isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'}`}>
+        <SuperAdminPortal
+          serverUrl={WEB_API_BASE}
+          authToken={effectiveAuthToken}
+          currentUser={authUser || 'Admin'}
+          onLogout={handleLogout}
+        />
+      </div>
     );
   }
 
-  // ─── Gate: Customer Workspace Onboarding Wizard (Company vs Just Me) ───────────
-  if (authIdentity?.needsOnboarding || (!authIdentity?.tenantId && userRole !== 'platform_admin')) {
-    return (
-      <CustomerOnboardingModal
-        serverUrl={WEB_API_BASE}
-        authToken={effectiveAuthToken}
-        currentUser={authIdentity}
-        onComplete={(newToken, updatedIdentity, tenant) => {
-          localStorage.setItem('octal_auth_token', newToken);
-          localStorage.setItem('octal_auth_user', updatedIdentity.username);
-          setAuthToken(newToken);
-          setAuthUser(updatedIdentity.username);
-          setAuthIdentity(updatedIdentity);
-          if (tenant?.customerType) setCustomerType(tenant.customerType);
-          setToast({ message: `Workspace "${tenant?.name}" ready! Welcome, Company Owner.`, type: 'success' });
-        }}
-        onLogout={handleLogout}
-      />
-    );
-  }
-
-  // Guard: If accessing /admin with a customer account, block with dedicated notice
-  if (isAdminRoute && userRole !== 'platform_admin' && !isImpersonating) {
+  // ─── GATE 2: Customer Access to /admin Restricted ─────────────────────────────
+  // If a customer user (non-platform) navigates to /admin, block them
+  if (isAdminRoute && !isPlatformUser && !isImpersonating) {
     return (
       <div className="min-h-screen flex items-center justify-center p-6 bg-slate-950 text-white font-sans">
         <div className="max-w-md w-full bg-slate-900 border border-amber-500/50 rounded-2xl p-6 shadow-2xl text-center space-y-4">
@@ -654,17 +633,44 @@ export default function App() {
     );
   }
 
-  // Section 12: Dedicated Platform Owner shell: if platform_admin and NOT impersonating, render SuperAdminPortal directly without customer drawer
-  if (userRole === 'platform_admin' && !isImpersonating) {
+  // ─── GATE 3: Pending Workspace Invitation Acceptance (Customer only) ───────────
+  if (authIdentity?.pendingInvitation) {
     return (
-      <div className={`min-h-screen w-full flex flex-col font-sans ${isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'}`}>
-        <SuperAdminPortal
-          serverUrl={WEB_API_BASE}
-          authToken={effectiveAuthToken}
-          currentUser={authUser || 'Admin'}
-          onLogout={handleLogout}
-        />
-      </div>
+      <InvitationAcceptanceModal
+        serverUrl={WEB_API_BASE}
+        authToken={effectiveAuthToken}
+        pendingInvitation={authIdentity.pendingInvitation}
+        currentUser={authIdentity}
+        onAccepted={(newToken, updatedIdentity, tenant) => {
+          setAuthToken(newToken);
+          setAuthUser(updatedIdentity.username);
+          setAuthIdentity(updatedIdentity);
+          if (tenant?.customerType) setCustomerType(tenant.customerType);
+          setToast({ message: `Welcome to ${tenant?.name || 'your workspace'}!`, type: 'success' });
+        }}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
+  // ─── GATE 4: Customer Workspace Onboarding Wizard (Customer only) ─────────────
+  if (authIdentity?.needsOnboarding || !authIdentity?.tenantId) {
+    return (
+      <CustomerOnboardingModal
+        serverUrl={WEB_API_BASE}
+        authToken={effectiveAuthToken}
+        currentUser={authIdentity}
+        onComplete={(newToken, updatedIdentity, tenant) => {
+          localStorage.setItem('octal_auth_token', newToken);
+          localStorage.setItem('octal_auth_user', updatedIdentity.username);
+          setAuthToken(newToken);
+          setAuthUser(updatedIdentity.username);
+          setAuthIdentity(updatedIdentity);
+          if (tenant?.customerType) setCustomerType(tenant.customerType);
+          setToast({ message: `Workspace "${tenant?.name}" ready! Welcome, Company Owner.`, type: 'success' });
+        }}
+        onLogout={handleLogout}
+      />
     );
   }
 

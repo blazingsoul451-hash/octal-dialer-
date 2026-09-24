@@ -99,6 +99,13 @@ export function isPlatformOwner(role: unknown): boolean {
 }
 
 /**
+ * True if the role is any platform-level role (platform_admin, master_admin, super_admin).
+ */
+export function isPlatformRole(role: unknown): boolean {
+  return tryNormalizeStructuralRole(role) === 'platform_admin';
+}
+
+/**
  * True if the user has Company Owner authority within a tenant workspace.
  * (A Platform Admin is NOT a customer Company Owner).
  */
