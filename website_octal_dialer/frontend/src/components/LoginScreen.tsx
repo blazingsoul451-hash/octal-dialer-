@@ -342,20 +342,29 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       const isLocal = typeof window !== 'undefined' &&
         (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-      const candidateUrls = isLocal
-        ? Array.from(new Set(['', serverUrl, 'http://127.0.0.1:5000', `http://${window.location.hostname}:5000`].filter(Boolean)))
-        : Array.from(new Set(['', serverUrl, `http://${window.location.hostname}:5000`, 'http://140.245.215.156:5000'].filter(Boolean)));
+      const candidateUrls: string[] = [''];
+      if (serverUrl && !candidateUrls.includes(serverUrl)) {
+        candidateUrls.push(serverUrl);
+      }
+      if (typeof window !== 'undefined' && window.location.origin && !candidateUrls.includes(window.location.origin)) {
+        candidateUrls.push(window.location.origin);
+      }
+      if (isLocal) {
+        candidateUrls.push('http://127.0.0.1:5000');
+        candidateUrls.push(`http://${window.location.hostname}:5000`);
+      }
 
       let res: Response | null = null;
 
       for (const baseUrl of candidateUrls) {
         try {
-          let endpoint = `${baseUrl}/auth/login`;
+          const cleanBase = baseUrl ? baseUrl.replace(/\/$/, '') : '';
+          let endpoint = `${cleanBase}/auth/login`;
           let payload: any = { username: username.trim(), password, captchaToken };
 
           if (mode === 'register') {
             const finalFullName = `${firstName.trim()} ${lastName.trim()}`.trim();
-            endpoint = `${baseUrl}/auth/register`;
+            endpoint = `${cleanBase}/auth/register`;
             payload = {
               name: finalFullName,
               fullName: finalFullName,
@@ -366,12 +375,12 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
               captchaToken
             };
           } else if (mode === 'forgot') {
-            endpoint = `${baseUrl}/auth/forgot-password`;
+            endpoint = `${cleanBase}/auth/forgot-password`;
             payload = { identifier: (email || username).trim(), captchaToken };
           }
 
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2500);
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
 
           const response = await fetch(endpoint, {
             method: 'POST',
@@ -382,7 +391,9 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
           clearTimeout(timeoutId);
           res = response;
           if (res) break;
-        } catch {}
+        } catch (fetchErr: any) {
+          console.warn('[LoginScreen] Candidate endpoint unreachable:', baseUrl, fetchErr?.message || fetchErr);
+        }
       }
 
       if (!res) {
