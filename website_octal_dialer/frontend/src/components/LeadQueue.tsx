@@ -79,6 +79,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
   const [logs, setLogs] = useState<string[]>([]);
 
   const processedCallRef = useRef<string | null>(null); // Track last processed call to prevent duplicate processing
+  const processedDispositionRef = useRef<any>(null); // Track last processed disposition to prevent duplicate queue advances
   const currentCampaignIndexRef = useRef<number | null>(null);
   const isAutoDialingRef = useRef<boolean>(false);
   const leadsRef = useRef<Lead[]>([]);
@@ -501,41 +502,28 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
     const duration = lastCallFinished.duration || 0;
 
     // Authoritative outcome classification:
-    // Explicit outcome rule:
-    // - CANCELLED: user hung up or skipped -> CANCELLED (no disposition modal)
-    // - BUSY: line busy / network rejected -> BUSY (no disposition modal)
-    // - NO_ANSWER: timeout, unreached, dropped -> NO_ANSWER (no disposition modal)
-    // - FAILED / NETWORK_ERROR / PHONE_DISCONNECTED: call failure -> FAILED (no disposition modal)
-    // - CONNECTED / ANSWERED: confirmed conversation -> ANSWERED (open disposition modal)
-    // Explicit CONNECTED outcome from phone is authoritative regardless of duration.
+    // When any call ends, classify initial outcome based on native GSM call state
+    // and launch the Quick Post-Call CRM HUD with the outcome pre-selected.
     let initialOutcome = 'NO_ANSWER';
-    let requiresDisposition = false;
 
     if (duration >= 10 || rawReason === 'CONNECTED' || rawReason === 'ANSWERED') {
       initialOutcome = 'ANSWERED';
-      requiresDisposition = true;
     } else if (rawReason === 'CANCELLED') {
-      initialOutcome = 'CANCELLED';
-      requiresDisposition = false;
+      initialOutcome = 'NO_ANSWER';
     } else if (rawReason === 'BUSY') {
       initialOutcome = 'BUSY';
-      requiresDisposition = false;
     } else if (rawReason === 'REJECTED') {
-      initialOutcome = 'REJECTED';
-      requiresDisposition = false;
+      initialOutcome = 'NOT_INTERESTED';
     } else if (rawReason === 'NO_ANSWER') {
       initialOutcome = 'NO_ANSWER';
-      requiresDisposition = false;
     } else if (
       rawReason === 'FAILED' ||
       rawReason === 'NETWORK_ERROR' ||
       rawReason === 'PHONE_DISCONNECTED'
     ) {
       initialOutcome = 'FAILED';
-      requiresDisposition = false;
     } else {
-      initialOutcome = 'UNKNOWN';
-      requiresDisposition = false;
+      initialOutcome = 'NO_ANSWER';
     }
 
     setLogs(prev => [
@@ -550,43 +538,33 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         : l
     ));
 
-    if (requiresDisposition) {
-      // Open disposition modal for agent to record authoritative human outcome
-      triggerDisposition(targetLead.id, targetLead.name, initialOutcome);
-      setLogs(prev => [
-        ...prev,
-        `[Dialer] Call answered (${duration}s) — awaiting agent disposition to advance...`
-      ]);
-    }
-
-    // Auto-Dialer pipeline progression: Auto-advance queue if call was not answered
-    if (!requiresDisposition && isAutoDialingRef.current && selectedCampIdRef.current) {
-      const currIdx = currentCampaignIndexRef.current !== null ? currentCampaignIndexRef.current : currentIndex;
-      const nextIdx = currIdx + 1;
-      const currentLeads = leadsRef.current;
-      if (nextIdx < currentLeads.length) {
-        const next = currentLeads[nextIdx];
-        currentCampaignIndexRef.current = nextIdx;
-        setCurrentIndex(nextIdx);
-        setSelectedLeadId(next.id);
-        scheduleNextDial(next);
-      } else {
-        setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — reached end of lead list.`]);
-        setIsAutoDialing(false);
-        currentCampaignIndexRef.current = null;
-      }
-    }
+    // Open disposition modal for agent to record authoritative human outcome, company, notes & task timer
+    triggerDisposition(targetLead.id, targetLead.name, initialOutcome);
+    setLogs(prev => [
+      ...prev,
+      `[Dialer] Call ended (${initialOutcome}, ${duration}s) — awaiting agent quick CRM sync to advance...`
+    ]);
   }, [lastCallFinished]);
 
   // Handle authoritative backend disposition save event
   useEffect(() => {
     if (!lastDispositionSaved?.success) return;
+    // Deduplicate: prevent double-advance if effect re-fires
+    if (processedDispositionRef.current === lastDispositionSaved) return;
+    processedDispositionRef.current = lastDispositionSaved;
 
     if (isAutoDialingRef.current && phoneConnected && selectedCampIdRef.current) {
-      const currIdx = currentCampaignIndexRef.current !== null ? currentCampaignIndexRef.current : currentIndex;
-      const nextIdx = currIdx + 1;
       const currentLeads = leadsRef.current;
-      if (nextIdx < currentLeads.length) {
+      let nextIdx = -1;
+      if (lastDispositionSaved.nextLeadId) {
+        nextIdx = currentLeads.findIndex(l => l.id === lastDispositionSaved.nextLeadId);
+      }
+      if (nextIdx === -1) {
+        const currIdx = currentCampaignIndexRef.current !== null ? currentCampaignIndexRef.current : currentIndex;
+        nextIdx = currIdx + 1;
+      }
+
+      if (nextIdx >= 0 && nextIdx < currentLeads.length) {
         const next = currentLeads[nextIdx];
         currentCampaignIndexRef.current = nextIdx;
         setCurrentIndex(nextIdx);
@@ -1171,7 +1149,9 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               disabled={callState !== 'IDLE' || !manualPhone.trim() || !phoneConnected}
               className={`px-6 py-2.5 font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-sm ${
                 callState !== 'IDLE' || !manualPhone.trim() || !phoneConnected
-                  ? 'bg-[#18181b] border border-[#27272a] text-zinc-600 cursor-not-allowed'
+                  ? isLight
+                    ? 'bg-slate-200 border border-slate-300 text-slate-400 cursor-not-allowed'
+                    : 'bg-[#18181b] border border-[#27272a] text-zinc-600 cursor-not-allowed'
                   : 'bg-amber-500 hover:bg-amber-400 text-black cursor-pointer'
               }`}
             >

@@ -6,9 +6,11 @@ interface CallLogProps {
   serverUrl: string;
   authToken?: string | null;
   isLight?: boolean;
+  userRole?: string;
 }
 
-export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight }) => {
+export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight, userRole }) => {
+  const isCompanyOwnerOrPlatformAdmin = userRole === 'admin' || userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'master_admin';
   const [logs, setLogs] = useState<CallLogType[]>([]);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -97,14 +99,16 @@ export const CallLog: React.FC<CallLogProps> = ({ serverUrl, authToken, isLight 
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCsv}
-            disabled={exporting || logs.length === 0}
-            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black font-bold text-xs rounded-xl transition flex items-center gap-2 cursor-pointer shadow-sm"
-          >
-            <Download className={`w-3.5 h-3.5 ${exporting ? 'animate-bounce' : ''}`} />
-            <span>{exporting ? 'Exporting...' : 'Export CSV'}</span>
-          </button>
+          {isCompanyOwnerOrPlatformAdmin && (
+            <button
+              onClick={handleExportCsv}
+              disabled={exporting || logs.length === 0}
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black font-bold text-xs rounded-xl transition flex items-center gap-2 cursor-pointer shadow-sm"
+            >
+              <Download className={`w-3.5 h-3.5 ${exporting ? 'animate-bounce' : ''}`} />
+              <span>{exporting ? 'Exporting...' : 'Export CSV'}</span>
+            </button>
+          )}
           <button
             onClick={fetchLogs}
             disabled={loading}

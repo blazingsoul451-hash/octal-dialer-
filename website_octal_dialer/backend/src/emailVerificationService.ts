@@ -71,7 +71,7 @@ export function isValidEmailFormat(email: string): boolean {
 
   const [local, domain] = parts;
   if (!local || !domain || local.length > 64 || domain.length > 253) return false;
-  if (local.startsWith('.') || local.endsWith('.') || local.includes('..')) return false;
+  if (local.startsWith('.') || local.endsWith('.') || local.includes('..') || local.includes('+')) return false;
 
   // Domain must contain a valid TLD (at least 2 chars)
   const domainParts = domain.split('.');

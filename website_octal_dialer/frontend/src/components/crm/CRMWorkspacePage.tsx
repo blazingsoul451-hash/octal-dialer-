@@ -10,6 +10,7 @@ import {
 import { LeadProfileDrawer } from './LeadProfileDrawer';
 import { CompanyProfileDrawer } from './CompanyProfileDrawer';
 import { ContactProfileDrawer } from './ContactProfileDrawer';
+import { TaskTimerBadge } from './TaskTimerBadge';
 import {
   CloseTaskModal,
   RescheduleTaskModal,
@@ -165,7 +166,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
       }
 
       // 4. Canonical leads
-      const leadsRes = await fetch(`${serverUrl}/api/scraped-leads?limit=300`, { headers });
+      const leadsRes = await fetch(`${serverUrl}/api/crm/leads?limit=100`, { headers });
       if (leadsRes.ok) {
         const json = await leadsRes.json();
         setLeads(json.leads || []);
@@ -326,7 +327,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   // Status transition for quotes
   const handleUpdateQuoteStatus = async (id: string, status: string) => {
     try {
-      const res = await fetch(`${serverUrl}/api/crm/quotes/${id}`, {
+      const res = await fetch(`${serverUrl}/api/crm/quotes/${id}/status`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -388,7 +389,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   // Filtered Leads
   const filteredLeads = useMemo(() => {
     return leads.filter(l => {
-      if (leadStatusFilter !== 'all' && l.status !== leadStatusFilter) return false;
+      if (leadStatusFilter !== 'all' && (l.status || '').toUpperCase() !== leadStatusFilter.toUpperCase()) return false;
       if (leadCampaignFilter !== 'all' && l.campaignId !== leadCampaignFilter) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -608,7 +609,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
                 <span>{tab.label}</span>
                 {tab.count !== null && (
                   <span className={`px-1.5 py-0.5 rounded-full text-xs font-medium ${
-                    isActive ? 'bg-black/20 text-black' : 'bg-zinc-800 text-zinc-400'
+                    isActive ? 'bg-black/20 text-black' : isLight ? 'bg-slate-200 text-slate-700' : 'bg-zinc-800 text-zinc-400'
                   }`}>
                     {tab.count}
                   </span>
@@ -632,11 +633,13 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
       {activeSubTab === 'overview' && (
         <div className="space-y-6">
           <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-2 text-xs font-medium text-zinc-400">
+            <div className={`flex items-center gap-2 text-xs font-medium ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
               <Calendar className="w-4 h-4 text-amber-500" />
               <span>Metrics Date Range:</span>
             </div>
-            <div className="flex items-center gap-1.5 bg-[#121216] border border-[#27272a] p-1 rounded-xl text-xs font-medium">
+            <div className={`flex items-center gap-1.5 p-1 rounded-xl text-xs font-medium border ${
+              isLight ? 'bg-slate-100 border-slate-200' : 'bg-[#121216] border-[#27272a]'
+            }`}>
               {[
                 { id: 'today', label: 'Today' },
                 { id: 'yesterday', label: 'Yesterday' },
@@ -648,8 +651,12 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
                 <button
                   key={r.id}
                   onClick={() => setDateRange(r.id as any)}
-                  className={`px-3 py-1 rounded-lg transition ${
-                    dateRange === r.id ? 'bg-amber-500 text-black font-semibold' : 'text-zinc-400 hover:text-white'
+                  className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                    dateRange === r.id
+                      ? 'bg-amber-500 text-black font-semibold shadow-xs'
+                      : isLight
+                        ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-200'
+                        : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
                   }`}
                 >
                   {r.label}
@@ -660,46 +667,56 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
 
           {/* Metric Cards Grid */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="p-4 bg-[#121216] border border-[#27272a] rounded-2xl space-y-1">
-              <span className="text-xs font-medium text-zinc-400">Total client companies</span>
-              <div className="text-3xl font-bold text-white tracking-tight">{metrics?.totalCompanies ?? companies.length}</div>
-              <div className="text-xs font-normal text-emerald-400">{metrics?.activeCompanies ?? companies.length} active relationships</div>
+            <div className={`p-4 border rounded-2xl space-y-1 ${
+              isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#121216] border-[#27272a]'
+            }`}>
+              <span className={`text-xs font-medium ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Total client companies</span>
+              <div className={`text-3xl font-bold tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics?.totalCompanies ?? companies.length}</div>
+              <div className="text-xs font-normal text-emerald-600 dark:text-emerald-400">{metrics?.activeCompanies ?? companies.length} active relationships</div>
             </div>
 
-            <div className="p-4 bg-[#121216] border border-[#27272a] rounded-2xl space-y-1">
-              <span className="text-xs font-medium text-zinc-400">Total contacts</span>
-              <div className="text-3xl font-bold text-white tracking-tight">{metrics?.totalContacts ?? contacts.length}</div>
-              <div className="text-xs font-normal text-cyan-400">Linked to accounts</div>
+            <div className={`p-4 border rounded-2xl space-y-1 ${
+              isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#121216] border-[#27272a]'
+            }`}>
+              <span className={`text-xs font-medium ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Total contacts</span>
+              <div className={`text-3xl font-bold tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics?.totalContacts ?? contacts.length}</div>
+              <div className="text-xs font-normal text-cyan-600 dark:text-cyan-400">Linked to accounts</div>
             </div>
 
-            <div className="p-4 bg-[#121216] border border-[#27272a] rounded-2xl space-y-1">
-              <span className="text-xs font-medium text-zinc-400">Open tasks & meetings</span>
-              <div className="text-3xl font-bold text-amber-400 tracking-tight">{metrics?.openTasks ?? 0}</div>
-              <div className="text-xs font-normal text-red-400">{metrics?.overdueTasks ?? 0} overdue actions</div>
+            <div className={`p-4 border rounded-2xl space-y-1 ${
+              isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#121216] border-[#27272a]'
+            }`}>
+              <span className={`text-xs font-medium ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Open tasks & meetings</span>
+              <div className="text-3xl font-bold text-amber-600 dark:text-amber-400 tracking-tight">{metrics?.openTasks ?? 0}</div>
+              <div className="text-xs font-normal text-red-600 dark:text-red-400">{metrics?.overdueTasks ?? 0} overdue actions</div>
             </div>
 
-            <div className="p-4 bg-[#121216] border border-[#27272a] rounded-2xl space-y-1">
-              <span className="text-xs font-medium text-zinc-400">Client deliverables</span>
-              <div className="text-3xl font-bold text-blue-400 tracking-tight">
+            <div className={`p-4 border rounded-2xl space-y-1 ${
+              isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#121216] border-[#27272a]'
+            }`}>
+              <span className={`text-xs font-medium ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Client deliverables</span>
+              <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 tracking-tight">
                 {workItems.filter(w => w.status === 'IN_PROGRESS' || w.status === 'TODO').length}
               </div>
-              <div className="text-xs font-normal text-zinc-400">{workItems.filter(w => w.status === 'COMPLETED').length} completed</div>
+              <div className={`text-xs font-normal ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>{workItems.filter(w => w.status === 'COMPLETED').length} completed</div>
             </div>
           </div>
 
           {/* Urgent Tasks & Live Activity Stream */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="p-5 bg-[#09090b] border border-[#18181b] rounded-2xl space-y-4">
+            <div className={`p-5 border rounded-2xl space-y-4 ${
+              isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
+            }`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Clock className="w-4 h-4 text-amber-500" />
-                  <h3 className="text-base font-semibold text-white">
+                  <h3 className={`text-base font-semibold ${isLight ? 'text-slate-900' : 'text-white'}`}>
                     Urgent tasks & meetings
                   </h3>
                 </div>
                 <button
                   onClick={() => setActiveSubTab('tasks')}
-                  className="text-xs text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1"
+                  className="text-xs text-amber-500 hover:text-amber-600 font-semibold flex items-center gap-1 cursor-pointer"
                 >
                   <span>View All ({tasks.length})</span>
                   <ArrowRight className="w-3 h-3" />
@@ -707,21 +724,29 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
               </div>
 
               {urgentTasks.length === 0 ? (
-                <div className="p-8 border border-dashed border-[#27272a] rounded-xl text-center text-xs text-zinc-500 font-mono">
+                <div className={`p-8 border border-dashed rounded-xl text-center text-xs font-mono ${
+                  isLight ? 'border-slate-300 bg-slate-50 text-slate-500' : 'border-[#27272a] text-zinc-500'
+                }`}>
                   No upcoming urgent tasks. You're completely caught up!
                 </div>
               ) : (
                 <div className="space-y-2.5">
                   {urgentTasks.map(task => (
-                    <div key={task.id} className="p-3 bg-[#121216] border border-[#27272a] rounded-xl flex items-center justify-between gap-3">
+                    <div key={task.id} className={`p-3 border rounded-xl flex items-center justify-between gap-3 ${
+                      isLight ? 'bg-slate-50 border-slate-200 hover:bg-slate-100' : 'bg-[#121216] border-[#27272a]'
+                    }`}>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-white truncate">{task.title}</span>
-                          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold uppercase bg-zinc-800 text-zinc-300">
+                          <span className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{task.title}</span>
+                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold uppercase ${
+                            isLight ? 'bg-slate-200 text-slate-700' : 'bg-zinc-800 text-zinc-300'
+                          }`}>
                             {task.taskType}
                           </span>
                         </div>
-                        <div className="text-[11px] text-zinc-400 flex items-center gap-2 mt-1 truncate">
+                        <div className={`text-[11px] flex items-center gap-2 mt-1 truncate ${
+                          isLight ? 'text-slate-500' : 'text-zinc-400'
+                        }`}>
                           <span>Due: {new Date(task.dueAt).toLocaleDateString()} {new Date(task.dueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                           {task.companyName && <span>• {task.companyName}</span>}
                         </div>
@@ -729,7 +754,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
                       <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           onClick={() => setSelectedTaskForClose(task)}
-                          className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-bold transition"
+                          className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-bold transition"
                         >
                           Close
                         </button>
@@ -741,17 +766,19 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
             </div>
 
             {/* Live Activity Stream */}
-            <div className="p-5 bg-[#09090b] border border-[#18181b] rounded-2xl space-y-4">
+            <div className={`p-5 border rounded-2xl space-y-4 ${
+              isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
+            }`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Activity className="w-4 h-4 text-amber-500" />
-                  <h3 className="text-base font-semibold text-white">
+                  <h3 className={`text-base font-semibold ${isLight ? 'text-slate-900' : 'text-white'}`}>
                     Live activity stream
                   </h3>
                 </div>
                 <button
                   onClick={() => setActiveSubTab('activity')}
-                  className="text-xs text-amber-400 hover:text-amber-300 font-mono font-bold flex items-center gap-1"
+                  className="text-xs text-amber-500 hover:text-amber-600 font-mono font-bold flex items-center gap-1 cursor-pointer"
                 >
                   <span>View All</span>
                   <ArrowRight className="w-3 h-3" />
@@ -759,7 +786,9 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
               </div>
 
               {timeline.length === 0 ? (
-                <div className="p-8 border border-dashed border-[#27272a] rounded-xl text-center text-xs text-zinc-500 font-mono">
+                <div className={`p-8 border border-dashed rounded-xl text-center text-xs font-mono ${
+                  isLight ? 'border-slate-300 bg-slate-50 text-slate-500' : 'border-[#27272a] text-zinc-500'
+                }`}>
                   No activity logged yet.
                 </div>
               ) : (
@@ -772,19 +801,21 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
                     const titleDisplay = (item as any).title || (item as any).eventType || (item as any).type || 'Activity logged';
 
                     return (
-                      <div key={item.id} className="p-3 bg-[#121216] border border-[#27272a] rounded-xl space-y-1">
+                      <div key={item.id} className={`p-3 border rounded-xl space-y-1 ${
+                        isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121216] border-[#27272a]'
+                      }`}>
                         <div className="flex items-center justify-between text-[10px] font-mono">
                           <div className="flex items-center gap-2">
-                            <span className="px-2 py-0.5 rounded-full font-bold uppercase bg-amber-500/10 text-amber-400">
+                            <span className="px-2 py-0.5 rounded-full font-bold uppercase bg-amber-500/10 text-amber-500">
                               {itemTypeDisplay}
                             </span>
-                            <span className="text-zinc-300 font-bold">{userDisplay}</span>
+                            <span className={`font-bold ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>{userDisplay}</span>
                           </div>
-                          <span className="text-zinc-500">{dateDisplay}</span>
+                          <span className={isLight ? 'text-slate-400' : 'text-zinc-500'}>{dateDisplay}</span>
                         </div>
-                        <p className="text-xs text-white font-medium">{titleDisplay}</p>
+                        <p className={`text-xs font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>{titleDisplay}</p>
                         {item.description && (
-                          <p className="text-[11px] text-zinc-400 line-clamp-1">{item.description}</p>
+                          <p className={`text-[11px] line-clamp-1 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>{item.description}</p>
                         )}
                       </div>
                     );
@@ -1324,11 +1355,18 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
                     </tr>
                   ) : (
                     filteredTasks.map(task => {
-                      const isOverdue = task.status === 'overdue' || (task.status === 'pending' && new Date(task.dueAt) < new Date());
+                      const isOverdue = task.status !== 'completed' && task.status !== 'cancelled' && Boolean(task.dueAt) && !isNaN(new Date(task.dueAt).getTime()) && new Date(task.dueAt).getTime() < Date.now();
                       return (
-                        <tr key={task.id} className="hover:bg-[#121216]/60 transition">
+                        <tr key={task.id} className={`transition ${isOverdue ? 'bg-red-950/20 border-l-4 border-l-red-500 hover:bg-red-950/30' : 'hover:bg-[#121216]/60'}`}>
                           <td className="py-3.5 px-4">
-                            <div className="font-bold text-white">{task.title}</div>
+                            <div className="font-bold text-white flex items-center gap-2">
+                              <span>{task.title}</span>
+                              {isOverdue && (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-black uppercase bg-red-500/20 text-red-400 border border-red-500/40 animate-pulse">
+                                  🚨 OVERDUE
+                                </span>
+                              )}
+                            </div>
                             {task.description && (
                               <div className="text-[11px] text-zinc-400 line-clamp-1">{task.description}</div>
                             )}
@@ -1351,7 +1389,23 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
                           </td>
 
                           <td className="py-3.5 px-4 font-mono text-zinc-300">
-                            {new Date(task.dueAt).toLocaleDateString()} {new Date(task.dueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            <div className="flex flex-col gap-1 items-start">
+                              {task.dueAt && !isNaN(new Date(task.dueAt).getTime()) ? (
+                                <>
+                                  <span className="text-[11px] text-zinc-400">
+                                    {`${new Date(task.dueAt).toLocaleDateString()} ${new Date(task.dueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+                                  </span>
+                                  <TaskTimerBadge dueAt={task.dueAt} status={task.status} />
+                                </>
+                              ) : (
+                                <>
+                                  <span className="text-[11px] text-zinc-500">No deadline</span>
+                                  {(task.status === 'completed' || task.status === 'cancelled') && (
+                                    <TaskTimerBadge dueAt="" status={task.status} />
+                                  )}
+                                </>
+                              )}
+                            </div>
                           </td>
 
                           <td className="py-3.5 px-4 text-zinc-300">
@@ -2097,6 +2151,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
           }}
           serverUrl={serverUrl}
           authToken={authToken}
+          onDialLead={onDialLead}
         />
       )}
 

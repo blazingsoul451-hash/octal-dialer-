@@ -290,8 +290,8 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
 
           <div className="space-y-3 font-mono text-xs">
             <div className={`flex items-center justify-between p-3 rounded-xl border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'}`}>
-              <span className={isLight ? 'text-slate-600' : 'text-zinc-400'}>Total System Leads</span>
-              <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics.totalLeads.toLocaleString()}</span>
+              <span className={isLight ? 'text-slate-600' : 'text-zinc-400'}>Active Workspaces</span>
+              <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{metrics.activeTenants}</span>
             </div>
 
             <div className={`flex items-center justify-between p-3 rounded-xl border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121215] border-[#27272a]'}`}>

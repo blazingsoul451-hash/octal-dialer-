@@ -13,7 +13,12 @@ interface UserProfileMenuProps {
   userRole?: string | null;
   showPill?: boolean;
   activeTab?: string;
+  trialInfo?: { isTrial: boolean; daysLeft: number; trialEndsAt?: string | null } | null;
+  liveTrialText?: string;
+  planName?: string;
+  onNavigateBilling?: () => void;
   onNavigateAccount?: () => void;
+  onProfileLoaded?: (profile: UserProfile) => void;
   onLogout: () => void;
 }
 
@@ -31,6 +36,7 @@ interface UserProfile {
   recordsPerPage: number;
   twoFactorEnabled: boolean;
   avatarUrl?: string;
+  companyName?: string;
 }
 
 export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
@@ -41,7 +47,12 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
   userRole,
   showPill = true,
   activeTab,
+  trialInfo,
+  liveTrialText,
+  planName,
+  onNavigateBilling,
   onNavigateAccount,
+  onProfileLoaded,
   onLogout
 }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -111,6 +122,7 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
       if (res.ok) {
         const data = await res.json();
         setProfile(data);
+        if (onProfileLoaded) onProfileLoaded(data);
         setEditFirstName(data.firstName || '');
         setEditLastName(data.lastName || '');
         setEditPhone(data.phone || '');
@@ -481,29 +493,22 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
         {showPill && (
           <div
             onClick={() => setDropdownOpen(prev => !prev)}
-            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full border text-xs font-bold cursor-pointer transition-all ${
+            className={`flex items-center px-3.5 py-1.5 rounded-full border text-xs font-bold cursor-pointer transition-all ${
               dropdownOpen
                 ? 'ring-2 ring-amber-500/50 border-amber-500'
-                : isLight
-                  ? 'bg-slate-100 border-slate-300 text-slate-900 shadow-sm hover:bg-slate-200'
-                  : 'bg-slate-900 border-slate-800 text-slate-200 hover:border-zinc-700'
-            }`}
-          >
-            <span className="capitalize">{displayName}</span>
-            {userRole && (
-              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-                userRole === 'platform_admin'
-                  ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
+                : userRole === 'platform_admin'
+                  ? isLight ? 'bg-purple-50 border-purple-300 text-purple-900 hover:bg-purple-100' : 'bg-purple-500/10 border-purple-500/30 text-purple-400 hover:bg-purple-500/20'
                   : userRole === 'admin'
-                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                  ? isLight ? 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100' : 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20'
                   : userRole === 'team_lead'
-                  ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                  : 'bg-slate-800 text-slate-400 border-slate-700'
-              }`}>
-                {userRole === 'platform_admin' ? 'Super Admin' : userRole === 'admin' ? 'Company Owner' : userRole === 'team_lead' ? 'Team Lead' : 'Agent'}
-              </span>
-            )}
-            <span className="text-slate-500 text-[10px] font-black">∨</span>
+                  ? isLight ? 'bg-blue-50 border-blue-300 text-blue-900 hover:bg-blue-100' : 'bg-blue-500/10 border-blue-500/30 text-blue-400 hover:bg-blue-500/20'
+                  : isLight ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200' : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-zinc-700'
+            }`}
+            title={`Account: ${displayName}`}
+          >
+            <span className="text-[11px] font-bold tracking-wide">
+              {userRole === 'platform_admin' ? 'Super Admin' : userRole === 'admin' ? 'Company Owner' : userRole === 'team_lead' ? 'Team Lead' : 'Agent'}
+            </span>
           </div>
         )}
 
@@ -567,6 +572,60 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
             <p className="text-xs font-mono text-zinc-400 truncate mt-0.5">
               {displayEmail}
             </p>
+          </div>
+
+          {/* Plan & Subscription Status Section */}
+          <div className={`mx-2.5 mt-2.5 mb-1.5 p-3 rounded-xl border transition-all ${
+            isLight
+              ? 'bg-amber-50/80 border-amber-200/90 text-amber-950'
+              : 'bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border-amber-500/25 text-zinc-100'
+          }`}>
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-[10px] uppercase font-mono tracking-wider font-extrabold text-amber-500 flex items-center gap-1">
+                  <span>⚡</span> Current Plan
+                </span>
+              </div>
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+                trialInfo?.isTrial
+                  ? liveTrialText === 'Expired'
+                    ? 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+                    : 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                  : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+              }`}>
+                {trialInfo?.isTrial
+                  ? (liveTrialText === 'Expired' ? 'Expired' : `${trialInfo.daysLeft}d Trial`)
+                  : (planName || 'Active Plan')}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] font-mono truncate text-zinc-400 dark:text-zinc-300">
+                {trialInfo?.isTrial ? (
+                  liveTrialText === 'Expired' ? (
+                    <span className="text-rose-400 font-bold">⚠️ Trial Expired</span>
+                  ) : (
+                    <span>⏳ {liveTrialText || `${trialInfo.daysLeft}d left`}</span>
+                  )
+                ) : (
+                  <span>{planName || 'Professional Plan'}</span>
+                )}
+              </div>
+              <button
+                onClick={() => {
+                  setDropdownOpen(false);
+                  if (onNavigateBilling) {
+                    onNavigateBilling();
+                  } else if (onNavigateAccount) {
+                    onNavigateAccount();
+                  }
+                }}
+                className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-black text-[10px] tracking-wide uppercase flex items-center gap-1 transition-all shadow-sm cursor-pointer shrink-0"
+                title="Manage billing and upgrade plan"
+              >
+                <span>Upgrade ⚡</span>
+              </button>
+            </div>
           </div>
 
           {/* Menu Items */}

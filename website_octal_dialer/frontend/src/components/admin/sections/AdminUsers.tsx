@@ -1,13 +1,18 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Trash2, Shield, CheckCircle2, ChevronDown, ChevronRight,
-  Search, Filter, AlertCircle, RefreshCw, UserPlus, Edit, CheckSquare, Square
+  Search, Filter, AlertCircle, RefreshCw, UserPlus, Edit, CheckSquare, Square,
+  Ban, UserCheck, Crown
 } from 'lucide-react';
 
 interface User {
   id: string;
   username: string;
-  role: 'platform_admin' | 'admin' | 'team_lead' | 'agent' | 'user';
+  email?: string;
+  displayName?: string;
+  role: 'superadmin' | 'platform_admin' | 'admin' | 'team_lead' | 'agent' | 'user';
+  status?: string;
+  tenantId?: string | null;
   createdAt: string;
   permissions?: {
     id: string;
@@ -24,7 +29,7 @@ interface AdminUsersProps {
   serverUrl: string;
   authToken: string;
   currentUser?: string;
-  currentUserRole?: 'platform_admin' | 'admin' | 'team_lead' | 'agent' | 'user';
+  currentUserRole?: 'superadmin' | 'platform_admin' | 'admin' | 'team_lead' | 'agent' | 'user';
 }
 
 const MODULES = [
@@ -52,7 +57,13 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
   const [roleFilter, setRoleFilter] = useState<string>('ALL');
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
 
-  const isPlatformMaster = currentUserRole === 'platform_admin';
+  const isSuperadminUser = currentUserRole === 'superadmin';
+  const isPlatformMaster = currentUserRole === 'platform_admin' || isSuperadminUser;
+
+  // Superadmin — all-platform users list
+  const [allPlatformUsers, setAllPlatformUsers] = useState<User[]>([]);
+  const [loadingAllUsers, setLoadingAllUsers] = useState(false);
+  const [superadminActionId, setSuperadminActionId] = useState<string | null>(null);
 
   // Create User Modal State
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -94,9 +105,55 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     }
   };
 
+  // Superadmin: fetch ALL platform users
+  const fetchAllPlatformUsers = async () => {
+    if (!isSuperadminUser) return;
+    setLoadingAllUsers(true);
+    try {
+      const res = await fetch(`${serverUrl}/api/superadmin/users`, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAllPlatformUsers(Array.isArray(data.users) ? data.users : []);
+      }
+    } catch {}
+    finally { setLoadingAllUsers(false); }
+  };
+
+  // Superadmin: suspend / restore a user
+  const handleSuperadminSetStatus = async (targetUser: User, status: 'Active' | 'Suspended' | 'Disabled') => {
+    setSuperadminActionId(targetUser.id);
+    setError(null);
+    try {
+      const res = await fetch(`${serverUrl}/api/superadmin/users/${targetUser.id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+        body: JSON.stringify({ status, reason: `Superadmin action via panel` })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSuccess(`${targetUser.username} → ${status}`);
+        setTimeout(() => setSuccess(null), 3000);
+        fetchAllPlatformUsers();
+      } else {
+        setError(data.error || 'Action failed.');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Connection error');
+    } finally {
+      setSuperadminActionId(null);
+    }
+  };
+
+
   useEffect(() => {
     fetchUsers();
   }, [serverUrl, authToken]);
+
+  useEffect(() => {
+    if (isSuperadminUser) fetchAllPlatformUsers();
+  }, [serverUrl, authToken, isSuperadminUser]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -275,6 +332,8 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
   const getRoleBadge = (role: string) => {
     switch (role) {
+      case 'superadmin':
+        return isLight ? 'bg-amber-100 border-amber-400 text-amber-900' : 'bg-amber-950/60 border-amber-500 text-amber-300';
       case 'platform_admin':
         return isLight ? 'bg-purple-100 border-purple-300 text-purple-800' : 'bg-purple-950/40 border-purple-800 text-purple-400';
       case 'admin':
@@ -288,6 +347,131 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
   return (
     <div className="space-y-6 text-left">
+
+      {/* ══════════════════════════════════════════════════════════
+          SUPERADMIN MASTER CONTROL — Only visible to master_mohsin7
+          ══════════════════════════════════════════════════════════ */}
+      {isSuperadminUser && (
+        <div className="rounded-2xl border-2 border-amber-500/40 bg-amber-950/10 p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center">
+                <Crown className="w-4 h-4 text-amber-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-black font-display text-amber-400 tracking-tight">
+                  MASTER CONTROL
+                </h3>
+                <p className="text-[10px] font-mono text-slate-500">
+                  Superadmin only — Full platform user authority. Suspend, restore or demote any account.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={fetchAllPlatformUsers}
+              disabled={loadingAllUsers}
+              className="p-2 rounded-xl border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 cursor-pointer transition"
+              title="Refresh platform users"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingAllUsers ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          {loadingAllUsers ? (
+            <div className="text-[11px] font-mono text-slate-500 py-3 text-center">Loading all platform users…</div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-amber-500/20">
+              <table className="w-full text-left border-collapse text-xs font-mono">
+                <thead>
+                  <tr className="bg-amber-950/30 text-[9px] uppercase tracking-wider text-amber-500/70 border-b border-amber-500/20">
+                    <th className="p-2.5">Username</th>
+                    <th className="p-2.5">Role</th>
+                    <th className="p-2.5">Email</th>
+                    <th className="p-2.5">Status</th>
+                    <th className="p-2.5">Tenant</th>
+                    <th className="p-2.5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-amber-500/10">
+                  {allPlatformUsers.length === 0 ? (
+                    <tr><td colSpan={6} className="p-4 text-center text-slate-500 text-[11px]">No users found</td></tr>
+                  ) : allPlatformUsers.map(u => {
+                    const isSelf = u.username === currentUser;
+                    const isLoading = superadminActionId === u.id;
+                    const isActive = (u.status || 'Active').toLowerCase() === 'active';
+                    const isSuspended = (u.status || '').toLowerCase() === 'suspended';
+                    const roleColor = u.role === 'superadmin'
+                      ? 'text-amber-400 bg-amber-950/40 border-amber-700'
+                      : u.role === 'platform_admin'
+                      ? 'text-purple-400 bg-purple-950/40 border-purple-800'
+                      : u.role === 'admin'
+                      ? 'text-amber-300 bg-amber-950/20 border-amber-800'
+                      : 'text-slate-400 bg-[#18181b] border-[#27272a]';
+
+                    return (
+                      <tr key={u.id} className="hover:bg-amber-950/10">
+                        <td className="p-2.5">
+                          <span className="font-bold text-white">
+                            {u.username}
+                            {isSelf && <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-amber-500/20 border border-amber-500/30 text-amber-400">YOU</span>}
+                          </span>
+                        </td>
+                        <td className="p-2.5">
+                          <span className={`px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase ${roleColor}`}>
+                            {u.role}
+                          </span>
+                        </td>
+                        <td className="p-2.5 text-slate-400 text-[10px]">{u.email || '—'}</td>
+                        <td className="p-2.5">
+                          <span className={`text-[10px] font-bold ${
+                            isActive ? 'text-emerald-400' : isSuspended ? 'text-rose-400' : 'text-slate-500'
+                          }`}>
+                            {u.status || 'Active'}
+                          </span>
+                        </td>
+                        <td className="p-2.5 text-slate-500 text-[10px]">
+                          {(u as any).tenantName || (u.tenantId ? u.tenantId.slice(0, 12) + '…' : 'Platform')}
+                        </td>
+                        <td className="p-2.5">
+                          {isSelf || u.role === 'superadmin' ? (
+                            <span className="text-[9px] text-slate-600 font-mono">Protected</span>
+                          ) : (
+                            <div className="flex items-center justify-end gap-1.5">
+                              {!isActive && (
+                                <button
+                                  onClick={() => handleSuperadminSetStatus(u, 'Active')}
+                                  disabled={isLoading}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-[9px] font-bold bg-emerald-950/40 border border-emerald-700 text-emerald-400 hover:bg-emerald-950/80 cursor-pointer transition disabled:opacity-50"
+                                  title="Restore / Activate"
+                                >
+                                  <UserCheck className="w-3 h-3" />
+                                  {isLoading ? '…' : 'Restore'}
+                                </button>
+                              )}
+                              {!isSuspended && (
+                                <button
+                                  onClick={() => handleSuperadminSetStatus(u, 'Suspended')}
+                                  disabled={isLoading}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-[9px] font-bold bg-rose-950/40 border border-rose-700/60 text-rose-400 hover:bg-rose-950/80 cursor-pointer transition disabled:opacity-50"
+                                  title="Suspend user"
+                                >
+                                  <Ban className="w-3 h-3" />
+                                  {isLoading ? '…' : 'Suspend'}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Header & Action Controls ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

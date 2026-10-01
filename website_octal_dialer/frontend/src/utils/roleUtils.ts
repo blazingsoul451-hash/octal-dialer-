@@ -13,6 +13,7 @@
  */
 
 export type StructuralRole =
+  | 'superadmin'
   | 'platform_admin'
   | 'admin'
   | 'team_lead'
@@ -41,6 +42,9 @@ export function normalizeStructuralRole(rawRole: unknown): StructuralRole {
   }
   const clean = rawRole.trim().toLowerCase();
 
+  if (clean === 'superadmin') {
+    return 'superadmin';
+  }
   if (clean === 'platform_admin' || clean === 'master_admin' || clean === 'super_admin') {
     return 'platform_admin';
   }
@@ -77,6 +81,8 @@ export function tryNormalizeStructuralRole(rawRole: unknown): StructuralRole | n
 export function getRoleDisplayName(role: unknown): string {
   const norm = tryNormalizeStructuralRole(role);
   switch (norm) {
+    case 'superadmin':
+      return 'Super Admin';
     case 'platform_admin':
       return 'Platform Owner';
     case 'admin':
@@ -92,17 +98,26 @@ export function getRoleDisplayName(role: unknown): string {
 }
 
 /**
- * True if the role is Global Platform Administrator.
+ * True if the role is Global Platform Administrator or Superadmin.
  */
 export function isPlatformOwner(role: unknown): boolean {
-  return tryNormalizeStructuralRole(role) === 'platform_admin';
+  const norm = tryNormalizeStructuralRole(role);
+  return norm === 'platform_admin' || norm === 'superadmin';
 }
 
 /**
- * True if the role is any platform-level role (platform_admin, master_admin, super_admin).
+ * True if the role is superadmin (master_mohsin7).
+ */
+export function isSuperAdmin(role: unknown): boolean {
+  return tryNormalizeStructuralRole(role) === 'superadmin';
+}
+
+/**
+ * True if the role is any platform-level role (superadmin, platform_admin, master_admin).
  */
 export function isPlatformRole(role: unknown): boolean {
-  return tryNormalizeStructuralRole(role) === 'platform_admin';
+  const norm = tryNormalizeStructuralRole(role);
+  return norm === 'platform_admin' || norm === 'superadmin';
 }
 
 /**

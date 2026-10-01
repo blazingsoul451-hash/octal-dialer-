@@ -9,7 +9,6 @@ import path from 'path';
 import crypto from 'crypto';
 import ExcelJS from 'exceljs';
 import dotenv from 'dotenv';
-import { apkWatcher } from './apkWatcher';
 import { tunnelManager } from './tunnelManager';
 
 dotenv.config({ path: path.join(__dirname, '../.env') });
@@ -107,11 +106,13 @@ import {
   canDispositionLead,
   getScopedLockedLeads,
   CANONICAL_MODULES,
+  ALL_CANONICAL_MODULES,
   normalizeModuleKey,
   getTenantModuleEntitlements,
   setTenantModuleEntitlement,
   getTenantAccessMatrix,
   getTenantSeatUsage,
+  lockWorkspaceForMembershipChange,
   getWorkspaceInvitations,
   getWorkspaceInvitationByTokenHash,
   getPendingInvitationForEmail,
@@ -161,11 +162,14 @@ import {
   verifyGoogleIdToken,
   updateUserRole,
   requirePlatformAdmin,
+  requireSuperAdmin,
   requireTenantAdmin,
   requireTeamLeadOrAdmin,
   resolveAccessScope,
   requireModule,
   getEffectivePermissions,
+  getUserModuleAccess,
+  isActiveUserStatus,
   requirePermission,
   validateRoleBelongsToTenant,
   getTenantId,
@@ -176,6 +180,7 @@ import {
   registerTokenRevocationHandler,
   isPlatformRole,
   isPlatformAdmin,
+  isSuperAdmin,
   isCompanyOwner,
   isTeamLead,
   isTenantMember,
@@ -199,6 +204,13 @@ import {
   expireCommand,
   getActiveCommands
 } from './safetyController';
+
+import {
+  logUserActivity,
+  recordAgentCallMetric,
+  getUserActivityLogs,
+  getAgentDailyMetrics
+} from './activityManager';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -491,6 +503,9 @@ function getPublicBaseUrl(context?: { headers?: any; handshake?: any }): string 
 const getEffectiveServerUrl = getPublicBaseUrl;
 
 // ─── Server Info Endpoint (Public) ──────────────────────────────────────────
+// CRM endpoints must respect the CRM module ceiling even when an action also accepts lead/call permissions.
+app.use('/api/crm', requireAuth, requireModule('crm'));
+
 app.get(['/info', '/api/info'], (req, res) => {
   const publicBase = getPublicBaseUrl({ headers: req.headers });
   res.json({
@@ -522,6 +537,15 @@ app.post(['/auth/login', '/api/auth/login'], async (req, res) => {
     res.status(401).json({ error: 'Session validation failed.' });
     return;
   }
+  logUserActivity({
+    tenantId: user.tenantId || 'platform',
+    userId: user.id,
+    username: user.username,
+    action: 'USER_LOGIN',
+    resourceType: 'auth',
+    details: { role: user.role },
+    req
+  });
   res.json({ token, username: user.username, role: user.role, user });
 });
 
@@ -549,6 +573,15 @@ app.post(['/admin/login', '/api/admin/login'], async (req, res) => {
     });
     return;
   }
+  logUserActivity({
+    tenantId: user.tenantId || 'platform',
+    userId: user.id,
+    username: user.username,
+    action: 'ADMIN_LOGIN',
+    resourceType: 'auth',
+    details: { role: user.role, portal: 'platform_admin' },
+    req
+  });
   res.json({ token, username: user.username, role: user.role, user });
 });
 
@@ -741,6 +774,11 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
     const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
 
     let authIntent: 'signin' | 'signup' = 'signin';
+    if (!state || !oauthStates.has(state) || Date.now() - oauthStates.get(state)!.createdAt > 10 * 60 * 1000) {
+      if (state) oauthStates.delete(state);
+      res.status(400).json({ error: 'Invalid or expired OAuth state. Please start sign-in again.' });
+      return;
+    }
     if (state && oauthStates.has(state)) {
       const stored = oauthStates.get(state)!;
       clientOrigin = stored.clientOrigin;
@@ -814,7 +852,7 @@ app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, async (req,
 
   // Resolve effective permissions
   const effectivePerms = await getEffectivePermissions(user);
-  const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+  const isPlatform = isPlatformRole(user.role);
   const isFullAccess = effectivePerms.has('*') || effectivePerms.has('all') || isPlatform;
 
   // Resolve company entitlement ceiling (Platform Admins have zero restrictions; tenant users are capped by company ceiling)
@@ -824,6 +862,7 @@ app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, async (req,
 
   // Compute module visibility map expected by the frontend
   const modulePerms: Record<string, boolean> = {};
+  const resolvedAccess = await getUserModuleAccess(user, companyEntitlements || {});
   for (const m of ALL_BUSINESS_MODULES) {
     let allowed = false;
     if (isPlatform) {
@@ -847,7 +886,7 @@ app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, async (req,
       allowed = false;
     }
 
-    modulePerms[m] = allowed;
+    modulePerms[m] = (isPlatform || isFullAccess) ? allowed : resolvedAccess.effectiveModules.includes(normalizeModuleKey(m));
   }
 
   res.json({
@@ -954,7 +993,19 @@ app.post(['/auth/logout', '/api/auth/logout'], async (req, res) => {
     return;
   }
   try {
+    const user = await validateToken(token);
     await logout(token);
+    if (user) {
+      logUserActivity({
+        tenantId: user.tenantId || 'platform',
+        userId: user.id,
+        username: user.username,
+        action: 'USER_LOGOUT',
+        resourceType: 'auth',
+        details: { role: user.role },
+        req
+      });
+    }
     res.json({ success: true, message: 'Logged out successfully.' });
   } catch (err: any) {
     console.error('[Auth Logout Error]:', err);
@@ -1025,6 +1076,12 @@ app.get('/api/user/profile', requireAuth, async (req, res) => {
     const lastName = parts.slice(1).join(' ') || '';
     const accountNo = user.tenantId ? `Account-${user.tenantId.replace(/[^a-zA-Z0-9]/g, '').slice(-4).toUpperCase()}` : 'Trial-2421';
 
+    let companyName = '';
+    if (user.tenantId) {
+      const tenant = await db.queryOne<{ name: string }>(`SELECT name FROM tenants WHERE id = $1`, [user.tenantId]);
+      if (tenant?.name) companyName = tenant.name;
+    }
+
     res.json({
       id: user.id,
       username: user.username,
@@ -1035,6 +1092,7 @@ app.get('/api/user/profile', requireAuth, async (req, res) => {
       phone: user.phone || '',
       role: user.role,
       tenantId: user.tenantId || null,
+      companyName,
       status: user.status || 'Active',
       accountNo,
       recordsPerPage: 25,
@@ -1550,8 +1608,8 @@ app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async
     res.status(404).json({ error: 'Campaign not found in your organization.' });
     return;
   }
-  const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-  const isCompanyAdmin = caller.role === 'admin';
+  const isPlatform = isPlatformRole(caller.role);
+  const isCompanyAdmin = isCompanyOwner(caller.role);
 
   if (!isPlatform && !isCompanyAdmin) {
     const scopedFilter = await getScopedLeadFilterSql(caller, tenantId, '', 3);
@@ -1567,9 +1625,10 @@ app.get(['/campaigns/:id/leads', '/api/campaigns/:id/leads'], requireAuth, async
 });
 
 // REST: Global Leads search & pagination (protected)
-app.get(['/leads', '/api/leads', '/api/crm/leads'], requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
+app.get(['/leads', '/api/leads', '/api/crm/leads', '/api/scraped-leads'], requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId;
+    const caller = (req as any).user;
+    const tenantId = caller?.tenantId || (isPlatformRole(caller?.role) ? 'tenant_default' : null);
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
@@ -1590,9 +1649,8 @@ app.get(['/leads', '/api/leads', '/api/crm/leads'], requireAuth, requirePermissi
     const params: any[] = [tenantId];
 
     // Access Scoping (Platform -> Platform, Admin -> Tenant, Team Lead -> Team, User -> OWN / Team Policy)
-    const caller = (req as any).user;
-    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-    const isCompanyAdmin = caller.role === 'admin';
+    const isPlatform = isPlatformRole(caller.role);
+    const isCompanyAdmin = isCompanyOwner(caller.role);
     const isTeamLead = caller.role === 'team_lead';
 
     let scopeSql = '';
@@ -1675,13 +1733,14 @@ app.get(['/leads', '/api/leads', '/api/crm/leads'], requireAuth, requirePermissi
 
     const formattedLeads = leads.map(r => ({
       id: r.id,
+      name: r.name || 'Unknown Contact',
       source: r.campaignName || 'Lead Queue',
       businessName: r.name || 'Unknown Contact',
       phone: r.phone || '',
       email: null,
       address: null,
       website: null,
-      status: r.status === 'COMPLETED' ? 'converted' : (r.status === 'PENDING' ? 'new' : 'contacted'),
+      status: r.status === 'COMPLETED' ? 'converted' : (r.status === 'PENDING' ? 'new' : (r.status || 'contacted')),
       scrapedBy: 'Auto Dialer',
       scrapedAt: r.createdAt || new Date().toISOString()
     }));
@@ -1807,8 +1866,8 @@ app.get('/api/crm/campaigns/:id/workspace', requireAuth, requirePermission(['cam
     }
 
     const caller = (req as any).user;
-    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-    const isCompanyAdmin = caller.role === 'admin';
+    const isPlatform = isPlatformRole(caller.role);
+    const isCompanyAdmin = isCompanyOwner(caller.role);
 
     let leads: any[] = [];
     if (!isPlatform && !isCompanyAdmin) {
@@ -2452,10 +2511,30 @@ app.post('/api/crm/leads', requireAuth, requirePermission(['leads:create', 'crm:
       return;
     }
 
-    const { name, phone, email, address, campaignId, crmCompanyId, contactId, requirement, country, assignedTo } = req.body;
+    const { name, phone, email, address, campaignId, crmCompanyId, contactId, requirement, country, assignedTo, companyName, task } = req.body;
     if (!name || !phone) {
       res.status(400).json({ error: 'Lead name and phone number are required.' });
       return;
+    }
+
+    // Auto-link or create company if companyName provided
+    let targetCompanyId = crmCompanyId;
+    if (!targetCompanyId && companyName && companyName.trim()) {
+      const cleanCompName = companyName.trim();
+      const existingComp = await db.queryOne<{ id: string }>(
+        `SELECT id FROM crm_companies WHERE "tenantId" = $1 AND LOWER(name) = LOWER($2) LIMIT 1`,
+        [tenantId, cleanCompName]
+      );
+      if (existingComp) {
+        targetCompanyId = existingComp.id;
+      } else {
+        const newCompId = 'comp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+        await db.execute(
+          `INSERT INTO crm_companies (id, "tenantId", name, status, "createdAt", "updatedAt") VALUES ($1, $2, $3, 'Active', $4, $4)`,
+          [newCompId, tenantId, cleanCompName, new Date().toISOString()]
+        );
+        targetCompanyId = newCompId;
+      }
     }
 
     // Default campaign if none specified
@@ -2468,23 +2547,26 @@ app.post('/api/crm/leads', requireAuth, requirePermission(['leads:create', 'crm:
     const leadId = `lead_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date().toISOString();
     const cleanPhone = normalizePhone(phone);
+    const initialStatus = (req.body.pipelineStatus?.trim() || req.body.status?.trim() || 'PENDING').toUpperCase();
 
     await db.execute(`
-      INSERT INTO leads (id, "campaignId", name, phone, status, "createdAt", "tenantId", address, "crmCompanyId", "contactId", requirement, country, "assignedTo")
-      VALUES ($1, $2, $3, $4, 'PENDING', $5, $6, $7, $8, $9, $10, $11, $12)
+      INSERT INTO leads (id, "campaignId", name, phone, status, "createdAt", "tenantId", address, "crmCompanyId", "contactId", requirement, country, "assignedTo", email)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
     `, [
       leadId,
       targetCampaignId,
       name.trim(),
       cleanPhone,
+      initialStatus,
       now,
       tenantId,
       address || null,
-      crmCompanyId || null,
+      targetCompanyId || null,
       contactId || null,
       requirement || null,
       country || null,
-      assignedTo || user.username
+      assignedTo || user.id,
+      email ? email.trim() : null
     ]);
 
     await recordLeadActivity({
@@ -2496,8 +2578,51 @@ app.post('/api/crm/leads', requireAuth, requirePermission(['leads:create', 'crm:
       description: `Lead created manually via CRM${requirement ? ': ' + requirement : ''}`
     });
 
+    let createdTaskId: string | null = null;
+    if (task && task.title && task.dueAt) {
+      const parsedDueAt = new Date(task.dueAt).getTime();
+      const safeDueAt = !isNaN(parsedDueAt) ? new Date(parsedDueAt).toISOString() : new Date(Date.now() + 30 * 60000).toISOString();
+      createdTaskId = 'task_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+      await db.execute(`
+        INSERT INTO crm_tasks (id, "tenantId", title, description, "taskType", status, priority, "dueAt", "leadId", "crmCompanyId", "createdByUserId", "assignedUserId", "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, $4, $5, 'open', $6, $7, $8, $9, $10, $11, $12, $12)
+      `, [
+        createdTaskId,
+        tenantId,
+        task.title.trim(),
+        task.description ? task.description.trim() : null,
+        task.taskType || 'call',
+        task.priority || 'medium',
+        safeDueAt,
+        leadId,
+        targetCompanyId || null,
+        user.id,
+        user.id,
+        now
+      ]);
+      await recordLeadActivity({
+        leadId,
+        tenantId,
+        userId: user.id,
+        username: user.username,
+        eventType: 'TASK_CREATED',
+        description: `Task scheduled: ${task.title} (Due: ${task.dueAt})`
+      });
+      io.to(`tenant_${tenantId}`).emit('crm:tasks:updated');
+    }
+
     const lead = await db.queryOne(`SELECT * FROM leads WHERE id = $1 AND "tenantId" = $2`, [leadId, tenantId]);
-    res.json({ success: true, lead });
+    logUserActivity({
+      tenantId,
+      userId: user.id,
+      username: user.username,
+      action: 'LEAD_CREATED',
+      resourceType: 'lead',
+      resourceId: leadId,
+      details: { leadName: name.trim(), phone: cleanPhone, companyName: companyName || null },
+      req
+    });
+    res.json({ success: true, lead, taskId: createdTaskId });
   } catch (err: any) {
     console.error('Error creating CRM lead:', err);
     res.status(500).json({ error: 'Internal server error while creating lead' });
@@ -2505,7 +2630,10 @@ app.post('/api/crm/leads', requireAuth, requirePermission(['leads:create', 'crm:
 });
 
 // REST: Get single lead by ID with strict scoping guard (protected)
-app.get(['/leads/:id', '/api/leads/:id', '/api/crm/leads/:id'], requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res) => {
+app.get(['/leads/:id', '/api/leads/:id', '/api/crm/leads/:id'], requireAuth, requirePermission(['leads:view', 'crm:view']), async (req, res, next) => {
+  if (req.params.id === 'export') {
+    return next();
+  }
   try {
     const tenantId = (req as any).user?.tenantId;
     if (!tenantId) {
@@ -2643,7 +2771,7 @@ app.post('/api/crm/leads/:id/notes', requireAuth, requirePermission(['leads:edit
       return;
     }
     const leadId = req.params.id;
-    const note = (req.body?.note || '').trim();
+    const note = (req.body?.note || req.body?.content || req.body?.body || '').trim();
     const category = req.body?.category || 'general';
     if (!note) {
       res.status(400).json({ error: 'Note content is required.' });
@@ -2670,7 +2798,7 @@ app.post('/api/crm/leads/:id/notes', requireAuth, requirePermission(['leads:edit
       description: note
     });
 
-    await recordCrmNote({
+    const createdNote = await recordCrmNote({
       tenantId,
       entityType: 'lead',
       entityId: leadId,
@@ -2680,7 +2808,7 @@ app.post('/api/crm/leads/:id/notes', requireAuth, requirePermission(['leads:edit
       createdByName: user.username
     });
 
-    res.json({ success: true, message: 'Note recorded successfully.' });
+    res.json({ success: true, message: 'Note recorded successfully.', note: createdNote });
   } catch (err: any) {
     console.error('Error recording note:', err);
     res.status(500).json({ error: 'Internal server error while recording note' });
@@ -3019,9 +3147,10 @@ app.post('/api/crm/tasks/:id/cancel', requireAuth, requirePermission(['crm:edit'
       return;
     }
     const taskId = req.params.id;
-    const { cancellationReason, remarks } = req.body;
+    const cancellationReason = (req.body.cancellationReason || req.body.reason || '').trim();
+    const remarks = req.body.remarks;
 
-    if (!cancellationReason || !cancellationReason.trim()) {
+    if (!cancellationReason) {
       res.status(400).json({ error: 'Cancellation reason is mandatory.' });
       return;
     }
@@ -3132,6 +3261,39 @@ app.post('/api/crm/notes', requireAuth, requirePermission(['crm:edit', 'crm:crea
   } catch (err: any) {
     console.error('Error saving CRM note:', err);
     res.status(500).json({ error: 'Internal server error while saving note' });
+  }
+});
+
+// DELETE /api/crm/notes/:id
+app.delete('/api/crm/notes/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const noteId = req.params.id;
+    const note = await db.queryOne<any>(`
+      SELECT * FROM crm_notes WHERE id = $1 AND "tenantId" = $2
+    `, [noteId, tenantId]);
+
+    if (!note) {
+      res.status(404).json({ error: 'Note not found' });
+      return;
+    }
+
+    const canDelete = isCompanyOwner(user) || isPlatformRole(user.role) || note.createdByUserId === user.id;
+    if (!canDelete) {
+      res.status(403).json({ error: 'Forbidden: You do not have permission to delete this note' });
+      return;
+    }
+
+    await db.execute(`DELETE FROM crm_notes WHERE id = $1 AND "tenantId" = $2`, [noteId, tenantId]);
+    res.json({ success: true, message: 'Note deleted successfully.' });
+  } catch (err: any) {
+    console.error('Error deleting CRM note:', err);
+    res.status(500).json({ error: 'Internal server error while deleting note' });
   }
 });
 
@@ -3776,7 +3938,7 @@ app.put('/api/crm/pricing-rules', requireAuth, async (req, res) => {
     }
 
     // Strictly Company Owner or Platform Admin only!
-    const isOwner = user.role === 'admin' || user.role === 'platform_admin' || user.role === 'master_admin';
+    const isOwner = isCompanyOwner(user) || isPlatformRole(user.role);
     if (!isOwner) {
       res.status(403).json({ error: 'Forbidden: Only the Company Owner can configure sales pricing rules and discount policies.' });
       return;
@@ -3850,7 +4012,7 @@ async function calculateQuoteInternal(tenantId: string, user: any, body: any) {
   try { packages = JSON.parse(rules.packagesJson); } catch {}
   try { addons = JSON.parse(rules.addonsJson); } catch {}
 
-  const isOwner = user.role === 'admin' || user.role === 'platform_admin' || user.role === 'master_admin';
+  const isOwner = isCompanyOwner(user) || isPlatformRole(user.role);
   const isTeamLead = user.role === 'team_lead';
   const maxDiscountPct = isOwner ? 100 : (isTeamLead ? Number(rules.teamLeadMaxDiscountPct) : Number(rules.agentMaxDiscountPct));
 
@@ -4156,7 +4318,7 @@ app.get('/api/crm/quotes/:id', requireAuth, requirePermission(['crm:view']), asy
   }
 });
 
-app.put('/api/crm/quotes/:id/status', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+app.put(['/api/crm/quotes/:id', '/api/crm/quotes/:id/status'], requireAuth, requirePermission(['crm:edit']), async (req, res) => {
   try {
     const user = (req as any).user;
     const tenantId = user?.tenantId;
@@ -4204,6 +4366,31 @@ app.put('/api/crm/quotes/:id/status', requireAuth, requirePermission(['crm:edit'
   } catch (err: any) {
     console.error('Error updating quote status:', err);
     res.status(500).json({ error: 'Internal server error while updating quote status' });
+  }
+});
+
+// DELETE /api/crm/quotes/:id
+app.delete('/api/crm/quotes/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const existing = await db.queryOne<any>(`SELECT * FROM crm_quotes WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    if (!existing) {
+      res.status(404).json({ error: 'Quote not found.' });
+      return;
+    }
+
+    await db.execute(`DELETE FROM crm_quote_items WHERE "quoteId" = $1 AND "tenantId" = $2`, [id, tenantId]);
+    await db.execute(`DELETE FROM crm_quotes WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    res.json({ success: true, message: 'Quote deleted successfully.' });
+  } catch (err: any) {
+    console.error('Error deleting quote:', err);
+    res.status(500).json({ error: 'Internal server error while deleting quote' });
   }
 });
 
@@ -4283,6 +4470,30 @@ app.put('/api/crm/tasks/:id', requireAuth, requirePermission(['crm:edit']), asyn
   } catch (err: any) {
     console.error('Error updating task:', err);
     res.status(500).json({ error: 'Internal server error while updating task' });
+  }
+});
+
+// DELETE /api/crm/tasks/:id
+app.delete('/api/crm/tasks/:id', requireAuth, requirePermission(['crm:edit']), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const id = req.params.id;
+    const existing = await db.queryOne<any>(`SELECT * FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    if (!existing) {
+      res.status(404).json({ error: 'Task not found.' });
+      return;
+    }
+
+    await db.execute(`DELETE FROM crm_tasks WHERE id = $1 AND "tenantId" = $2`, [id, tenantId]);
+    res.json({ success: true, message: 'Task deleted successfully.' });
+  } catch (err: any) {
+    console.error('Error deleting task:', err);
+    res.status(500).json({ error: 'Internal server error while deleting task' });
   }
 });
 
@@ -4857,7 +5068,7 @@ app.get('/api/super-admin/activity', requirePlatformAdmin, async (req, res) => {
 // POST /api/super-admin/provision: 1-click workspace organization provisioning
 app.post('/api/super-admin/provision', requirePlatformAdmin, async (req, res) => {
   try {
-    const { name, username, email, password } = req.body;
+    const { name, username, email, password, customerType, maxAgents, planId } = req.body;
     if (!name || typeof name !== 'string' || !name.trim()) {
       res.status(400).json({ error: 'Company / Workspace Name is required.' });
       return;
@@ -4876,7 +5087,10 @@ app.post('/api/super-admin/provision', requirePlatformAdmin, async (req, res) =>
       name: name.trim(),
       username: username.trim().toLowerCase(),
       email: email ? email.trim().toLowerCase() : undefined,
-      passwordHash: hash
+      passwordHash: hash,
+      customerType: customerType === 'PERSONAL' ? 'PERSONAL' : 'COMPANY',
+      maxAgents: typeof maxAgents === 'number' ? maxAgents : undefined,
+      planId: planId || 'plan_starter'
     });
 
     emitPlatformEvent('platform:tenant-created', {
@@ -4886,8 +5100,8 @@ app.post('/api/super-admin/provision', requirePlatformAdmin, async (req, res) =>
     });
 
     res.status(201).json({
-      message: 'Workspace organization created successfully.',
-      ...result
+      ...result,
+      message: 'Workspace organization created successfully.'
     });
   } catch (err: any) {
     console.error('[Super Admin] Provision error:', err);
@@ -4970,18 +5184,18 @@ app.put('/api/super-admin/tenants/:id/entitlements', requirePlatformAdmin, async
       return;
     }
 
-    const { moduleId, enabled, entitlements: bulkMap } = req.body;
+    const { moduleId, enabled, entitlements: bulkMapRaw, modules } = req.body;
+    const bulkMap = bulkMapRaw || modules;
 
-    if (bulkMap && typeof bulkMap === 'object') {
-      for (const [mId, isEn] of Object.entries(bulkMap)) {
-        await setTenantModuleEntitlement(tenantId, mId, Boolean(isEn), caller.username);
-      }
-    } else if (moduleId !== undefined) {
-      await setTenantModuleEntitlement(tenantId, moduleId, Boolean(enabled), caller.username);
-    } else {
-      res.status(400).json({ error: 'Must provide either moduleId + enabled or entitlements map.' });
+    const changes = bulkMap && typeof bulkMap === 'object' && !Array.isArray(bulkMap)
+      ? Object.entries(bulkMap) : moduleId !== undefined ? [[moduleId, enabled]] : [];
+    if (!changes.length || changes.some(([id, value]) => typeof value !== 'boolean' || !ALL_CANONICAL_MODULES.some(m => m.id === normalizeModuleKey(id)))) {
+      res.status(400).json({ error: 'Provide known module IDs with boolean enabled values.' });
       return;
     }
+    await db.withTransaction(async () => {
+      for (const [id, value] of changes) await setTenantModuleEntitlement(tenantId, id, value as boolean, caller.username);
+    });
 
     const updatedEntitlements = await getTenantModuleEntitlements(tenantId);
     emitPlatformEvent('platform:tenant-entitlements-updated', { tenantId, entitlements: updatedEntitlements });
@@ -5089,13 +5303,191 @@ app.put('/api/super-admin/tenants/:id/status', requirePlatformAdmin, async (req,
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SUPERADMIN ROUTES — Only master account (role: superadmin) can access these
+// Can suspend / restore / demote ANY user including platform_admins
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/superadmin/users — list ALL users across the platform (including platform_admins)
+app.get('/api/superadmin/users', requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const rows = await db.queryAll<any>(`
+      SELECT id, username, email, role, status, "displayName", "tenantId", "createdAt", "updatedAt"
+      FROM users
+      ORDER BY
+        CASE LOWER(role)
+          WHEN 'superadmin'    THEN 0
+          WHEN 'platform_admin' THEN 1
+          WHEN 'admin'         THEN 2
+          ELSE 3
+        END,
+        username ASC
+    `);
+    res.json({ users: rows, total: rows.length });
+  } catch (err: any) {
+    console.error('[Superadmin] List users error:', err);
+    res.status(500).json({ error: 'Failed to list users.' });
+  }
+});
+
+// PUT /api/superadmin/users/:id/status — suspend or restore ANY user (including platform_admins)
+app.put('/api/superadmin/users/:id/status', requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { status, reason } = req.body;
+
+    if (!['Active', 'Disabled', 'Suspended'].includes(status)) {
+      res.status(400).json({ error: 'Status must be "Active", "Disabled", or "Suspended".' });
+      return;
+    }
+
+    const target = await db.queryOne<any>(`SELECT id, username, role, status FROM users WHERE id = $1`, [req.params.id]);
+    if (!target) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+
+    // Superadmin cannot suspend themselves
+    if (target.id === caller.id) {
+      res.status(400).json({ error: 'You cannot suspend your own master account.' });
+      return;
+    }
+
+    // Prevent suspending another superadmin
+    if (isSuperAdmin(target.role)) {
+      res.status(403).json({ error: 'Cannot modify another superadmin account.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await db.execute(`UPDATE users SET status = $1, "updatedAt" = $2 WHERE id = $3`, [status, now, target.id]);
+
+    // Audit log
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, $3, 'user', $4, $5, $6, NULL)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        caller.username,
+        status === 'Active' ? 'SUPERADMIN_USER_RESTORED' : 'SUPERADMIN_USER_SUSPENDED',
+        target.id,
+        JSON.stringify({ targetUsername: target.username, targetRole: target.role, newStatus: status, reason: reason || 'Superadmin action' }),
+        now
+      ]);
+    } catch { /* audit log is best-effort */ }
+
+    console.log(`[Superadmin] ${caller.username} set ${target.username} (${target.role}) status → ${status}. Reason: ${reason || 'none'}`);
+    res.json({ success: true, message: `User ${target.username} status updated to ${status}.`, userId: target.id, status });
+  } catch (err: any) {
+    console.error('[Superadmin] Update user status error:', err);
+    res.status(500).json({ error: 'Failed to update user status.' });
+  }
+});
+
+// PUT /api/superadmin/users/:id/role — change role of any user (downgrade platform_admin → admin, etc.)
+app.put('/api/superadmin/users/:id/role', requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const { role, reason } = req.body;
+
+    const allowedRoles = ['platform_admin', 'admin', 'team_lead', 'agent', 'user'];
+    if (!role || !allowedRoles.includes(role)) {
+      res.status(400).json({ error: `Role must be one of: ${allowedRoles.join(', ')}.` });
+      return;
+    }
+
+    const target = await db.queryOne<any>(`SELECT id, username, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]);
+    if (!target) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+
+    // Superadmin cannot demote themselves
+    if (target.id === caller.id) {
+      res.status(400).json({ error: 'Cannot change your own master role.' });
+      return;
+    }
+
+    // Cannot promote anyone to superadmin via this endpoint (there can only be one)
+    if (isSuperAdmin(target.role)) {
+      res.status(403).json({ error: 'Cannot modify another superadmin account.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await db.execute(`UPDATE users SET role = $1, "updatedAt" = $2 WHERE id = $3`, [role, now, target.id]);
+
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, 'SUPERADMIN_ROLE_CHANGE', 'user', $3, $4, $5, NULL)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        caller.username,
+        target.id,
+        JSON.stringify({ targetUsername: target.username, oldRole: target.role, newRole: role, reason: reason || 'Superadmin action' }),
+        now
+      ]);
+    } catch { /* audit log is best-effort */ }
+
+    console.log(`[Superadmin] ${caller.username} changed ${target.username} role: ${target.role} → ${role}`);
+    res.json({ success: true, message: `User ${target.username} role changed to ${role}.`, userId: target.id, oldRole: target.role, newRole: role });
+  } catch (err: any) {
+    console.error('[Superadmin] Change user role error:', err);
+    res.status(500).json({ error: 'Failed to change user role.' });
+  }
+});
+
+// DELETE /api/superadmin/users/:id — permanently delete any non-superadmin user
+app.delete('/api/superadmin/users/:id', requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const target = await db.queryOne<any>(`SELECT id, username, role FROM users WHERE id = $1`, [req.params.id]);
+    if (!target) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+    if (target.id === caller.id) {
+      res.status(400).json({ error: 'Cannot delete your own master account.' });
+      return;
+    }
+    if (isSuperAdmin(target.role)) {
+      res.status(403).json({ error: 'Cannot delete another superadmin account.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await db.execute(`DELETE FROM users WHERE id = $1`, [target.id]);
+
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, 'SUPERADMIN_USER_DELETED', 'user', $3, $4, $5, NULL)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        caller.username,
+        target.id,
+        JSON.stringify({ targetUsername: target.username, targetRole: target.role }),
+        now
+      ]);
+    } catch { /* audit log is best-effort */ }
+
+    console.log(`[Superadmin] ${caller.username} deleted user ${target.username} (${target.role})`);
+    res.json({ success: true, message: `User ${target.username} permanently deleted.` });
+  } catch (err: any) {
+    console.error('[Superadmin] Delete user error:', err);
+    res.status(500).json({ error: 'Failed to delete user.' });
+  }
+});
+
 // PUT /api/super-admin/tenants/:id/seats (and /limits): Update tenant seat quota with safety verification
 app.put(['/api/super-admin/tenants/:id/seats', '/api/super-admin/tenants/:id/limits'], requirePlatformAdmin, async (req, res) => {
   try {
     const tenantId = req.params.id;
     const caller = (req as any).user;
-    const { seatLimit, force } = req.body;
-    const parsedLimit = parseInt(String(seatLimit), 10);
+    const { seatLimit, maxAgents, force } = req.body;
+    const parsedLimit = parseInt(String(seatLimit !== undefined ? seatLimit : maxAgents), 10);
 
     if (isNaN(parsedLimit) || parsedLimit < 1) {
       res.status(400).json({ error: 'Valid positive seat limit integer is required.' });
@@ -5136,6 +5528,253 @@ app.put(['/api/super-admin/tenants/:id/seats', '/api/super-admin/tenants/:id/lim
   } catch (err: any) {
     console.error('[Super Admin] Update seats error:', err);
     res.status(500).json({ error: 'Failed to update workspace seat limit' });
+  }
+});
+
+// POST /api/super-admin/tenants/:id/adjust-trial & /extend-trial: Add or reduce trial duration
+app.post(['/api/super-admin/tenants/:id/adjust-trial', '/api/super-admin/tenants/:id/extend-trial'], requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const { action, days, hours, customDate, daysToAdd, daysToReduce } = req.body;
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant organization not found.' });
+      return;
+    }
+
+    let sub = await db.queryOne<any>(`
+      SELECT * FROM subscriptions 
+      WHERE "tenantId" = $1 
+      ORDER BY "createdAt" DESC LIMIT 1
+    `, [tenantId]);
+
+    // Current expiration anchor
+    let currentEndMs: number;
+    if (sub?.currentPeriodEnd) {
+      currentEndMs = new Date(sub.currentPeriodEnd).getTime();
+    } else if (sub?.trialEnd) {
+      currentEndMs = new Date(sub.trialEnd).getTime();
+    } else {
+      currentEndMs = new Date(tenant.createdAt).getTime() + 14 * 86400000;
+    }
+
+    let newEndTime: number;
+
+    if (action === 'expire_now') {
+      newEndTime = Date.now() - 1000; // Expired immediately
+    } else if (action === 'set_custom' && customDate) {
+      newEndTime = new Date(customDate).getTime();
+    } else {
+      // Determine delta in milliseconds
+      let deltaDays = 0;
+      if (typeof days === 'number') deltaDays = days;
+      else if (daysToAdd) deltaDays = Number(daysToAdd);
+      else if (daysToReduce) deltaDays = -Math.abs(Number(daysToReduce));
+      else if (req.body.days) deltaDays = Number(req.body.days);
+
+      let deltaHours = typeof hours === 'number' ? hours : 0;
+      const totalDeltaMs = (deltaDays * 86400000) + (deltaHours * 3600000);
+
+      if (totalDeltaMs > 0 && currentEndMs < Date.now()) {
+        // If extending an already expired trial, start adding from now
+        newEndTime = Date.now() + totalDeltaMs;
+      } else {
+        newEndTime = currentEndMs + totalDeltaMs;
+      }
+    }
+
+    const newEndIso = new Date(newEndTime).toISOString();
+    const nowIso = new Date().toISOString();
+    const isNowExpired = newEndTime <= Date.now();
+
+    if (sub) {
+      await db.execute(`
+        UPDATE subscriptions 
+        SET "currentPeriodEnd" = $1, "trialEnd" = $1, status = 'trialing', "updatedAt" = $2 
+        WHERE id = $3
+      `, [newEndIso, nowIso, sub.id]);
+    } else {
+      const newSubId = 'sub_' + crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+      await db.execute(`
+        INSERT INTO subscriptions (id, "tenantId", "planId", status, "currentPeriodStart", "currentPeriodEnd", "trialStart", "trialEnd", "createdAt", "updatedAt", provider)
+        VALUES ($1, $2, 'plan_starter', 'trialing', $3, $4, $3, $4, $3, $3, 'manual')
+      `, [newSubId, tenantId, tenant.createdAt || nowIso, newEndIso]);
+    }
+
+    await db.execute(`
+      UPDATE tenants 
+      SET status = 'trial', "updatedAt" = $1 
+      WHERE id = $2
+    `, [nowIso, tenantId]);
+
+    // Admin audit logging
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, $3, 'tenant', $4, $5, $6, $4)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        (req as any).user?.username || 'platform_admin',
+        'ADJUST_TRIAL',
+        tenantId,
+        `Adjusted trial for ${tenant.name} (${tenantId}). New expiration: ${newEndIso} (Expired: ${isNowExpired})`,
+        nowIso
+      ]);
+    } catch {}
+
+    res.json({
+      success: true,
+      message: isNowExpired 
+        ? 'Trial expired immediately.' 
+        : `Trial duration adjusted successfully. New expiration: ${new Date(newEndTime).toLocaleString()}`,
+      newPeriodEnd: newEndIso,
+      remainingMs: Math.max(0, newEndTime - Date.now()),
+      isExpired: isNowExpired
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Adjust trial error:', err);
+    res.status(500).json({ error: err.message || 'Failed to adjust trial.' });
+  }
+});
+
+// PUT /api/super-admin/tenants/:id/plan: Authoritative workspace plan and subscription tier update
+app.put('/api/super-admin/tenants/:id/plan', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const { planId } = req.body;
+    if (!planId || typeof planId !== 'string') {
+      res.status(400).json({ error: 'Valid planId is required (starter, pro, enterprise).' });
+      return;
+    }
+    const cleanPlan = planId.toLowerCase().replace(/^plan_/, '').trim();
+    if (!['starter', 'pro', 'enterprise', 'legacy'].includes(cleanPlan)) {
+      res.status(400).json({ error: 'Invalid plan. Allowed: starter, pro, enterprise.' });
+      return;
+    }
+
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant organization not found.' });
+      return;
+    }
+
+    const fullPlanId = 'plan_' + cleanPlan;
+    const nowIso = new Date().toISOString();
+
+    // 1. Update tenants table tier
+    await db.execute(`UPDATE tenants SET tier = $1, "updatedAt" = $2 WHERE id = $3`, [cleanPlan, nowIso, tenantId]);
+
+    // 2. Update or insert subscription
+    const existingSub = await db.queryOne<any>(`
+      SELECT id FROM subscriptions 
+      WHERE "tenantId" = $1 
+      ORDER BY "createdAt" DESC LIMIT 1
+    `, [tenantId]);
+
+    if (existingSub) {
+      await db.execute(`
+        UPDATE subscriptions 
+        SET "planId" = $1, "updatedAt" = $2 
+        WHERE id = $3
+      `, [fullPlanId, nowIso, existingSub.id]);
+    } else {
+      const newSubId = 'sub_' + crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+      const periodEnd = new Date(Date.now() + 30 * 86400000).toISOString();
+      await db.execute(`
+        INSERT INTO subscriptions (id, "tenantId", "planId", status, "currentPeriodStart", "currentPeriodEnd", "createdAt", "updatedAt", provider)
+        VALUES ($1, $2, $3, 'active', $4, $5, $4, $4, 'manual')
+      `, [newSubId, tenantId, fullPlanId, nowIso, periodEnd]);
+    }
+
+    // 3. Admin audit log
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, 'UPDATE_PLAN', 'tenant', $3, $4, $5, $3)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        (req as any).user?.username || 'platform_admin',
+        tenantId,
+        `Changed workspace plan to ${cleanPlan.toUpperCase()}`,
+        nowIso
+      ]);
+    } catch {}
+
+    emitPlatformEvent('platform:tenant-updated', { tenantId, plan: cleanPlan, tier: cleanPlan });
+
+    res.json({
+      success: true,
+      plan: cleanPlan,
+      tier: cleanPlan,
+      message: `Workspace plan updated to ${cleanPlan.toUpperCase()}`
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Update plan error:', err);
+    res.status(500).json({ error: 'Failed to update workspace plan' });
+  }
+});
+
+// GET /billing/subscription & /api/company/subscription: Tenant subscription & trial status
+app.get(['/billing/subscription', '/api/billing/subscription', '/api/company/subscription'], requireAuth, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    const tenantId = caller.tenantId;
+    if (!tenantId) {
+      res.status(400).json({ error: 'No workspace assigned to user.' });
+      return;
+    }
+
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant workspace not found.' });
+      return;
+    }
+
+    const sub = await db.queryOne<any>(`
+      SELECT * FROM subscriptions 
+      WHERE "tenantId" = $1 
+      ORDER BY "createdAt" DESC LIMIT 1
+    `, [tenantId]);
+
+    const isTrial = tenant.status === 'trial' || sub?.status === 'trialing';
+    const periodEnd = sub?.currentPeriodEnd || sub?.trialEnd || (isTrial ? new Date(new Date(tenant.createdAt).getTime() + 14 * 86400000).toISOString() : null);
+    let daysLeft = 14;
+    let remainingMs = 0;
+    if (periodEnd) {
+      remainingMs = Math.max(0, new Date(periodEnd).getTime() - Date.now());
+      daysLeft = Math.ceil(remainingMs / (1000 * 60 * 60 * 24));
+    }
+
+    const plan = sub?.planId
+      ? await db.queryOne<any>(`SELECT id, name, "priceMonthly", "priceYearly" FROM plans WHERE id = $1`, [sub.planId])
+      : null;
+
+    res.json({
+      success: true,
+      tenantId,
+      status: tenant.status,
+      isTrial,
+      daysLeft,
+      trialEndsAt: periodEnd,
+      trialRemainingMs: remainingMs,
+      isExpired: isTrial && remainingMs === 0,
+      subscription: sub ? {
+        ...sub,
+        status: isTrial ? 'trialing' : sub.status,
+        currentPeriodEnd: periodEnd || new Date(Date.now() + 14 * 86400000).toISOString(),
+        trialEndsAt: periodEnd
+      } : {
+        id: `sub_${tenantId}`,
+        planId: 'plan_starter',
+        status: isTrial ? 'trialing' : 'active',
+        currentPeriodEnd: periodEnd || new Date(Date.now() + 14 * 86400000).toISOString(),
+        trialEndsAt: periodEnd
+      },
+      plan: plan || { id: 'plan_starter', name: 'Starter Plan', priceMonthly: 29 }
+    });
+  } catch (err: any) {
+    console.error('[Subscription] Error fetching subscription state:', err);
+    res.status(500).json({ error: 'Failed to retrieve subscription status.' });
   }
 });
 
@@ -5521,9 +6160,37 @@ app.get(['/logs', '/api/logs', '/api/call-logs'], requireAuth, requirePermission
   res.json(await getScopedLogs(caller, tenantId));
 });
 
-// POST /api/logs/update & /logs/update — Update call disposition (protected)
+// POST /api/logs/update & /logs/update — Update call disposition & sync CRM (protected)
 app.post(['/api/logs/update', '/logs/update'], requireAuth, requirePermission(['calls:log_disposition', 'history:edit_disposition']), async (req, res) => {
-  const { leadId, notes, logId } = req.body as { leadId?: string; outcome?: string; notes?: string; disposition?: string; logId?: string };
+  const {
+    leadId,
+    notes,
+    logId,
+    leadName,
+    companyName,
+    email,
+    phone,
+    pipelineStatus,
+    task
+  } = req.body as {
+    leadId?: string;
+    outcome?: string;
+    notes?: string;
+    disposition?: string;
+    logId?: string;
+    leadName?: string;
+    companyName?: string;
+    email?: string;
+    phone?: string;
+    pipelineStatus?: string;
+    task?: {
+      title: string;
+      description?: string;
+      priority?: string;
+      dueAt: string;
+      taskType?: string;
+    };
+  };
   const outcome = req.body.outcome || req.body.disposition;
   const user = (req as any).user;
   const tenantId = user?.tenantId;
@@ -5538,6 +6205,7 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, requirePermission(['
     return;
   }
 
+  try {
   const lead = await getLead(leadId, tenantId);
   if (!lead) {
     res.status(404).json({ error: 'Lead not found in your organization.' });
@@ -5562,16 +6230,122 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, requirePermission(['
   });
 
   if (updated) {
+    let targetCrmCompanyId = (lead as any).crmCompanyId;
+    if (companyName && companyName.trim()) {
+      const cleanCompName = companyName.trim();
+      const existingComp = await db.queryOne<{ id: string }>(
+        `SELECT id FROM crm_companies WHERE "tenantId" = $1 AND LOWER(name) = LOWER($2) LIMIT 1`,
+        [tenantId, cleanCompName]
+      );
+      if (existingComp) {
+        targetCrmCompanyId = existingComp.id;
+      } else {
+        const newCompId = 'comp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+        await db.execute(
+          `INSERT INTO crm_companies (id, "tenantId", name, status, "createdAt", "updatedAt") VALUES ($1, $2, $3, 'Active', $4, $4)`,
+          [newCompId, tenantId, cleanCompName, new Date().toISOString()]
+        );
+        targetCrmCompanyId = newCompId;
+      }
+    }
+
+    const newName = leadName?.trim() || lead.name;
+    const newPhone = phone ? normalizePhone(phone) : lead.phone;
+    const newEmail = email !== undefined ? (email.trim() || null) : (lead as any).email;
+    const newStatus = pipelineStatus?.trim() || (outcome === 'INTERESTED' ? 'INTERESTED' : (outcome === 'CALLBACK_REQUESTED' ? 'CALLBACK' : 'COMPLETED'));
+
+    await db.execute(`
+      UPDATE leads 
+      SET name = $1, phone = $2, "crmCompanyId" = $3, status = $4, email = $5
+      WHERE id = $6 AND "tenantId" = $7
+    `, [newName, newPhone, targetCrmCompanyId, newStatus, newEmail, leadId, tenantId]);
+
+    // Record review note into CRM notes if provided
+    if (notes && notes.trim()) {
+      try {
+        await recordCrmNote({
+          tenantId,
+          entityType: 'lead',
+          entityId: leadId,
+          category: 'call',
+          body: notes.trim(),
+          createdByUserId: user.id,
+          createdByName: user.username
+        });
+      } catch (e) {
+        console.warn('Could not record call note to crm_notes:', e);
+      }
+    }
+
+    // Record Quick Task if provided
+    let createdTaskId: string | null = null;
+    if (task && task.title && task.dueAt) {
+      const parsedDueAt = new Date(task.dueAt).getTime();
+      const safeDueAt = !isNaN(parsedDueAt) ? new Date(parsedDueAt).toISOString() : new Date(Date.now() + 30 * 60000).toISOString();
+      createdTaskId = 'task_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+      await db.execute(`
+        INSERT INTO crm_tasks (id, "tenantId", title, description, "taskType", status, priority, "dueAt", "leadId", "crmCompanyId", "createdByUserId", "assignedUserId", "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, $4, $5, 'open', $6, $7, $8, $9, $10, $11, $12, $12)
+      `, [
+        createdTaskId,
+        tenantId,
+        task.title.trim(),
+        task.description ? task.description.trim() : null,
+        task.taskType || 'call',
+        task.priority || 'medium',
+        safeDueAt,
+        leadId,
+        targetCrmCompanyId || null,
+        user.id,
+        user.id,
+        new Date().toISOString()
+      ]);
+
+      await recordLeadActivity({
+        leadId,
+        tenantId,
+        userId: user.id,
+        username: user.username,
+        eventType: 'TASK_CREATED',
+        description: `Task scheduled: ${task.title} (Due: ${task.dueAt})`
+      });
+      io.to(`tenant_${tenantId}`).emit('crm:tasks:updated');
+    }
+
+    logUserActivity({
+      tenantId,
+      userId: user.id,
+      username: user.username,
+      action: 'DISPOSITION_SAVED',
+      resourceType: 'lead',
+      resourceId: leadId,
+      details: { outcome, notes: notes || '', leadName: lead.name, campaignId: lead.campaignId },
+      req
+    });
+    recordAgentCallMetric({
+      tenantId,
+      userId: user.id,
+      username: user.username,
+      outcome,
+      duration: lead.duration || 0,
+      timestamp: new Date().toISOString()
+    });
+
     const nextLead = lead.campaignId ? await getNextPendingLead(lead.campaignId, tenantId, leadId) : null;
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     res.json({
       success: true,
-      message: 'Disposition saved successfully.',
+      message: 'Disposition and CRM data synchronized successfully.',
       nextLeadId: nextLead ? nextLead.id : null,
-      nextLead: nextLead || null
+      nextLead: nextLead || null,
+      taskId: createdTaskId
     });
   } else {
     res.status(404).json({ error: 'Lead or log record not found in tenant.' });
+  }
+  } catch (err: any) {
+    console.error('Error updating log disposition:', err);
+    res.status(500).json({ error: 'Internal server error while updating disposition' });
   }
 });
 
@@ -5589,6 +6363,62 @@ app.get('/api/campaigns/:id/next-lead', requireAuth, async (req, res) => {
     nextLeadId: nextLead ? nextLead.id : null,
     nextLead: nextLead || null
   });
+});
+
+// ─── Activity & Performance Metrics REST Endpoints ─────────────────────────
+
+// GET /api/activity/logs — Granular workspace activity trail (protected)
+app.get(['/api/activity/logs', '/activity/logs'], requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const { userId, action, limit, page } = req.query as {
+      userId?: string;
+      action?: string;
+      limit?: string;
+      page?: string;
+    };
+    const result = await getUserActivityLogs(tenantId, {
+      userId: userId ? String(userId) : undefined,
+      action: action ? String(action) : undefined,
+      limit: limit ? Number(limit) : undefined,
+      page: page ? Number(page) : undefined
+    });
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    console.error('Error fetching activity logs:', err);
+    res.status(500).json({ error: 'Internal server error while fetching activity logs' });
+  }
+});
+
+// GET /api/metrics/agents — Daily agent call & talk time scorecard (protected)
+app.get(['/api/metrics/agents', '/metrics/agents'], requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+    const { userId, date, limit } = req.query as {
+      userId?: string;
+      date?: string;
+      limit?: string;
+    };
+    const metrics = await getAgentDailyMetrics(tenantId, {
+      userId: userId ? String(userId) : undefined,
+      date: date ? String(date) : undefined,
+      limit: limit ? Number(limit) : undefined
+    });
+    res.json({ success: true, metrics });
+  } catch (err: any) {
+    console.error('Error fetching agent metrics:', err);
+    res.status(500).json({ error: 'Internal server error while fetching agent metrics' });
+  }
 });
 
 registerScraperRoutes(app, requireAuth, io);
@@ -5790,28 +6620,16 @@ const handleGetUsers = async (req: express.Request, res: express.Response) => {
   }
 
   // Resolve company entitlement ceiling for effective access calculation
-  const tenantId = user.tenantId;
-  const companyEntitlements = await getTenantModuleEntitlements(tenantId);
-  const enabledCompanyList = CANONICAL_MODULES.filter(m => companyEntitlements[m.id]).map(m => m.id);
-
+  const entitlementCache = new Map<string, Record<string, boolean>>();
   for (const u of users) {
-    const isOwner = u.role === 'admin';
     const userPerms = permMap.get(u.id) || [];
     u.permissions = userPerms;
-
-    let assignedList: string[];
-    if (isOwner) {
-      assignedList = enabledCompanyList;
-    } else {
-      assignedList = userPerms
-        .filter((p: any) => Number(p.enabled) === 1)
-        .map((p: any) => normalizeModuleKey(p.moduleId));
+    if (!entitlementCache.has(u.tenantId)) {
+      entitlementCache.set(u.tenantId, await getTenantModuleEntitlements(u.tenantId));
     }
-
-    const effectiveList = assignedList.filter(m => companyEntitlements[m] === true);
-    u.assignedModules = assignedList;
-    u.effectiveModules = effectiveList;
-    u.companyCeiling = enabledCompanyList;
+    const ceiling = entitlementCache.get(u.tenantId)!;
+    Object.assign(u, await getUserModuleAccess(u, ceiling));
+    u.companyCeiling = CANONICAL_MODULES.filter(m => ceiling[m.id]).map(m => m.id);
   }
 
   res.json(users);
@@ -5893,6 +6711,11 @@ const handleCreateUser = async (req: express.Request, res: express.Response) => 
         .map(([k, _]) => k);
     }
 
+    requestedMods = [...new Set(requestedMods.map(normalizeModuleKey))];
+    if (requestedMods.some(id => !ALL_CANONICAL_MODULES.some(m => m.id === id))) {
+      res.status(400).json({ error: 'Unknown module assignment.' });
+      return;
+    }
     if (requestedMods.length > 0) {
       const companyEntitlements = await getTenantModuleEntitlements(tenantId);
       for (const modId of requestedMods) {
@@ -5911,6 +6734,8 @@ const handleCreateUser = async (req: express.Request, res: express.Response) => 
     const now = new Date().toISOString();
 
     await db.withTransaction(async () => {
+      await lockWorkspaceForMembershipChange(tenantId);
+      if ((await getTenantSeatUsage(tenantId)).availableSeats <= 0) throw new Error('Workspace seat limit reached.');
       result = await registerPublicUser({
         username,
         password,
@@ -5929,13 +6754,13 @@ const handleCreateUser = async (req: express.Request, res: express.Response) => 
       );
 
       // Insert initial module permissions inside transaction
-      for (const modId of requestedMods) {
+      for (const modId of rawModules !== undefined ? ALL_CANONICAL_MODULES.map(m => m.id) : requestedMods) {
         const canonical = normalizeModuleKey(modId);
         const permId = 'p_' + Math.random().toString(36).substring(2, 11);
         await db.execute(
           `INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "grantedAt", "tenantId")
-           VALUES ($1, $2, $3, 1, $4, $5, $6)`,
-          [permId, result.user.id, canonical, caller.username, now, tenantId]
+           VALUES ($1, $2, $3, $7, $4, $5, $6)`,
+          [permId, result.user.id, canonical, caller.username, now, tenantId, requestedMods.includes(canonical) ? 1 : 0]
         );
       }
     });
@@ -5963,7 +6788,7 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
   try {
     const caller = (req as any).user;
     const isPlatform = isPlatformRole(caller.role);
-    const targetUser = await db.queryOne(`SELECT id, role, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
+    const targetUser = await db.queryOne(`SELECT id, role, status, "tenantId" FROM users WHERE id = $1`, [req.params.id]) as any;
 
     if (!targetUser) {
       res.status(404).json({ error: 'User not found.' });
@@ -5992,7 +6817,7 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
     const targetTenantId = targetUser.tenantId || caller.tenantId;
     const isValidRole = await validateRoleBelongsToTenant(roleId, targetTenantId);
     if (!isValidRole) {
-      res.status(403).json({ error: 'Forbidden: Selected role does not belong to user\'s organization.' });
+      res.status(400).json({ error: 'Invalid role: Selected role does not belong to user\'s organization.' });
       return;
     }
   }
@@ -6010,7 +6835,7 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
   }
 
   // Seat Limit: Prevent activating inactive user beyond plan seat capacity
-  if (status === 'Active' && targetUser.status !== 'Active') {
+  if (status !== undefined && isActiveUserStatus(status) && !isActiveUserStatus(targetUser.status)) {
     const seatUsage = await getTenantSeatUsage(targetUser.tenantId);
     if (seatUsage.availableSeats <= 0) {
       res.status(400).json({ error: `Cannot activate user. Workspace plan seat limit reached (${seatUsage.activeSeats + seatUsage.pendingInvitations} of ${seatUsage.maxSeats} seats committed).` });
@@ -6025,16 +6850,20 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
 
   if (rawPerms && typeof rawPerms === 'object') {
     const activePermMap: Record<string, boolean> = Array.isArray(rawPerms)
-      ? rawPerms.reduce((acc: any, k: string) => { acc[k] = true; return acc; }, {})
+      ? { ...Object.fromEntries(ALL_CANONICAL_MODULES.map(m => [m.id, false])), ...Object.fromEntries(rawPerms.map((k: string) => [normalizeModuleKey(k), true])) }
       : rawPerms;
     permMap = activePermMap;
 
     const companyEntitlements = await getTenantModuleEntitlements(tenantId);
     // Validate that caller cannot enable any module that is disabled in company entitlements
     for (const [modId, enabled] of Object.entries(activePermMap)) {
+      if (typeof enabled !== 'boolean' || !ALL_CANONICAL_MODULES.some(m => m.id === normalizeModuleKey(modId))) {
+        res.status(400).json({ error: 'Assignments require known module IDs and boolean values.' });
+        return;
+      }
       if (Boolean(enabled)) {
         const canonical = normalizeModuleKey(modId);
-        if (companyEntitlements[canonical] === false) {
+        if (companyEntitlements[canonical] !== true) {
           res.status(403).json({
             error: `Forbidden: Cannot enable module '${canonical}'. It is not included in your company's platform entitlements ceiling.`
           });
@@ -6055,11 +6884,30 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
   if (phone !== undefined) { updates.push(`phone = $${idx++}`); updateParams.push(phone); }
   if (status !== undefined) { updates.push(`status = $${idx++}`); updateParams.push(status); }
   if (ipRestrictions !== undefined) { updates.push(`"ipRestrictions" = $${idx++}`); updateParams.push(ipRestrictions); }
-  if (roleId !== undefined) { updates.push(`"roleId" = $${idx++}`); updateParams.push(roleId || null); }
+  if (roleId !== undefined && roleId !== null && roleId !== '') {
+    const roleExists = await db.queryOne('SELECT id FROM custom_roles WHERE id = $1 AND "tenantId" = $2', [roleId, tenantId]);
+    if (!roleExists) {
+      res.status(400).json({ error: 'Custom role does not exist in this company workspace.' });
+      return;
+    }
+    updates.push(`"roleId" = $${idx++}`);
+    updateParams.push(roleId);
+  } else if (roleId === null || roleId === '') {
+    updates.push(`"roleId" = $${idx++}`);
+    updateParams.push(null);
+  }
 
   const now = new Date().toISOString();
 
   await db.withTransaction(async () => {
+    await lockWorkspaceForMembershipChange(tenantId);
+    const current = await db.queryOne<any>('SELECT role, status FROM users WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!current) throw new Error('User no longer exists.');
+    if (status !== undefined && isActiveUserStatus(status) && !isActiveUserStatus(current.status) && (await getTenantSeatUsage(tenantId)).availableSeats <= 0) throw new Error('Workspace seat limit reached.');
+    if (current.role === 'admin' && ((status !== undefined && !isActiveUserStatus(status)) || (role && role !== 'admin'))) {
+      const owners = await db.queryOne<any>(`SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND role = 'admin' AND id <> $2 AND LOWER(status) = 'active'`, [tenantId, req.params.id]);
+      if (Number(owners?.count || 0) === 0) throw new Error('Cannot disable or demote the final active Company Owner.');
+    }
     // 1. Update role if provided — enforce canonical role transition matrix
     if (role) {
       await updateUserRole(caller, req.params.id, role);
@@ -6152,11 +7000,15 @@ app.post(['/api/admin/permissions', '/admin/permissions'], requireAuth, requireA
 
     const tenantId = targetUser.tenantId || caller.tenantId;
     const canonical = normalizeModuleKey(moduleId);
+    if (typeof enabled !== 'boolean' || !ALL_CANONICAL_MODULES.some(m => m.id === canonical)) {
+      res.status(400).json({ error: 'A known module ID and boolean enabled value are required.' });
+      return;
+    }
 
     // Validate against company entitlement ceiling
     if (Boolean(enabled)) {
       const companyEntitlements = await getTenantModuleEntitlements(tenantId);
-      if (companyEntitlements[canonical] === false) {
+      if (companyEntitlements[canonical] !== true) {
         res.status(403).json({
           error: `Forbidden: Cannot enable module '${canonical}'. It is not included in your company's platform entitlements ceiling.`
         });
@@ -6291,10 +7143,22 @@ app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCom
     }
   }
 
-  await db.execute(`DELETE FROM user_permissions WHERE "userId" = $1`, [req.params.id]);
-  const info = isPlatform
-    ? await db.execute(`DELETE FROM users WHERE id = $1`, [req.params.id])
-    : await db.execute(`DELETE FROM users WHERE id = $1 AND "tenantId" = $2`, [req.params.id, caller.tenantId]);
+  let info;
+  try {
+    info = await db.withTransaction(async () => {
+      await lockWorkspaceForMembershipChange(targetUser.tenantId);
+      const current = await db.queryOne<any>('SELECT role FROM users WHERE id = $1 FOR UPDATE', [req.params.id]);
+      if (current?.role === 'admin') {
+        const owners = await db.queryOne<any>(`SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND id <> $2 AND role = 'admin' AND LOWER(status) = 'active'`, [targetUser.tenantId, req.params.id]);
+        if (Number(owners?.count || 0) === 0) throw new Error('Cannot delete the final active Company Owner.');
+      }
+      await db.execute('DELETE FROM user_permissions WHERE "userId" = $1', [req.params.id]);
+      return await db.execute('DELETE FROM users WHERE id = $1 AND "tenantId" = $2', [req.params.id, targetUser.tenantId]);
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
   if (info.rowCount > 0) {
     res.json({ success: true, message: 'User deleted.' });
   } else {
@@ -6319,18 +7183,22 @@ app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, asyn
       return;
     }
 
-    // Idempotency: If user already belongs to a workspace, return existing without creating another
+    // 1. Inactive or disabled accounts are strictly ineligible
+    if (!isActiveUserStatus(dbUser.status)) {
+      res.status(403).json({ error: 'Forbidden: Disabled or inactive accounts cannot complete onboarding.' });
+      return;
+    }
+
+    // 2. Existing workspace members cannot create another workspace
     if (dbUser.tenantId) {
-      const existingTenant = await getTenantById(dbUser.tenantId);
-      if (existingTenant) {
-        res.json({
-          success: true,
-          alreadyCompleted: true,
-          tenant: existingTenant,
-          user: dbUser
-        });
-        return;
-      }
+      res.status(403).json({ error: 'Forbidden: Account already belongs to a workspace and cannot create another workspace.' });
+      return;
+    }
+
+    // 3. Explicit server-controlled onboarding eligibility check
+    if (dbUser.onboardingStatus !== 'PENDING') {
+      res.status(403).json({ error: 'Forbidden: Account is not eligible for company onboarding. Contact your organization administrator or accept an invitation.' });
+      return;
     }
 
     const {
@@ -6358,10 +7226,14 @@ app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, asyn
     const maxAgents = planId === 'plan_enterprise' ? 1000 : (planId === 'plan_pro' ? 20 : 5);
 
     await db.withTransaction(async () => {
-      // 1. Create tenant
+      const currentIdentity = await db.queryOne<any>('SELECT "tenantId", "onboardingStatus" FROM users WHERE id = $1 FOR UPDATE', [dbUser.id]);
+      if (!currentIdentity || currentIdentity.tenantId || currentIdentity.onboardingStatus !== 'PENDING') {
+        throw new Error('Onboarding already completed or in progress.');
+      }
+      // 1. Create tenant with trial status
       await db.execute(`
         INSERT INTO tenants (id, name, slug, country, "ownerEmail", status, "leadPoolMode", "maxAgents", tier, "customerType", "createdAt", "updatedAt")
-        VALUES ($1, $2, $3, $4, $5, 'active', 'shared', $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, 'trial', 'shared', $6, $7, $8, $9, $10)
       `, [tenantId, rawName.trim(), slug, country, dbUser.email || '', maxAgents, planId.replace('plan_', ''), workspaceType, now, now]);
 
       // 2. Create subscription with trialing status
@@ -6399,7 +7271,7 @@ app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, asyn
       const updatedDisplayName = fullName?.trim() || dbUser.displayName || dbUser.username;
       await db.execute(`
         UPDATE users 
-        SET "tenantId" = $1, role = 'admin', "roleId" = NULL, "displayName" = $2, phone = COALESCE($3, phone), "needsProfileSetup" = 0, "updatedAt" = $4
+        SET "tenantId" = $1, role = 'admin', "roleId" = NULL, "displayName" = $2, phone = COALESCE($3, phone), "needsProfileSetup" = 0, "onboardingStatus" = 'COMPLETED', "updatedAt" = $4
         WHERE id = $5
       `, [tenantId, updatedDisplayName, phone || null, now, dbUser.id]);
 
@@ -6427,7 +7299,8 @@ app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, asyn
       displayName: fullName?.trim() || dbUser.displayName,
       role: 'admin',
       tenantId,
-      email: dbUser.email
+      email: dbUser.email,
+      onboardingStatus: 'COMPLETED'
     };
     const newToken = issueAuthToken(updatedUser);
     const updatedTenant = await getTenantById(tenantId);
@@ -6490,6 +7363,14 @@ app.post(['/api/admin/invitations', '/admin/invitations', '/api/invitations', '/
     }
 
     const cleanRole = (role === 'team_lead' ? 'team_lead' : 'user');
+
+    if (teamId) {
+      const validTeam = await db.queryOne('SELECT id FROM teams WHERE id = $1 AND "tenantId" = $2', [teamId, tenantId]);
+      if (!validTeam) {
+        res.status(400).json({ error: 'Team does not belong to this workspace.' });
+        return;
+      }
+    }
 
     // Seat limit enforcement: Check available seats before issuing invitation
     const seatUsage = await getTenantSeatUsage(tenantId);
@@ -6659,7 +7540,7 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
     }
 
     // Cross-tenant Protection: Users already belonging to a different tenant cannot switch tenants via invitation
-    if (caller.tenantId && caller.tenantId !== invitation.tenantId) {
+    if (caller.tenantId) {
       res.status(403).json({ error: 'Forbidden: Account is already associated with another workspace.' });
       return;
     }
@@ -6687,13 +7568,17 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
     const assignedRole = (invitation.role === 'team_lead' ? 'team_lead' : 'user');
 
     await db.withTransaction(async () => {
+      await lockWorkspaceForMembershipChange(invitation.tenantId);
+      const identity = await db.queryOne<any>('SELECT "tenantId" FROM users WHERE id = $1 FOR UPDATE', [caller.id]);
+      if (!identity || identity.tenantId) throw new Error('This identity already belongs to a workspace.');
+      if ((await getTenantSeatUsage(invitation.tenantId)).activeSeats >= seatUsage.maxSeats) throw new Error('Workspace seat limit reached.');
       // 1. Mark invitation accepted
-      await acceptWorkspaceInvitation(invitation.id, caller.id);
+      if (!(await acceptWorkspaceInvitation(invitation.id, caller.id))) throw new Error('Invitation already used, revoked, or expired.');
 
       // 2. Attach user to tenant with assigned role (NO SELF-ELEVATION)
       await db.execute(`
         UPDATE users 
-        SET "tenantId" = $1, role = $2, "updatedAt" = $3
+        SET "tenantId" = $1, role = $2, "roleId" = NULL, "onboardingStatus" = 'COMPLETED', "updatedAt" = $3
         WHERE id = $4
       `, [invitation.tenantId, assignedRole, now, caller.id]);
 
@@ -6717,7 +7602,7 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
       if (invitation.initialModules) {
         try {
           const parsed = JSON.parse(invitation.initialModules);
-          if (Array.isArray(parsed) && parsed.length > 0) {
+          if (Array.isArray(parsed)) {
             targetModules = parsed;
           } else if (typeof parsed === 'object' && parsed !== null) {
             targetModules = Object.keys(parsed).filter(k => !!parsed[k]);
@@ -6730,15 +7615,14 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
       // Authoritative tenant entitlements ceiling (fail-closed)
       const tenantEntitlements = await getTenantModuleEntitlements(invitation.tenantId);
 
-      for (const mod of targetModules) {
+      for (const mod of ALL_CANONICAL_MODULES.map(m => m.id)) {
         const canonical = normalizeModuleKey(mod);
-        if (tenantEntitlements[canonical] === true) {
+        const enabled = tenantEntitlements[canonical] === true && targetModules.map(normalizeModuleKey).includes(canonical);
           await db.execute(`
             INSERT INTO user_permissions (id, "userId", "moduleId", enabled, "grantedBy", "tenantId", "grantedAt")
-            VALUES ($1, $2, $3, 1, 'INVITATION_ACCEPT', $4, $5)
-            ON CONFLICT ("id") DO UPDATE SET enabled = 1
-          `, [`perm_${caller.id}_${canonical}`, caller.id, canonical, invitation.tenantId, now]);
-        }
+            VALUES ($1, $2, $3, $6, 'INVITATION_ACCEPT', $4, $5)
+            ON CONFLICT ("id") DO UPDATE SET enabled = EXCLUDED.enabled
+          `, [`perm_${caller.id}_${canonical}`, caller.id, canonical, invitation.tenantId, now, enabled ? 1 : 0]);
       }
 
       // 5. Record audit log
@@ -7682,19 +8566,14 @@ app.get('/join', (req, res) => {
   res.send(html);
 });
 
-// REST: Serve Mobile APK file download — dynamically resolves freshest build by mtimeMs and auto-syncs
+// REST: Serve Mobile APK file download — dynamically resolves freshest build
 const serveApkHandler = (_req: express.Request, res: express.Response): void => {
-  // 1. Trigger on-demand sync scan
-  apkWatcher.syncFreshestApk();
-
   const candidatePaths = [
+    '/var/www/octal-frontend/OctalDialer.apk',
+    path.resolve(__dirname, '../data/OctalDialer.apk'),
     path.resolve(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-debug.apk'),
     path.resolve(__dirname, '../../application_octal_dialer/build/app/outputs/flutter-apk/app-release.apk'),
-    path.resolve(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-debug.apk'),
-    path.resolve(__dirname, '../../mobile/build/app/outputs/flutter-apk/app-release.apk'),
-    path.resolve(__dirname, '../data/OctalDialer.apk'),
-    path.resolve(__dirname, '../../frontend/public/OctalDialer.apk'),
-    path.resolve(process.env.USERPROFILE || 'C:/Users/ice', 'Desktop/OctalDialer.apk')
+    path.resolve(__dirname, '../../frontend/public/OctalDialer.apk')
   ];
 
   const existingCandidates = candidatePaths
@@ -7819,6 +8698,23 @@ app.post('/api/leads/import', requireAuth, async (req, res) => {
     io.to(`tenant_${tenantId}`).emit('leads:updated');
     io.to(`tenant_${tenantId}`).emit('campaigns:updated');
 
+    logUserActivity({
+      tenantId,
+      userId: user.id,
+      username: user.username,
+      action: 'LEADS_IMPORTED',
+      resourceType: 'campaign',
+      resourceId: result.campaign.id,
+      details: {
+        campaignName: result.campaign.name,
+        count: result.finalCount,
+        dedupedCount: result.dedupedCount,
+        dncSkippedCount: result.dncSkippedCount,
+        fileName: fileName || 'Manual Import'
+      },
+      req
+    });
+
     res.json({
       success: true,
       campaignId: result.campaign.id,
@@ -7886,11 +8782,11 @@ app.post('/api/leads/import/mobile', requireAuth, async (req, res) => {
   }
 });
 
-// REST: Export logs to CSV (protected)
-app.get('/api/logs/export', requireAuth, requirePermission(['history:view_logs', 'calls:view_queue']), async (req, res) => {
+// REST: Export logs to CSV (strictly Company Owner or Platform Admin)
+app.get(['/api/logs/export', '/logs/export'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
-    const tenantId = caller?.tenantId;
+    const tenantId = caller?.tenantId || (isPlatformRole(caller?.role) ? 'tenant_default' : null);
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
@@ -7909,6 +8805,16 @@ app.get('/api/logs/export', requireAuth, requirePermission(['history:view_logs',
 
     const csv = [header.join(','), ...rows.map(r => r.join(','))].join('\n');
 
+    logUserActivity({
+      tenantId,
+      userId: caller.id,
+      username: caller.username,
+      action: 'CALL_LOGS_EXPORTED',
+      resourceType: 'call_logs',
+      details: { rowCount: logs.length },
+      req
+    });
+
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="octal_dialer_call_logs.csv"');
     res.send(csv);
@@ -7918,10 +8824,11 @@ app.get('/api/logs/export', requireAuth, requirePermission(['history:view_logs',
   }
 });
 
-// REST: Export leads to CSV (protected)
-app.get('/api/leads/export', requireAuth, requirePermission(['leads:export', 'leads:view']), async (req, res) => {
+// REST: Export leads to CSV (strictly Company Owner or Platform Admin)
+app.get(['/api/leads/export', '/leads/export'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
-    const tenantId = (req as any).user?.tenantId;
+    const caller = (req as any).user;
+    const tenantId = caller?.tenantId || (isPlatformRole(caller?.role) ? 'tenant_default' : null);
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
@@ -7948,9 +8855,8 @@ app.get('/api/leads/export', requireAuth, requirePermission(['leads:export', 'le
       params.push(status);
     }
 
-    const caller = (req as any).user;
-    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-    const isCompanyAdmin = caller.role === 'admin';
+    const isPlatform = isPlatformRole(caller.role);
+    const isCompanyAdmin = isCompanyOwner(caller.role);
 
     if (!isPlatform && !isCompanyAdmin) {
       const scopedFilter = await getScopedLeadFilterSql(caller, tenantId, 'l', params.length + 1);
@@ -7975,6 +8881,16 @@ app.get('/api/leads/export', requireAuth, requirePermission(['leads:export', 'le
     ]);
 
     const csv = [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+
+    logUserActivity({
+      tenantId,
+      userId: caller.id,
+      username: caller.username,
+      action: 'LEADS_EXPORTED',
+      resourceType: 'leads',
+      details: { rowCount: leads.length, source: source || 'all', status: status || 'all' },
+      req
+    });
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="octal_dialer_leads.csv"');
@@ -9348,10 +10264,21 @@ io.on('connection', (socket) => {
             if (effectiveCommandId) await expireCommand(effectiveCommandId);
             if (effectiveLeadId) {
               await releaseLeadLock(effectiveLeadId, effectiveSessionId);
-              await createLog(effectiveLeadId, effectiveReason, effectiveDuration, effectiveTenantId);
+              await createLog(effectiveLeadId, effectiveReason, effectiveDuration, effectiveTenantId, userId || undefined);
               await updateLeadStatus(effectiveLeadId, 'COMPLETED', effectiveReason, effectiveDuration, effectiveTenantId);
             } else {
-              await createManualLog(effectivePhone, effectiveName || 'Manual Quick Dial', effectiveReason, effectiveDuration, effectiveTenantId);
+              await createManualLog(effectivePhone, effectiveName || 'Manual Quick Dial', effectiveReason, effectiveDuration, effectiveTenantId, userId || undefined);
+            }
+
+            if (userId) {
+              await recordAgentCallMetric({
+                tenantId: effectiveTenantId,
+                userId,
+                username: 'agent',
+                outcome: effectiveReason,
+                duration: effectiveDuration,
+                timestamp: finalizedAt
+              });
             }
           } else {
             // Conflict / already committed: query full canonical record within transaction; do not repeat mutations
@@ -9834,11 +10761,11 @@ async function startServer() {
 
     // 3. Initialize background services
     tunnelManager.attachSocketIO(io);
-    tunnelManager.init(PORT);
-    apkWatcher.init(io, db);
+    // Public exposure must be explicitly enabled; never launch tunnels during tests/startup by default.
+    if (process.env.ENABLE_PUBLIC_TUNNEL === 'true' && process.env.NODE_ENV !== 'test') tunnelManager.init(PORT);
 
     // 4. Start HTTP listener
-    if (process.env.NODE_ENV !== 'test' && !process.env.SKIP_LISTEN) {
+    if ((process.env.NODE_ENV !== 'test' || process.env.TEST_LISTEN === 'true') && !process.env.SKIP_LISTEN) {
       httpServer.listen(PORT, '0.0.0.0', () => {
         console.log(`[Octal Backend] Server running on http://0.0.0.0:${PORT}`);
         console.log(`[Local IP Address] Detected: http://${getLocalIP()}:${PORT}`);

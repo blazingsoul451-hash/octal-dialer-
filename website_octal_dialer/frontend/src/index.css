@@ -23,37 +23,7 @@
     color: #0f172a;
   }
 
-  /* ☀️ High-Contrast Sharp Text for Bright Mode */
-  html:not(.dark) .text-zinc-400,
-  html:not(.dark) .text-slate-400 {
-    color: #334155 !important; /* slate-700 */
-  }
 
-  html:not(.dark) .text-zinc-500,
-  html:not(.dark) .text-slate-500 {
-    color: #475569 !important; /* slate-600 */
-  }
-
-  html:not(.dark) .text-zinc-600,
-  html:not(.dark) .text-slate-600 {
-    color: #1e293b !important; /* slate-800 */
-  }
-
-  html:not(.dark) .text-amber-400 {
-    color: #b45309 !important; /* amber-700 for maximum readability on bright backgrounds */
-  }
-
-  html:not(.dark) .text-emerald-400 {
-    color: #047857 !important; /* emerald-700 */
-  }
-
-  html:not(.dark) .text-blue-400 {
-    color: #1d4ed8 !important; /* blue-700 */
-  }
-
-  html:not(.dark) .text-purple-400 {
-    color: #6d28d9 !important; /* purple-700 */
-  }
 
   /* 🌌 Deep OLED Pitch Black Theme Overrides */
   html.dark .bg-\[\#030712\],
@@ -109,8 +79,8 @@
     font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 
-  code, pre, .font-mono {
-    font-family: 'JetBrains Mono', monospace;
+  code, pre, .font-mono, [class*="font-mono"] {
+    font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
   }
 }
 
@@ -215,8 +185,240 @@ input, select, textarea, button {
   font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
 }
 
-/* Monospace preserved strictly for machine IDs, tokens & technical code logs */
-.font-mono-tech, code, pre, kbd, samp, input.font-mono-tech, textarea.font-mono-tech {
-  font-family: 'JetBrains Mono', monospace !important;
+/* All text throughout the entire platform renders in sleek Geist typography */
+.font-mono, [class*="font-mono"] {
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
 }
+
+/* ========================================================================= */
+/* ☀️ GLOBAL BRIGHT MODE ENGINE (TOP-LEVEL HIGH SPECIFICITY OVERRIDES)       */
+/* ========================================================================= */
+
+html:not(.dark) {
+  color-scheme: light;
+}
+
+html:not(.dark) body {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+/* 1. Dark background containers -> Pure White Cards */
+html:not(.dark) .bg-\[\#0B0E14\],
+html:not(.dark) .bg-\[\#0b0e14\],
+html:not(.dark) .bg-\[\#09090b\],
+html:not(.dark) .bg-\[\#09090B\],
+html:not(.dark) .bg-\[\#0a0a0d\],
+html:not(.dark) .bg-\[\#0c0c0f\],
+html:not(.dark) .bg-\[\#0b0b0e\],
+html:not(.dark) .bg-\[\#0d0d12\],
+html:not(.dark) .bg-\[\#0e0e11\],
+html:not(.dark) .bg-\[\#0f0f15\],
+html:not(.dark) .bg-\[\#05070f\],
+html:not(.dark) .bg-\[\#080706\],
+html:not(.dark) .bg-\[\#090807\],
+html:not(.dark) .bg-\[\#0a0908\],
+html:not(.dark) .bg-\[\#0d0c0a\],
+html:not(.dark) .bg-\[\#0f0e0c\],
+html:not(.dark) .bg-\[\#0f1110\],
+html:not(.dark) .bg-\[\#111118\],
+html:not(.dark) .bg-\[\#0c0d0e\],
+html:not(.dark) .bg-\[\#030712\],
+html:not(.dark) .bg-\[\#020617\],
+html:not(.dark) .bg-\[\#090d16\],
+html:not(.dark) .bg-slate-950,
+html:not(.dark) .bg-zinc-950,
+html:not(.dark) .bg-black:not(button):not(button *):not(.bg-amber-400):not(.bg-amber-500) {
+  background-color: #ffffff !important;
+}
+
+/* 2. Elevated panels & inner sections -> Soft Slate-50 */
+html:not(.dark) .bg-\[\#10141D\],
+html:not(.dark) .bg-\[\#10141d\],
+html:not(.dark) .bg-\[\#12110e\],
+html:not(.dark) .bg-\[\#121215\],
+html:not(.dark) .bg-\[\#121216\],
+html:not(.dark) .bg-\[\#12121a\],
+html:not(.dark) .bg-\[\#13131a\],
+html:not(.dark) .bg-\[\#141210\],
+html:not(.dark) .bg-\[\#141418\],
+html:not(.dark) .bg-\[\#14141c\],
+html:not(.dark) .bg-\[\#141923\],
+html:not(.dark) .bg-\[\#16161a\],
+html:not(.dark) .bg-\[\#170e0f\],
+html:not(.dark) .bg-\[\#181512\],
+html:not(.dark) .bg-\[\#181614\],
+html:not(.dark) .bg-\[\#18181b\],
+html:not(.dark) .bg-\[\#18181c\],
+html:not(.dark) .bg-\[\#181822\],
+html:not(.dark) .bg-\[\#1a1714\],
+html:not(.dark) .bg-\[\#1a1815\],
+html:not(.dark) .bg-\[\#1a1a24\],
+html:not(.dark) .bg-\[\#1c1917\],
+html:not(.dark) .bg-\[\#1f1f23\],
+html:not(.dark) .bg-\[\#202025\],
+html:not(.dark) .bg-\[\#222227\],
+html:not(.dark) .bg-\[\#252535\],
+html:not(.dark) .bg-\[\#27272a\],
+html:not(.dark) .bg-\[\#0f172a\],
+html:not(.dark) .bg-\[\#0a0f1d\],
+html:not(.dark) .bg-\[\#0a101f\],
+html:not(.dark) .bg-\[\#0c1527\],
+html:not(.dark) .bg-slate-900:not(button):not(.bg-amber-500 *):not(.bg-amber-400 *),
+html:not(.dark) .bg-slate-850,
+html:not(.dark) .bg-zinc-900:not(button),
+html:not(.dark) .bg-zinc-800:not(button) {
+  background-color: #f8fafc !important;
+}
+
+/* 3. Neutral buttons in bright mode */
+html:not(.dark) button.bg-slate-800\/40,
+html:not(.dark) button.bg-slate-800\/60,
+html:not(.dark) button.bg-slate-800\/80,
+html:not(.dark) button.bg-slate-800,
+html:not(.dark) button.bg-slate-900,
+html:not(.dark) button.bg-zinc-800,
+html:not(.dark) button.bg-zinc-900,
+html:not(.dark) button.bg-\[\#18181b\],
+html:not(.dark) button.bg-\[\#121216\] {
+  background-color: #f1f5f9 !important;
+  color: #334155 !important;
+  border-color: #cbd5e1 !important;
+}
+
+html:not(.dark) button.bg-slate-800\/40:hover,
+html:not(.dark) button.bg-slate-800\/60:hover,
+html:not(.dark) button.bg-slate-800\/80:hover,
+html:not(.dark) button.bg-slate-800:hover,
+html:not(.dark) button.bg-slate-900:hover,
+html:not(.dark) button.bg-zinc-800:hover,
+html:not(.dark) button.bg-zinc-900:hover,
+html:not(.dark) button.bg-\[\#18181b\]:hover,
+html:not(.dark) button.bg-\[\#121216\]:hover {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+/* 4. Sub-tab count badges */
+html:not(.dark) .bg-zinc-800.text-zinc-400,
+html:not(.dark) .bg-zinc-800.text-zinc-300,
+html:not(.dark) .bg-zinc-800 {
+  background-color: #e2e8f0 !important;
+  color: #475569 !important;
+}
+
+/* 5. Inputs, selects, and textareas */
+html:not(.dark) input.bg-\[\#10141D\],
+html:not(.dark) input.bg-\[\#10141d\],
+html:not(.dark) input.bg-\[\#121215\],
+html:not(.dark) input.bg-\[\#121216\],
+html:not(.dark) input.bg-\[\#18181b\],
+html:not(.dark) input.bg-slate-900,
+html:not(.dark) input.bg-slate-900\/60,
+html:not(.dark) input.bg-slate-800,
+html:not(.dark) input.bg-zinc-900,
+html:not(.dark) select.bg-\[\#10141D\],
+html:not(.dark) select.bg-\[\#10141d\],
+html:not(.dark) select.bg-\[\#121215\],
+html:not(.dark) select.bg-\[\#121216\],
+html:not(.dark) select.bg-slate-900,
+html:not(.dark) textarea.bg-\[\#10141D\],
+html:not(.dark) textarea.bg-\[\#10141d\],
+html:not(.dark) textarea.bg-\[\#121216\],
+html:not(.dark) textarea.bg-slate-900 {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+html:not(.dark) select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* 6. Dark borders -> Crisp slate borders */
+html:not(.dark) .border-\[\#18181b\],
+html:not(.dark) .border-\[\#1c1917\],
+html:not(.dark) .border-\[\#1e1e28\],
+html:not(.dark) .border-\[\#1f1c19\],
+html:not(.dark) .border-\[\#1f1f23\],
+html:not(.dark) .border-\[\#1f1f24\],
+html:not(.dark) .border-\[\#1f1f28\],
+html:not(.dark) .border-\[\#20202c\],
+html:not(.dark) .border-\[\#222226\],
+html:not(.dark) .border-\[\#22222e\],
+html:not(.dark) .border-\[\#262634\],
+html:not(.dark) .border-\[\#27272a\],
+html:not(.dark) .border-\[\#2a2a38\],
+html:not(.dark) .border-\[\#3f3f46\],
+html:not(.dark) .border-slate-800,
+html:not(.dark) .border-slate-850,
+html:not(.dark) .border-slate-800\/80,
+html:not(.dark) .border-slate-700,
+html:not(.dark) .border-slate-700\/50,
+html:not(.dark) .border-slate-700\/60,
+html:not(.dark) .border-zinc-800,
+html:not(.dark) .border-zinc-700,
+html:not(.dark) .border-\[\#1e293b\] {
+  border-color: #e2e8f0 !important;
+}
+
+/* 7. Dividers */
+html:not(.dark) .divide-\[\#18181c\] > :not([hidden]) ~ :not([hidden]),
+html:not(.dark) .divide-slate-800 > :not([hidden]) ~ :not([hidden]),
+html:not(.dark) .divide-slate-800\/60 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #e2e8f0 !important;
+}
+
+/* 8. Table row hovers */
+html:not(.dark) .hover\:bg-\[\#121216\]\/60:hover,
+html:not(.dark) .hover\:bg-\[\#121216\]:hover,
+html:not(.dark) .hover\:bg-\[\#18181b\]:hover,
+html:not(.dark) .hover\:bg-slate-800\/50:hover,
+html:not(.dark) .hover\:bg-slate-800:hover,
+html:not(.dark) .hover\:bg-zinc-800:hover,
+html:not(.dark) .hover\:bg-zinc-900:hover {
+  background-color: #f1f5f9 !important;
+}
+
+/* 9. Text readability & contrast */
+html:not(.dark) h1.text-white,
+html:not(.dark) h2.text-white,
+html:not(.dark) h3.text-white,
+html:not(.dark) h4.text-white,
+html:not(.dark) h5.text-white,
+html:not(.dark) h6.text-white,
+html:not(.dark) .font-display.text-white,
+html:not(.dark) strong.text-white,
+html:not(.dark) th.text-white,
+html:not(.dark) label.text-white {
+  color: #0f172a !important;
+}
+
+html:not(.dark) span.text-white:not(button):not(button *):not(.bg-amber-400 *):not(.bg-amber-500 *):not(.bg-emerald-600 *):not(.bg-emerald-500 *):not(.bg-red-600 *):not(.bg-red-500 *):not(.bg-blue-600 *):not(.bg-indigo-600 *):not(.bg-purple-600 *),
+html:not(.dark) p.text-white:not(button):not(button *):not(.bg-amber-400 *):not(.bg-amber-500 *):not(.bg-emerald-600 *):not(.bg-emerald-500 *):not(.bg-red-600 *):not(.bg-red-500 *),
+html:not(.dark) div.text-white:not(button):not(button *):not(.bg-amber-400 *):not(.bg-amber-500 *):not(.bg-emerald-600 *):not(.bg-emerald-500 *):not(.bg-red-600 *):not(.bg-red-500 *) {
+  color: #0f172a !important;
+}
+
+html:not(.dark) .text-zinc-400,
+html:not(.dark) .text-slate-400 {
+  color: #475569 !important;
+}
+
+html:not(.dark) .text-zinc-500,
+html:not(.dark) .text-slate-500 {
+  color: #64748b !important;
+}
+
+html:not(.dark) .text-zinc-300,
+html:not(.dark) .text-slate-300 {
+  color: #334155 !important;
+}
+
+html:not(.dark) .text-zinc-200,
+html:not(.dark) .text-slate-200 {
+  color: #1e293b !important;
+}
+
 

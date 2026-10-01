@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS "users" (
   "status" TEXT NOT NULL DEFAULT 'Active',
   "ipRestrictions" TEXT,
   "avatar_url" TEXT,
-  "roleId" TEXT
+  "roleId" TEXT,
+  "onboardingStatus" TEXT NOT NULL DEFAULT 'NONE'
 );
 
 -- Table: custom_roles
@@ -235,7 +236,8 @@ CREATE TABLE IF NOT EXISTS "leads" (
   "crmCompanyId" TEXT,
   "contactId" TEXT,
   "requirement" TEXT,
-  "country" TEXT
+  "country" TEXT,
+  "email" TEXT
 );
 
 -- Table: call_attempts
@@ -859,3 +861,44 @@ CREATE INDEX IF NOT EXISTS "idx_workspace_invitations_tenant" ON "workspace_invi
 CREATE INDEX IF NOT EXISTS "idx_workspace_invitations_email" ON "workspace_invitations"("email");
 CREATE INDEX IF NOT EXISTS "idx_workspace_invitations_tokenHash" ON "workspace_invitations"("tokenHash");
 CREATE INDEX IF NOT EXISTS "idx_workspace_invitations_status" ON "workspace_invitations"("status");
+
+-- Table: user_activity_logs (Granular audit trail for all workspace user & agent activities)
+CREATE TABLE IF NOT EXISTS "user_activity_logs" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "userId" TEXT NOT NULL,
+  "username" TEXT NOT NULL,
+  "action" TEXT NOT NULL,
+  "resourceType" TEXT NOT NULL DEFAULT 'system',
+  "resourceId" TEXT,
+  "details" TEXT,
+  "ipAddress" TEXT,
+  "userAgent" TEXT,
+  "timestamp" TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "idx_user_activity_logs_tenant" ON "user_activity_logs"("tenantId");
+CREATE INDEX IF NOT EXISTS "idx_user_activity_logs_user" ON "user_activity_logs"("tenantId", "userId");
+CREATE INDEX IF NOT EXISTS "idx_user_activity_logs_action" ON "user_activity_logs"("tenantId", "action");
+CREATE INDEX IF NOT EXISTS "idx_user_activity_logs_time" ON "user_activity_logs"("tenantId", "timestamp" DESC);
+
+-- Table: agent_daily_metrics (Pre-aggregated daily performance scoreboard for agents)
+CREATE TABLE IF NOT EXISTS "agent_daily_metrics" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "userId" TEXT NOT NULL,
+  "username" TEXT NOT NULL DEFAULT '',
+  "date" TEXT NOT NULL,
+  "totalCalls" INTEGER NOT NULL DEFAULT 0,
+  "answeredCalls" INTEGER NOT NULL DEFAULT 0,
+  "failedCalls" INTEGER NOT NULL DEFAULT 0,
+  "busyCalls" INTEGER NOT NULL DEFAULT 0,
+  "noAnswerCalls" INTEGER NOT NULL DEFAULT 0,
+  "totalTalkSeconds" INTEGER NOT NULL DEFAULT 0,
+  "avgTalkSeconds" INTEGER NOT NULL DEFAULT 0,
+  "firstCallAt" TEXT,
+  "lastCallAt" TEXT,
+  "updatedAt" TEXT NOT NULL,
+  CONSTRAINT "uq_agent_daily_metrics" UNIQUE ("tenantId", "userId", "date")
+);
+CREATE INDEX IF NOT EXISTS "idx_agent_daily_metrics_tenant_date" ON "agent_daily_metrics"("tenantId", "date" DESC);
+CREATE INDEX IF NOT EXISTS "idx_agent_daily_metrics_user_date" ON "agent_daily_metrics"("tenantId", "userId", "date" DESC);

@@ -51,16 +51,30 @@ export function issueAuthToken(user: { id: string; username: string; role: strin
     sub: user.id,
     username: user.username,
     role: user.role,
-    tenantId: user.tenantId || null
+    tenantId: user.tenantId || (isPlatformRole(user.role) ? 'tenant_default' : null)
   };
   return jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
 }
 
 // ─── Canonical Role Recognition & Authority Isolation ────────────────────────
+
+/**
+ * Role hierarchy (highest → lowest):
+ *   superadmin > platform_admin > admin > team_lead > agent/user
+ *
+ * superadmin: single master account (master_mohsin7). Can suspend/restore/demote
+ *             ANY user including platform_admins. Cannot be suspended by anyone.
+ */
+export function isSuperAdmin(role?: string | null): boolean {
+  if (!role) return false;
+  return role.toLowerCase().trim() === 'superadmin';
+}
+
 export function isPlatformRole(role?: string | null): boolean {
   if (!role) return false;
   const r = role.toLowerCase().trim();
-  return r === 'platform_admin' || r === 'master_admin' || r === 'super_admin';
+  // superadmin is also considered a platform role (has all platform privileges + more)
+  return r === 'superadmin' || r === 'platform_admin' || r === 'master_admin' || r === 'super_admin';
 }
 
 export function isPlatformAdmin(user?: { role?: string | null } | null): boolean {
@@ -83,7 +97,18 @@ export function isTenantMember(userOrRole?: any): boolean {
   return r === 'user' || r === 'agent';
 }
 
-export const SQL_EXCLUDE_PLATFORM_ROLES = "LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')";
+export const SQL_EXCLUDE_PLATFORM_ROLES = "LOWER(role) NOT IN ('superadmin', 'platform_admin', 'master_admin', 'super_admin')";
+
+// ─── requireSuperAdmin middleware ─────────────────────────────────────────────
+// Only the superadmin account can pass this gate. Used for cross-admin actions.
+export function requireSuperAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  const user = (req as any).user;
+  if (!user || !isSuperAdmin(user.role)) {
+    res.status(403).json({ error: 'Forbidden: Master administrator privileges required.' });
+    return;
+  }
+  next();
+}
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 export interface AuthUser {
@@ -95,6 +120,7 @@ export interface AuthUser {
   email?: string;
   roleId?: string | null;
   needsOnboarding?: boolean;
+  onboardingStatus?: string;
   pendingInvitation?: any;
   impersonatedBy?: string;
   impersonatedReason?: string;
@@ -236,6 +262,7 @@ export async function authenticateGoogleSignIn(profile: { googleId: string; emai
     throw err;
   }
 
+  if (!(await isAccountAccessible(user))) throw new Error('Account or workspace is disabled.');
   const pendingInvitation = (!user.tenantId && user.email)
     ? await getPendingInvitationForEmail(user.email)
     : null;
@@ -296,11 +323,12 @@ export async function registerGoogleSignUp(profile: { googleId: string; email: s
   // Check if identity has a pending workspace invitation
   const pendingInvitation = await getPendingInvitationForEmail(email);
   const needsOnboarding = !pendingInvitation;
+  const onboardingStatus = needsOnboarding ? 'PENDING' : 'INELIGIBLE';
 
   await db.execute(`
-    INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "googleId", "authProvider", "emailVerified", "emailVerifiedAt", "needsProfileSetup", "createdAt", "updatedAt")
-    VALUES ($1, $2, $3, $4, $5, 'user', NULL, $6, 'google', 1, $7, 0, $8, $9)
-  `, [userId, username, displayName, email, hash, googleId, now, now, now]);
+    INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "googleId", "authProvider", "emailVerified", "emailVerifiedAt", "needsProfileSetup", "onboardingStatus", "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, $5, 'user', NULL, $6, 'google', 1, $7, 0, $8, $9, $10)
+  `, [userId, username, displayName, email, hash, googleId, now, onboardingStatus, now, now]);
 
   const authUser: AuthUser = {
     id: userId,
@@ -310,6 +338,7 @@ export async function registerGoogleSignUp(profile: { googleId: string; email: s
     tenantId: null,
     email: email,
     needsOnboarding,
+    onboardingStatus,
     pendingInvitation: pendingInvitation || null
   };
 
@@ -346,6 +375,9 @@ export async function registerCustomerWithEmail(params: {
   const password = params.password || '';
   const now = new Date().toISOString();
 
+  if (email.includes('+')) {
+    throw new Error('Email alias addresses containing "+" are not allowed. Please enter your primary work email.');
+  }
   if (!isValidEmailFormat(email)) {
     throw new Error('Please enter a valid work email address.');
   }
@@ -375,11 +407,12 @@ export async function registerCustomerWithEmail(params: {
   // Check if identity has a pending workspace invitation
   const pendingInvitation = await getPendingInvitationForEmail(email);
   const needsOnboarding = !pendingInvitation;
+  const onboardingStatus = needsOnboarding ? 'PENDING' : 'INELIGIBLE';
 
   await db.execute(`
-    INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "googleId", "authProvider", "emailVerified", "emailVerifiedAt", "needsProfileSetup", "createdAt", "updatedAt")
-    VALUES ($1, $2, $3, $4, $5, 'user', NULL, NULL, 'local', 1, $6, 0, $7, $8)
-  `, [userId, username, fullName, email, hash, now, now, now]);
+    INSERT INTO users (id, username, "displayName", email, "passwordHash", role, "tenantId", "googleId", "authProvider", "emailVerified", "emailVerifiedAt", "needsProfileSetup", "onboardingStatus", "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, $5, 'user', NULL, NULL, 'local', 1, $6, 0, $7, $8, $9)
+  `, [userId, username, fullName, email, hash, now, onboardingStatus, now, now]);
 
   const authUser: AuthUser = {
     id: userId,
@@ -389,6 +422,7 @@ export async function registerCustomerWithEmail(params: {
     tenantId: null,
     email: email,
     needsOnboarding,
+    onboardingStatus,
     pendingInvitation: pendingInvitation || null
   };
 
@@ -514,6 +548,9 @@ export async function initiateEmailSignup(params: {
   const email = (params.email || '').trim().toLowerCase();
   const password = params.password || '';
 
+  if (email.includes('+')) {
+    throw new Error('Email alias addresses containing "+" are not allowed. Please enter your primary work email.');
+  }
   if (!isValidEmailFormat(email)) {
     throw new Error('Please enter a valid email address.');
   }
@@ -739,6 +776,9 @@ export async function registerPublicUser(params: { username: string; email?: str
   const password = params.password;
 
   if (email) {
+    if (email.includes('+')) {
+      throw new Error('Email alias addresses containing "+" are not allowed. Please enter your primary work email.');
+    }
     if (!isValidEmailFormat(email)) {
       throw new Error('Please enter a valid email address.');
     }
@@ -769,8 +809,8 @@ export async function registerPublicUser(params: { username: string; email?: str
   const now = new Date().toISOString();
 
   await db.execute(`
-    INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "emailVerifiedAt", "createdAt", "updatedAt")
-    VALUES ($1, $2, $3, $4, 'user', $5, 'local', 1, $6, $7, $8)
+    INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "emailVerifiedAt", "onboardingStatus", "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, $4, 'user', $5, 'local', 1, $6, 'COMPLETED', $7, $8)
   `, [userId, username, email, hash, tenantId, now, now, now]);
 
   const authUser: AuthUser = {
@@ -870,25 +910,38 @@ export async function ensureDefaultAdmin(): Promise<void> {
 // ─── Auth operations ──────────────────────────────────────────────────────────
 
 /** Validate credentials (by username or email) → return JWT token or null */
+export function isActiveUserStatus(status?: string | null): boolean {
+  return status == null || status.trim().toLowerCase() === 'active';
+}
+
+async function isAccountAccessible(user: any): Promise<boolean> {
+  if (!isActiveUserStatus(user.status)) return false;
+  if (isPlatformRole(user.role)) return true;
+  // A detached customer identity may sign in to complete onboarding or accept an invitation.
+  // Business endpoints separately require a tenant context.
+  const userTenant = user.tenantId || user.tenantid;
+  if (!userTenant) return user.role === 'user';
+  const tenant = await db.queryOne<{ status: string }>('SELECT status FROM tenants WHERE id = $1', [userTenant]);
+  return !!tenant && (tenant.status?.toLowerCase() === 'active' || tenant.status?.toLowerCase() === 'trial');
+}
+
 export async function login(identifier: string, password: string): Promise<string | null> {
   const cleanIdent = (identifier || '').trim().toLowerCase();
   const user = await db.queryOne<any>(`SELECT * FROM users WHERE username = $1 OR (email IS NOT NULL AND email = $2)`, [cleanIdent, cleanIdent]);
   if (!user) return null;
   if (!verifyPassword(password, user.passwordHash)) return null;
 
-  if (!user.tenantId && !isPlatformRole(user.role)) {
-    console.error(`[Auth] User ${identifier} has no associated tenantId. Login rejected.`);
-    return null;
-  }
+  if (!(await isAccountAccessible(user))) return null;
 
   // Clean up expired legacy sessions
   await db.execute(`DELETE FROM sessions_store WHERE "expiresAt" < $1`, [new Date().toISOString()]);
 
+  const dbTenantId = user.tenantId || user.tenantid;
   const payload = {
     sub: user.id,
     username: user.username,
     role: user.role,
-    tenantId: user.tenantId || null
+    tenantId: dbTenantId || (isPlatformRole(user.role) ? 'tenant_default' : null)
   };
 
   const token = jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
@@ -1044,22 +1097,13 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
         return null;
       }
 
+      const dbTenantId = dbUser.tenantId || dbUser.tenantid;
       // If token specifies a tenantId and dbUser has one, verify match
-      if (decoded.tenantId && dbUser.tenantId && dbUser.tenantId !== decoded.tenantId) {
+      if (decoded.tenantId && dbTenantId && dbTenantId !== decoded.tenantId) {
         return null;
       }
 
-      // Check user suspension
-      if (dbUser.status === 'suspended') {
-        return null;
-      }
-
-      if (dbUser.tenantId) {
-        const dbTenant = await db.queryOne<{ status: string }>(`SELECT status FROM tenants WHERE id = $1`, [dbUser.tenantId]);
-        if (dbTenant && dbTenant.status === 'suspended' && !isPlatformRole(dbUser.role)) {
-          return null;
-        }
-      }
+      if (!(await isAccountAccessible(dbUser))) return null;
 
       // If the JWT payload contains impersonation claims, preserve the claims and the downgraded/effective role from the token
       const effectiveRole = decoded.impersonatedBy ? (decoded.role || dbUser.role) : dbUser.role;
@@ -1067,11 +1111,12 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
       return {
         id: dbUser.id,
         username: dbUser.username,
-        displayName: dbUser.displayName || dbUser.username,
+        displayName: dbUser.displayName || dbUser.displayname || dbUser.username,
         role: effectiveRole,
-        tenantId: dbUser.tenantId || null,
+        tenantId: dbTenantId || decoded.tenantId || (isPlatformRole(effectiveRole) ? 'tenant_default' : null),
         email: dbUser.email,
-        roleId: dbUser.roleId || null,
+        roleId: dbUser.roleId || dbUser.roleid || null,
+        onboardingStatus: dbUser.onboardingStatus || dbUser.onboardingstatus || 'NONE',
         impersonatedBy: decoded.impersonatedBy || undefined,
         impersonatedReason: decoded.impersonatedReason || undefined
       };
@@ -1090,7 +1135,7 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
     }
 
     const user = await db.queryOne<any>(`SELECT * FROM users WHERE id = $1`, [session.userId]);
-    if (!user || (!user.tenantId && !isPlatformRole(user.role)) || user.status === 'suspended') {
+    if (!user || !(await isAccountAccessible(user))) {
       return null;
     }
 
@@ -1142,14 +1187,13 @@ export async function requestPasswordReset(identifier: string): Promise<{ succes
 
   const resetToken = crypto.randomBytes(32).toString('hex');
   const expires = new Date(Date.now() + 3600 * 1000).toISOString();
-  await db.execute(`UPDATE users SET "resetToken" = $1, "resetTokenExpires" = $2 WHERE id = $3`, [resetToken, expires, user.id]);
+  await db.execute(`UPDATE users SET "resetToken" = $1, "resetTokenExpires" = $2 WHERE id = $3`, [crypto.createHash('sha256').update(resetToken).digest('hex'), expires, user.id]);
 
   if (user.email) {
     sendPasswordResetEmail(user.email, resetToken).catch(err => console.error('[Auth] Failed to send password reset email:', err));
   }
 
-  console.log(`[Auth] Password reset requested for user ${user.username}. Reset Token: ${resetToken}`);
-  return { success: true, message: 'Password reset link generated.', resetToken };
+  return { success: true, message: 'If an account matches that email/username, a reset link has been issued.' };
 }
 
 /** Password Reset: execute with token */
@@ -1159,13 +1203,9 @@ export async function resetPasswordWithToken(resetToken: string, newPassword: st
   }
 
   const now = new Date().toISOString();
-  const user = await db.queryOne<any>(`SELECT id FROM users WHERE "resetToken" = $1 AND "resetTokenExpires" > $2`, [resetToken, now]);
-  if (!user) {
-    throw new Error('Invalid or expired password reset token.');
-  }
-
   const { hash } = hashPassword(newPassword);
-  await db.execute(`UPDATE users SET "passwordHash" = $1, "resetToken" = NULL, "resetTokenExpires" = NULL, "updatedAt" = $2 WHERE id = $3`, [hash, now, user.id]);
+  const result = await db.execute(`UPDATE users SET "passwordHash" = $1, "resetToken" = NULL, "resetTokenExpires" = NULL, "updatedAt" = $2 WHERE "resetToken" = $3 AND "resetTokenExpires" > $2`, [hash, now, crypto.createHash('sha256').update(resetToken).digest('hex')]);
+  if (result.rowCount !== 1) throw new Error('Invalid or expired password reset token.');
 
   return { success: true, message: 'Password successfully updated. You may now log in.' };
 }
@@ -1177,6 +1217,7 @@ export async function resetPasswordWithToken(resetToken: string, newPassword: st
  * - Team Lead / Member: strictly forbidden from changing user roles.
  */
 export async function updateUserRole(executorUser: AuthUser, targetUserId: string, newRole: string): Promise<{ success: boolean; user: any }> {
+  return db.withTransaction(async () => {
   const isPlatform = isPlatformRole(executorUser.role);
   const isCompanyOwnerRole = isCompanyOwner(executorUser.role);
 
@@ -1219,6 +1260,13 @@ export async function updateUserRole(executorUser: AuthUser, targetUserId: strin
   }
 
   const now = new Date().toISOString();
+  await db.queryOne('SELECT id FROM tenants WHERE id = $1 FOR UPDATE', [target.tenantId]);
+  const current = await db.queryOne<any>('SELECT role FROM users WHERE id = $1 FOR UPDATE', [targetUserId]);
+  if (!current || isPlatformRole(current.role)) throw new Error('User cannot be modified.');
+  if (current.role === 'admin' && normalizedRole !== 'admin') {
+    const remaining = await db.queryOne<any>(`SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND id <> $2 AND role = 'admin' AND LOWER(status) = 'active'`, [target.tenantId, targetUserId]);
+    if (Number(remaining?.count || 0) === 0) throw new Error('Cannot demote the final active Company Owner.');
+  }
   await db.execute(`UPDATE users SET role = $1, "updatedAt" = $2 WHERE id = $3`, [normalizedRole, now, targetUserId]);
 
   return {
@@ -1230,6 +1278,7 @@ export async function updateUserRole(executorUser: AuthUser, targetUserId: strin
       tenantId: target.tenantId
     }
   };
+  });
 }
 
 /** Middleware: require platform admin role (Master Admin) */
@@ -1368,10 +1417,9 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
         console.error(`[Auth] Error parsing permissions for role ${roleId}:`, err);
       }
       return permissions;
-    } else if (role && role.status === 'Inactive') {
-      // Role is deactivated - user has 0 effective permissions
-      return permissions;
     }
+    // Missing, cross-tenant, or inactive assigned roles must never fall back to default rights.
+    return permissions;
   }
 
   // 4. Fallback for unassigned accounts (roleId is null)
@@ -1394,6 +1442,7 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
     }
   } catch (err) {
     console.error(`[Auth] Error querying permissions for user ${user.id}:`, err);
+    return permissions;
   }
 
   if (user.role === 'team_lead') {
@@ -1403,6 +1452,8 @@ export async function getEffectivePermissions(user: AuthUser): Promise<Set<strin
 
   if (hasExplicitUserPermissions) {
     for (const lp of legacyPerms) {
+      // Ignore corrupt/legacy unknown grants; module rows can never grant '*'.
+      if (!getCanonicalModuleForPermission(lp.moduleId)) continue;
       if (lp.enabled === 1 || lp.enabled === true) {
         permissions.add(lp.moduleId);
         permissions.add(`${lp.moduleId}:view`);
@@ -1485,6 +1536,33 @@ export function getCanonicalModuleForPermission(perm: string): string | null {
   return null;
 }
 
+/** Used by both management screens and API authorization to describe the same grants. */
+export async function getUserModuleAccess(user: AuthUser & { status?: string }, entitlements: Record<string, boolean>) {
+  const permissions = await getEffectivePermissions(user);
+  const wildcard = permissions.has('*') || permissions.has('all');
+  const modules = new Set<string>();
+  if (wildcard) {
+    for (const key of Object.keys(entitlements)) if (entitlements[key]) modules.add(normalizeModuleKey(key));
+  } else {
+    for (const permission of permissions) {
+      const moduleId = getCanonicalModuleForPermission(permission);
+      if (moduleId) modules.add(normalizeModuleKey(moduleId));
+    }
+  }
+  const assignedModules = [...modules];
+  const assignments = await getAssignedModuleCeiling(user);
+  const effectiveModules = isActiveUserStatus(user.status)
+    ? assignedModules.filter(id => entitlements[id] === true && (!assignments || assignments.has(id))) : [];
+  return { assignedModules, effectiveModules };
+}
+
+async function getAssignedModuleCeiling(user: AuthUser): Promise<Set<string> | null> {
+  if (isPlatformRole(user.role) || isCompanyOwner(user)) return null;
+  const rows = await db.queryAll<{ moduleId: string; enabled: number }>('SELECT "moduleId", enabled FROM user_permissions WHERE "userId" = $1 AND "tenantId" = $2', [user.id, user.tenantId]);
+  if (!rows.length) return null;
+  return new Set(rows.filter(r => Number(r.enabled) === 1).map(r => normalizeModuleKey(r.moduleId)));
+}
+
 /**
  * Reusable backend authorization guard: requirePermission(permKey | permKeys[])
  * 1. Requires authenticated user (req.user must be set via requireAuth).
@@ -1513,6 +1591,7 @@ export function requirePermission(requiredPerm: string | string[]) {
 
     const perms = Array.isArray(requiredPerm) ? requiredPerm : [requiredPerm];
     const entitlements = await getTenantModuleEntitlements(user.tenantId);
+    const assignments = await getAssignedModuleCeiling(user);
 
     // 1. Company Entitlement Ceiling:
     // A permission is allowed under the company ceiling if:
@@ -1522,7 +1601,7 @@ export function requirePermission(requiredPerm: string | string[]) {
       const mod = getCanonicalModuleForPermission(p);
       if (!mod) return true;
       const canonical = normalizeModuleKey(mod);
-      return entitlements[canonical] === true || entitlements[mod] === true;
+      return (entitlements[canonical] === true || entitlements[mod] === true) && (!assignments || assignments.has(canonical));
     });
 
     if (companyAllowedPerms.length === 0) {
@@ -1572,8 +1651,8 @@ export function getTenantId(req: express.Request): string {
   if (!user || !user.tenantId) {
     const headerTenant = req.headers['x-tenant-id'] as string;
     const queryTenant = req.query?.tenantId as string;
-    if (user && isPlatformRole(user.role) && (headerTenant || queryTenant)) {
-      return (headerTenant || queryTenant).trim();
+    if (user && isPlatformRole(user.role)) {
+      return (headerTenant || queryTenant || 'tenant_default').trim();
     }
     throw new Error('Unauthorized: missing tenant identity');
   }
@@ -1609,11 +1688,12 @@ export function requireModule(moduleId: string | string[]) {
 
     const modules = Array.isArray(moduleId) ? moduleId : [moduleId];
     const entitlements = await getTenantModuleEntitlements(user.tenantId);
+    const assignments = await getAssignedModuleCeiling(user);
 
     // 1. Company Ceiling Check
     const companyAllowedModules = modules.filter(m => {
       const canonical = normalizeModuleKey(m);
-      return entitlements[canonical] === true || entitlements[m] === true;
+      return (entitlements[canonical] === true || entitlements[m] === true) && (!assignments || assignments.has(canonical));
     });
 
     if (companyAllowedModules.length === 0) {

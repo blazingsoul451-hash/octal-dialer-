@@ -12,16 +12,43 @@ export default defineConfig({
       '/auth': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/api': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/email': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
-      '/admin': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
+      '/admin': {
+        target: 'http://127.0.0.1:5000',
+        changeOrigin: true,
+        secure: false,
+        bypass: (req) => {
+          if (req.headers.accept && req.headers.accept.includes('text/html')) {
+            return '/index.html';
+          }
+        }
+      },
       '/campaigns': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/leads': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/logs': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
-      '/settings': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
+      '/settings': {
+        target: 'http://127.0.0.1:5000',
+        changeOrigin: true,
+        secure: false,
+        bypass: (req) => {
+          if (req.headers.accept && req.headers.accept.includes('text/html')) {
+            return '/index.html';
+          }
+        }
+      },
       '/info': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/health': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/ready': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/download': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
-      '/crm': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
+      '/crm': {
+        target: 'http://127.0.0.1:5000',
+        changeOrigin: true,
+        secure: false,
+        bypass: (req) => {
+          if (req.headers.accept && req.headers.accept.includes('text/html')) {
+            return '/index.html';
+          }
+        }
+      },
       '/socket.io': { target: 'http://127.0.0.1:5000', ws: true, changeOrigin: true }
     }
   },

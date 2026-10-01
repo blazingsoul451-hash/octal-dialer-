@@ -17,6 +17,7 @@ interface ReportsPageProps {
   serverUrl: string;
   authToken: string | null;
   campaigns?: Campaign[];
+  userRole?: string;
 }
 
 type DatePreset = 'today' | 'yesterday' | '7d' | '30d' | 'all';
@@ -25,8 +26,10 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   isLight,
   serverUrl,
   authToken,
-  campaigns = []
+  campaigns = [],
+  userRole
 }) => {
+  const isCompanyOwnerOrPlatformAdmin = userRole === 'admin' || userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'master_admin';
   const [logs, setLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -704,16 +707,18 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
             <p className="text-[10px] text-zinc-500 font-mono">Searchable audit trail of GSM dialer connections</p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleExportCsv}
-              disabled={exporting || tableFilteredLogs.length === 0}
-              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black font-bold text-xs rounded-xl transition flex items-center gap-2 cursor-pointer shadow-sm"
-            >
-              <Download className={`w-3.5 h-3.5 ${exporting ? 'animate-bounce' : ''}`} />
-              <span>{exporting ? 'Exporting...' : 'Export Filtered CSV'}</span>
-            </button>
-          </div>
+          {isCompanyOwnerOrPlatformAdmin && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleExportCsv}
+                disabled={exporting || tableFilteredLogs.length === 0}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black font-bold text-xs rounded-xl transition flex items-center gap-2 cursor-pointer shadow-sm"
+              >
+                <Download className={`w-3.5 h-3.5 ${exporting ? 'animate-bounce' : ''}`} />
+                <span>{exporting ? 'Exporting...' : 'Export Filtered CSV'}</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Filter Controls Bar */}

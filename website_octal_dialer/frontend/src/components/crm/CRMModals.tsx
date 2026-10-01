@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   X, CheckCircle2, Calendar, AlertTriangle, AlertCircle,
-  Building2, User, Phone, CalendarCheck
+  Building2, User, Phone, CalendarCheck, Clock, PhoneCall
 } from 'lucide-react';
 import type { CrmTask, CrmTaskType, CrmTaskPriority } from '../../types/crm';
 
@@ -1263,6 +1263,7 @@ interface AddLeadModalProps extends ModalBaseProps {
   campaigns?: Array<{ id: string; name: string }>;
   defaultCompanyId?: string;
   onSuccess: (newLead?: any) => void;
+  onDialLead?: (phone: string, leadId: string, leadName: string) => void;
 }
 
 export const AddLeadModal: React.FC<AddLeadModalProps> = ({
@@ -1272,36 +1273,75 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
   defaultCompanyId,
   onClose,
   onSuccess,
+  onDialLead,
   serverUrl,
   authToken
 }) => {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [companyName, setCompanyName] = useState('');
   const [email, setEmail] = useState('');
   const [country, setCountry] = useState('');
   const [requirement, setRequirement] = useState('');
+  const [pipelineStatus, setPipelineStatus] = useState('new');
   const [crmCompanyId, setCrmCompanyId] = useState('');
   const [campaignId, setCampaignId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Quick Task Timer state
+  const [createTask, setCreateTask] = useState(false);
+  const [taskPreset, setTaskPreset] = useState<'15m' | '30m' | '1h' | '2h' | 'tomorrow' | 'custom'>('30m');
+  const [customDueAt, setCustomDueAt] = useState('');
+  const [taskPriority, setTaskPriority] = useState<CrmTaskPriority>('normal');
+  const [taskType, setTaskType] = useState<CrmTaskType>('follow_up');
+  const [taskTitle, setTaskTitle] = useState('');
+
   useEffect(() => {
     if (isOpen) {
       setName('');
       setPhone('');
+      setCompanyName('');
       setEmail('');
       setCountry('');
       setRequirement('');
+      setPipelineStatus('new');
       setCrmCompanyId(defaultCompanyId || '');
       setCampaignId(campaigns[0]?.id || '');
       setError(null);
+      setCreateTask(false);
+      setTaskPreset('30m');
+      setCustomDueAt('');
+      setTaskPriority('normal');
+      setTaskType('follow_up');
+      setTaskTitle('');
     }
   }, [isOpen, defaultCompanyId, campaigns]);
 
   if (!isOpen) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const getDueAtFromPreset = (preset: string): string => {
+    const now = Date.now();
+    if (preset === '15m') return new Date(now + 15 * 60000).toISOString();
+    if (preset === '30m') return new Date(now + 30 * 60000).toISOString();
+    if (preset === '1h') return new Date(now + 60 * 60000).toISOString();
+    if (preset === '2h') return new Date(now + 120 * 60000).toISOString();
+    if (preset === 'tomorrow') {
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      d.setHours(9, 0, 0, 0);
+      return d.toISOString();
+    }
+    if (preset === 'custom' && customDueAt) {
+      const parsed = new Date(customDueAt).getTime();
+      if (!isNaN(parsed)) {
+        return new Date(parsed).toISOString();
+      }
+    }
+    return new Date(now + 30 * 60000).toISOString();
+  };
+
+  const handleSave = async (forceTask: boolean = false, dialAfterSave: boolean = false) => {
     if (!name.trim()) {
       setError('Lead / contact name is required.');
       return;
@@ -1315,21 +1355,36 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
     setError(null);
 
     try {
+      const shouldIncludeTask = forceTask || createTask;
+      const payload: any = {
+        name: name.trim(),
+        phone: phone.trim(),
+        email: email.trim() || undefined,
+        country: country.trim() || undefined,
+        requirement: requirement.trim() || undefined,
+        pipelineStatus,
+        crmCompanyId: crmCompanyId || undefined,
+        companyName: companyName.trim() || undefined,
+        campaignId: campaignId || undefined
+      };
+
+      if (shouldIncludeTask) {
+        payload.task = {
+          title: taskTitle.trim() || `Follow up with ${name.trim()}${companyName.trim() ? ` (${companyName.trim()})` : ''}`,
+          taskType,
+          dueAt: getDueAtFromPreset(taskPreset),
+          priority: taskPriority,
+          description: requirement.trim() || undefined
+        };
+      }
+
       const res = await fetch(`${serverUrl}/api/crm/leads`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${authToken}`
         },
-        body: JSON.stringify({
-          name: name.trim(),
-          phone: phone.trim(),
-          email: email.trim() || undefined,
-          country: country.trim() || undefined,
-          requirement: requirement.trim() || undefined,
-          crmCompanyId: crmCompanyId || undefined,
-          campaignId: campaignId || undefined
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!res.ok) {
@@ -1339,6 +1394,11 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
 
       const data = await res.json();
       onSuccess(data.lead);
+
+      if (dialAfterSave && onDialLead && data.lead) {
+        onDialLead(data.lead.phone, data.lead.id, data.lead.name || 'Lead');
+      }
+
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error creating lead');
@@ -1352,7 +1412,7 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       className="crm-geist-scope fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in select-none"
     >
-      <div className="w-full max-w-lg bg-[#0e0e11] border border-[#27272a] rounded-2xl shadow-2xl overflow-hidden flex flex-col text-left">
+      <div className="w-full max-w-xl bg-[#0e0e11] border border-[#27272a] rounded-2xl shadow-2xl overflow-hidden flex flex-col text-left max-h-[90vh]">
         {/* Header */}
         <div className="p-5 border-b border-[#1f1f23] flex items-center justify-between bg-[#121216]">
           <div className="flex items-center gap-3">
@@ -1360,8 +1420,8 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
               <Phone className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-black text-white tracking-tight">Add Canonical Lead</h2>
-              <p className="text-xs text-zinc-400">Register lead into unified dialer & CRM pipeline</p>
+              <h2 className="text-base font-black text-white tracking-tight">Quick Lead & Task Sync</h2>
+              <p className="text-xs text-zinc-400">Register lead into unified dialer & start live task timer</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg border border-[#27272a] text-zinc-400 hover:text-white hover:bg-[#1f1f23]">
@@ -1370,7 +1430,7 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
         </div>
 
         {/* Content Form */}
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto">
           {error && (
             <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -1378,20 +1438,47 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
             </div>
           )}
 
+          {/* Contact Name & Company Name */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">
-                Lead / Business Name <span className="text-amber-500">*</span>
+                Lead / Contact Name <span className="text-amber-500">*</span>
               </label>
               <input
                 type="text"
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Apex Dynamics Ltd"
+                placeholder="e.g. John Doe"
                 className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
               />
             </div>
+            <div>
+              <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">
+                Company Name
+              </label>
+              <input
+                type="text"
+                list="crm-company-options"
+                value={companyName}
+                onChange={(e) => {
+                  setCompanyName(e.target.value);
+                  const matched = companies.find(c => c.name.toLowerCase() === e.target.value.toLowerCase());
+                  if (matched) setCrmCompanyId(matched.id);
+                }}
+                placeholder="e.g. Apex Dynamics Ltd"
+                className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
+              />
+              <datalist id="crm-company-options">
+                {companies.map(c => (
+                  <option key={c.id} value={c.name} />
+                ))}
+              </datalist>
+            </div>
+          </div>
+
+          {/* Phone Number & Email */}
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">
                 Phone Number <span className="text-amber-500">*</span>
@@ -1405,9 +1492,6 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
                 className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
               />
             </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">
                 Email Address
@@ -1416,93 +1500,217 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="lead@apex.com"
-                className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">
-                Country
-              </label>
-              <input
-                type="text"
-                value={country}
-                onChange={(e) => setCountry(e.target.value)}
-                placeholder="United Kingdom"
+                placeholder="lead@company.com"
                 className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            {companies.length > 0 && (
-              <div>
-                <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">
-                  Link to Company
-                </label>
-                <select
-                  value={crmCompanyId}
-                  onChange={(e) => setCrmCompanyId(e.target.value)}
-                  className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
-                >
-                  <option value="">None / Standalone Lead</option>
-                  {companies.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {campaigns.length > 0 && (
-              <div>
-                <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">
-                  Assign Campaign
-                </label>
-                <select
-                  value={campaignId}
-                  onChange={(e) => setCampaignId(e.target.value)}
-                  className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
-                >
-                  <option value="">Default CRM Pipeline</option>
-                  {campaigns.map(camp => (
-                    <option key={camp.id} value={camp.id}>{camp.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-
+          {/* Pipeline Stage Pills */}
           <div>
             <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">
-              Requirement / Project Details
+              Pipeline Stage
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { id: 'new', label: 'New Lead' },
+                { id: 'contacted', label: 'Contacted' },
+                { id: 'interested', label: 'Interested 👍' },
+                { id: 'callback', label: 'Callback 📞' },
+                { id: 'qualified', label: 'Qualified 🎯' },
+                { id: 'not_interested', label: 'Not Interested ❌' },
+              ].map(st => (
+                <button
+                  type="button"
+                  key={st.id}
+                  onClick={() => setPipelineStatus(st.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+                    pipelineStatus === st.id
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 shadow-sm'
+                      : 'bg-[#18181b] text-zinc-400 border border-[#27272a] hover:text-white hover:bg-[#202025]'
+                  }`}
+                >
+                  {st.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Quick Task with Live Timer Toggle Section */}
+          <div className="p-3.5 bg-[#141418] border border-[#27272a] rounded-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={createTask}
+                  onChange={(e) => setCreateTask(e.target.checked)}
+                  className="w-4 h-4 rounded border-zinc-700 text-amber-500 focus:ring-amber-500/20 bg-zinc-900"
+                />
+                <span className="text-xs font-extrabold text-white flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  Attach Quick Task with Countdown Timer
+                </span>
+              </label>
+              <span className="text-[10px] font-mono text-zinc-500">Live Octal Timer</span>
+            </div>
+
+            {createTask && (
+              <div className="space-y-3 pt-2.5 border-t border-[#1f1f23]">
+                {/* Timer Presets */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-mono font-bold text-zinc-400">
+                      Timer Preset (Turns RED When Expired)
+                    </span>
+                    <span className="text-[10px] text-amber-400 font-mono">
+                      Due: {new Date(getDueAtFromPreset(taskPreset)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-6 gap-1.5">
+                    {[
+                      { id: '15m', label: '15m' },
+                      { id: '30m', label: '30m' },
+                      { id: '1h', label: '1h' },
+                      { id: '2h', label: '2h' },
+                      { id: 'tomorrow', label: 'Tmrw 9A' },
+                      { id: 'custom', label: 'Custom' },
+                    ].map(p => (
+                      <button
+                        type="button"
+                        key={p.id}
+                        onClick={() => setTaskPreset(p.id as any)}
+                        className={`py-1.5 rounded-lg text-xs font-bold transition text-center ${
+                          taskPreset === p.id
+                            ? 'bg-amber-500 text-black font-extrabold shadow-sm'
+                            : 'bg-[#18181b] text-zinc-400 border border-[#27272a] hover:text-white'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {taskPreset === 'custom' && (
+                  <div>
+                    <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1">
+                      Custom Deadline Date & Time
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={customDueAt}
+                      onChange={(e) => setCustomDueAt(e.target.value)}
+                      className="w-full px-2.5 py-1.5 bg-[#18181b] border border-[#27272a] rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                )}
+
+                {/* Priority & Action Type */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1">
+                      Action Type
+                    </label>
+                    <select
+                      value={taskType}
+                      onChange={(e) => setTaskType(e.target.value as CrmTaskType)}
+                      className="w-full px-2.5 py-1.5 bg-[#18181b] border border-[#27272a] rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="follow_up">Follow-up</option>
+                      <option value="call">Phone Call</option>
+                      <option value="meeting">Meeting</option>
+                      <option value="email">Email</option>
+                      <option value="whatsapp">WhatsApp</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1">
+                      Priority
+                    </label>
+                    <select
+                      value={taskPriority}
+                      onChange={(e) => setTaskPriority(e.target.value as CrmTaskPriority)}
+                      className="w-full px-2.5 py-1.5 bg-[#18181b] border border-[#27272a] rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="normal">Normal</option>
+                      <option value="high">High</option>
+                      <option value="urgent">Urgent 🔥</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Task Title */}
+                <div>
+                  <input
+                    type="text"
+                    value={taskTitle}
+                    onChange={(e) => setTaskTitle(e.target.value)}
+                    placeholder={`e.g. Call back ${name || 'lead'} regarding quote`}
+                    className="w-full px-3 py-1.5 bg-[#18181b] border border-[#27272a] rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Notes / Requirement */}
+          <div>
+            <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">
+              Requirement / Lead Notes
             </label>
             <textarea
-              rows={3}
+              rows={2}
               value={requirement}
               onChange={(e) => setRequirement(e.target.value)}
-              placeholder="Requirement brief, lead source inquiry, or special call disposition..."
+              placeholder="Requirement brief, lead inquiry context, or special instructions..."
               className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500 resize-none"
             />
           </div>
+        </div>
 
-          {/* Action Buttons */}
-          <div className="pt-3 border-t border-[#1f1f23] flex items-center justify-end gap-2.5">
+        {/* Action Buttons Footer */}
+        <div className="p-4 border-t border-[#1f1f23] bg-[#121216] flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3.5 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs font-bold text-zinc-400 hover:text-white hover:bg-[#202025] transition"
+          >
+            Cancel
+          </button>
+
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={onClose}
-              className="px-4 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs font-bold text-zinc-300 hover:text-white hover:bg-[#202025] transition"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
               disabled={submitting}
-              className="px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-xs rounded-xl shadow-lg shadow-amber-500/20 transition disabled:opacity-50"
+              onClick={() => handleSave(false, false)}
+              className="px-3.5 py-2 bg-[#18181b] border border-[#27272a] hover:border-zinc-500 rounded-xl text-xs font-bold text-zinc-200 hover:text-white transition disabled:opacity-50"
             >
-              {submitting ? 'Creating...' : 'Create Canonical Lead'}
+              Save Lead Only
             </button>
+
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => handleSave(true, false)}
+              className="px-3.5 py-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition disabled:opacity-50"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              Save & Start Task Timer ⏱️
+            </button>
+
+            {onDialLead && (
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => handleSave(createTask, true)}
+                className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-black font-black text-xs rounded-xl shadow-lg shadow-emerald-500/20 transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <PhoneCall className="w-3.5 h-3.5" />
+                Save & Dial Now 📞
+              </button>
+            )}
           </div>
-        </form>
+        </div>
       </div>
     </div>
   );

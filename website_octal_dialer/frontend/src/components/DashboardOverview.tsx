@@ -23,6 +23,7 @@ interface DashboardOverviewProps {
   serverUrl: string;
   authToken?: string;
   authUser?: string | null;
+  displayName?: string | null;
   phoneConnected: boolean;
   phoneDeviceName?: string | null;
   campaigns: Campaign[];
@@ -35,6 +36,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   serverUrl,
   authToken,
   authUser,
+  displayName,
   phoneConnected,
   phoneDeviceName,
   campaigns,
@@ -132,7 +134,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       }`}>
         <h1 className="text-2xl tracking-tight">
           <span className={`font-medium ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Hello </span>
-          <span className={`font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{authUser || 'User'}</span>
+          <span className={`font-black capitalize ${isLight ? 'text-slate-900' : 'text-white'}`}>{displayName || authUser || 'User'}</span>
         </h1>
 
         {/* Dashboard Sub-Tabs */}
@@ -631,6 +633,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                             ? 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400'
                             : isBusy
                             ? 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400'
+                            : isLight
+                            ? 'bg-slate-100 border-slate-200 text-slate-500'
                             : 'bg-[#18181b] border-[#27272a] text-zinc-400'
                         }`}>
                           {isAnswered ? <CheckCircle2 className="w-4 h-4" /> : isVoicemail ? <Voicemail className="w-4 h-4" /> : <PhoneMissed className="w-4 h-4" />}
@@ -650,6 +654,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                             ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
                             : isVoicemail
                             ? 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400'
+                            : isLight
+                            ? 'bg-slate-100 border-slate-200 text-slate-500'
                             : 'bg-[#18181b] border-[#27272a] text-zinc-400'
                         }`}>
                           {outcome.replace('_', ' ')}

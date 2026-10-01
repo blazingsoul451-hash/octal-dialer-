@@ -4,7 +4,7 @@ import {
   Bluetooth, PlaySquare, Sun, Moon, ShieldAlert, LayoutDashboard, Menu, Mail,
   Play, Layers, Settings, Users, FileText, Search,
   Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp,
-  Target, Building2
+  Target, Building2, ChevronDown, UserPlus
 } from 'lucide-react';
 import { useSocket } from './hooks/useSocket';
 import { DashboardOverview } from './components/DashboardOverview';
@@ -62,6 +62,7 @@ const SERVER_URL = WEB_API_BASE;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs' | 'team-lead' | 'super-admin'>('dashboard');
+  const [prevTabBeforeSettings, setPrevTabBeforeSettings] = useState<string>('dashboard');
   const [settingsSubView, setSettingsSubView] = useState<'overview' | 'company-profile' | 'users-roles' | 'account' | 'billing'>('overview');
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
@@ -79,23 +80,53 @@ export default function App() {
 
   const isAdminRoute = typeof window !== 'undefined' && (window.location.pathname.startsWith('/admin') || window.location.hostname.startsWith('admin.'));
 
+  // Safely retrieve customer token from localStorage, strictly rejecting any platform admin tokens
+  const getInitialCustomerToken = (): string | null => {
+    if (typeof window === 'undefined') return null;
+    const custToken = localStorage.getItem('octal_customer_auth_token');
+    if (custToken) return custToken;
+    const legacyToken = localStorage.getItem('octal_auth_token');
+    if (legacyToken) {
+      const hint = getInitialIdentityHintFromToken(legacyToken);
+      const r = (hint?.role || '').toLowerCase();
+      // Strict tab isolation: NEVER allow platform admin tokens from localStorage across tabs!
+      if (r === 'platform_admin' || r === 'superadmin' || r === 'master_admin' || r === 'super_admin') {
+        try {
+          localStorage.removeItem('octal_auth_token');
+          localStorage.removeItem('octal_auth_user');
+          localStorage.removeItem('octal_platform_auth_token');
+          localStorage.removeItem('octal_platform_auth_user');
+        } catch {}
+        return null;
+      }
+      return legacyToken;
+    }
+    return null;
+  };
+
   const [authToken, setAuthToken] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       const imp = sessionStorage.getItem('octal_impersonate_token');
       if (imp) return imp;
+      // Tab-scoped platform admin token (STRICT TAB ISOLATION: only lives in this tab's sessionStorage)
+      const tabAdminToken = sessionStorage.getItem('octal_platform_auth_token');
       if (isAdminRoute) {
-        return localStorage.getItem('octal_platform_auth_token');
+        return tabAdminToken;
       }
-      return localStorage.getItem('octal_customer_auth_token') || localStorage.getItem('octal_auth_token');
+      if (tabAdminToken) {
+        return tabAdminToken;
+      }
+      return getInitialCustomerToken();
     }
     return null;
   });
   const [authIdentity, setAuthIdentity] = useState<AuthIdentity | null>(() => {
     if (typeof window !== 'undefined') {
       const imp = sessionStorage.getItem('octal_impersonate_token');
+      const tabAdminToken = sessionStorage.getItem('octal_platform_auth_token');
       const token = imp || (isAdminRoute
-        ? localStorage.getItem('octal_platform_auth_token')
-        : (localStorage.getItem('octal_customer_auth_token') || localStorage.getItem('octal_auth_token')));
+        ? tabAdminToken
+        : (tabAdminToken || getInitialCustomerToken()));
       return getInitialIdentityHintFromToken(token);
     }
     return null;
@@ -103,13 +134,14 @@ export default function App() {
   const [authUser, setAuthUser] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       const imp = sessionStorage.getItem('octal_impersonate_token');
+      const tabAdminToken = sessionStorage.getItem('octal_platform_auth_token');
       const token = imp || (isAdminRoute
-        ? localStorage.getItem('octal_platform_auth_token')
-        : (localStorage.getItem('octal_customer_auth_token') || localStorage.getItem('octal_auth_token')));
+        ? tabAdminToken
+        : (tabAdminToken || getInitialCustomerToken()));
       const hint = getInitialIdentityHintFromToken(token);
       return hint?.username || (isAdminRoute
-        ? localStorage.getItem('octal_platform_auth_user')
-        : (localStorage.getItem('octal_customer_auth_user') || localStorage.getItem('octal_auth_user')));
+        ? sessionStorage.getItem('octal_platform_auth_user')
+        : (sessionStorage.getItem('octal_platform_auth_user') || localStorage.getItem('octal_customer_auth_user') || localStorage.getItem('octal_auth_user')));
     }
     return null;
   });
@@ -160,6 +192,96 @@ export default function App() {
     facebookScraper: false,
     facebookPoster: false
   });
+
+  const [trialInfo, setTrialInfo] = useState<{ isTrial: boolean; daysLeft: number; trialEndsAt?: string | null } | null>(null);
+  const [liveTrialText, setLiveTrialText] = useState<string>('');
+  const [planName, setPlanName] = useState<string>('Professional');
+  const [userDisplayName, setUserDisplayName] = useState<string | null>(null);
+  const [companyName, setCompanyName] = useState<string>('');
+  const [companyMenuOpen, setCompanyMenuOpen] = useState<boolean>(false);
+  const companyMenuTimeoutRef = React.useRef<any>(null);
+  const [usersRolesInitialTab, setUsersRolesInitialTab] = useState<'overview' | 'users' | 'team-leads' | 'teams' | 'invitations' | 'roles' | 'access-review'>('overview');
+
+  useEffect(() => {
+    if (!effectiveAuthToken) return;
+    const fetchTrialStatus = async () => {
+      try {
+        const res = await fetch(`${SERVER_URL}/api/billing/subscription`, {
+          headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.planName || data.plan) {
+            setPlanName(data.planName || data.plan);
+          }
+          if (data.isTrial || data.status === 'trial') {
+            setTrialInfo({
+              isTrial: true,
+              daysLeft: data.daysLeft ?? 14,
+              trialEndsAt: data.trialEndsAt || data.subscription?.currentPeriodEnd || null
+            });
+          } else {
+            setTrialInfo(null);
+          }
+        }
+      } catch {
+        // Non-blocking
+      }
+    };
+    fetchTrialStatus();
+  }, [effectiveAuthToken]);
+
+  // Fetch Company Name for workspace header
+  useEffect(() => {
+    if (!effectiveAuthToken) return;
+    const fetchCompanyInfo = async () => {
+      try {
+        const res = await fetch(`${SERVER_URL}/api/admin/company/profile`, {
+          headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.name) {
+            setCompanyName(data.name);
+          }
+        }
+      } catch {
+        // Non-blocking
+      }
+    };
+    fetchCompanyInfo();
+  }, [effectiveAuthToken]);
+
+  // Live countdown timer for trial accounts
+  useEffect(() => {
+    if (!trialInfo?.isTrial || !trialInfo.trialEndsAt) {
+      setLiveTrialText('');
+      return;
+    }
+    const updateCountdown = () => {
+      const target = new Date(trialInfo.trialEndsAt!).getTime();
+      const diff = target - Date.now();
+      if (diff <= 0) {
+        setLiveTrialText('Expired');
+        return;
+      }
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+      if (days > 0) {
+        setLiveTrialText(`${days}d ${hours}h ${minutes}m ${seconds}s`);
+      } else if (hours > 0) {
+        setLiveTrialText(`${hours}h ${minutes}m ${seconds}s`);
+      } else {
+        setLiveTrialText(`${minutes}m ${seconds}s`);
+      }
+    };
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(interval);
+  }, [trialInfo]);
 
   // ─── UI Scale / Display Density State (Laptop & Desktop Adaptability) ─────
 
@@ -260,9 +382,16 @@ export default function App() {
     setAuthToken(token);
     setAuthUser(identity.username);
     setAuthIdentity(identity);
-    if (identity.role === 'platform_admin') {
-      localStorage.setItem('octal_platform_auth_token', token);
-      localStorage.setItem('octal_platform_auth_user', identity.username);
+    const roleLower = (identity.role || '').toLowerCase();
+    if (roleLower === 'platform_admin' || roleLower === 'superadmin' || roleLower === 'master_admin' || roleLower === 'super_admin') {
+      // Tab-scoped platform admin session (STRICT TAB ISOLATION: only stored in this tab's sessionStorage)
+      sessionStorage.setItem('octal_platform_auth_token', token);
+      sessionStorage.setItem('octal_platform_auth_user', identity.username);
+      // Clean up any lingering localStorage platform tokens
+      localStorage.removeItem('octal_platform_auth_token');
+      localStorage.removeItem('octal_platform_auth_user');
+      localStorage.removeItem('octal_auth_token');
+      localStorage.removeItem('octal_auth_user');
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/admin') && !window.location.hostname.startsWith('admin.')) {
         window.history.pushState({}, '', '/admin');
       }
@@ -289,15 +418,14 @@ export default function App() {
         headers: { 'Authorization': `Bearer ${authToken}` }
       }).catch(() => {});
     }
-    if (isAdminRoute || authIdentity?.role === 'platform_admin') {
-      localStorage.removeItem('octal_platform_auth_token');
-      localStorage.removeItem('octal_platform_auth_user');
-    } else {
-      localStorage.removeItem('octal_customer_auth_token');
-      localStorage.removeItem('octal_customer_auth_user');
-      localStorage.removeItem('octal_auth_token');
-      localStorage.removeItem('octal_auth_user');
-    }
+    sessionStorage.removeItem('octal_platform_auth_token');
+    sessionStorage.removeItem('octal_platform_auth_user');
+    localStorage.removeItem('octal_platform_auth_token');
+    localStorage.removeItem('octal_platform_auth_user');
+    localStorage.removeItem('octal_customer_auth_token');
+    localStorage.removeItem('octal_customer_auth_user');
+    localStorage.removeItem('octal_auth_token');
+    localStorage.removeItem('octal_auth_user');
     localStorage.removeItem('octal_session_id');
     setAuthToken(null);
     setAuthUser(null);
@@ -307,6 +435,9 @@ export default function App() {
     setCampaigns([]);
     setDispOpen(false);
     setActiveTab('dashboard');
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
+      window.history.pushState({}, '', '/');
+    }
   };
 
   // Bright Mode / Dark Mode state
@@ -322,6 +453,21 @@ export default function App() {
 
   // Verify stored auth token on mount & check URL query params from Google OAuth redirects or impersonation
   useEffect(() => {
+    // Enforce strict tab isolation: purge any legacy platform admin tokens from localStorage
+    try {
+      localStorage.removeItem('octal_platform_auth_token');
+      localStorage.removeItem('octal_platform_auth_user');
+      const legacyToken = localStorage.getItem('octal_auth_token');
+      if (legacyToken) {
+        const hint = getInitialIdentityHintFromToken(legacyToken);
+        const r = (hint?.role || '').toLowerCase();
+        if (r === 'platform_admin' || r === 'superadmin' || r === 'master_admin' || r === 'super_admin') {
+          localStorage.removeItem('octal_auth_token');
+          localStorage.removeItem('octal_auth_user');
+        }
+      }
+    } catch {}
+
     // Check URL parameters for OAuth tokens or auth errors
     const urlParams = new URLSearchParams(window.location.search);
     let oauthToken = urlParams.get('token');
@@ -410,6 +556,12 @@ export default function App() {
             sessionStorage.removeItem('octal_impersonate_tenant');
             setImpersonateToken(null);
           } else {
+            sessionStorage.removeItem('octal_platform_auth_token');
+            sessionStorage.removeItem('octal_platform_auth_user');
+            localStorage.removeItem('octal_platform_auth_token');
+            localStorage.removeItem('octal_platform_auth_user');
+            localStorage.removeItem('octal_customer_auth_token');
+            localStorage.removeItem('octal_customer_auth_user');
             localStorage.removeItem('octal_auth_token');
             localStorage.removeItem('octal_auth_user');
             setAuthToken(null);
@@ -460,7 +612,7 @@ export default function App() {
             setShowProfileSetupModal(true);
           }
 
-          if (verifiedRole === 'platform_admin') {
+          if (verifiedRole === 'platform_admin' || verifiedRole === 'superadmin') {
             setUserPermissions({
               octalDialer: true,
               googleScraper: true,
@@ -596,6 +748,8 @@ export default function App() {
           authToken={effectiveAuthToken}
           currentUser={authUser || 'Admin'}
           onLogout={handleLogout}
+          isLight={isLight}
+          onToggleTheme={toggleTheme}
         />
       </div>
     );
@@ -842,7 +996,7 @@ export default function App() {
           </div>
 
           {/* Right: Octal Accounts Style Action Bar */}
-          <div className="flex items-center gap-3 select-none">
+          <div className="flex items-center gap-2.5 sm:gap-3 select-none">
 
             {/* Phone Status Pill */}
             <button
@@ -879,10 +1033,15 @@ export default function App() {
             <button
               id="topbar-settings-btn"
               onClick={() => {
-                setSettingsSubView('overview');
-                setActiveTab('admin');
+                if (activeTab === 'admin') {
+                  setActiveTab((prevTabBeforeSettings && prevTabBeforeSettings !== 'admin' ? prevTabBeforeSettings : 'dashboard') as any);
+                } else {
+                  setPrevTabBeforeSettings(activeTab);
+                  setSettingsSubView('overview');
+                  setActiveTab('admin');
+                }
               }}
-              title="Workspace Settings"
+              title={activeTab === 'admin' ? 'Close Settings' : 'Workspace Settings'}
               className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
                 activeTab === 'admin'
                   ? isLight
@@ -909,18 +1068,150 @@ export default function App() {
               {isLight ? <Moon className="w-4 h-4 text-slate-800" /> : <Sun className="w-4 h-4 text-amber-400" />}
             </button>
 
+            {/* 🏢 Detached Company / Organization Tab with Hover Dropdown */}
+            <div
+              className="relative"
+              onMouseEnter={() => {
+                if (companyMenuTimeoutRef.current) clearTimeout(companyMenuTimeoutRef.current);
+                setCompanyMenuOpen(true);
+              }}
+              onMouseLeave={() => {
+                companyMenuTimeoutRef.current = setTimeout(() => {
+                  setCompanyMenuOpen(false);
+                }, 250);
+              }}
+            >
+              <button
+                onClick={() => setCompanyMenuOpen(prev => !prev)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold transition-all cursor-pointer shadow-sm ${
+                  companyMenuOpen
+                    ? 'ring-2 ring-amber-500/50 border-amber-500'
+                    : isLight
+                      ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
+                      : 'bg-slate-900 border-slate-800 text-slate-200 hover:border-slate-700'
+                }`}
+                title="Company & Workspace Operations"
+              >
+                <Building2 className="w-3.5 h-3.5 text-amber-500" />
+                <span className="font-semibold tracking-wide truncate max-w-[130px]">
+                  {companyName || 'Workspace'}
+                </span>
+                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${companyMenuOpen ? 'rotate-180 text-amber-400' : ''}`} />
+              </button>
+
+              {/* Dropdown Menu on Hover / Click */}
+              {companyMenuOpen && (
+                <div
+                  className={`absolute right-0 top-full mt-2 w-64 rounded-2xl border p-2 shadow-2xl z-50 backdrop-blur-md animate-fadeIn ${
+                    isLight
+                      ? 'bg-white/95 border-slate-200 text-slate-800 shadow-slate-300/50'
+                      : 'bg-[#0B0E14]/95 border-slate-800 text-slate-200 shadow-black/80'
+                  }`}
+                >
+                  {/* Header with Company details */}
+                  <div className={`px-3 py-2 border-b mb-1 flex items-center gap-2.5 ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
+                    <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                      <Building2 className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold truncate text-white">
+                        {companyName || 'Organization'}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono">
+                        Workspace Management
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Option 1: Add Users */}
+                  <button
+                    onClick={() => {
+                      setCompanyMenuOpen(false);
+                      setUsersRolesInitialTab('users');
+                      setSettingsSubView('users-roles');
+                      setActiveTab('admin');
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer text-left ${
+                      isLight
+                        ? 'hover:bg-amber-50 text-slate-700 hover:text-amber-900'
+                        : 'hover:bg-amber-500/10 text-slate-300 hover:text-amber-400'
+                    }`}
+                  >
+                    <UserPlus className="w-4 h-4 text-emerald-400" />
+                    <div>
+                      <div className="font-bold">Add Users</div>
+                      <div className="text-[10px] text-slate-400 font-normal">Create accounts & invite members</div>
+                    </div>
+                  </button>
+
+                  {/* Option 2: Assign Users & Teams (Create Team Lead & Assign) */}
+                  <button
+                    onClick={() => {
+                      setCompanyMenuOpen(false);
+                      setUsersRolesInitialTab('teams');
+                      setSettingsSubView('users-roles');
+                      setActiveTab('admin');
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer text-left ${
+                      isLight
+                        ? 'hover:bg-amber-50 text-slate-700 hover:text-amber-900'
+                        : 'hover:bg-amber-500/10 text-slate-300 hover:text-amber-400'
+                    }`}
+                  >
+                    <Users className="w-4 h-4 text-blue-400" />
+                    <div>
+                      <div className="font-bold">Assign Users & Teams</div>
+                      <div className="text-[10px] text-slate-400 font-normal">Create team lead & assign agents</div>
+                    </div>
+                  </button>
+
+                  {/* Option 3: Company Profile */}
+                  <button
+                    onClick={() => {
+                      setCompanyMenuOpen(false);
+                      setSettingsSubView('company-profile');
+                      setActiveTab('admin');
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer text-left mt-1 border-t ${
+                      isLight
+                        ? 'border-slate-100 hover:bg-slate-100 text-slate-600'
+                        : 'border-slate-800/80 hover:bg-slate-900 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                    <span className="text-[11px]">Company Profile & Details</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* 👤 Octal Accounts User Profile Menu with Hover & Camera Modals */}
             <UserProfileMenu
               isLight={isLight}
               serverUrl={WEB_API_BASE}
-              authToken={effectiveAuthToken}
+              authToken={effectiveAuthToken || ''}
               authUser={authUser}
               userRole={userRole}
               showPill={true}
               activeTab={activeTab}
+              trialInfo={trialInfo}
+              liveTrialText={liveTrialText}
+              planName={planName}
+              onNavigateBilling={() => {
+                setSettingsSubView('billing');
+                setActiveTab('admin');
+              }}
               onNavigateAccount={() => {
                 setSettingsSubView('account');
                 setActiveTab('admin');
+              }}
+              onProfileLoaded={(profile) => {
+                if (profile.displayName) {
+                  setUserDisplayName(profile.displayName);
+                }
+                if (profile.companyName) {
+                  setCompanyName(profile.companyName);
+                }
               }}
               onLogout={handleLogout}
             />
@@ -977,7 +1268,7 @@ export default function App() {
               </button>
 
               {/* CRM Workspace (Gated by CRM permission or Platform Admin) */}
-              {(userRole === 'platform_admin' || userPermissions.crm) && (
+              {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.crm) && (
                 <button
                   onClick={() => setActiveTab('crm')}
                   title="CRM & Customer Intelligence"
@@ -997,7 +1288,7 @@ export default function App() {
               )}
 
               {/* Campaigns Workspace (Gated by Campaigns permission or Platform Admin) */}
-              {(userRole === 'platform_admin' || userPermissions.campaigns) && (
+              {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.campaigns) && (
                 <button
                   onClick={() => setActiveTab('campaigns')}
                   title="Campaigns Workspace"
@@ -1017,7 +1308,7 @@ export default function App() {
               )}
 
               {/* Leads Database (Gated by Leads permission or Platform Admin) */}
-              {(userRole === 'platform_admin' || userPermissions.leads) && (
+              {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.leads) && (
                 <button
                   onClick={() => setActiveTab('leads')}
                   className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
@@ -1096,7 +1387,7 @@ export default function App() {
               )}
 
               {/* Reports & Analytics (Gated by Reports permission or Platform Admin) */}
-              {(userRole === 'platform_admin' || userPermissions.reports) && (
+              {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.reports) && (
                 <button
                   onClick={() => setActiveTab('reports')}
                   title="Reports & Analytics"
@@ -1121,7 +1412,7 @@ export default function App() {
               <div className="space-y-3 text-left overflow-y-auto flex-1 min-h-0 pr-1 pt-2 no-scrollbar">
 
                 {/* OCTAL Dialer Group */}
-                {(userRole === 'platform_admin' || userPermissions.octalDialer) && (
+                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.octalDialer) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('octalDialer', e)}
@@ -1192,7 +1483,7 @@ export default function App() {
 
 
                 {/* Auto Emailer Group */}
-                {(userRole === 'platform_admin' || userPermissions.autoEmailer) && (
+                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.autoEmailer) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('autoEmailer', e)}
@@ -1262,7 +1553,7 @@ export default function App() {
 
 
                 {/* Facebook Poster Group */}
-                {(userRole === 'platform_admin' || userPermissions.facebookPoster) && (
+                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.facebookPoster) && (
                 <div className="space-y-1">
                   <button
                     onClick={(e) => toggleAccordion('facebookPoster', e)}
@@ -1332,7 +1623,7 @@ export default function App() {
               </div>
             ) : (
               /* Collapsed Icon-Only Vertical Docked Rail */
-              (userRole === 'platform_admin' || userPermissions.octalDialer) && (
+              (userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.octalDialer) && (
                 <div className="space-y-3 flex flex-col items-center pt-2">
                   {[
                     { id: 'dialer', label: 'Auto Dialer', icon: PlaySquare },
@@ -1405,6 +1696,7 @@ export default function App() {
               serverUrl={SERVER_URL}
               authToken={effectiveAuthToken || ''}
               authUser={authUser}
+              displayName={userDisplayName || authUser}
               phoneConnected={socketData.phoneConnected}
               phoneDeviceName={socketData.phoneDeviceName}
               campaigns={campaigns}
@@ -1414,7 +1706,7 @@ export default function App() {
           )}
 
           {activeTab === 'crm' && (
-            (userRole === 'platform_admin' || userPermissions.crm) ? (
+            (userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.crm) ? (
               <CRMWorkspacePage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
@@ -1439,7 +1731,7 @@ export default function App() {
           )}
 
           {activeTab === 'campaigns' && (
-            (userRole === 'platform_admin' || userPermissions.campaigns) ? (
+            (userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.campaigns) ? (
               <CampaignWorkspacePage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
@@ -1460,7 +1752,7 @@ export default function App() {
           )}
 
           {activeTab === 'follow-ups' && (
-            (userRole === 'platform_admin' || userPermissions.crm) ? (
+            (userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.crm) ? (
               <CRMWorkspacePage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
@@ -1486,12 +1778,13 @@ export default function App() {
           )}
 
           {activeTab === 'reports' && (
-            (userRole === 'platform_admin' || userPermissions.reports) ? (
+            (userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.reports) ? (
               <ReportsPage
                 isLight={isLight}
                 serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken}
                 campaigns={campaigns}
+                userRole={authIdentity?.role || userRole}
               />
             ) : (
               <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
@@ -1514,6 +1807,7 @@ export default function App() {
               customerType={customerType}
               userPermissions={userPermissions}
               initialSubView={settingsSubView}
+              usersRolesTab={usersRolesInitialTab}
               onNavigateTab={(tab) => setActiveTab(tab as any)}
             />
           )}
@@ -1578,12 +1872,12 @@ export default function App() {
           )}
 
           {activeTab === 'leads' && (
-            (userRole === 'platform_admin' || userRole === 'admin' || userPermissions.leads) ? (
+            (userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.leads) ? (
               <LeadsTable
                 isLight={isLight}
                 serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken || ''}
-
+                userRole={authIdentity?.role || userRole}
               />
             ) : (
               <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
@@ -1693,6 +1987,7 @@ export default function App() {
               isLight={isLight}
               serverUrl={SERVER_URL}
               authToken={effectiveAuthToken}
+              userRole={authIdentity?.role || userRole}
             />
           )}
 

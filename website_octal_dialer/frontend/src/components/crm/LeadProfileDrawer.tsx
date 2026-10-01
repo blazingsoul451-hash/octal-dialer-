@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
   X, User, Calendar, Clock, AlertCircle, Plus, PhoneCall,
-  Send, Activity, Tag, Building2, ArrowRight
+  Send, Activity, Tag, Building2, ArrowRight, Trash2, FileText
 } from 'lucide-react';
 import type { CrmTask, CrmNote } from '../../types/crm';
 import { CloseTaskModal, RescheduleTaskModal, CancelTaskModal, CreateTaskModal } from './CRMModals';
+import { TaskTimerBadge } from './TaskTimerBadge';
 
 interface LeadProfileDrawerProps {
   isLight?: boolean;
@@ -155,6 +156,33 @@ export const LeadProfileDrawer: React.FC<LeadProfileDrawerProps> = ({
       // Ignored
     } finally {
       setSubmittingNote(false);
+    }
+  };
+
+  const handleDeleteNote = async (noteId: string) => {
+    try {
+      const res = await fetch(`${serverUrl}/api/crm/notes/${noteId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      });
+      if (res.ok) {
+        fetchProfile();
+      }
+    } catch {
+      // Ignored
+    }
+  };
+
+  const getCategoryBadge = (cat?: string) => {
+    switch (cat) {
+      case 'call': return 'bg-blue-500/15 text-blue-400 border border-blue-500/30';
+      case 'meeting': return 'bg-purple-500/15 text-purple-400 border border-purple-500/30';
+      case 'requirement': return 'bg-amber-500/15 text-amber-400 border border-amber-500/30';
+      case 'payment': return 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30';
+      case 'support': return 'bg-rose-500/15 text-rose-400 border border-rose-500/30';
+      default: return 'bg-zinc-800 text-zinc-300 border border-zinc-700';
     }
   };
 
@@ -315,39 +343,35 @@ export const LeadProfileDrawer: React.FC<LeadProfileDrawerProps> = ({
                 ) : (
                   <div className="space-y-2">
                     {tasks.map(task => {
-                      const isOverdue = task.status === 'overdue' || (task.status === 'pending' && new Date(task.dueAt).getTime() < Date.now());
+                      const isOverdue = task.status !== 'completed' && task.status !== 'cancelled' && Boolean(task.dueAt) && !isNaN(new Date(task.dueAt).getTime()) && new Date(task.dueAt).getTime() < Date.now();
                       return (
                         <div
                           key={task.id}
-                          className={`p-3 border rounded-xl flex flex-col gap-2 ${
+                          className={`p-3 border rounded-xl flex flex-col gap-2 transition ${
                             task.status === 'completed'
                               ? 'bg-[#0f1110] border-emerald-500/20 text-zinc-400'
                               : isOverdue
-                              ? 'bg-[#170e0f] border-red-500/30 text-white'
+                              ? 'bg-red-950/20 border-red-500/60 shadow-[0_0_15px_rgba(239,68,68,0.15)] text-white'
                               : 'bg-[#121216] border-[#27272a] text-white'
                           }`}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <span className="text-xs font-bold">{task.title}</span>
                                 <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold uppercase bg-zinc-800 text-zinc-300">
                                   {task.taskType}
                                 </span>
-                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${
-                                  task.status === 'completed'
-                                    ? 'bg-emerald-500/10 text-emerald-400'
-                                    : isOverdue
-                                    ? 'bg-red-500/10 text-red-400'
-                                    : 'bg-amber-500/10 text-amber-400'
-                                }`}>
-                                  {task.status}
-                                </span>
+                                {(task.dueAt || task.status === 'completed' || task.status === 'cancelled') && (
+                                  <TaskTimerBadge dueAt={task.dueAt} status={task.status} />
+                                )}
                               </div>
-                              <div className="text-[11px] text-zinc-400 flex items-center gap-3 mt-1">
+                              <div className="text-[11px] text-zinc-400 flex items-center gap-3 mt-1.5 font-mono">
                                 <span className="flex items-center gap-1">
-                                  <Clock className="w-3 h-3" />
-                                  {new Date(task.dueAt).toLocaleString()}
+                                  <Clock className="w-3 h-3 text-zinc-500" />
+                                  {task.dueAt && !isNaN(new Date(task.dueAt).getTime())
+                                    ? new Date(task.dueAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
+                                    : 'No deadline'}
                                 </span>
                               </div>
                             </div>
@@ -450,6 +474,58 @@ export const LeadProfileDrawer: React.FC<LeadProfileDrawerProps> = ({
                   </button>
                 </div>
               </form>
+
+              {/* Lead Interaction Notes List */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between">
+                  <h3 className={`text-xs font-mono font-black uppercase tracking-wider flex items-center gap-1.5 ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>
+                    <FileText className="w-3.5 h-3.5 text-amber-500" />
+                    <span>Lead Interaction Notes ({data.notes?.length || 0})</span>
+                  </h3>
+                </div>
+
+                {(!data.notes || data.notes.length === 0) ? (
+                  <div className={`p-4 border border-dashed rounded-xl text-center text-xs font-mono ${
+                    isLight ? 'border-slate-300 text-slate-500' : 'border-[#27272a] text-zinc-500'
+                  }`}>
+                    No notes recorded for this lead yet. Use the form above to add interaction logs.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {data.notes.map(note => (
+                      <div key={note.id} className={`p-3 border rounded-xl space-y-1.5 transition ${
+                        isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#121216] border-[#27272a]'
+                      }`}>
+                        <div className="flex items-center justify-between text-[11px] font-mono">
+                          <div className="flex items-center gap-2">
+                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${getCategoryBadge(note.category)}`}>
+                              {note.category}
+                            </span>
+                            <span className={`font-bold ${isLight ? 'text-slate-800' : 'text-zinc-300'}`}>
+                              {note.createdByName || 'Agent'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-zinc-500">
+                              {new Date(note.createdAt).toLocaleString()}
+                            </span>
+                            <button
+                              onClick={() => handleDeleteNote(note.id)}
+                              className="text-zinc-500 hover:text-red-400 p-1 rounded transition cursor-pointer"
+                              title="Delete note"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                        <p className={`text-xs whitespace-pre-wrap leading-relaxed ${isLight ? 'text-slate-900' : 'text-zinc-200'}`}>
+                          {note.body}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {/* Activity Timeline Stream */}
               <div className="space-y-3 pt-2">

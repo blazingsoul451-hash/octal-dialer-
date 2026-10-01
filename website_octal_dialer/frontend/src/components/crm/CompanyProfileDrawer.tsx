@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   X, Building2, User, Phone, Mail, Tag,
   Clock, AlertTriangle, Plus, Send,
-  PhoneCall
+  PhoneCall, Trash2
 } from 'lucide-react';
 import type { CrmCompany, CrmContact, CrmTask, CrmNote } from '../../types/crm';
 import { CloseTaskModal, RescheduleTaskModal, CancelTaskModal, AddContactModal, CreateTaskModal } from './CRMModals';
@@ -126,6 +126,22 @@ export const CompanyProfileDrawer: React.FC<CompanyProfileDrawerProps> = ({
       // Ignored
     } finally {
       setSubmittingNote(false);
+    }
+  };
+
+  const handleDeleteNote = async (noteId: string) => {
+    try {
+      const res = await fetch(`${serverUrl}/api/crm/notes/${noteId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      });
+      if (res.ok) {
+        fetchCompanyDetails();
+      }
+    } catch {
+      // Ignored
     }
   };
 
@@ -649,9 +665,18 @@ export const CompanyProfileDrawer: React.FC<CompanyProfileDrawerProps> = ({
                               </span>
                               <span className="font-bold text-zinc-300">{note.createdByName || 'Agent'}</span>
                             </div>
-                            <span className="text-zinc-500 font-mono text-[10px]">
-                              {new Date(note.createdAt).toLocaleString()}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-zinc-500 font-mono text-[10px]">
+                                {new Date(note.createdAt).toLocaleString()}
+                              </span>
+                              <button
+                                onClick={() => handleDeleteNote(note.id)}
+                                className="text-zinc-500 hover:text-red-400 p-1 rounded transition cursor-pointer"
+                                title="Delete note"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
                           <p className="text-xs text-zinc-200 whitespace-pre-wrap">{note.body}</p>
                         </div>

@@ -20,9 +20,11 @@ interface LeadsTableProps {
   serverUrl: string;
   authToken: string;
   contextSource?: string; // If provided, auto-filter by this source
+  userRole?: string;
 }
 
-export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, authToken, contextSource }) => {
+export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, authToken, contextSource, userRole }) => {
+  const isCompanyOwnerOrPlatformAdmin = userRole === 'admin' || userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'master_admin';
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -189,13 +191,15 @@ export const LeadsTable: React.FC<LeadsTableProps> = ({ isLight, serverUrl, auth
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               <span>Refresh</span>
             </button>
-            <button
-              onClick={handleExport}
-              className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs px-4 py-2 rounded-xl transition-all cursor-pointer shadow-sm"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Export CSV</span>
-            </button>
+            {isCompanyOwnerOrPlatformAdmin && (
+              <button
+                onClick={handleExport}
+                className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs px-4 py-2 rounded-xl transition-all cursor-pointer shadow-sm"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export CSV</span>
+              </button>
+            )}
           </div>
         </div>
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Eye, EyeOff, AlertCircle, CheckCircle2, ChevronDown, Search } from 'lucide-react';
 import { type AuthIdentity, tryNormalizeStructuralRole } from '../utils/roleUtils';
 
 interface LoginScreenProps {
@@ -19,6 +19,55 @@ interface GooglePromptError {
   message?: string;
 }
 
+const COUNTRY_CODES = [
+  { iso: 'PK', code: '+92', name: 'Pakistan' },
+  { iso: 'US', code: '+1', name: 'United States / Canada' },
+  { iso: 'GB', code: '+44', name: 'United Kingdom' },
+  { iso: 'AE', code: '+971', name: 'United Arab Emirates' },
+  { iso: 'SA', code: '+966', name: 'Saudi Arabia' },
+  { iso: 'AU', code: '+61', name: 'Australia' },
+  { iso: 'DE', code: '+49', name: 'Germany' },
+  { iso: 'FR', code: '+33', name: 'France' },
+  { iso: 'IN', code: '+91', name: 'India' },
+  { iso: 'SG', code: '+65', name: 'Singapore' },
+  { iso: 'MY', code: '+60', name: 'Malaysia' },
+  { iso: 'TR', code: '+90', name: 'Turkey' },
+  { iso: 'ES', code: '+34', name: 'Spain' },
+  { iso: 'IT', code: '+39', name: 'Italy' },
+  { iso: 'NL', code: '+31', name: 'Netherlands' },
+  { iso: 'CH', code: '+41', name: 'Switzerland' },
+  { iso: 'SE', code: '+46', name: 'Sweden' },
+  { iso: 'NO', code: '+47', name: 'Norway' },
+  { iso: 'DK', code: '+45', name: 'Denmark' },
+  { iso: 'IE', code: '+353', name: 'Ireland' },
+  { iso: 'ZA', code: '+27', name: 'South Africa' },
+  { iso: 'EG', code: '+20', name: 'Egypt' },
+  { iso: 'NG', code: '+234', name: 'Nigeria' },
+  { iso: 'KE', code: '+254', name: 'Kenya' },
+  { iso: 'BR', code: '+55', name: 'Brazil' },
+  { iso: 'MX', code: '+52', name: 'Mexico' },
+  { iso: 'NZ', code: '+64', name: 'New Zealand' },
+  { iso: 'JP', code: '+81', name: 'Japan' },
+  { iso: 'KR', code: '+82', name: 'South Korea' },
+  { iso: 'CN', code: '+86', name: 'China' },
+  { iso: 'HK', code: '+852', name: 'Hong Kong' },
+  { iso: 'PH', code: '+63', name: 'Philippines' },
+  { iso: 'ID', code: '+62', name: 'Indonesia' },
+  { iso: 'TH', code: '+66', name: 'Thailand' },
+  { iso: 'VN', code: '+84', name: 'Vietnam' },
+  { iso: 'BD', code: '+880', name: 'Bangladesh' },
+  { iso: 'LK', code: '+94', name: 'Sri Lanka' },
+  { iso: 'NP', code: '+977', name: 'Nepal' },
+  { iso: 'QA', code: '+974', name: 'Qatar' },
+  { iso: 'OM', code: '+968', name: 'Oman' },
+  { iso: 'BH', code: '+973', name: 'Bahrain' },
+  { iso: 'KW', code: '+965', name: 'Kuwait' },
+  { iso: 'JO', code: '+962', name: 'Jordan' },
+  { iso: 'LB', code: '+961', name: 'Lebanon' },
+  { iso: 'KZ', code: '+7', name: 'Kazakhstan' },
+  { iso: '🌐', code: '', name: 'Other / Custom' },
+];
+
 export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
 
@@ -32,7 +81,28 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [mobile, setMobile] = useState('');
+  const [countryCode, setCountryCode] = useState('+92');
+  const [isCountryPickerOpen, setIsCountryPickerOpen] = useState(false);
+  const [countrySearchQuery, setCountrySearchQuery] = useState('');
+  const countryPickerRef = useRef<HTMLDivElement>(null);
   const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (countryPickerRef.current && !countryPickerRef.current.contains(e.target as Node)) {
+        setIsCountryPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const currentCountry = COUNTRY_CODES.find(c => c.code === countryCode) || COUNTRY_CODES[0];
+  const filteredCountries = COUNTRY_CODES.filter(c =>
+    c.name.toLowerCase().includes(countrySearchQuery.toLowerCase()) ||
+    c.code.includes(countrySearchQuery) ||
+    c.iso.toLowerCase().includes(countrySearchQuery.toLowerCase())
+  );
 
   // Common form state
   const [loading, setLoading] = useState(false);
@@ -217,9 +287,14 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         pendingInvitation: data.pendingInvitation
       };
 
-      if (normalizedRole === 'platform_admin') {
-        localStorage.setItem('octal_platform_auth_token', data.token);
-        localStorage.setItem('octal_platform_auth_user', identity.username);
+      const roleLower = (normalizedRole || '').toLowerCase();
+      if (roleLower === 'platform_admin' || roleLower === 'superadmin' || roleLower === 'master_admin' || roleLower === 'super_admin') {
+        sessionStorage.setItem('octal_platform_auth_token', data.token);
+        sessionStorage.setItem('octal_platform_auth_user', identity.username);
+        localStorage.removeItem('octal_platform_auth_token');
+        localStorage.removeItem('octal_platform_auth_user');
+        localStorage.removeItem('octal_auth_token');
+        localStorage.removeItem('octal_auth_user');
       } else {
         localStorage.setItem('octal_customer_auth_token', data.token);
         localStorage.setItem('octal_customer_auth_user', identity.username);
@@ -290,6 +365,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
     e.preventDefault();
     setError(null);
     setSuccessMsg(null);
+    let normalizedMobile = mobile.trim();
 
     if (mode === 'register') {
       if (!businessName.trim()) {
@@ -308,18 +384,36 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         setError('Please enter your Email Address.');
         return;
       }
+      if (email.includes('+')) {
+        setError('Email alias addresses containing "+" are not allowed. Please enter your primary work email.');
+        return;
+      }
       if (!password || password.length < 6) {
         setError('Password must be at least 6 characters.');
         return;
       }
-      if (!mobile.trim()) {
+      const rawMobile = mobile.trim();
+      if (!rawMobile) {
         setError('Please enter your Mobile number.');
+        return;
+      }
+
+      let finalMobile = rawMobile;
+      if (countryCode && !rawMobile.startsWith('+')) {
+        const stripped = rawMobile.startsWith('0') ? rawMobile.slice(1) : rawMobile;
+        finalMobile = `${countryCode}${stripped}`;
+      }
+      normalizedMobile = finalMobile;
+
+      const digitsOnly = finalMobile.replace(/\D/g, '');
+      if (digitsOnly.length < 7 || digitsOnly.length > 15) {
+        setError('Please enter a valid phone number (between 7 and 15 digits).');
         return;
       }
 
       // Persist business name & mobile for seamless onboarding wizard prefill
       localStorage.setItem('pending_business_name', businessName.trim());
-      localStorage.setItem('pending_mobile', mobile.trim());
+      localStorage.setItem('pending_mobile', finalMobile);
     } else if (mode === 'forgot') {
       if (!username.trim() && !email.trim()) {
         setError('Please provide your email address or username.');
@@ -327,7 +421,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       }
     } else {
       if (!username.trim()) {
-        setError('Please enter your User Name / Email.');
+        setError('Please enter your Email Address.');
         return;
       }
       if (!password) {
@@ -371,7 +465,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
               email: email.trim(),
               password,
               businessName: businessName.trim(),
-              mobile: mobile.trim(),
+              mobile: normalizedMobile,
               captchaToken
             };
           } else if (mode === 'forgot') {
@@ -429,9 +523,14 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         pendingInvitation: data.pendingInvitation
       };
 
-      if (normalizedRole === 'platform_admin') {
-        localStorage.setItem('octal_platform_auth_token', token);
-        localStorage.setItem('octal_platform_auth_user', returnedUser);
+      const roleLower = (normalizedRole || '').toLowerCase();
+      if (roleLower === 'platform_admin' || roleLower === 'superadmin' || roleLower === 'master_admin' || roleLower === 'super_admin') {
+        sessionStorage.setItem('octal_platform_auth_token', token);
+        sessionStorage.setItem('octal_platform_auth_user', returnedUser);
+        localStorage.removeItem('octal_platform_auth_token');
+        localStorage.removeItem('octal_platform_auth_user');
+        localStorage.removeItem('octal_auth_token');
+        localStorage.removeItem('octal_auth_user');
       } else {
         localStorage.setItem('octal_customer_auth_token', token);
         localStorage.setItem('octal_customer_auth_user', returnedUser);
@@ -542,18 +641,19 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
           {/* Right Panel: White Card (rounded-[25px], width 445px, padding 30px) */}
           <div className="w-full max-w-[445px] bg-white rounded-[25px] shadow-2xl p-[30px] z-10 flex flex-col justify-center min-h-[428px]">
             <form onSubmit={handleSubmit} className="w-full">
-              {/* User Name */}
+              {/* Email Address */}
               <div className="mb-4">
                 <label className="block text-sm font-normal text-gray-800 mb-1.5">
-                  User Name
+                  Email Address
                 </label>
                 <input
                   id="login-username"
+                  name="email"
                   type="text"
                   value={username}
                   onChange={e => setUsername(e.target.value)}
-                  placeholder="Email"
-                  autoComplete="username"
+                  placeholder="name@company.com"
+                  autoComplete="email"
                   required
                   className="w-full px-3 h-[38px] rounded-[4px] border border-gray-300 text-gray-800 text-sm placeholder-gray-400 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-400/30 transition-all shadow-sm"
                 />
@@ -690,7 +790,9 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                 </label>
                 <input
                   id="register-business-name"
+                  name="organization"
                   type="text"
+                  autoComplete="organization"
                   value={businessName}
                   onChange={e => setBusinessName(e.target.value)}
                   placeholder="Business Name"
@@ -707,7 +809,9 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                   </label>
                   <input
                     id="register-firstname"
+                    name="given-name"
                     type="text"
+                    autoComplete="given-name"
                     value={firstName}
                     onChange={e => setFirstName(e.target.value)}
                     placeholder="First Name"
@@ -721,7 +825,9 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                   </label>
                   <input
                     id="register-lastname"
+                    name="family-name"
                     type="text"
+                    autoComplete="family-name"
                     value={lastName}
                     onChange={e => setLastName(e.target.value)}
                     placeholder="Last Name"
@@ -739,7 +845,9 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                   </label>
                   <input
                     id="register-email"
+                    name="email"
                     type="email"
+                    autoComplete="email"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
                     placeholder="Email"
@@ -754,7 +862,9 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                   <div className="relative">
                     <input
                       id="register-password"
+                      name="password"
                       type={showPassword ? 'text' : 'password'}
+                      autoComplete="new-password"
                       value={password}
                       onChange={e => setPassword(e.target.value)}
                       placeholder="Password"
@@ -779,15 +889,100 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                   <label className="block text-sm font-normal text-gray-700 mb-1">
                     Mobile <span className="text-red-500 font-bold">*</span>
                   </label>
-                  <input
-                    id="register-mobile"
-                    type="tel"
-                    value={mobile}
-                    onChange={e => setMobile(e.target.value)}
-                    placeholder="Mobile"
-                    required
-                    className="w-full px-3 h-[38px] rounded-[4px] border border-gray-300 text-gray-800 text-sm placeholder-gray-400 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-400/30 transition-all shadow-sm"
-                  />
+                  <div className="relative flex gap-1.5" ref={countryPickerRef}>
+                    {/* Custom Styled Country Dropdown Trigger */}
+                    <button
+                      type="button"
+                      id="register-country-trigger"
+                      onClick={() => setIsCountryPickerOpen(!isCountryPickerOpen)}
+                      className="w-[115px] shrink-0 h-[38px] px-2.5 rounded-[4px] border border-gray-300 bg-white hover:bg-amber-50/50 hover:border-amber-500 transition-all flex items-center justify-between text-xs cursor-pointer shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-400/30 select-none"
+                    >
+                      <div className="flex items-center gap-1.5 truncate">
+                        <span className="px-1.5 py-0.5 rounded bg-slate-950 text-amber-400 font-mono font-bold text-[10px]">
+                          {currentCountry.iso}
+                        </span>
+                        <span className="font-bold text-slate-900 text-[13px]">
+                          {currentCountry.code || 'Other'}
+                        </span>
+                      </div>
+                      <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${isCountryPickerOpen ? 'rotate-180 text-amber-600' : ''}`} />
+                    </button>
+
+                    {/* Popover Dropdown Panel */}
+                    {isCountryPickerOpen && (
+                      <div className="absolute top-[42px] left-0 z-50 w-[290px] bg-white border border-slate-200 rounded-xl shadow-2xl p-2.5 text-left animate-in fade-in-50 duration-150">
+                        {/* Search Input */}
+                        <div className="relative mb-2">
+                          <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                          <input
+                            type="text"
+                            value={countrySearchQuery}
+                            onChange={e => setCountrySearchQuery(e.target.value)}
+                            placeholder="Search country or code..."
+                            className="w-full pl-9 pr-3 py-2 text-xs font-medium bg-slate-50 border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:border-amber-500 focus:bg-white focus:ring-2 focus:ring-amber-400/20 transition-all"
+                            autoFocus
+                          />
+                        </div>
+
+                        {/* List of Countries */}
+                        <div className="max-h-[210px] overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                          {filteredCountries.length === 0 ? (
+                            <div className="p-4 text-center text-xs text-slate-500 font-medium">
+                              No matching countries found
+                            </div>
+                          ) : (
+                            filteredCountries.map((c, i) => {
+                              const isSelected = c.code === countryCode;
+                              return (
+                                <button
+                                  key={i}
+                                  type="button"
+                                  onClick={() => {
+                                    setCountryCode(c.code);
+                                    setIsCountryPickerOpen(false);
+                                    setCountrySearchQuery('');
+                                  }}
+                                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-all cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-amber-500 text-slate-950 font-extrabold shadow-sm'
+                                      : 'text-slate-800 hover:bg-slate-100 hover:text-slate-950'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2 truncate">
+                                    <span className={`px-1.5 py-0.5 rounded font-mono font-bold text-[10px] ${
+                                      isSelected
+                                        ? 'bg-slate-950 text-amber-400'
+                                        : 'bg-slate-200/80 text-slate-700'
+                                    }`}>
+                                      {c.iso}
+                                    </span>
+                                    <span className={`truncate text-[13px] ${isSelected ? 'font-black text-slate-950' : 'font-semibold text-slate-900'}`}>
+                                      {c.name}
+                                    </span>
+                                  </div>
+                                  <span className={`font-mono text-xs shrink-0 ml-2 ${isSelected ? 'text-slate-950 font-black' : 'text-slate-500 font-bold'}`}>
+                                    {c.code}
+                                  </span>
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    <input
+                      id="register-mobile"
+                      name="tel"
+                      type="tel"
+                      autoComplete="tel"
+                      value={mobile}
+                      onChange={e => setMobile(e.target.value)}
+                      placeholder="328 8144064"
+                      required
+                      className="flex-1 min-w-0 px-3 h-[38px] rounded-[4px] border border-gray-300 text-gray-800 text-sm placeholder-gray-400 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-400/30 transition-all shadow-sm"
+                    />
+                  </div>
                 </div>
                 <div>
                   <button

@@ -17,6 +17,8 @@ interface UserItem {
   createdAt: string;
   roleId?: string;
   roleName?: string;
+  assignedModules?: string[];
+  effectiveModules?: string[];
   permissions?: {
     id: string;
     userId: string;
@@ -86,6 +88,7 @@ interface UsersAndRolesViewProps {
   authToken: string;
   currentUser: string;
   currentUserRole?: string;
+  initialTab?: 'overview' | 'users' | 'team-leads' | 'teams' | 'invitations' | 'roles' | 'access-review';
   onBack?: () => void;
 }
 
@@ -105,9 +108,10 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
   authToken,
   currentUser: _currentUser,
   currentUserRole: _currentUserRole,
+  initialTab,
   onBack
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'team-leads' | 'teams' | 'invitations' | 'roles' | 'access-review'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'team-leads' | 'teams' | 'invitations' | 'roles' | 'access-review'>(initialTab || 'overview');
 
   // Core Data
   const [users, setUsers] = useState<UserItem[]>([]);
@@ -292,6 +296,12 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
     fetchData();
   }, [serverUrl, authToken]);
 
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
+
   // ─── Module Entitlement Helpers (PLATFORM -> COMPANY -> TEAM -> USER) ─────
   const isModuleCompanyEntitled = useCallback((moduleId: string): boolean => {
     const normKey = moduleId === 'octalDialer' ? 'dialer' :
@@ -314,6 +324,8 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
   }, [isModuleCompanyEntitled]);
 
   const getUserEffectiveModulesCount = useCallback((user: UserItem): number => {
+    if (user.effectiveModules) return user.effectiveModules.length;
+    if (user.status && user.status.toLowerCase() !== 'active') return 0;
     if (user.role === 'admin') {
       return companyAvailableCount;
     }
@@ -464,14 +476,14 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
     setEditEmail(user.email || '');
     setEditPhone(user.phone || '');
     setEditRole((user.role === 'admin' ? 'admin' : user.role === 'team_lead' ? 'team_lead' : 'agent'));
-    setEditStatus((user.status?.toLowerCase() === 'disabled' ? 'Disabled' : 'Active'));
+    setEditStatus((user.status && user.status.toLowerCase() !== 'active' ? 'Disabled' : 'Active'));
     setEditPassword('');
 
     // Pre-fill modules map respecting company ceiling
     const modMap: Record<string, boolean> = {};
     AVAILABLE_MODULES.forEach(m => {
       const p = user.permissions?.find(x => x.moduleId === m.id || (m.id === 'octalDialer' && x.moduleId === 'dialer'));
-      const isAssigned = p ? p.enabled === 1 : false;
+      const isAssigned = user.assignedModules ? user.assignedModules.includes(m.id) : (p ? p.enabled === 1 : false);
       modMap[m.id] = user.role === 'admin' ? isModuleCompanyEntitled(m.id) : (isAssigned && isModuleCompanyEntitled(m.id));
     });
     setEditModules(modMap);
@@ -1854,8 +1866,8 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                     {AVAILABLE_MODULES.map(m => {
                       const companyEntitled = isModuleCompanyEntitled(m.id);
                       const perm = selectedUser.permissions?.find(p => p.moduleId === m.id || (m.id === 'octalDialer' && p.moduleId === 'dialer'));
-                      const userAssigned = selectedUser.role === 'admin' ? true : (perm ? perm.enabled === 1 : false);
-                      const isEffective = selectedUser.role === 'admin' ? companyEntitled : (companyEntitled && userAssigned);
+                      const userAssigned = selectedUser.assignedModules ? selectedUser.assignedModules.includes(m.id) : (selectedUser.role === 'admin' || (perm ? perm.enabled === 1 : false));
+                      const isEffective = selectedUser.effectiveModules ? selectedUser.effectiveModules.includes(m.id) : (companyEntitled && userAssigned && (!selectedUser.status || selectedUser.status.toLowerCase() === 'active'));
 
                       return (
                         <tr key={m.id} className="hover:bg-slate-800/30">

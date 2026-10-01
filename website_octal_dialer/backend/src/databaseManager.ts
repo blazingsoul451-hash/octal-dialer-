@@ -91,6 +91,9 @@ export interface CallLog {
   outcome: string;
   duration: number;
   timestamp: string;
+  tenantId?: string;
+  userId?: string;
+  userName?: string;
 }
 
 // ─── Exported API (explicit tenantId required - fail closed) ─────────────
@@ -148,7 +151,7 @@ export async function getTenantSeatUsage(tenantId: string): Promise<TenantSeatUs
   }
 
   const activeRow = await db.queryOne<{ count: string | number }>(
-    `SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin') AND LOWER(status) = 'active'`,
+    `SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('superadmin', 'platform_admin', 'master_admin', 'super_admin') AND LOWER(status) = 'active'`,
     [tenantId]
   );
   const activeSeats = parseInt(String(activeRow?.count || '0'), 10);
@@ -206,6 +209,12 @@ export async function createWorkspaceInvitation(data: {
   expiresAt: string;
   createdAt: string;
 }): Promise<WorkspaceInvitation> {
+  return db.withTransaction(async () => {
+  await lockWorkspaceForMembershipChange(data.tenantId);
+  if ((await getTenantSeatUsage(data.tenantId)).availableSeats <= 0) throw new Error('Workspace seat limit reached.');
+  const duplicate = await db.queryOne(`SELECT id FROM workspace_invitations WHERE "tenantId" = $1 AND LOWER(email) = LOWER($2) AND status = 'PENDING' AND "expiresAt" > $3`, [data.tenantId, data.email, new Date().toISOString()]);
+  if (duplicate) throw new Error('A pending invitation already exists in this workspace.');
+  if (data.teamId && !(await db.queryOne('SELECT id FROM teams WHERE id = $1 AND "tenantId" = $2', [data.teamId, data.tenantId]))) throw new Error('Team does not belong to this workspace.');
   await db.execute(
     `INSERT INTO workspace_invitations (id, "tenantId", email, role, "teamId", "invitedByUserId", "tokenHash", status, "initialModules", "expiresAt", "createdAt")
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $9, $10)`,
@@ -227,6 +236,13 @@ export async function createWorkspaceInvitation(data: {
     `SELECT * FROM workspace_invitations WHERE id = $1`,
     [data.id]
   ))!;
+  });
+}
+
+/** Serialize capacity checks and membership mutations on the same transaction connection. */
+export async function lockWorkspaceForMembershipChange(tenantId: string): Promise<void> {
+  const tenant = await db.queryOne<any>('SELECT id, status FROM tenants WHERE id = $1 FOR UPDATE', [tenantId]);
+  if (!tenant || (tenant.status !== 'active' && tenant.status !== 'trial')) throw new Error('An active or trial workspace is required.');
 }
 
 export async function revokeWorkspaceInvitation(id: string, tenantId: string): Promise<boolean> {
@@ -240,7 +256,7 @@ export async function revokeWorkspaceInvitation(id: string, tenantId: string): P
 export async function acceptWorkspaceInvitation(id: string, userId: string): Promise<boolean> {
   const nowIso = new Date().toISOString();
   const res = await db.execute(
-    `UPDATE workspace_invitations SET status = 'ACCEPTED', "acceptedAt" = $1, "acceptedByUserId" = $2 WHERE id = $3 AND status = 'PENDING'`,
+    `UPDATE workspace_invitations SET status = 'ACCEPTED', "acceptedAt" = $1, "acceptedByUserId" = $2 WHERE id = $3 AND status = 'PENDING' AND "expiresAt" > $1`,
     [nowIso, userId, id]
   );
   return res.rowCount > 0;
@@ -611,13 +627,23 @@ export async function getLogByLeadId(leadId: string, tenantId: string): Promise<
   return db.queryOne<CallLog>(`SELECT * FROM call_logs WHERE "leadId" = $1 AND "tenantId" = $2 LIMIT 1`, [leadId, tenantId]);
 }
 
-export async function createLog(leadId: string, outcome: string, duration: number, tenantId: string): Promise<CallLog | null> {
+export async function createLog(leadId: string, outcome: string, duration: number, tenantId: string, userId?: string, userName?: string): Promise<CallLog | null> {
   if (!tenantId || !leadId) return null;
   const lead = await getLead(leadId, tenantId);
   if (!lead) return null;
 
   const resolvedTenantId = (lead as any).tenantId || tenantId;
   const campaign = await db.queryOne<Campaign>(`SELECT * FROM campaigns WHERE id = $1 AND "tenantId" = $2`, [lead.campaignId, resolvedTenantId]);
+
+  let resolvedUserName = userName;
+  if (userId && !resolvedUserName) {
+    try {
+      const u = await db.queryOne<{ username: string }>(`SELECT username FROM users WHERE id = $1 LIMIT 1`, [userId]);
+      if (u?.username) resolvedUserName = u.username;
+    } catch {
+      // ignore
+    }
+  }
 
   const log: CallLog & { tenantId: string } = {
     id: 'log_' + Math.random().toString(36).substring(2, 11),
@@ -628,14 +654,16 @@ export async function createLog(leadId: string, outcome: string, duration: numbe
     outcome,
     duration,
     tenantId: resolvedTenantId,
+    userId: userId || undefined,
+    userName: resolvedUserName || undefined,
     timestamp: new Date().toISOString()
   };
 
   await db.withTransaction(async () => {
     await db.execute(`
-      INSERT INTO call_logs (id, "leadId", "leadName", "leadPhone", "campaignName", outcome, duration, "tenantId", timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    `, [log.id, log.leadId, log.leadName, log.leadPhone, log.campaignName, log.outcome, log.duration, log.tenantId, log.timestamp]);
+      INSERT INTO call_logs (id, "leadId", "leadName", "leadPhone", "campaignName", outcome, duration, "tenantId", "userId", "userName", timestamp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `, [log.id, log.leadId, log.leadName, log.leadPhone, log.campaignName, log.outcome, log.duration, log.tenantId, log.userId || null, log.userName || null, log.timestamp]);
 
     await updateLeadStatus(leadId, 'COMPLETED', outcome, duration, resolvedTenantId);
   });
@@ -643,8 +671,18 @@ export async function createLog(leadId: string, outcome: string, duration: numbe
   return log;
 }
 
-export async function createManualLog(phone: string, name: string, outcome: string, duration: number, tenantId: string): Promise<CallLog> {
+export async function createManualLog(phone: string, name: string, outcome: string, duration: number, tenantId: string, userId?: string, userName?: string): Promise<CallLog> {
   const tId = tenantId;
+  let resolvedUserName = userName;
+  if (userId && !resolvedUserName) {
+    try {
+      const u = await db.queryOne<{ username: string }>(`SELECT username FROM users WHERE id = $1 LIMIT 1`, [userId]);
+      if (u?.username) resolvedUserName = u.username;
+    } catch {
+      // ignore
+    }
+  }
+
   const log: CallLog & { tenantId: string } = {
     id: 'log_' + Math.random().toString(36).substring(2, 11),
     leadId: 'manual_' + Date.now(),
@@ -654,12 +692,14 @@ export async function createManualLog(phone: string, name: string, outcome: stri
     outcome,
     duration,
     tenantId: tId,
+    userId: userId || undefined,
+    userName: resolvedUserName || undefined,
     timestamp: new Date().toISOString()
   };
   await db.execute(`
-    INSERT INTO call_logs (id, "leadId", "leadName", "leadPhone", "campaignName", outcome, duration, "tenantId", timestamp)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-  `, [log.id, log.leadId, log.leadName, log.leadPhone, log.campaignName, log.outcome, log.duration, log.tenantId, log.timestamp]);
+    INSERT INTO call_logs (id, "leadId", "leadName", "leadPhone", "campaignName", outcome, duration, "tenantId", "userId", "userName", timestamp)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+  `, [log.id, log.leadId, log.leadName, log.leadPhone, log.campaignName, log.outcome, log.duration, log.tenantId, log.userId || null, log.userName || null, log.timestamp]);
   return log;
 }
 
@@ -1058,11 +1098,11 @@ export async function updateLogDisposition(data: {
     if (targetLog) {
       // UPDATE ONLY the specific target log by its unique primary key id
       await db.execute(
-        `UPDATE call_logs SET outcome = $1 WHERE id = $2 AND "tenantId" = $3`,
-        [outcome, targetLog.id, tenantId]
+        `UPDATE call_logs SET outcome = $1, "userId" = COALESCE(call_logs."userId", $4), "userName" = COALESCE(call_logs."userName", $5) WHERE id = $2 AND "tenantId" = $3`,
+        [outcome, targetLog.id, tenantId, userId || null, username || null]
       );
     } else {
-      await createLog(leadId, outcome, lead.duration || 0, tenantId);
+      await createLog(leadId, outcome, lead.duration || 0, tenantId, userId, username);
     }
 
     // 3. Record in dispositions table
@@ -1428,7 +1468,7 @@ async function assertTenantRecords(table: 'teams' | 'users' | 'campaigns', ids: 
   for (const id of new Set(ids)) {
     if (typeof id !== 'string' || !id) throw new Error('Invalid record ID.');
     const query = table === 'users'
-      ? `SELECT id FROM "users" WHERE id = $1 AND "tenantId" = $2 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin') FOR UPDATE`
+      ? `SELECT id FROM "users" WHERE id = $1 AND "tenantId" = $2 AND LOWER(role) NOT IN ('superadmin', 'platform_admin', 'master_admin', 'super_admin') FOR UPDATE`
       : `SELECT id FROM "${table}" WHERE id = $1 AND "tenantId" = $2 FOR UPDATE`;
     const row = await db.queryOne(query, [id, tenantId]);
     if (!row) throw new Error(`Record not found in your tenant${table === 'users' ? ' (platform administrators cannot be assigned to customer teams)' : ''}.`);
@@ -1916,8 +1956,8 @@ export async function getScopedLogs(actor: any, tenantId: string): Promise<CallL
   return db.queryAll<CallLog>(`
     SELECT cl.*
     FROM call_logs cl
-    JOIN leads l ON l.id = cl."leadId" AND l."tenantId" = cl."tenantId"
-    WHERE cl."tenantId" = $1 AND l."assignedTo" IN (${placeholders})
+    LEFT JOIN leads l ON l.id = cl."leadId" AND l."tenantId" = cl."tenantId"
+    WHERE cl."tenantId" = $1 AND (cl."userId" IN (${placeholders}) OR l."assignedTo" IN (${placeholders}))
     ORDER BY cl.timestamp DESC
   `, [tenantId, ...allowedUserIds]);
 }
@@ -2131,7 +2171,7 @@ export async function updateTenantSeatLimit(tenantId: string, seatLimit: number,
   const now = new Date().toISOString();
   const currentTenant = await db.queryOne<any>(`SELECT "maxAgents" FROM tenants WHERE id = $1`, [tenantId]);
   const activeUsersCount = await db.queryOne<{ c: string | number }>(`
-    SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
+    SELECT COUNT(*) as c FROM users WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('superadmin', 'platform_admin', 'master_admin', 'super_admin')
   `, [tenantId]);
   const activeUsers = Number(activeUsersCount?.c || 0);
   const previousLimit = Number(currentTenant?.maxAgents || 10);
@@ -2185,7 +2225,7 @@ export async function getGlobalCustomerUsers(options: {
       u."updatedAt"
     FROM users u
     LEFT JOIN tenants t ON t.id = u."tenantId"
-    WHERE LOWER(u.role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
+    WHERE LOWER(u.role) NOT IN ('superadmin', 'platform_admin', 'master_admin', 'super_admin')
   `;
   const params: any[] = [];
 
@@ -2499,12 +2539,15 @@ export interface DetailedTenantRecord {
   slug: string;
   customerType: 'COMPANY' | 'PERSONAL';
   status: 'active' | 'suspended' | 'trial' | 'past_due';
+  isTrial?: boolean;
+  trialEndsAt?: string | null;
   primaryOwner: {
     username: string;
     email: string | null;
     displayName?: string;
   };
   plan: string;
+  tier?: string;
   subscriptionStatus: string;
   moduleEntitlements: string[];
   createdAt: string;
@@ -2561,7 +2604,7 @@ export const ALL_CANONICAL_MODULES: CanonicalModule[] = [
 ];
 
 export function normalizeModuleKey(rawKey: string): string {
-  const clean = (rawKey || '').trim();
+  const clean = typeof rawKey === 'string' ? rawKey.trim() : '';
   for (const mod of ALL_CANONICAL_MODULES) {
     if (mod.id === clean || mod.key === clean) return mod.id;
     if (mod.aliases && mod.aliases.includes(clean)) return mod.id;
@@ -2571,7 +2614,17 @@ export function normalizeModuleKey(rawKey: string): string {
 
 export async function getTenantModuleEntitlements(tenantId: string): Promise<Record<string, boolean>> {
   const result: Record<string, boolean> = {};
-  ALL_CANONICAL_MODULES.forEach(m => {
+
+  // All canonical business modules default to TRUE (included in all company plans unless explicitly turned off)
+  CANONICAL_MODULES.forEach(m => {
+    result[m.id] = true;
+    if (m.aliases) {
+      m.aliases.forEach(a => { result[a] = true; });
+    }
+  });
+
+  // Legacy scrapers default to FALSE (independent add-ons)
+  LEGACY_SCRAPER_MODULES.forEach(m => {
     result[m.id] = false;
     if (m.aliases) {
       m.aliases.forEach(a => { result[a] = false; });
@@ -2585,8 +2638,12 @@ export async function getTenantModuleEntitlements(tenantId: string): Promise<Rec
       SELECT "moduleId", enabled FROM tenant_module_entitlements WHERE "tenantId" = $1
     `, [tenantId]);
 
+    const existingCanonicalKeys = new Set<string>();
+
     for (const r of rows) {
       const canonical = normalizeModuleKey(r.moduleId);
+      existingCanonicalKeys.add(canonical);
+      // Explicit 1 = enabled, explicit 0 = disabled by Master Admin
       const isEnabled = Number(r.enabled) === 1;
       result[canonical] = isEnabled;
       const modDef = ALL_CANONICAL_MODULES.find(m => m.id === canonical);
@@ -2594,15 +2651,26 @@ export async function getTenantModuleEntitlements(tenantId: string): Promise<Rec
         modDef.aliases.forEach(a => { result[a] = isEnabled; });
       }
     }
-  } catch (err) {
-    console.error(`[getTenantModuleEntitlements] Error querying entitlements for ${tenantId} (failing closed):`, err);
-    // Explicit fail-closed on database error
-    ALL_CANONICAL_MODULES.forEach(m => {
-      result[m.id] = false;
-      if (m.aliases) {
-        m.aliases.forEach(a => { result[a] = false; });
+
+    // Auto-seed missing canonical modules into tenant_module_entitlements table
+    // so PostgreSQL records are permanently created and explicitly stored with enabled = 1
+    const missingCanonical = CANONICAL_MODULES.filter(m => !existingCanonicalKeys.has(m.id));
+    if (missingCanonical.length > 0) {
+      const now = new Date().toISOString();
+      for (const missing of missingCanonical) {
+        try {
+          await db.execute(`
+            INSERT INTO tenant_module_entitlements (id, "tenantId", "moduleId", enabled, "updatedBy", "updatedAt")
+            VALUES ($1, $2, $3, 1, 'system_auto_seed', $4)
+            ON CONFLICT ("tenantId", "moduleId") DO NOTHING
+          `, ['tme_' + crypto.randomUUID(), tenantId, missing.id, now]);
+        } catch {
+          // ignore concurrent collision
+        }
       }
-    });
+    }
+  } catch (err) {
+    console.error(`[getTenantModuleEntitlements] Error querying entitlements for ${tenantId}:`, err);
   }
 
   return result;
@@ -2615,6 +2683,9 @@ export async function setTenantModuleEntitlement(
   updatedBy: string
 ): Promise<void> {
   const canonicalId = normalizeModuleKey(moduleId);
+  if (!ALL_CANONICAL_MODULES.some(m => m.id === canonicalId) || typeof enabled !== 'boolean') {
+    throw new Error('A known module ID and boolean enabled value are required.');
+  }
   const enabledInt = enabled ? 1 : 0;
   const now = new Date().toISOString();
   const id = 'tme_' + crypto.randomUUID();
@@ -2651,9 +2722,9 @@ export async function getTenantAccessMatrix(tenantId: string): Promise<any[]> {
   const companyCeilingSummary = `${enabledCompanyModules.length}/${CANONICAL_MODULES.length} company modules`;
 
   const users = await db.queryAll<any>(`
-    SELECT id, username, "displayName", email, role, status, "createdAt"
+    SELECT id, username, "displayName", email, role, "roleId", "tenantId", status, "createdAt"
     FROM users
-    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
+    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('superadmin', 'platform_admin', 'master_admin', 'super_admin')
     ORDER BY CASE WHEN role = 'admin' THEN 1 WHEN role = 'team_lead' THEN 2 ELSE 3 END, "createdAt" ASC
   `, [tenantId]);
 
@@ -2682,7 +2753,8 @@ export async function getTenantAccessMatrix(tenantId: string): Promise<any[]> {
     }
   });
 
-  return users.map(u => {
+  const { getUserModuleAccess } = await import('./authManager');
+  return Promise.all(users.map(async u => {
     const isOwner = u.role === 'admin';
     const isTeamLead = u.role === 'team_lead';
     const assignedSet = userPermMap.get(u.id) || new Set<string>();
@@ -2694,7 +2766,9 @@ export async function getTenantAccessMatrix(tenantId: string): Promise<any[]> {
       assignedList = Array.from(assignedSet);
     }
 
-    const effectiveList = assignedList.filter(modId => entitlements[modId] === true);
+    const access = await getUserModuleAccess(u, entitlements);
+    assignedList = access.assignedModules;
+    const effectiveList = access.effectiveModules;
     const userTeams = userTeamsMap.get(u.id) || [];
     const teamDisplay = isOwner 
       ? 'Entire Company' 
@@ -2720,7 +2794,7 @@ export async function getTenantAccessMatrix(tenantId: string): Promise<any[]> {
       companyEntitlements: enabledCompanyModules.map(m => m.id),
       status: u.status || 'Active'
     };
-  });
+  }));
 }
 
 export interface DetailedTenantsListResult {
@@ -2836,14 +2910,18 @@ export async function getDetailedTenantsList(options: {
 
   // Module entitlements breakdown across page
   const tenantModulesMap: Record<string, string[]> = {};
+  const tenantsConfigured = new Set<string>();
   tenantIds.forEach(id => { tenantModulesMap[id] = []; });
   try {
     const tmeRows = await db.queryAll<any>(`
-      SELECT "tenantId", "moduleId" FROM tenant_module_entitlements WHERE enabled = 1
+      SELECT "tenantId", "moduleId", enabled FROM tenant_module_entitlements
     `);
     tmeRows.forEach(r => {
-      if (r.tenantId && tenantModulesMap[r.tenantId]) {
-        tenantModulesMap[r.tenantId].push(normalizeModuleKey(r.moduleId));
+      if (r.tenantId && tenantModulesMap[r.tenantId] !== undefined) {
+        tenantsConfigured.add(r.tenantId);
+        if (Number(r.enabled) === 1) {
+          tenantModulesMap[r.tenantId].push(normalizeModuleKey(r.moduleId));
+        }
       }
     });
   } catch {}
@@ -2918,11 +2996,20 @@ export async function getDetailedTenantsList(options: {
   } catch {}
 
   // Subscriptions
-  const subMap: Record<string, { planId: string; status: string }> = {};
+  const subMap: Record<string, { planId: string; status: string; currentPeriodEnd: string | null; trialEnd: string | null }> = {};
   try {
-    const subRows = await db.queryAll<any>(`SELECT "tenantId", "planId", status FROM subscriptions`);
+    const subRows = await db.queryAll<any>(`
+      SELECT "tenantId", "planId", status, "currentPeriodEnd", "trialEnd", "createdAt" 
+      FROM subscriptions 
+      ORDER BY "createdAt" ASC
+    `);
     subRows.forEach(r => {
-      if (r.tenantId) subMap[r.tenantId] = { planId: r.planId || 'standard', status: r.status || 'active' };
+      if (r.tenantId) subMap[r.tenantId] = {
+        planId: r.planId || 'starter',
+        status: r.status || 'active',
+        currentPeriodEnd: r.currentPeriodEnd || null,
+        trialEnd: r.trialEnd || null
+      };
     });
   } catch {}
 
@@ -2938,7 +3025,28 @@ export async function getDetailedTenantsList(options: {
     const offlineDevices = deviceOfflineMap[t.id] || 0;
     const totalRegisteredDevices = connectedDevices + offlineDevices;
 
-    const sub = subMap[t.id] || { planId: t.tier || 'standard', status: t.status === 'suspended' ? 'suspended' : 'active' };
+    const sub = subMap[t.id] || { planId: t.tier || 'starter', status: t.status === 'suspended' ? 'suspended' : (t.status === 'trial' ? 'trialing' : 'active'), currentPeriodEnd: null, trialEnd: null };
+    
+    // Clean and normalize plan & tier representation
+    const rawPlan = sub.planId || t.tier || 'starter';
+    const cleanPlan = rawPlan.toLowerCase().replace(/^plan_/, '').trim() || 'starter';
+    const effectivePlan = cleanPlan === 'standard' ? 'starter' : cleanPlan;
+
+    // Authoritative trial detection
+    const isTrial = t.status === 'trial' || sub.status === 'trialing';
+    let effectiveStatus: 'active' | 'suspended' | 'trial' | 'past_due' = 'active';
+    if (t.status === 'suspended') {
+      effectiveStatus = 'suspended';
+    } else if (sub.status === 'past_due') {
+      effectiveStatus = 'past_due';
+    } else if (isTrial) {
+      effectiveStatus = 'trial';
+    } else {
+      effectiveStatus = (t.status === 'trial' ? 'trial' : 'active');
+    }
+
+    const defaultTrialEnd = new Date(new Date(t.createdAt).getTime() + 14 * 86400000).toISOString();
+    const trialEndsAt = isTrial ? (sub.currentPeriodEnd || sub.trialEnd || defaultTrialEnd) : null;
 
     // Concrete Health Status computation (Section 4)
     let healthStatus: 'HEALTHY' | 'WARNING' | 'DEGRADED' | 'OFFLINE' = 'HEALTHY';
@@ -2971,11 +3079,14 @@ export async function getDetailedTenantsList(options: {
       name: t.name,
       slug: t.slug,
       customerType: (t.customerType === 'PERSONAL' ? 'PERSONAL' : 'COMPANY'),
-      status: t.status,
+      status: effectiveStatus,
+      isTrial,
+      trialEndsAt,
       primaryOwner: uStats.primaryOwner || { username: 'unassigned', email: t.ownerEmail || null },
-      plan: sub.planId,
-      subscriptionStatus: sub.status,
-      moduleEntitlements: (tenantModulesMap[t.id] && tenantModulesMap[t.id].length > 0)
+      plan: effectivePlan,
+      tier: effectivePlan,
+      subscriptionStatus: isTrial ? 'trialing' : sub.status,
+      moduleEntitlements: tenantsConfigured.has(t.id)
         ? Array.from(new Set(tenantModulesMap[t.id]))
         : CANONICAL_MODULES.map(m => m.id),
       createdAt: t.createdAt,
@@ -3026,7 +3137,7 @@ export async function getTenantDetail(tenantId: string): Promise<any> {
   const users = await db.queryAll<any>(`
     SELECT id, username, email, "displayName", role, status, "createdAt", "updatedAt"
     FROM users
-    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('platform_admin', 'master_admin', 'super_admin')
+    WHERE "tenantId" = $1 AND LOWER(role) NOT IN ('superadmin', 'platform_admin', 'master_admin', 'super_admin')
     ORDER BY CASE WHEN role = 'admin' THEN 1 WHEN role = 'team_lead' THEN 2 ELSE 3 END, "createdAt" ASC
   `, [tenantId]);
 
@@ -3078,9 +3189,10 @@ export async function getTenantDetail(tenantId: string): Promise<any> {
 
   // Subscription
   const subscription = await db.queryOne<any>(`
-    SELECT id, "planId", status, "currentPeriodStart", "currentPeriodEnd", provider
+    SELECT id, "planId", status, "currentPeriodStart", "currentPeriodEnd", "trialEnd", provider
     FROM subscriptions
     WHERE "tenantId" = $1
+    ORDER BY "createdAt" DESC
     LIMIT 1
   `, [tenantId]);
 
@@ -3110,16 +3222,36 @@ export async function getTenantDetail(tenantId: string): Promise<any> {
   }
   if (healthReasons.length === 0) healthReasons.push('All systems operational');
 
+  const rawTier = (subscription?.planId ? subscription.planId.replace(/^plan_/, '') : (tenant.tier || 'starter')).toLowerCase().trim();
+  const cleanTier = rawTier === 'standard' ? 'starter' : (rawTier || 'starter');
+  const isTrial = tenant.status === 'trial' || subscription?.status === 'trialing';
+  let effectiveStatus = tenant.status;
+  if (tenant.status === 'suspended') {
+    effectiveStatus = 'suspended';
+  } else if (subscription?.status === 'past_due') {
+    effectiveStatus = 'past_due';
+  } else if (isTrial) {
+    effectiveStatus = 'trial';
+  } else {
+    effectiveStatus = (tenant.status === 'trial' ? 'trial' : 'active');
+  }
+
+  const defaultTrialEnd = new Date(new Date(tenant.createdAt).getTime() + 14 * 86400000).toISOString();
+  const trialEndsAt = isTrial ? (subscription?.currentPeriodEnd || subscription?.trialEnd || defaultTrialEnd) : null;
+
   return {
     overview: {
       id: tenant.id,
       name: tenant.name,
       slug: tenant.slug,
-      status: tenant.status,
+      status: effectiveStatus,
+      isTrial,
+      trialEndsAt,
       customerType: tenant.customerType || 'COMPANY',
       ownerEmail: tenant.ownerEmail,
       leadPoolMode: tenant.leadPoolMode || 'shared',
-      tier: tenant.tier || 'standard',
+      tier: cleanTier,
+      plan: cleanTier,
       createdAt: tenant.createdAt,
       updatedAt: tenant.updatedAt
     },
@@ -3151,10 +3283,15 @@ export async function getTenantDetail(tenantId: string): Promise<any> {
     modules: enabledModulesList,
     moduleEntitlements,
     accessMatrix,
-    subscription: subscription || {
-      planId: tenant.tier || 'standard',
-      status: tenant.status === 'suspended' ? 'suspended' : 'active',
-      currentPeriodEnd: null
+    subscription: subscription ? {
+      ...subscription,
+      planId: subscription.planId || ('plan_' + cleanTier),
+      trialEndsAt: isTrial ? trialEndsAt : null
+    } : {
+      planId: 'plan_' + cleanTier,
+      status: isTrial ? 'trialing' : (tenant.status === 'suspended' ? 'suspended' : 'active'),
+      currentPeriodEnd: trialEndsAt,
+      trialEndsAt: trialEndsAt
     },
     health: {
       status: healthStatus,
@@ -3244,17 +3381,26 @@ export async function provisionWorkspaceOrganization(data: {
   username: string;
   email?: string;
   passwordHash: string;
+  customerType?: 'COMPANY' | 'PERSONAL';
+  maxAgents?: number;
+  planId?: string;
 }): Promise<{ success: boolean; tenantId: string; username: string }> {
   const now = new Date().toISOString();
   const rawSlug = data.name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'workspace';
   const tenantId = 'tenant_' + crypto.randomUUID().replace(/-/g, '').substring(0, 10);
   const slug = `${rawSlug}-${tenantId.substring(7)}`;
 
+  const rawPlanId = data.planId || 'plan_starter';
+  const cleanTier = rawPlanId.toLowerCase().replace(/^plan_/, '').trim() || 'starter';
+  const effectiveTier = cleanTier === 'standard' ? 'starter' : cleanTier;
+  const seatLimit = data.maxAgents || (effectiveTier === 'starter' ? 5 : (effectiveTier === 'pro' ? 20 : 1000));
+  const trialEndIso = new Date(Date.now() + 14 * 86400000).toISOString();
+
   // Insert tenant
   await db.execute(`
     INSERT INTO tenants (id, name, slug, status, "createdAt", "updatedAt", "customerType", "maxTeamVisibility", "leadPoolMode", "maxAgents", tier)
-    VALUES ($1, $2, $3, 'active', $4, $4, 'COMPANY', 'TEAM_COLLABORATE', 'shared', 25, 'standard')
-  `, [tenantId, data.name, slug, now]);
+    VALUES ($1, $2, $3, 'trial', $4, $4, $5, 'TEAM_COLLABORATE', 'shared', $6, $7)
+  `, [tenantId, data.name, slug, now, data.customerType || 'COMPANY', seatLimit, effectiveTier]);
 
   // Insert primary owner user
   const userId = 'user_' + crypto.randomUUID();
@@ -3262,6 +3408,13 @@ export async function provisionWorkspaceOrganization(data: {
     INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "authProvider", "emailVerified", "createdAt", "updatedAt")
     VALUES ($1, $2, $3, $4, 'admin', $5, 'local', 1, $6, $6)
   `, [userId, data.username.trim().toLowerCase(), data.email ? data.email.trim().toLowerCase() : null, data.passwordHash, tenantId, now]);
+
+  // Insert trial subscription record
+  const subId = 'sub_' + crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+  await db.execute(`
+    INSERT INTO subscriptions (id, "tenantId", "planId", status, "currentPeriodStart", "currentPeriodEnd", "trialStart", "trialEnd", "createdAt", "updatedAt", provider)
+    VALUES ($1, $2, $3, 'trialing', $4, $5, $4, $5, $4, $4, 'manual')
+  `, [subId, tenantId, rawPlanId, now, trialEndIso]);
 
   // Seed Authoritative Tenant Module Entitlements
   const defaultProvisionModules = [
