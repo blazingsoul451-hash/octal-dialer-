@@ -4,6 +4,7 @@ import {
   Check, X, Camera, LogOut, CheckCircle2, XCircle,
   Upload, RefreshCw, Trash2
 } from 'lucide-react';
+import { formatGreetingName } from '../utils/roleUtils';
 
 interface UserProfileMenuProps {
   isLight?: boolean;
@@ -455,7 +456,7 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
     }
   };
 
-  const displayName = profile.displayName || (profile.firstName ? `${profile.firstName} ${profile.lastName}`.trim() : authUser) || 'User';
+  const displayName = profile.displayName || (profile.firstName ? `${profile.firstName} ${profile.lastName}`.trim() : null) || formatGreetingName(authUser);
   const displayEmail = profile.email || `${authUser || 'user'}@octaldialer.com`;
   const activeAvatar = profile.avatarUrl || editAvatarUrl;
 

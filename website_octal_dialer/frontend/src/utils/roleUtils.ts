@@ -184,3 +184,28 @@ export function getInitialIdentityHintFromToken(token: string | null | undefined
     return null;
   }
 }
+
+/**
+ * Formats a clean human-friendly greeting name from display name, email, or raw username.
+ * e.g. "mohsin_mughal7" -> "Mohsin Mughal"
+ *      "mohsinmughal1771@gmail.com" -> "Mohsin Mughal"
+ *      "Mohsin Babar" -> "Mohsin Babar"
+ */
+export function formatGreetingName(raw?: string | null): string {
+  if (!raw) return 'User';
+  let clean = raw.trim();
+  if (clean.includes('@')) {
+    clean = clean.split('@')[0];
+  }
+  // Replace delimiters with spaces
+  clean = clean.replace(/[._\-]+/g, ' ');
+  // If trailing digits exist (e.g. mohsin mughal 7 or mohsin 1771), remove them
+  clean = clean.replace(/\d+$/g, '').trim();
+  if (!clean) clean = raw.split('@')[0];
+  return clean
+    .split(' ')
+    .filter(Boolean)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+

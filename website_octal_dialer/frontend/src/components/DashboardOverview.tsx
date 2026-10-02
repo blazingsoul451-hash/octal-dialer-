@@ -17,6 +17,7 @@ import {
   Users
 } from 'lucide-react';
 import type { Campaign, CallLog } from '../types';
+import { formatGreetingName } from '../utils/roleUtils';
 
 interface DashboardOverviewProps {
   isLight?: boolean;
@@ -134,7 +135,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       }`}>
         <h1 className="text-2xl tracking-tight">
           <span className={`font-medium ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Hello </span>
-          <span className={`font-black capitalize ${isLight ? 'text-slate-900' : 'text-white'}`}>{displayName || authUser || 'User'}</span>
+          <span className={`font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{formatGreetingName(displayName || authUser)}</span>
         </h1>
 
         {/* Dashboard Sub-Tabs */}

@@ -33,6 +33,7 @@ import { CompanySettings } from './components/settings/CompanySettings';
 import { CustomerOnboardingModal } from './components/onboarding/CustomerOnboardingModal';
 import { InvitationAcceptanceModal } from './components/onboarding/InvitationAcceptanceModal';
 import { UserProfileMenu } from './components/UserProfileMenu';
+import { QuickAddUserModal, QuickAssignTeamModal } from './components/modals/TopBarQuickActionModals';
 import type { Campaign } from './types';
 import {
   type StructuralRole,
@@ -201,6 +202,8 @@ export default function App() {
   const [companyMenuOpen, setCompanyMenuOpen] = useState<boolean>(false);
   const companyMenuTimeoutRef = React.useRef<any>(null);
   const [usersRolesInitialTab, setUsersRolesInitialTab] = useState<'overview' | 'users' | 'team-leads' | 'teams' | 'invitations' | 'roles' | 'access-review'>('overview');
+  const [quickAddUserOpen, setQuickAddUserOpen] = useState<boolean>(false);
+  const [quickAssignTeamOpen, setQuickAssignTeamOpen] = useState<boolean>(false);
 
   useEffect(() => {
     if (!effectiveAuthToken) return;
@@ -1016,6 +1019,119 @@ export default function App() {
               <span>{socketData.phoneConnected ? `Phone Connected` : 'Phone Offline'}</span>
             </button>
 
+            {/* 🏢 Detached Company / Organization Tab with Hover Dropdown */}
+            <div
+              className="relative"
+              onMouseEnter={() => {
+                if (companyMenuTimeoutRef.current) clearTimeout(companyMenuTimeoutRef.current);
+                setCompanyMenuOpen(true);
+              }}
+              onMouseLeave={() => {
+                companyMenuTimeoutRef.current = setTimeout(() => {
+                  setCompanyMenuOpen(false);
+                }, 250);
+              }}
+            >
+              <button
+                onClick={() => setCompanyMenuOpen(prev => !prev)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold transition-all cursor-pointer shadow-sm ${
+                  companyMenuOpen
+                    ? 'ring-2 ring-amber-500/50 border-amber-500'
+                    : isLight
+                      ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
+                      : 'bg-slate-900 border-slate-800 text-slate-200 hover:border-slate-700'
+                }`}
+                title="Company & Workspace Operations"
+              >
+                <Building2 className="w-3.5 h-3.5 text-amber-500" />
+                <span className="font-semibold tracking-wide truncate max-w-[130px]">
+                  {companyName || 'Workspace'}
+                </span>
+                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${companyMenuOpen ? 'rotate-180 text-amber-400' : ''}`} />
+              </button>
+
+              {/* Dropdown Menu on Hover / Click */}
+              {companyMenuOpen && (
+                <div
+                  className={`absolute left-0 sm:right-auto top-full mt-2 w-64 rounded-2xl border p-2 shadow-2xl z-50 backdrop-blur-md animate-fadeIn ${
+                    isLight
+                      ? 'bg-white/95 border-slate-200 text-slate-800 shadow-slate-300/50'
+                      : 'bg-[#0B0E14]/95 border-slate-800 text-slate-200 shadow-black/80'
+                  }`}
+                >
+                  {/* Header with Company details */}
+                  <div className={`px-3 py-2 border-b mb-1 flex items-center gap-2.5 ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
+                    <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                      <Building2 className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                        {companyName || 'Organization'}
+                      </div>
+                      <div className={`text-[10px] font-mono ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                        Workspace Management
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Option 1: Add Users (Opens Quick Modal) */}
+                  <button
+                    onClick={() => {
+                      setCompanyMenuOpen(false);
+                      setQuickAddUserOpen(true);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer text-left ${
+                      isLight
+                        ? 'hover:bg-amber-50 text-slate-700 hover:text-amber-900'
+                        : 'hover:bg-amber-500/10 text-slate-300 hover:text-amber-400'
+                    }`}
+                  >
+                    <UserPlus className="w-4 h-4 text-emerald-400" />
+                    <div>
+                      <div className="font-bold">Add Users</div>
+                      <div className={`text-[10px] font-normal ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>Create accounts & invite members</div>
+                    </div>
+                  </button>
+
+                  {/* Option 2: Assign Users & Teams (Opens Quick Modal) */}
+                  <button
+                    onClick={() => {
+                      setCompanyMenuOpen(false);
+                      setQuickAssignTeamOpen(true);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer text-left ${
+                      isLight
+                        ? 'hover:bg-amber-50 text-slate-700 hover:text-amber-900'
+                        : 'hover:bg-amber-500/10 text-slate-300 hover:text-amber-400'
+                    }`}
+                  >
+                    <Users className="w-4 h-4 text-blue-400" />
+                    <div>
+                      <div className="font-bold">Assign Users & Teams</div>
+                      <div className={`text-[10px] font-normal ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>Create team lead & assign agents</div>
+                    </div>
+                  </button>
+
+                  {/* Option 3: Company Profile */}
+                  <button
+                    onClick={() => {
+                      setCompanyMenuOpen(false);
+                      setSettingsSubView('company-profile');
+                      setActiveTab('admin');
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer text-left mt-1 border-t ${
+                      isLight
+                        ? 'border-slate-100 hover:bg-slate-100 text-slate-600 hover:text-slate-900'
+                        : 'border-slate-800/80 hover:bg-slate-900 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                    <span className="text-[11px]">Company Profile & Details</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Quick Upload Action */}
             <button
               onClick={() => setActiveTab('upload')}
@@ -1068,123 +1184,6 @@ export default function App() {
               {isLight ? <Moon className="w-4 h-4 text-slate-800" /> : <Sun className="w-4 h-4 text-amber-400" />}
             </button>
 
-            {/* 🏢 Detached Company / Organization Tab with Hover Dropdown */}
-            <div
-              className="relative"
-              onMouseEnter={() => {
-                if (companyMenuTimeoutRef.current) clearTimeout(companyMenuTimeoutRef.current);
-                setCompanyMenuOpen(true);
-              }}
-              onMouseLeave={() => {
-                companyMenuTimeoutRef.current = setTimeout(() => {
-                  setCompanyMenuOpen(false);
-                }, 250);
-              }}
-            >
-              <button
-                onClick={() => setCompanyMenuOpen(prev => !prev)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold transition-all cursor-pointer shadow-sm ${
-                  companyMenuOpen
-                    ? 'ring-2 ring-amber-500/50 border-amber-500'
-                    : isLight
-                      ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
-                      : 'bg-slate-900 border-slate-800 text-slate-200 hover:border-slate-700'
-                }`}
-                title="Company & Workspace Operations"
-              >
-                <Building2 className="w-3.5 h-3.5 text-amber-500" />
-                <span className="font-semibold tracking-wide truncate max-w-[130px]">
-                  {companyName || 'Workspace'}
-                </span>
-                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${companyMenuOpen ? 'rotate-180 text-amber-400' : ''}`} />
-              </button>
-
-              {/* Dropdown Menu on Hover / Click */}
-              {companyMenuOpen && (
-                <div
-                  className={`absolute right-0 top-full mt-2 w-64 rounded-2xl border p-2 shadow-2xl z-50 backdrop-blur-md animate-fadeIn ${
-                    isLight
-                      ? 'bg-white/95 border-slate-200 text-slate-800 shadow-slate-300/50'
-                      : 'bg-[#0B0E14]/95 border-slate-800 text-slate-200 shadow-black/80'
-                  }`}
-                >
-                  {/* Header with Company details */}
-                  <div className={`px-3 py-2 border-b mb-1 flex items-center gap-2.5 ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
-                    <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-                      <Building2 className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-xs font-bold truncate text-white">
-                        {companyName || 'Organization'}
-                      </div>
-                      <div className="text-[10px] text-slate-400 font-mono">
-                        Workspace Management
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Option 1: Add Users */}
-                  <button
-                    onClick={() => {
-                      setCompanyMenuOpen(false);
-                      setUsersRolesInitialTab('users');
-                      setSettingsSubView('users-roles');
-                      setActiveTab('admin');
-                    }}
-                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer text-left ${
-                      isLight
-                        ? 'hover:bg-amber-50 text-slate-700 hover:text-amber-900'
-                        : 'hover:bg-amber-500/10 text-slate-300 hover:text-amber-400'
-                    }`}
-                  >
-                    <UserPlus className="w-4 h-4 text-emerald-400" />
-                    <div>
-                      <div className="font-bold">Add Users</div>
-                      <div className="text-[10px] text-slate-400 font-normal">Create accounts & invite members</div>
-                    </div>
-                  </button>
-
-                  {/* Option 2: Assign Users & Teams (Create Team Lead & Assign) */}
-                  <button
-                    onClick={() => {
-                      setCompanyMenuOpen(false);
-                      setUsersRolesInitialTab('teams');
-                      setSettingsSubView('users-roles');
-                      setActiveTab('admin');
-                    }}
-                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer text-left ${
-                      isLight
-                        ? 'hover:bg-amber-50 text-slate-700 hover:text-amber-900'
-                        : 'hover:bg-amber-500/10 text-slate-300 hover:text-amber-400'
-                    }`}
-                  >
-                    <Users className="w-4 h-4 text-blue-400" />
-                    <div>
-                      <div className="font-bold">Assign Users & Teams</div>
-                      <div className="text-[10px] text-slate-400 font-normal">Create team lead & assign agents</div>
-                    </div>
-                  </button>
-
-                  {/* Option 3: Company Profile */}
-                  <button
-                    onClick={() => {
-                      setCompanyMenuOpen(false);
-                      setSettingsSubView('company-profile');
-                      setActiveTab('admin');
-                    }}
-                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer text-left mt-1 border-t ${
-                      isLight
-                        ? 'border-slate-100 hover:bg-slate-100 text-slate-600'
-                        : 'border-slate-800/80 hover:bg-slate-900 text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                    <span className="text-[11px]">Company Profile & Details</span>
-                  </button>
-                </div>
-              )}
-            </div>
-
             {/* 👤 Octal Accounts User Profile Menu with Hover & Camera Modals */}
             <UserProfileMenu
               isLight={isLight}
@@ -1206,8 +1205,9 @@ export default function App() {
                 setActiveTab('admin');
               }}
               onProfileLoaded={(profile) => {
-                if (profile.displayName) {
-                  setUserDisplayName(profile.displayName);
+                const resolved = profile.displayName || (profile.firstName ? `${profile.firstName} ${profile.lastName || ''}`.trim() : null) || profile.username;
+                if (resolved) {
+                  setUserDisplayName(resolved);
                 }
                 if (profile.companyName) {
                   setCompanyName(profile.companyName);
@@ -2108,6 +2108,39 @@ export default function App() {
           if (result) {
             setLastDispositionSaved(result);
           }
+        }}
+      />
+
+      {/* Top Bar Quick Action Modals */}
+      <QuickAddUserModal
+        isOpen={quickAddUserOpen}
+        isLight={isLight}
+        serverUrl={SERVER_URL}
+        authToken={effectiveAuthToken || ''}
+        onClose={() => setQuickAddUserOpen(false)}
+        onSuccess={(msg) => {
+          showToast(msg, 'success');
+        }}
+        onNavigateSettings={() => {
+          setUsersRolesInitialTab('users');
+          setSettingsSubView('users-roles');
+          setActiveTab('admin');
+        }}
+      />
+
+      <QuickAssignTeamModal
+        isOpen={quickAssignTeamOpen}
+        isLight={isLight}
+        serverUrl={SERVER_URL}
+        authToken={effectiveAuthToken || ''}
+        onClose={() => setQuickAssignTeamOpen(false)}
+        onSuccess={(msg) => {
+          showToast(msg, 'success');
+        }}
+        onNavigateSettings={() => {
+          setUsersRolesInitialTab('teams');
+          setSettingsSubView('users-roles');
+          setActiveTab('admin');
         }}
       />
     </div>
