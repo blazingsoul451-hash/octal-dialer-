@@ -193,9 +193,10 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 3000);
     fetch(`${serverUrl}/auth/config`, { signal: controller.signal })
-      .then(res => res.json())
-      .then((data: AuthConfig) => {
+      .then(res => res.ok ? res.json() : null)
+      .then((data: AuthConfig | null) => {
         clearTimeout(timeoutId);
+        if (!data) return;
         setAuthConfig(data);
         if (data.googleClientId) {
           loadGoogleGsi(data.googleClientId);
@@ -282,7 +283,13 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credential: response.credential, intent, captchaToken })
       });
-      const data = await res.json();
+      let data: any = {};
+      try {
+        const text = await res.text();
+        data = JSON.parse(text);
+      } catch {
+        throw new Error('Invalid authentication response from server.');
+      }
       if (!res.ok) {
         if (data.code === 'ACCOUNT_SUSPENDED' || data.code === 'WORKSPACE_SUSPENDED' || (data.error && data.error.toLowerCase().includes('suspended'))) {
           setSuspendedInfo({
@@ -380,11 +387,13 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       }
 
       if (res && res.ok) {
-        const data = await res.json();
-        if (data.authUrl) {
-          window.location.href = data.authUrl;
-          return;
-        }
+        try {
+          const data = await res.json();
+          if (data.authUrl) {
+            window.location.href = data.authUrl;
+            return;
+          }
+        } catch {}
       }
 
       window.location.href = `${serverUrl}/auth/google?intent=${intent}`;
@@ -417,7 +426,13 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
           tenantName: suspendedInfo?.tenantName
         })
       });
-      const data = await res.json();
+      let data: any = {};
+      try {
+        const text = await res.text();
+        data = JSON.parse(text);
+      } catch {
+        throw new Error('Unable to submit request. Please try again.');
+      }
       if (!res.ok) {
         throw new Error(data.error || 'Failed to submit request.');
       }
@@ -563,7 +578,16 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         return;
       }
 
-      const data = await res.json();
+      let data: any = {};
+      try {
+        const rawText = await res.text();
+        data = JSON.parse(rawText);
+      } catch {
+        setError(res.status >= 500
+          ? 'Server communication error. Please try again shortly.'
+          : 'Invalid response from server. Please verify your connection.');
+        return;
+      }
 
       if (!res.ok) {
         if (data.code === 'ACCOUNT_SUSPENDED' || (data.error && data.error.toLowerCase().includes('suspended'))) {

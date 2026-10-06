@@ -237,7 +237,14 @@ const getCanonicalAllowedOrigins = (): string[] => {
     'http://127.0.0.1:5174',
     'http://140.245.215.156',
     'http://140.245.215.156:5000',
-    'http://140.245.215.156.sslip.io'
+    'http://140.245.215.156.sslip.io',
+    'https://zestify7.online',
+    'http://zestify7.online',
+    'https://www.zestify7.online',
+    'http://www.zestify7.online',
+    'https://admin.zestify7.online',
+    'https://app.zestify7.online',
+    'https://api.zestify7.online'
   ]);
 
   if (serverUrl) origins.add(serverUrl.replace(/\/$/, ''));
@@ -253,25 +260,28 @@ export const isOriginAllowed = (origin: string | undefined): boolean => {
   const allowedOrigins = getCanonicalAllowedOrigins();
   if (allowedOrigins.includes(origin)) return true;
 
-  // In development / test, also permit localhost, 127.0.0.1, LAN development subnets, and test tunnels
-  if (!isProduction) {
-    try {
-      const parsed = new URL(origin);
-      const host = parsed.hostname;
-      if (
-        host === 'localhost' ||
-        host === '127.0.0.1' ||
-        host.startsWith('192.168.') ||
-        host.startsWith('10.') ||
-        host.startsWith('172.') ||
-        host.endsWith('.sslip.io') ||
-        host.endsWith('.trycloudflare.com')
-      ) {
-        return true;
-      }
-    } catch {
-      return false;
+  try {
+    const parsed = new URL(origin);
+    const host = parsed.hostname.toLowerCase();
+
+    // Always allow production domain zestify7.online and all its subdomains
+    if (host === 'zestify7.online' || host.endsWith('.zestify7.online')) {
+      return true;
     }
+
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host.startsWith('192.168.') ||
+      host.startsWith('10.') ||
+      host.startsWith('172.') ||
+      host.endsWith('.sslip.io') ||
+      host.endsWith('.trycloudflare.com')
+    ) {
+      return true;
+    }
+  } catch {
+    return false;
   }
 
   return false;
@@ -282,7 +292,8 @@ app.use(cors({
     if (isOriginAllowed(origin)) {
       callback(null, true);
     } else {
-      callback(new Error(`CORS origin rejected: ${origin}`));
+      console.warn(`[CORS Blocked]: Origin not allowed: ${origin}`);
+      callback(null, false);
     }
   },
   credentials: true,
@@ -291,6 +302,15 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Handle JSON body syntax parse errors gracefully with JSON error response instead of HTML
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err instanceof SyntaxError && 'status' in err && (err as any).status === 400 && 'body' in err) {
+    res.status(400).json({ error: 'Malformed JSON payload.' });
+    return;
+  }
+  next(err);
+});
 
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────
