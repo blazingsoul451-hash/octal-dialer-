@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 class AppConfig {
   /// Default backend URL if none configured (Production Cloud Server)
   static const String defaultBaseUrl = String.fromEnvironment('OCTAL_API_BASE_URL',
-      defaultValue: kDebugMode ? 'http://140.245.215.156' : 'https://140.245.215.156');
+      defaultValue: kDebugMode ? 'http://140.245.215.156' : 'https://zestify7.online');
 
   /// Key used in SharedPreferences
   static const String serverUrlKey = 'server_url';
@@ -22,7 +22,7 @@ class AppConfig {
     final prefs = await SharedPreferences.getInstance();
     final savedUrl = prefs.getString(serverUrlKey);
 
-    if (savedUrl != null && savedUrl.isNotEmpty && savedUrl != 'http://127.0.0.1:3000' && savedUrl != 'http://localhost:3000' && savedUrl != 'http://192.168.1.35:3000') {
+    if (savedUrl != null && savedUrl.isNotEmpty && savedUrl != 'http://127.0.0.1:3000' && savedUrl != 'http://localhost:3000' && savedUrl != 'http://192.168.1.35:3000' && savedUrl != 'https://140.245.215.156') {
       final sanitized = sanitizeUrl(savedUrl);
       if (sanitized != null) {
         _currentBaseUrl = sanitized;
