@@ -21,7 +21,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]:', reason);
 });
 
-import { isValidEmailFormat } from './emailVerificationService';
+import { isValidEmailFormat, sendAdminCompanyEmail } from './emailVerificationService';
 
 import {
   createCampaign,
@@ -152,6 +152,7 @@ import {
 import {
   ensureDefaultAdmin,
   login,
+  authenticateLogin,
   logout,
   validateToken,
   changePassword,
@@ -527,11 +528,21 @@ app.post(['/auth/login', '/api/auth/login'], async (req, res) => {
     res.status(400).json({ error: 'Username and password required.' });
     return;
   }
-  const token = await login(username, password);
-  if (!token) {
-    res.status(401).json({ error: 'Invalid username or password, or account suspended.' });
+  const authResult = await authenticateLogin(username, password);
+  if (!authResult.success) {
+    if (authResult.code === 'ACCOUNT_SUSPENDED') {
+      res.status(403).json({
+        code: 'ACCOUNT_SUSPENDED',
+        error: authResult.error || 'Your account or workspace has been suspended.',
+        email: authResult.email,
+        tenantName: authResult.tenantName
+      });
+      return;
+    }
+    res.status(401).json({ error: authResult.error || 'Invalid username or password.' });
     return;
   }
+  const token = authResult.token!;
   const user = await validateToken(token);
   if (!user) {
     res.status(401).json({ error: 'Session validation failed.' });
@@ -675,6 +686,106 @@ app.get(['/auth/verify', '/api/auth/verify'], async (req, res) => {
     needsOnboarding,
     pendingInvitation
   });
+});
+
+// POST /auth/contact-admin & /api/auth/contact-admin — Public endpoint for suspended accounts to contact support
+app.post(['/auth/contact-admin', '/api/auth/contact-admin'], async (req, res) => {
+  try {
+    const email = (req.body?.email || '').trim().toLowerCase();
+    const name = (req.body?.name || '').trim();
+    const message = (req.body?.message || '').trim();
+    const tenantName = (req.body?.tenantName || '').trim();
+    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+
+    if (!email || !isValidEmailFormat(email)) {
+      res.status(400).json({ error: 'A valid email address is required.' });
+      return;
+    }
+
+    if (!message || message.length < 5) {
+      res.status(400).json({ error: 'Please enter a message describing your reactivation request (at least 5 characters).' });
+      return;
+    }
+
+    const existingUser = await db.queryOne<any>('SELECT id, username, "tenantId" FROM users WHERE email = $1', [email]);
+    let resolvedTenantId = existingUser?.tenantId || null;
+    let resolvedTenantName = tenantName;
+
+    if (!resolvedTenantName && resolvedTenantId) {
+      const t = await db.queryOne<any>('SELECT name FROM tenants WHERE id = $1', [resolvedTenantId]);
+      if (t) resolvedTenantName = t.name;
+    }
+
+    const now = new Date().toISOString();
+    const auditId = 'reactivate_' + crypto.randomUUID();
+
+    await db.execute(`
+      INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
+      auditId,
+      existingUser?.username || email,
+      'WORKSPACE_REACTIVATION_REQUEST',
+      'tenant',
+      resolvedTenantId || 'unassigned',
+      JSON.stringify({
+        email,
+        name: name || existingUser?.username || 'Customer User',
+        message,
+        tenantName: resolvedTenantName || 'Unknown Workspace',
+        ip: String(ip),
+        submittedAt: now
+      }),
+      now,
+      resolvedTenantId
+    ]);
+
+    if (resolvedTenantId) {
+      try {
+        const msgId = 'cmsg_' + crypto.randomUUID();
+        await db.execute(`
+          INSERT INTO company_messages (
+            id, "tenantId", "senderRole", "senderId", "senderName", "senderEmail",
+            "recipientEmail", "recipientName", subject, message, channel, "deliveryStatus", "createdAt", metadata
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        `, [
+          msgId,
+          resolvedTenantId,
+          'customer',
+          existingUser?.id || null,
+          name || existingUser?.username || 'Customer User',
+          email,
+          'blazingsoul451@gmail.com',
+          'Platform Administrator',
+          'Workspace Reactivation Request',
+          message,
+          'in_app',
+          'received',
+          now,
+          JSON.stringify({ ip: String(ip), tenantName: resolvedTenantName })
+        ]);
+      } catch (cmsgErr) {
+        console.warn('[contact-admin] Failed to save in company_messages:', cmsgErr);
+      }
+    }
+
+    emitPlatformEvent('platform:reactivation-requested', {
+      id: auditId,
+      email,
+      name: name || existingUser?.username || 'Customer User',
+      message,
+      tenantName: resolvedTenantName || 'Unknown Workspace',
+      submittedAt: now
+    });
+
+    res.json({
+      success: true,
+      message: 'Your reactivation request has been sent to the platform administrator. We will review your account and contact you shortly.'
+    });
+  } catch (err: any) {
+    console.error('[Contact Admin Error]:', err);
+    res.status(500).json({ error: 'Failed to submit request. Please try again or contact administrator directly.' });
+  }
 });
 
 // In-memory OAuth state storage for CSRF protection & origin routing
@@ -821,7 +932,8 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
     console.error('[Google OAuth Callback Error]:', err);
     const code = err.code || 'GOOGLE_AUTH_FAILED';
     const emailParam = err.email ? `&email=${encodeURIComponent(err.email)}` : '';
-    res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(code)}&message=${encodeURIComponent(err.message || 'Google authentication failed.')}${emailParam}`);
+    const tenantParam = err.tenantName ? `&tenant=${encodeURIComponent(err.tenantName)}` : '';
+    res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(code)}&message=${encodeURIComponent(err.message || 'Google authentication failed.')}${emailParam}${tenantParam}`);
   }
 });
 
@@ -838,7 +950,12 @@ app.post(['/auth/google/verify', '/api/auth/google/verify', '/auth/google', '/ap
     res.json({ success: true, token: result.token, username: result.user.username,
       role: result.user.role, user: result.user, isNewUser: result.isNewUser });
   } catch (err: any) {
-    res.status(400).json({ code: err.code || 'GOOGLE_AUTH_FAILED', error: err.message || 'Google authentication failed.' });
+    res.status(400).json({
+      code: err.code || 'GOOGLE_AUTH_FAILED',
+      error: err.message || 'Google authentication failed.',
+      email: err.email,
+      tenantName: err.tenantName
+    });
   }
 });
 
@@ -5711,6 +5828,229 @@ app.put('/api/super-admin/tenants/:id/plan', requirePlatformAdmin, async (req, r
   } catch (err: any) {
     console.error('[Super Admin] Update plan error:', err);
     res.status(500).json({ error: 'Failed to update workspace plan' });
+  }
+});
+
+// GET /api/super-admin/tenants/:id/messages: Fetch direct messages & communication history for a company
+app.get('/api/super-admin/tenants/:id/messages', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant workspace not found.' });
+      return;
+    }
+
+    // Ensure company_messages table exists
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS company_messages (
+        id TEXT PRIMARY KEY,
+        "tenantId" TEXT NOT NULL,
+        "senderRole" TEXT NOT NULL DEFAULT 'super_admin',
+        "senderId" TEXT,
+        "senderName" TEXT NOT NULL DEFAULT 'Platform Administrator',
+        "senderEmail" TEXT,
+        "recipientEmail" TEXT NOT NULL,
+        "recipientName" TEXT,
+        subject TEXT NOT NULL,
+        message TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'email',
+        "deliveryStatus" TEXT NOT NULL DEFAULT 'sent',
+        "deliveryError" TEXT,
+        metadata TEXT,
+        "createdAt" TEXT NOT NULL
+      )
+    `);
+
+    const messages = await db.queryAll<any>(`
+      SELECT id, "tenantId", "senderRole", "senderId", "senderName", "senderEmail",
+             "recipientEmail", "recipientName", subject, message, channel,
+             "deliveryStatus", "deliveryError", metadata, "createdAt"
+      FROM company_messages
+      WHERE "tenantId" = $1
+      ORDER BY "createdAt" ASC
+    `, [tenantId]);
+
+    // Discover candidate recipient emails for this tenant
+    const usersInTenant = await db.queryAll<any>(`
+      SELECT id, username, email, role, "displayName"
+      FROM users
+      WHERE "tenantId" = $1 AND email IS NOT NULL
+      ORDER BY CASE LOWER(role) WHEN 'admin' THEN 0 WHEN 'super_admin' THEN 1 ELSE 2 END, username ASC
+    `, [tenantId]);
+
+    const defaultRecipient = tenant.ownerEmail || usersInTenant.find(u => u.role === 'admin')?.email || usersInTenant[0]?.email || '';
+
+    res.json({
+      success: true,
+      tenantId,
+      tenantName: tenant.name,
+      ownerEmail: tenant.ownerEmail,
+      defaultRecipient,
+      recipients: usersInTenant.map(u => ({
+        id: u.id,
+        username: u.username,
+        email: u.email,
+        role: u.role,
+        displayName: u.displayName || u.username
+      })),
+      messages
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Get company messages error:', err);
+    res.status(500).json({ error: 'Failed to retrieve company messages' });
+  }
+});
+
+// POST /api/super-admin/tenants/:id/messages: Send direct email / notice to company and log in chat history
+app.post('/api/super-admin/tenants/:id/messages', requirePlatformAdmin, async (req, res) => {
+  try {
+    const tenantId = req.params.id;
+    const caller = (req as any).user;
+    const { recipientEmail, subject, message, channel = 'email' } = req.body;
+
+    if (!recipientEmail || !isValidEmailFormat(recipientEmail)) {
+      res.status(400).json({ error: 'A valid recipient email address is required.' });
+      return;
+    }
+
+    if (!subject || !subject.trim()) {
+      res.status(400).json({ error: 'Subject line is required.' });
+      return;
+    }
+
+    if (!message || message.trim().length < 3) {
+      res.status(400).json({ error: 'Message content is required (at least 3 characters).' });
+      return;
+    }
+
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant workspace not found.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const msgId = 'cmsg_' + crypto.randomUUID();
+    const senderName = caller?.displayName || caller?.username || 'Platform Administrator';
+    const senderEmail = caller?.email || 'admin@octaldialer.com';
+
+    // 1. Dispatch email via SMTP transporter
+    const emailDispatch = await sendAdminCompanyEmail({
+      toEmail: recipientEmail.trim().toLowerCase(),
+      companyName: tenant.name,
+      subject: subject.trim(),
+      message: message.trim(),
+      senderName,
+      replyTo: senderEmail
+    });
+
+    const deliveryStatus = emailDispatch.success ? 'sent' : 'failed';
+    const deliveryError = emailDispatch.error || null;
+
+    // 2. Persist in company_messages
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS company_messages (
+        id TEXT PRIMARY KEY,
+        "tenantId" TEXT NOT NULL,
+        "senderRole" TEXT NOT NULL DEFAULT 'super_admin',
+        "senderId" TEXT,
+        "senderName" TEXT NOT NULL DEFAULT 'Platform Administrator',
+        "senderEmail" TEXT,
+        "recipientEmail" TEXT NOT NULL,
+        "recipientName" TEXT,
+        subject TEXT NOT NULL,
+        message TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'email',
+        "deliveryStatus" TEXT NOT NULL DEFAULT 'sent',
+        "deliveryError" TEXT,
+        metadata TEXT,
+        "createdAt" TEXT NOT NULL
+      )
+    `);
+
+    await db.execute(`
+      INSERT INTO company_messages (
+        id, "tenantId", "senderRole", "senderId", "senderName", "senderEmail",
+        "recipientEmail", "recipientName", subject, message, channel,
+        "deliveryStatus", "deliveryError", metadata, "createdAt"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+    `, [
+      msgId,
+      tenantId,
+      'super_admin',
+      caller?.id || null,
+      senderName,
+      senderEmail,
+      recipientEmail.trim().toLowerCase(),
+      tenant.name,
+      subject.trim(),
+      message.trim(),
+      channel,
+      deliveryStatus,
+      deliveryError,
+      JSON.stringify({
+        smtpMessageId: emailDispatch.messageId || null,
+        sentByAdminId: caller?.id || null,
+        sentByUsername: caller?.username || null
+      }),
+      now
+    ]);
+
+    // 3. Log to audit_logs_admin
+    try {
+      await db.execute(`
+        INSERT INTO audit_logs_admin (id, username, action, "targetType", "targetId", details, timestamp, "tenantId")
+        VALUES ($1, $2, 'COMPANY_MESSAGE_SENT', 'tenant', $3, $4, $5, $3)
+      `, [
+        'audit_' + crypto.randomUUID(),
+        caller?.username || 'platform_admin',
+        tenantId,
+        JSON.stringify({
+          recipientEmail,
+          subject,
+          deliveryStatus,
+          deliveryError,
+          channel
+        }),
+        now
+      ]);
+    } catch {}
+
+    const createdRecord = {
+      id: msgId,
+      tenantId,
+      senderRole: 'super_admin',
+      senderId: caller?.id || null,
+      senderName,
+      senderEmail,
+      recipientEmail: recipientEmail.trim().toLowerCase(),
+      recipientName: tenant.name,
+      subject: subject.trim(),
+      message: message.trim(),
+      channel,
+      deliveryStatus,
+      deliveryError,
+      createdAt: now
+    };
+
+    // 4. Real-time platform event broadcast
+    emitPlatformEvent('platform:company-message-sent', {
+      tenantId,
+      message: createdRecord
+    });
+
+    res.json({
+      success: true,
+      message: emailDispatch.success
+        ? `Message sent to ${recipientEmail} and logged successfully.`
+        : `Message saved in company history, but SMTP delivery could not dispatch: ${emailDispatch.error}`,
+      deliveryStatus,
+      data: createdRecord
+    });
+  } catch (err: any) {
+    console.error('[Super Admin] Send company message error:', err);
+    res.status(500).json({ error: 'Failed to send company message' });
   }
 });
 

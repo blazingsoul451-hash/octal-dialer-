@@ -262,7 +262,15 @@ export async function authenticateGoogleSignIn(profile: { googleId: string; emai
     throw err;
   }
 
-  if (!(await isAccountAccessible(user))) throw new Error('Account or workspace is disabled.');
+  const access = await checkAccountAccess(user);
+  if (!access.accessible) {
+    const err: any = new Error(access.message || 'Your account or workspace has been suspended.');
+    err.code = 'ACCOUNT_SUSPENDED';
+    err.accessCode = access.code;
+    err.email = user.email || email;
+    err.tenantName = access.tenantName;
+    throw err;
+  }
   const pendingInvitation = (!user.tenantId && user.email)
     ? await getPendingInvitationForEmail(user.email)
     : null;
@@ -305,6 +313,15 @@ export async function registerGoogleSignUp(profile: { googleId: string; email: s
   // 1. Check if user already exists
   const existing = await db.queryOne<any>(`SELECT * FROM users WHERE "googleId" = $1 OR email = $2 OR username = $3`, [googleId, email, email]);
   if (existing) {
+    const access = await checkAccountAccess(existing);
+    if (!access.accessible) {
+      const err: any = new Error(access.message || 'This Google account is linked to a workspace that is currently suspended.');
+      err.code = 'ACCOUNT_SUSPENDED';
+      err.accessCode = access.code;
+      err.email = email;
+      err.tenantName = access.tenantName;
+      throw err;
+    }
     const err: any = new Error('An Octal Dialer account already exists with this Google account. Please sign in instead.');
     err.code = 'ACCOUNT_EXISTS';
     err.email = email;
@@ -391,6 +408,15 @@ export async function registerCustomerWithEmail(params: {
   // Duplicate safety check
   const existing = await db.queryOne<any>(`SELECT id, email, username FROM users WHERE email = $1 OR username = $2`, [email, email]);
   if (existing) {
+    const access = await checkAccountAccess(existing);
+    if (!access.accessible) {
+      const err: any = new Error(access.message || 'An account with this email exists and belongs to a suspended workspace.');
+      err.code = 'ACCOUNT_SUSPENDED';
+      err.accessCode = access.code;
+      err.email = email;
+      err.tenantName = access.tenantName;
+      throw err;
+    }
     const err: any = new Error('An account with this email already exists. Please sign in instead.');
     err.code = 'ACCOUNT_EXISTS';
     err.email = email;
@@ -914,24 +940,109 @@ export function isActiveUserStatus(status?: string | null): boolean {
   return status == null || status.trim().toLowerCase() === 'active';
 }
 
-async function isAccountAccessible(user: any): Promise<boolean> {
-  if (!isActiveUserStatus(user.status)) return false;
-  if (isPlatformRole(user.role)) return true;
+export interface AccountAccessResult {
+  accessible: boolean;
+  code?: 'USER_SUSPENDED' | 'USER_DISABLED' | 'WORKSPACE_SUSPENDED' | 'TENANT_NOT_FOUND';
+  message?: string;
+  tenantName?: string;
+}
+
+export async function checkAccountAccess(user: any): Promise<AccountAccessResult> {
+  if (!user) return { accessible: false, code: 'USER_DISABLED', message: 'User account not found.' };
+  if (isPlatformRole(user.role)) return { accessible: true };
+
+  const userStatus = (user.status || '').toLowerCase();
+  if (userStatus === 'suspended') {
+    return {
+      accessible: false,
+      code: 'USER_SUSPENDED',
+      message: 'Your user account has been suspended by the administrator.'
+    };
+  }
+  if (userStatus === 'disabled' || userStatus === 'inactive') {
+    return {
+      accessible: false,
+      code: 'USER_DISABLED',
+      message: 'Your user account has been disabled by the administrator.'
+    };
+  }
+  if (!isActiveUserStatus(user.status)) {
+    return {
+      accessible: false,
+      code: 'USER_DISABLED',
+      message: 'Your user account is not active.'
+    };
+  }
+
   // A detached customer identity may sign in to complete onboarding or accept an invitation.
   // Business endpoints separately require a tenant context.
   const userTenant = user.tenantId || user.tenantid;
-  if (!userTenant) return user.role === 'user';
-  const tenant = await db.queryOne<{ status: string }>('SELECT status FROM tenants WHERE id = $1', [userTenant]);
-  return !!tenant && (tenant.status?.toLowerCase() === 'active' || tenant.status?.toLowerCase() === 'trial');
+  if (!userTenant) return { accessible: user.role === 'user' };
+
+  const tenant = await db.queryOne<{ name: string; status: string }>('SELECT name, status FROM tenants WHERE id = $1', [userTenant]);
+  if (!tenant) {
+    return {
+      accessible: false,
+      code: 'TENANT_NOT_FOUND',
+      message: 'The workspace associated with your account was not found.'
+    };
+  }
+
+  const tenantStatus = (tenant.status || '').toLowerCase();
+  if (tenantStatus === 'suspended') {
+    return {
+      accessible: false,
+      code: 'WORKSPACE_SUSPENDED',
+      tenantName: tenant.name,
+      message: `The workspace "${tenant.name}" has been suspended by the platform administrator.`
+    };
+  }
+
+  if (tenantStatus !== 'active' && tenantStatus !== 'trial') {
+    return {
+      accessible: false,
+      code: 'WORKSPACE_SUSPENDED',
+      tenantName: tenant.name,
+      message: `The workspace "${tenant.name}" is currently inactive.`
+    };
+  }
+
+  return { accessible: true, tenantName: tenant.name };
 }
 
-export async function login(identifier: string, password: string): Promise<string | null> {
+async function isAccountAccessible(user: any): Promise<boolean> {
+  const result = await checkAccountAccess(user);
+  return result.accessible;
+}
+
+export async function authenticateLogin(identifier: string, password: string): Promise<{
+  success: boolean;
+  token?: string;
+  user?: any;
+  code?: 'INVALID_CREDENTIALS' | 'ACCOUNT_SUSPENDED' | 'WORKSPACE_SUSPENDED';
+  error?: string;
+  email?: string;
+  tenantName?: string;
+}> {
   const cleanIdent = (identifier || '').trim().toLowerCase();
   const user = await db.queryOne<any>(`SELECT * FROM users WHERE username = $1 OR (email IS NOT NULL AND email = $2)`, [cleanIdent, cleanIdent]);
-  if (!user) return null;
-  if (!verifyPassword(password, user.passwordHash)) return null;
+  if (!user) {
+    return { success: false, code: 'INVALID_CREDENTIALS', error: 'Invalid username or password.' };
+  }
+  if (!verifyPassword(password, user.passwordHash)) {
+    return { success: false, code: 'INVALID_CREDENTIALS', error: 'Invalid username or password.' };
+  }
 
-  if (!(await isAccountAccessible(user))) return null;
+  const access = await checkAccountAccess(user);
+  if (!access.accessible) {
+    return {
+      success: false,
+      code: 'ACCOUNT_SUSPENDED',
+      error: access.message || 'Your account or workspace has been suspended.',
+      email: user.email,
+      tenantName: access.tenantName
+    };
+  }
 
   // Clean up expired legacy sessions
   await db.execute(`DELETE FROM sessions_store WHERE "expiresAt" < $1`, [new Date().toISOString()]);
@@ -945,7 +1056,12 @@ export async function login(identifier: string, password: string): Promise<strin
   };
 
   const token = jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
-  return token;
+  return { success: true, token, user };
+}
+
+export async function login(identifier: string, password: string): Promise<string | null> {
+  const result = await authenticateLogin(identifier, password);
+  return result.success && result.token ? result.token : null;
 }
 
 // ─── Token Revocation / Blacklist ─────────────────────────────────────────────

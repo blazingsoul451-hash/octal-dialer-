@@ -289,3 +289,88 @@ export async function sendPasswordResetEmail(toEmail: string, resetToken: string
     return false;
   }
 }
+
+function escapeHtml(str: string): string {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
+ * Sends a direct administrative notice or message to a company/workspace owner.
+ */
+export async function sendAdminCompanyEmail(params: {
+  toEmail: string;
+  companyName: string;
+  subject: string;
+  message: string;
+  senderName?: string;
+  replyTo?: string;
+}): Promise<{ success: boolean; error?: string; messageId?: string }> {
+  try {
+    const mailer = getTransporter();
+    const fromAddress = config.emailFrom || 'no-reply@octaldialer.com';
+    const sender = params.senderName || 'Octal Platform Administrator';
+
+    const formattedText = `Hello,\n\nYou have received a direct message from Octal Platform Administration regarding your workspace "${params.companyName}".\n\n--------------------------------------------------\nSubject: ${params.subject}\n--------------------------------------------------\n\n${params.message}\n\n--------------------------------------------------\nIf you have any questions or require assistance, please reply to this email.\n\n— Octal Platform Team`;
+
+    const formattedHtml = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0c0a09; color: #f8fafc; margin: 0; padding: 32px 16px; }
+            .container { max-width: 560px; margin: 0 auto; background-color: #141210; border: 1px solid rgba(251, 191, 36, 0.25); border-radius: 16px; padding: 32px; box-shadow: 0 12px 30px rgba(0,0,0,0.6); }
+            .header { border-bottom: 1px solid #27272a; padding-bottom: 16px; margin-bottom: 20px; }
+            .brand { font-size: 20px; font-weight: 900; letter-spacing: -0.5px; color: #ffffff; }
+            .brand span { color: #f59e0b; }
+            .badge { display: inline-block; background-color: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); color: #f59e0b; font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 4px 10px; border-radius: 9999px; margin-top: 8px; }
+            .workspace-info { background-color: #1c1917; border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; font-size: 12px; color: #a8a29e; }
+            .workspace-info strong { color: #f59e0b; }
+            .title { font-size: 17px; font-weight: 800; color: #ffffff; margin-top: 0; margin-bottom: 14px; }
+            .message-body { background: #0c0a09; border: 1px solid #27272a; border-radius: 12px; padding: 20px; font-size: 14px; line-height: 1.6; color: #e2e8f0; white-space: pre-wrap; margin-bottom: 24px; }
+            .footer { font-size: 11px; color: #71717a; text-align: center; margin-top: 24px; border-top: 1px solid #27272a; padding-top: 16px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <div class="brand">OCTAL <span>DIALER</span></div>
+              <div class="badge">Official Platform Notice</div>
+            </div>
+            <div class="workspace-info">
+              Workspace: <strong>${escapeHtml(params.companyName)}</strong> &bull; From: <strong>${escapeHtml(sender)}</strong>
+            </div>
+            <h2 class="title">${escapeHtml(params.subject)}</h2>
+            <div class="message-body">${escapeHtml(params.message)}</div>
+            <p style="font-size: 12px; color: #a1a1aa; line-height: 1.5;">
+              If you have any questions or need to follow up regarding your account or services, feel free to reply directly to this message.
+            </p>
+            <div class="footer">
+              &copy; ${new Date().getFullYear()} Octal Dialer Cloud Systems. All rights reserved.
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    const info = await mailer.sendMail({
+      from: `"${sender}" <${fromAddress}>`,
+      to: params.toEmail,
+      replyTo: params.replyTo || fromAddress,
+      subject: `[Octal Notice] ${params.subject}`,
+      text: formattedText,
+      html: formattedHtml
+    });
+
+    return { success: true, messageId: info?.messageId };
+  } catch (err: any) {
+    console.error('[sendAdminCompanyEmail] SMTP dispatch failed:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+

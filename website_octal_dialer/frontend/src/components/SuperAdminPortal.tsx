@@ -6,7 +6,8 @@ import {
   Clock, ShieldCheck, CheckCircle2, AlertTriangle,
   Sliders, ChevronRight, PhoneCall,
   Mail, Share2, UserCheck, ShieldAlert,
-  Sun, Moon, Crown, Ban, Menu
+  Sun, Moon, Crown, Ban, Menu,
+  Send, MessageSquare
 } from 'lucide-react';
 import { io as socketIO, Socket } from 'socket.io-client';
 
@@ -46,7 +47,8 @@ type DetailTab =
   | 'entitlements'
   | 'seats'
   | 'devices'
-  | 'activity';
+  | 'activity'
+  | 'messages';
 
 const CANONICAL_MODULES = [
   { id: 'crm', label: 'CRM Workspace', desc: 'Core pipeline, customer accounts & contacts', icon: Users },
@@ -305,6 +307,19 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
     reason: string;
   } | null>(null);
 
+  // Company Direct Messaging & Support Chat State
+  const [showCompanyChatModal, setShowCompanyChatModal] = useState(false);
+  const [chatTargetTenant, setChatTargetTenant] = useState<any | null>(null);
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatRecipient, setChatRecipient] = useState('');
+  const [chatRecipientsList, setChatRecipientsList] = useState<any[]>([]);
+  const [chatSubject, setChatSubject] = useState('');
+  const [chatMessageBody, setChatMessageBody] = useState('');
+  const [chatSending, setChatSending] = useState(false);
+  const [chatNotice, setChatNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const chatMessagesEndRef = useRef<HTMLDivElement | null>(null);
+
   const socketRef = useRef<Socket | null>(null);
 
   const notify = (msg: string) => {
@@ -521,7 +536,477 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
     }
   };
 
+  // ── Company Messaging & Support Chat Handlers ──────────────────────────────
+  const loadCompanyMessages = async (tenantId: string) => {
+    setChatLoading(true);
+    setChatNotice(null);
+    try {
+      const res = await fetch(`${serverUrl}/api/super-admin/tenants/${tenantId}/messages`, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setChatMessages(data.messages || []);
+        if (data.defaultRecipient) {
+          setChatRecipient(data.defaultRecipient);
+        }
+        setChatRecipientsList(data.recipients || []);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setChatNotice({ type: 'error', text: err.error || 'Failed to load company messages.' });
+      }
+    } catch {
+      setChatNotice({ type: 'error', text: 'Network error connecting to message service.' });
+    } finally {
+      setChatLoading(false);
+    }
+  };
 
+  const openCompanyChat = (tenant: any) => {
+    setChatTargetTenant(tenant);
+    setChatRecipient(tenant.ownerEmail || tenant.primaryOwner?.email || '');
+    setChatSubject(`Administrative Notice: ${tenant.name}`);
+    setChatMessageBody('');
+    setChatNotice(null);
+    setShowCompanyChatModal(true);
+    loadCompanyMessages(tenant.id);
+  };
+
+  const handleSendCompanyMessage = async (tenantId: string) => {
+    if (!chatRecipient || !chatRecipient.trim()) {
+      setChatNotice({ type: 'error', text: 'Please enter or select a recipient email.' });
+      return;
+    }
+    if (!chatSubject || !chatSubject.trim()) {
+      setChatNotice({ type: 'error', text: 'Please provide a subject line.' });
+      return;
+    }
+    if (!chatMessageBody || chatMessageBody.trim().length < 3) {
+      setChatNotice({ type: 'error', text: 'Please enter a message (at least 3 characters).' });
+      return;
+    }
+
+    setChatSending(true);
+    setChatNotice(null);
+    try {
+      const res = await fetch(`${serverUrl}/api/super-admin/tenants/${tenantId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          recipientEmail: chatRecipient.trim(),
+          subject: chatSubject.trim(),
+          message: chatMessageBody.trim(),
+          channel: 'email'
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setChatMessageBody('');
+        setChatNotice({
+          type: 'success',
+          text: data.deliveryStatus === 'sent'
+            ? `Email sent to ${chatRecipient} and recorded in company chat.`
+            : `Message recorded in company log (SMTP dispatch status: ${data.deliveryStatus}).`
+        });
+        if (data.data) {
+          setChatMessages(prev => [...prev, data.data]);
+        } else {
+          loadCompanyMessages(tenantId);
+        }
+      } else {
+        setChatNotice({ type: 'error', text: data.error || 'Failed to send message.' });
+      }
+    } catch (e: any) {
+      setChatNotice({ type: 'error', text: e.message || 'Network error sending message.' });
+    } finally {
+      setChatSending(false);
+    }
+  };
+
+  const applyMessageTemplate = (templateType: 'reactivation' | 'compliance' | 'trial' | 'billing' | 'maintenance') => {
+    const companyName = chatTargetTenant?.name || tenantDetail?.overview?.name || 'your workspace';
+    switch (templateType) {
+      case 'reactivation':
+        setChatSubject(`Workspace Reactivation Notice — ${companyName}`);
+        setChatMessageBody(`Hello ${companyName} Team,\n\nWe have reviewed your account and reactivation request. Your workspace status has been restored to active standing.\n\nPlease log in and verify that your team members can access all entitled services.\n\nBest regards,\nPlatform Administration`);
+        break;
+      case 'compliance':
+        setChatSubject(`Verification Required for ${companyName}`);
+        setChatMessageBody(`Hello ${companyName} Team,\n\nWe require additional account verification to ensure uninterrupted service across your telephony and cellular dialer lines.\n\nPlease reply with your authorized representative details or reach out to our team.\n\nBest regards,\nPlatform Compliance`);
+        break;
+      case 'trial':
+        setChatSubject(`Trial Extension Update for ${companyName}`);
+        setChatMessageBody(`Hello ${companyName} Team,\n\nWe have extended your workspace trial period to allow your team to fully evaluate Octal Dialer features and CRM integrations.\n\nFeel free to reach out if you have any questions or need onboarding assistance.\n\nBest regards,\nOctal Customer Success`);
+        break;
+      case 'billing':
+        setChatSubject(`Important: Billing & Quota Notice for ${companyName}`);
+        setChatMessageBody(`Hello ${companyName} Team,\n\nYour workspace is approaching its current seat or usage quota. To ensure your team continues dialing without interruptions, please review your active plan and limits.\n\nBest regards,\nBilling Support`);
+        break;
+      case 'maintenance':
+        setChatSubject(`Scheduled Infrastructure Maintenance Notice`);
+        setChatMessageBody(`Hello ${companyName} Team,\n\nWe will be performing scheduled platform upgrades during off-peak hours. Service is expected to remain operational with zero downtime.\n\nThank you for choosing Octal Dialer.\n\nOctal DevOps Team`);
+        break;
+    }
+  };
+
+  const renderCompanyChatView = (targetTenant: any, isDrawer: boolean = false) => {
+    const tenantId = targetTenant?.id;
+    const tenantName = targetTenant?.name || 'Workspace';
+    const status = targetTenant?.status || 'active';
+
+    return (
+      <div className="space-y-4">
+        {/* Header / Recipient Bar */}
+        <div className={`p-4 rounded-xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-3 ${
+          isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#141210] border-[#27272a]'
+        }`}>
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-xl border flex items-center justify-center font-bold text-sm shrink-0 ${
+              isLight ? 'bg-amber-100 border-amber-300 text-amber-900' : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+            }`}>
+              {tenantName.charAt(0).toUpperCase()}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className={`text-sm font-bold font-sans ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  {tenantName}
+                </h3>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                  status === 'trial'
+                    ? (isLight ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-amber-500/15 text-amber-400 border border-amber-500/30')
+                    : status === 'active'
+                    ? (isLight ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20')
+                    : (isLight ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20')
+                }`}>
+                  {status}
+                </span>
+              </div>
+              <div className={`text-[11px] font-mono mt-0.5 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
+                ID: {tenantId} &bull; Slug: {targetTenant?.slug || '—'}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+            <button
+              onClick={() => loadCompanyMessages(tenantId)}
+              disabled={chatLoading}
+              className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                isLight ? 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200 shadow-sm' : 'bg-[#181614] hover:bg-zinc-800 text-zinc-300 border-[#27272a]'
+              }`}
+              title="Refresh messages"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${chatLoading ? 'animate-spin text-amber-500' : ''}`} />
+              <span>Refresh</span>
+            </button>
+
+            {!isDrawer && (
+              <button
+                onClick={() => setShowCompanyChatModal(false)}
+                className={`p-1.5 rounded-lg transition cursor-pointer ${
+                  isLight ? 'text-slate-400 hover:text-slate-700 hover:bg-slate-100' : 'text-zinc-500 hover:text-white hover:bg-zinc-800'
+                }`}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Recipient Selector Toolbar */}
+        <div className={`p-3 rounded-xl border flex flex-col md:flex-row items-center gap-3 ${
+          isLight ? 'bg-white border-slate-200' : 'bg-[#0f0e0c] border-[#1c1917]'
+        }`}>
+          <div className="flex items-center gap-2 text-xs font-semibold text-zinc-400 shrink-0">
+            <Mail className="w-4 h-4 text-amber-500" />
+            <span className={isLight ? 'text-slate-700 font-bold' : 'text-zinc-300 font-bold'}>To:</span>
+          </div>
+
+          {chatRecipientsList.length > 0 && (
+            <select
+              value={chatRecipient}
+              onChange={(e) => setChatRecipient(e.target.value)}
+              className={`border rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-amber-500 font-sans cursor-pointer transition ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-[#141210] border-[#27272a] text-zinc-200'
+              }`}
+            >
+              {chatRecipientsList.map((u: any) => (
+                <option key={u.id} value={u.email}>
+                  {u.displayName || u.username} ({u.role?.toUpperCase()}) — {u.email}
+                </option>
+              ))}
+            </select>
+          )}
+
+          <div className="relative flex-1 w-full">
+            <input
+              type="email"
+              value={chatRecipient}
+              onChange={(e) => setChatRecipient(e.target.value)}
+              placeholder="Recipient email address (e.g. owner@company.com)..."
+              className={`w-full border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-amber-500 font-sans transition ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900 placeholder:text-slate-400' : 'bg-[#141210] border-[#27272a] text-white placeholder-zinc-500'
+              }`}
+            />
+          </div>
+        </div>
+
+        {/* Quick Notices / Template Chips */}
+        <div className="space-y-1.5">
+          <div className={`text-[10px] font-bold uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
+            Quick Notice Templates
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => applyMessageTemplate('reactivation')}
+              className={`text-[11px] px-2.5 py-1 rounded-lg border font-semibold transition cursor-pointer flex items-center gap-1 ${
+                isLight ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+              }`}
+            >
+              <span>✅</span> Reactivation Notice
+            </button>
+            <button
+              type="button"
+              onClick={() => applyMessageTemplate('compliance')}
+              className={`text-[11px] px-2.5 py-1 rounded-lg border font-semibold transition cursor-pointer flex items-center gap-1 ${
+                isLight ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-200' : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/30'
+              }`}
+            >
+              <span>🛡️</span> Compliance Request
+            </button>
+            <button
+              type="button"
+              onClick={() => applyMessageTemplate('trial')}
+              className={`text-[11px] px-2.5 py-1 rounded-lg border font-semibold transition cursor-pointer flex items-center gap-1 ${
+                isLight ? 'bg-blue-50 hover:bg-blue-100 text-blue-900 border-blue-200' : 'bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border-blue-500/30'
+              }`}
+            >
+              <span>⏱️</span> Trial Extension
+            </button>
+            <button
+              type="button"
+              onClick={() => applyMessageTemplate('billing')}
+              className={`text-[11px] px-2.5 py-1 rounded-lg border font-semibold transition cursor-pointer flex items-center gap-1 ${
+                isLight ? 'bg-purple-50 hover:bg-purple-100 text-purple-900 border-purple-200' : 'bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border-purple-500/30'
+              }`}
+            >
+              <span>💳</span> Billing & Quotas
+            </button>
+            <button
+              type="button"
+              onClick={() => applyMessageTemplate('maintenance')}
+              className={`text-[11px] px-2.5 py-1 rounded-lg border font-semibold transition cursor-pointer flex items-center gap-1 ${
+                isLight ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700'
+              }`}
+            >
+              <span>⚙️</span> Maintenance
+            </button>
+          </div>
+        </div>
+
+        {/* Message Stream Container */}
+        <div className={`rounded-xl border p-4 overflow-y-auto space-y-3 shadow-inner ${
+          isDrawer ? 'max-h-96 min-h-[220px]' : 'max-h-72 min-h-[200px]'
+        } ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#080706] border-[#1c1917]'}`}>
+          {chatLoading && chatMessages.length === 0 ? (
+            <div className="py-12 flex flex-col items-center justify-center gap-2 text-amber-500">
+              <RefreshCw className="w-5 h-5 animate-spin" />
+              <span className="text-xs font-semibold">Loading conversation history...</span>
+            </div>
+          ) : chatMessages.length === 0 ? (
+            <div className={`py-10 text-center space-y-2 ${isLight ? 'text-slate-400' : 'text-zinc-600'}`}>
+              <MessageSquare className="w-8 h-8 mx-auto opacity-40 text-amber-500" />
+              <div className="text-xs font-medium">No messages exchanged yet with this company.</div>
+              <div className="text-[11px]">Compose and dispatch a direct administrative notice or email below.</div>
+            </div>
+          ) : (
+            chatMessages.map((msg: any) => {
+              const isSuperAdmin = msg.senderRole === 'super_admin';
+              return (
+                <div
+                  key={msg.id}
+                  className={`p-3.5 rounded-xl border text-xs space-y-1.5 transition ${
+                    isSuperAdmin
+                      ? (isLight
+                          ? 'bg-white border-amber-200 shadow-sm ml-4'
+                          : 'bg-[#141210] border-amber-500/25 ml-4')
+                      : (isLight
+                          ? 'bg-blue-50/80 border-blue-200 mr-4'
+                          : 'bg-blue-950/20 border-blue-500/30 mr-4')
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 border-b pb-1.5 border-black/10 dark:border-white/5">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                        isSuperAdmin
+                          ? (isLight ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30')
+                          : (isLight ? 'bg-blue-100 text-blue-900 border border-blue-300' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30')
+                      }`}>
+                        {isSuperAdmin ? 'Platform Admin Outbound' : 'Customer Inbound'}
+                      </span>
+                      <span className={`font-bold ${isLight ? 'text-slate-800' : 'text-white'}`}>
+                        {msg.senderName}
+                      </span>
+                      {msg.senderEmail && (
+                        <span className={`text-[10px] font-mono ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
+                          &lt;{msg.senderEmail}&gt;
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 text-[10px]">
+                      {isSuperAdmin && (
+                        <span className={`inline-flex items-center gap-1 font-semibold ${
+                          msg.deliveryStatus === 'sent'
+                            ? (isLight ? 'text-emerald-700' : 'text-emerald-400')
+                            : (isLight ? 'text-rose-700' : 'text-rose-400')
+                        }`}>
+                          {msg.deliveryStatus === 'sent' ? '✓ Dispatched via SMTP' : '⚠️ SMTP Failed'}
+                        </span>
+                      )}
+                      <span className={isLight ? 'text-slate-400' : 'text-zinc-500'}>
+                        {new Date(msg.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className={`font-bold text-[11px] ${isLight ? 'text-amber-900' : 'text-amber-400'}`}>
+                      Subject: {msg.subject}
+                    </div>
+                    <div className={`whitespace-pre-wrap leading-relaxed ${isLight ? 'text-slate-800' : 'text-zinc-200'}`}>
+                      {msg.message}
+                    </div>
+                  </div>
+
+                  {msg.recipientEmail && (
+                    <div className={`text-[10px] pt-1 flex items-center justify-between border-t border-black/5 dark:border-white/5 ${
+                      isLight ? 'text-slate-500' : 'text-zinc-500'
+                    }`}>
+                      <span>To: {msg.recipientEmail}</span>
+                      <span>Channel: {msg.channel?.toUpperCase() || 'EMAIL'}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+          <div ref={chatMessagesEndRef} />
+        </div>
+
+        {/* Notice Message Banner */}
+        {chatNotice && (
+          <div className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+            chatNotice.type === 'success'
+              ? (isLight ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400')
+              : (isLight ? 'bg-rose-50 border-rose-300 text-rose-800' : 'bg-rose-500/10 border-rose-500/30 text-rose-400')
+          }`}>
+            {chatNotice.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+            <span className="flex-1 font-medium">{chatNotice.text}</span>
+            <button onClick={() => setChatNotice(null)} className="cursor-pointer opacity-70 hover:opacity-100">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Message Composer */}
+        <div className={`p-4 rounded-xl border space-y-3 shadow-md ${
+          isLight ? 'bg-white border-slate-200' : 'bg-[#0d0c0a] border-[#1c1917]'
+        }`}>
+          <div>
+            <label className={`block text-[10px] font-bold uppercase tracking-wider mb-1 ${
+              isLight ? 'text-slate-700' : 'text-zinc-400'
+            }`}>
+              Subject Line
+            </label>
+            <input
+              type="text"
+              value={chatSubject}
+              onChange={(e) => setChatSubject(e.target.value)}
+              placeholder="e.g. Workspace Reactivation Confirmation"
+              className={`w-full border rounded-xl px-3 py-2 text-xs font-sans transition focus:outline-none focus:border-amber-500 ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900 placeholder:text-slate-400 focus:bg-white' : 'bg-[#141210] border-[#27272a] text-white placeholder-zinc-500'
+              }`}
+            />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className={`block text-[10px] font-bold uppercase tracking-wider ${
+                isLight ? 'text-slate-700' : 'text-zinc-400'
+              }`}>
+                Message Body
+              </label>
+              <span className={`text-[10px] font-mono ${isLight ? 'text-slate-400' : 'text-zinc-500'}`}>
+                {chatMessageBody.length} characters &bull; Press Ctrl+Enter to send
+              </span>
+            </div>
+            <textarea
+              rows={4}
+              value={chatMessageBody}
+              onChange={(e) => setChatMessageBody(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.ctrlKey && e.key === 'Enter') {
+                  handleSendCompanyMessage(tenantId);
+                }
+              }}
+              placeholder="Compose your direct message or official notice to this company..."
+              className={`w-full border rounded-xl p-3 text-xs font-sans transition focus:outline-none focus:border-amber-500 resize-y ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900 placeholder:text-slate-400 focus:bg-white' : 'bg-[#141210] border-[#27272a] text-white placeholder-zinc-500'
+              }`}
+            />
+          </div>
+
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-500">
+              <Mail className="w-3.5 h-3.5 text-amber-500" />
+              <span>Will dispatch live email via platform SMTP and record into company audit trail.</span>
+            </div>
+
+            <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setChatMessageBody('');
+                  setChatNotice(null);
+                }}
+                disabled={chatSending}
+                className={`px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  isLight ? 'text-slate-600 hover:bg-slate-100' : 'text-zinc-400 hover:bg-[#1a1815]'
+                }`}
+              >
+                Clear
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSendCompanyMessage(tenantId)}
+                disabled={chatSending || !chatMessageBody.trim() || !chatRecipient.trim()}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {chatSending ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Sending Email...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Send Message & Email</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // ── Stage 2: Live Socket.IO Events & Fallback Polling ────────────────────────
   useEffect(() => {
@@ -564,6 +1049,23 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
     socket.on('platform:device-offline', handlePlatformEvent);
     socket.on('platform:call-started', handlePlatformEvent);
     socket.on('platform:call-completed', handlePlatformEvent);
+    socket.on('platform:company-message-sent', (data) => {
+      if (data?.tenantId && (data.tenantId === chatTargetTenant?.id || data.tenantId === selectedTenantId)) {
+        if (data.message) {
+          setChatMessages(prev => {
+            if (prev.some(m => m.id === data.message.id)) return prev;
+            return [...prev, data.message];
+          });
+        }
+      }
+    });
+    socket.on('platform:reactivation-requested', (data) => {
+      notify(`Reactivation requested by ${data.name || data.email} (${data.tenantName || 'Workspace'})`);
+      if (chatTargetTenant?.id && data?.tenantId === chatTargetTenant.id) {
+        loadCompanyMessages(chatTargetTenant.id);
+      }
+      handlePlatformEvent(data);
+    });
 
     const interval = setInterval(() => fetchGlobalData(false), 30000);
 
@@ -1806,6 +2308,19 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                                 </button>
 
                                 <button
+                                  onClick={() => openCompanyChat(t)}
+                                  className={`px-2 py-1 rounded-lg border text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
+                                    isLight
+                                      ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                                      : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/30'
+                                  }`}
+                                  title="Direct Chat & Send Email to Company"
+                                >
+                                  <Mail className="w-3.5 h-3.5 text-amber-500" />
+                                  <span>Chat</span>
+                                </button>
+
+                                <button
                                   onClick={() => { fetchTenantDetail(t.id); setDetailTab('summary'); }}
                                   className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition cursor-pointer ${
                                     isLight
@@ -2669,6 +3184,22 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                     <ShieldAlert className="w-3.5 h-3.5" />
                     <span>{tenantDetail.overview?.status === 'active' ? 'Suspend Workspace' : 'Reactivate Workspace'}</span>
                   </button>
+
+                  <button
+                    onClick={() => {
+                      setDetailTab('messages');
+                      setChatTargetTenant(tenantDetail.overview);
+                      loadCompanyMessages(tenantDetail.overview?.id);
+                    }}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${
+                      isLight
+                        ? 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200 shadow-sm'
+                        : 'bg-[#141210] hover:bg-[#27272a] text-zinc-200 border-[#27272a]'
+                    }`}
+                  >
+                    <Mail className="w-3.5 h-3.5 text-amber-500" />
+                    <span>Direct Chat / Email</span>
+                  </button>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -2702,11 +3233,18 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                   { id: 'entitlements' as DetailTab, label: 'Module Ceiling' },
                   { id: 'seats' as DetailTab, label: 'Seats & Quotas' },
                   { id: 'devices' as DetailTab, label: `Devices (${tenantDetail.connectedDevices?.devices?.length || 0})` },
-                  { id: 'activity' as DetailTab, label: 'Audit Trail' }
+                  { id: 'activity' as DetailTab, label: 'Audit Trail' },
+                  { id: 'messages' as DetailTab, label: 'Direct Messages & Email' }
                 ].map((tab) => (
                   <button
                     key={tab.id}
-                    onClick={() => setDetailTab(tab.id)}
+                    onClick={() => {
+                      setDetailTab(tab.id);
+                      if (tab.id === 'messages') {
+                        setChatTargetTenant(tenantDetail.overview);
+                        loadCompanyMessages(tenantDetail.overview?.id);
+                      }
+                    }}
                     className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition cursor-pointer ${
                       detailTab === tab.id
                         ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
@@ -3386,6 +3924,13 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                       </tbody>
                     </table>
                   </div>
+                </div>
+              )}
+
+              {/* TAB 9: DIRECT MESSAGES & EMAIL */}
+              {detailTab === 'messages' && (
+                <div className="space-y-4">
+                  {renderCompanyChatView(tenantDetail.overview, true)}
                 </div>
               )}
             </div>
@@ -4110,6 +4655,19 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                   : (targetSuspendTenant.status === 'active' ? 'Suspend Workspace' : 'Reactivate Workspace')}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          MODAL: COMPANY DIRECT CHAT / EMAIL MODAL
+      ══════════════════════════════════════════════════════════════════════ */}
+      {showCompanyChatModal && chatTargetTenant && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className={`w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-2xl border shadow-2xl p-6 space-y-4 transition ${
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#0d0c0a] border-[#1c1917] text-white'
+          }`}>
+            {renderCompanyChatView(chatTargetTenant, false)}
           </div>
         </div>
       )}

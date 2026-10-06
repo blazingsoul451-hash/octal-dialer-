@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Eye, EyeOff, AlertCircle, CheckCircle2, ChevronDown, Search } from 'lucide-react';
+import { Eye, EyeOff, AlertCircle, CheckCircle2, ChevronDown, Search, ShieldAlert, Mail, Send, X, MessageSquare } from 'lucide-react';
 import { type AuthIdentity, tryNormalizeStructuralRole } from '../utils/roleUtils';
 
 interface LoginScreenProps {
@@ -16,6 +16,12 @@ interface AuthConfig {
 interface GooglePromptError {
   code: 'ACCOUNT_NOT_FOUND' | 'ACCOUNT_EXISTS' | 'GOOGLE_ACCOUNT_NOT_FOUND' | 'GOOGLE_ACCOUNT_ALREADY_EXISTS';
   email?: string;
+  message?: string;
+}
+
+interface SuspendedAccountInfo {
+  email?: string;
+  tenantName?: string;
   message?: string;
 }
 
@@ -112,6 +118,15 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
   // Google Explicit Intent Error Modal
   const [googlePromptError, setGooglePromptError] = useState<GooglePromptError | null>(null);
 
+  // Suspended Account & Workspace Reactivation State
+  const [suspendedInfo, setSuspendedInfo] = useState<SuspendedAccountInfo | null>(null);
+  const [reactivateMessage, setReactivateMessage] = useState<string>('Hello Administrator, our workspace account was suspended. We would like to reactivate our account and resume using our dialer. Please review and restore our access.');
+  const [reactivateName, setReactivateName] = useState<string>('');
+  const [reactivateEmail, setReactivateEmail] = useState<string>('');
+  const [reactivateSubmitting, setReactivateSubmitting] = useState<boolean>(false);
+  const [reactivateSuccess, setReactivateSuccess] = useState<boolean>(false);
+  const [reactivateError, setReactivateError] = useState<string | null>(null);
+
   // Auth config (Google OAuth & CAPTCHA)
   const [authConfig, setAuthConfig] = useState<AuthConfig>({
     googleClientId: '276074980527-6d3r4q4e013ts65tpfq7d8971k6p99ct.apps.googleusercontent.com',
@@ -140,8 +155,17 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       const authError = params.get('auth_error');
       const authEmail = params.get('email');
       const authMessage = params.get('message');
+      const authTenant = params.get('tenant');
 
-      if (authError === 'ACCOUNT_NOT_FOUND' || authError === 'GOOGLE_ACCOUNT_NOT_FOUND') {
+      if (authError === 'ACCOUNT_SUSPENDED' || authError === 'WORKSPACE_SUSPENDED' || (authMessage && authMessage.toLowerCase().includes('suspended'))) {
+        setSuspendedInfo({
+          email: authEmail || undefined,
+          tenantName: authTenant || undefined,
+          message: authMessage ? decodeURIComponent(authMessage) : 'Your workspace or account has been suspended by the platform administrator.'
+        });
+        if (authEmail) setReactivateEmail(authEmail);
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (authError === 'ACCOUNT_NOT_FOUND' || authError === 'GOOGLE_ACCOUNT_NOT_FOUND') {
         setGooglePromptError({
           code: 'ACCOUNT_NOT_FOUND',
           email: authEmail || undefined,
@@ -260,6 +284,15 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       });
       const data = await res.json();
       if (!res.ok) {
+        if (data.code === 'ACCOUNT_SUSPENDED' || data.code === 'WORKSPACE_SUSPENDED' || (data.error && data.error.toLowerCase().includes('suspended'))) {
+          setSuspendedInfo({
+            email: data.email,
+            tenantName: data.tenantName,
+            message: data.error || 'Your workspace or account has been suspended by the platform administrator.'
+          });
+          if (data.email) setReactivateEmail(data.email);
+          return;
+        }
         if (data.code === 'ACCOUNT_NOT_FOUND' || data.code === 'GOOGLE_ACCOUNT_NOT_FOUND') {
           setGooglePromptError({ code: 'ACCOUNT_NOT_FOUND', email: data.email, message: data.error });
           return;
@@ -358,6 +391,41 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
     } catch (err: any) {
       setError(err.message || 'Failed to initiate Google authentication.');
       setLoading(false);
+    }
+  };
+
+  const handleSendReactivationRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reactivateEmail || !reactivateEmail.includes('@')) {
+      setReactivateError('Please enter a valid email address.');
+      return;
+    }
+    if (!reactivateMessage.trim()) {
+      setReactivateError('Please enter a message for the administrator.');
+      return;
+    }
+    setReactivateSubmitting(true);
+    setReactivateError(null);
+    try {
+      const res = await fetch(`${serverUrl}/auth/contact-admin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: reactivateEmail.trim(),
+          name: reactivateName.trim(),
+          message: reactivateMessage.trim(),
+          tenantName: suspendedInfo?.tenantName
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to submit request.');
+      }
+      setReactivateSuccess(true);
+    } catch (err: any) {
+      setReactivateError(err.message || 'Failed to send reactivation request.');
+    } finally {
+      setReactivateSubmitting(false);
     }
   };
 
@@ -498,6 +566,19 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       const data = await res.json();
 
       if (!res.ok) {
+        if (data.code === 'ACCOUNT_SUSPENDED' || (data.error && data.error.toLowerCase().includes('suspended'))) {
+          setSuspendedInfo({
+            email: data.email || (username.includes('@') ? username : email || undefined),
+            tenantName: data.tenantName,
+            message: data.error || 'Your workspace or account has been suspended by the platform administrator.'
+          });
+          if (data.email || username.includes('@')) {
+            setReactivateEmail(data.email || username);
+          } else if (email) {
+            setReactivateEmail(email);
+          }
+          return;
+        }
         setError(data.error || 'Operation failed.');
         return;
       }
@@ -614,6 +695,173 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                 className="text-xs text-slate-400 hover:text-white cursor-pointer py-1"
               >
                 Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Suspended Account / Workspace Contact Admin Modal ── */}
+      {suspendedInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
+          <div className="bg-[#0b0e14] border border-amber-500/40 rounded-2xl p-6 sm:p-7 shadow-2xl max-w-lg w-full text-slate-100 space-y-5 relative">
+            <button
+              type="button"
+              onClick={() => {
+                setSuspendedInfo(null);
+                setReactivateSuccess(false);
+                setReactivateError(null);
+              }}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+              title="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Header Icon + Title */}
+            <div className="flex items-start gap-3.5">
+              <div className="w-12 h-12 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 shadow-lg shadow-amber-500/10">
+                <ShieldAlert className="w-6 h-6" />
+              </div>
+              <div className="min-w-0 pr-6">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-lg font-bold text-white tracking-wide">
+                    Workspace Suspended
+                  </h3>
+                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 font-mono">
+                    Access Paused
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  This workspace or account is currently paused by the platform administrator.
+                </p>
+              </div>
+            </div>
+
+            {/* Context Details Card */}
+            <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
+              {suspendedInfo.tenantName && (
+                <div className="flex items-center justify-between text-slate-300">
+                  <span className="text-slate-400 font-medium">Workspace:</span>
+                  <span className="font-bold text-white truncate max-w-[240px]">{suspendedInfo.tenantName}</span>
+                </div>
+              )}
+              {suspendedInfo.email && (
+                <div className="flex items-center justify-between text-slate-300">
+                  <span className="text-slate-400 font-medium">Account Email:</span>
+                  <span className="font-mono font-semibold text-amber-400 truncate max-w-[240px]">{suspendedInfo.email}</span>
+                </div>
+              )}
+              <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-800/80 leading-relaxed">
+                {suspendedInfo.message || 'Users associated with this workspace cannot log in or make calls until it is reactivated by the administrator.'}
+              </div>
+            </div>
+
+            {reactivateSuccess ? (
+              /* Success confirmation view */
+              <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 text-xs space-y-3">
+                <div className="flex items-center gap-2 font-bold text-sm text-emerald-400">
+                  <CheckCircle2 className="w-5 h-5 shrink-0" />
+                  <span>Reactivation Request Submitted!</span>
+                </div>
+                <p className="text-slate-300 leading-relaxed">
+                  The platform administrator has been notified. We will review your account and contact you at <strong className="text-white">{reactivateEmail}</strong>.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSuspendedInfo(null);
+                    setReactivateSuccess(false);
+                  }}
+                  className="w-full mt-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs py-2.5 rounded-xl transition cursor-pointer"
+                >
+                  Return to Sign In
+                </button>
+              </div>
+            ) : (
+              /* Interactive Contact Form */
+              <form onSubmit={handleSendReactivationRequest} className="space-y-3.5">
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <MessageSquare className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Contact Administrator to Reactivate</span>
+                </div>
+
+                {reactivateError && (
+                  <div className="p-2.5 rounded-lg bg-rose-950/40 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                    <span>{reactivateError}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-400 mb-1">Your Name</label>
+                    <input
+                      type="text"
+                      value={reactivateName}
+                      onChange={(e) => setReactivateName(e.target.value)}
+                      placeholder="e.g. John Doe"
+                      className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-400 mb-1">Your Email</label>
+                    <input
+                      type="email"
+                      required
+                      value={reactivateEmail}
+                      onChange={(e) => setReactivateEmail(e.target.value)}
+                      placeholder="e.g. user@gmail.com"
+                      className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-amber-500 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">Message to Administrator</label>
+                  <textarea
+                    rows={3}
+                    required
+                    value={reactivateMessage}
+                    onChange={(e) => setReactivateMessage(e.target.value)}
+                    placeholder="Describe your request..."
+                    className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-amber-500 resize-none"
+                  />
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
+                  <button
+                    type="submit"
+                    disabled={reactivateSubmitting}
+                    className="w-full sm:flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold text-xs py-2.5 rounded-xl transition shadow-lg shadow-amber-500/20 disabled:opacity-50 cursor-pointer"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>{reactivateSubmitting ? 'Sending Request...' : 'Send Reactivation Request'}</span>
+                  </button>
+
+                  <a
+                    href={`mailto:blazingsoul451@gmail.com?subject=${encodeURIComponent(`Workspace Reactivation Request - ${suspendedInfo.email || ''}`)}&body=${encodeURIComponent(`Hello Administrator,\n\nOur workspace account (${suspendedInfo.tenantName || 'Workspace'}) associated with email ${suspendedInfo.email || reactivateEmail} was suspended.\n\nWe would like to request account reactivation.\n\nMessage: ${reactivateMessage}`)}`}
+                    className="w-full sm:w-auto px-3.5 py-2.5 rounded-xl border border-slate-700 hover:border-slate-500 text-slate-300 hover:text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition text-center cursor-pointer"
+                    title="Send Email Directly"
+                  >
+                    <Mail className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Direct Email</span>
+                  </a>
+                </div>
+              </form>
+            )}
+
+            <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+              <span>Admin contact: <span className="font-mono text-slate-300">blazingsoul451@gmail.com</span></span>
+              <button
+                type="button"
+                onClick={() => {
+                  setSuspendedInfo(null);
+                  setReactivateSuccess(false);
+                }}
+                className="text-amber-400 hover:underline cursor-pointer"
+              >
+                Sign in with another account
               </button>
             </div>
           </div>
