@@ -211,6 +211,7 @@ export async function pairPhone(
   const session = sessionIdHint ? sessions.get(sessionIdHint) : getSessionByToken(cleanToken);
   if (!session || !cleanToken || cleanToken !== session.token || session.tokenExpiresAt.getTime() <= Date.now()) return null;
   if (!session.tenantId || (identity && (identity.tenantId !== session.tenantId || identity.userId !== session.userId))) return null;
+  if (session.phoneDeviceId && !identity) return null;
   if (session.status === 'CALLING' || pairingInProgress.has(session.id)) return null;
   const tenantId = session.tenantId;
   pairingInProgress.add(session.id);

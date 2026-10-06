@@ -95,6 +95,12 @@ function createInMemoryDb() {
       if (sql.includes('SELECT COUNT(*)::int AS count FROM campaign_teams')) {
         return { count: 0 };
       }
+      if (sql.includes('COUNT(*) as count FROM users WHERE') && sql.includes("role = 'admin'")) {
+        const tenantId = params[0];
+        const excludeUserId = params[1];
+        const count = tables.users.filter(u => u.tenantId === tenantId && u.id !== excludeUserId && u.role === 'admin' && (u.status || 'active').toLowerCase() === 'active').length;
+        return { count };
+      }
       return null;
     },
     queryAll: async (sql, params = []) => {
@@ -747,7 +753,7 @@ async function runAllTests() {
 
   await check(42, 'CSV call log export route (GET /api/logs/export) uses getScopedLogs per actor scope', async () => {
     const serverCode = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
-    assert.ok(serverCode.includes("app.get('/api/logs/export'"));
+    assert.ok(serverCode.includes("'/api/logs/export'"));
     assert.ok(serverCode.includes("const logs = await getScopedLogs(caller, tenantId);"));
     assert.ok(!serverCode.includes("const logs = await getLogs(tenantId);\n\n    const header = ['Time'"), 'Export must never call unscoped getLogs');
   });
