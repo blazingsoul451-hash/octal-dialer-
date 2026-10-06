@@ -6,7 +6,7 @@ import {
   Clock, ShieldCheck, CheckCircle2, AlertTriangle,
   Sliders, ChevronRight, PhoneCall,
   Mail, Share2, UserCheck, ShieldAlert,
-  Sun, Moon, Crown, Ban
+  Sun, Moon, Crown, Ban, Menu
 } from 'lucide-react';
 import { io as socketIO, Socket } from 'socket.io-client';
 
@@ -147,6 +147,25 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
 
   // Navigation State
   const [activeTab, setActiveTab] = useState<NavigationTab>('overview');
+  const [isNavPinned, setIsNavPinned] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('zestify_admin_nav_pinned');
+      if (saved !== null) return saved === 'true';
+      return window.innerWidth >= 1440;
+    }
+    return false;
+  });
+  const [isNavHovered, setIsNavHovered] = useState(false);
+  const isNavExpanded = isNavPinned || isNavHovered;
+
+  const toggleNavPinned = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setIsNavPinned(prev => {
+      const next = !prev;
+      localStorage.setItem('zestify_admin_nav_pinned', String(next));
+      return next;
+    });
+  };
 
   // Observability & Telemetry State
   const [overview, setOverview] = useState<any>(null);
@@ -822,184 +841,203 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
       isLight ? 'bg-slate-100 text-slate-900' : 'bg-[#080706] text-slate-100'
     }`}>
       {/* ── 1. PLATFORM OWNER SIDEBAR ── */}
-      <aside className={`w-64 border-r flex flex-col shrink-0 z-30 select-none transition-colors duration-200 ${
-        isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#0d0c0a] border-[#1c1917]'
-      }`}>
+      <aside
+        onMouseEnter={() => setIsNavHovered(true)}
+        onMouseLeave={() => setIsNavHovered(false)}
+        className={`border-r flex flex-col shrink-0 z-30 select-none transition-all duration-300 ease-in-out ${
+          isNavExpanded ? 'w-64' : 'w-16 items-center'
+        } ${
+          isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#0d0c0a] border-[#1c1917]'
+        }`}
+      >
         {/* Brand Header */}
-        <div className={`p-5 border-b flex items-center justify-between ${
+        <div className={`border-b flex items-center transition-all ${
+          isNavExpanded ? 'p-4 justify-between w-full' : 'p-3.5 justify-center'
+        } ${
           isLight ? 'border-slate-200 bg-white' : 'border-[#1c1917] bg-[#0d0c0a]'
         }`}>
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-amber-500 shadow-lg shadow-amber-500/20 flex items-center justify-center shrink-0">
+          {isNavExpanded ? (
+            <>
+              <div className="flex items-center gap-3 overflow-hidden">
+                <div className="w-9 h-9 rounded-xl bg-amber-500 shadow-lg shadow-amber-500/20 flex items-center justify-center shrink-0">
+                  <Shield className="w-5 h-5 text-slate-950" />
+                </div>
+                <div className="overflow-hidden">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-sm font-extrabold tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                      ZESTIFY
+                    </span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                      isLight ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                    }`}>
+                      ROOT
+                    </span>
+                  </div>
+                  <div className={`text-[10px] font-semibold tracking-wider uppercase truncate ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>
+                    PLATFORM CONSOLE
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={toggleNavPinned}
+                title={isNavPinned ? "Unpin Navigation Sidebar (Collapse)" : "Pin Navigation Sidebar Open"}
+                className={`p-1.5 rounded-lg border transition cursor-pointer shrink-0 ${
+                  isNavPinned
+                    ? (isLight ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-amber-500/20 border-amber-500/40 text-amber-400')
+                    : (isLight ? 'border-slate-200 text-slate-500 hover:bg-slate-100' : 'border-[#27272a] text-zinc-400 hover:bg-[#181614]')
+                }`}
+              >
+                <Menu className="w-4 h-4 stroke-[2.5]" />
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={toggleNavPinned}
+              title="Pin Navigation Sidebar Open"
+              className="w-9 h-9 rounded-xl bg-amber-500 shadow-lg shadow-amber-500/20 flex items-center justify-center shrink-0 cursor-pointer hover:scale-105 transition-transform"
+            >
               <Shield className="w-5 h-5 text-slate-950" />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className={`text-sm font-extrabold tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  ZESTIFY
-                </span>
-                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                  isLight ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                }`}>
-                  ROOT
-                </span>
-              </div>
-              <div className={`text-[10px] font-semibold tracking-wider uppercase ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>
-                PLATFORM CONSOLE
-              </div>
-            </div>
-          </div>
+            </button>
+          )}
         </div>
 
         {/* Navigation Menu */}
-        <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-          <button
-            onClick={() => setActiveTab('overview')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
-              activeTab === 'overview'
-                ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
-                : isLight
-                ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-100 font-semibold'
-                : 'text-zinc-400 hover:text-white hover:bg-[#181614] font-semibold'
-            }`}
-          >
-            <Activity className={`w-4 h-4 ${activeTab === 'overview' ? 'text-slate-950' : 'text-amber-500'}`} />
-            <span>OVERVIEW</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('workspaces')}
-            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
-              activeTab === 'workspaces'
-                ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
-                : isLight
-                ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-100 font-semibold'
-                : 'text-zinc-400 hover:text-white hover:bg-[#181614] font-semibold'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <Building2 className={`w-4 h-4 ${activeTab === 'workspaces' ? 'text-slate-950' : 'text-amber-500'}`} />
-              <span>COMPANIES</span>
-            </div>
-            <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
-              activeTab === 'workspaces'
-                ? 'bg-slate-950 text-amber-400'
-                : isLight
-                ? 'bg-slate-100 text-slate-700 border border-slate-200'
-                : 'bg-[#1c1917] text-zinc-400'
-            }`}>
-              {totalTenants}
-            </span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('users')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
-              activeTab === 'users'
-                ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
-                : isLight
-                ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-100 font-semibold'
-                : 'text-zinc-400 hover:text-white hover:bg-[#181614] font-semibold'
-            }`}
-          >
-            <Users className={`w-4 h-4 ${activeTab === 'users' ? 'text-slate-950' : 'text-amber-500'}`} />
-            <span>PEOPLE</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('devices')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
-              activeTab === 'devices'
-                ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
-                : isLight
-                ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-100 font-semibold'
-                : 'text-zinc-400 hover:text-white hover:bg-[#181614] font-semibold'
-            }`}
-          >
-            <Smartphone className={`w-4 h-4 ${activeTab === 'devices' ? 'text-slate-950' : 'text-amber-500'}`} />
-            <span>TELEPHONY & DEVICES</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('jobs')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
-              activeTab === 'jobs'
-                ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
-                : isLight
-                ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-100 font-semibold'
-                : 'text-zinc-400 hover:text-white hover:bg-[#181614] font-semibold'
-            }`}
-          >
-            <Sliders className={`w-4 h-4 ${activeTab === 'jobs' ? 'text-slate-950' : 'text-amber-500'}`} />
-            <span>AUTOMATION & JOBS</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('activity')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
-              activeTab === 'activity'
-                ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
-                : isLight
-                ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-100 font-semibold'
-                : 'text-zinc-400 hover:text-white hover:bg-[#181614] font-semibold'
-            }`}
-          >
-            <ShieldAlert className={`w-4 h-4 ${activeTab === 'activity' ? 'text-slate-950' : 'text-amber-500'}`} />
-            <span>SECURITY & AUDIT</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('health')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
-              activeTab === 'health'
-                ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
-                : isLight
-                ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-100 font-semibold'
-                : 'text-zinc-400 hover:text-white hover:bg-[#181614] font-semibold'
-            }`}
-          >
-            <ShieldCheck className={`w-4 h-4 ${activeTab === 'health' ? 'text-slate-950' : 'text-amber-500'}`} />
-            <span>SYSTEM HEALTH</span>
-          </button>
+        <nav className={`flex-1 space-y-1 overflow-y-auto overflow-x-hidden ${isNavExpanded ? 'p-3 w-full' : 'p-2 w-full flex flex-col items-center'}`}>
+          {[
+            { id: 'overview', label: 'OVERVIEW', icon: Activity },
+            { id: 'workspaces', label: 'COMPANIES', icon: Building2, count: totalTenants },
+            { id: 'users', label: 'PEOPLE', icon: Users },
+            { id: 'devices', label: 'TELEPHONY & DEVICES', icon: Smartphone },
+            { id: 'jobs', label: 'AUTOMATION & JOBS', icon: Sliders },
+            { id: 'activity', label: 'SECURITY & AUDIT', icon: ShieldAlert },
+            { id: 'health', label: 'SYSTEM HEALTH', icon: ShieldCheck },
+          ].map(item => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id as NavigationTab)}
+                title={`${item.label}${item.count !== undefined ? ` (${item.count})` : ''}`}
+                className={`transition cursor-pointer relative ${
+                  isNavExpanded
+                    ? 'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold'
+                    : 'w-10 h-10 flex items-center justify-center rounded-xl my-0.5'
+                } ${
+                  isActive
+                    ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                    : isLight
+                    ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-100 font-semibold'
+                    : 'text-zinc-400 hover:text-white hover:bg-[#181614] font-semibold'
+                }`}
+              >
+                {isNavExpanded ? (
+                  <>
+                    <div className="flex items-center gap-3">
+                      <Icon className={`w-4 h-4 ${isActive ? 'text-slate-950' : 'text-amber-500'}`} />
+                      <span>{item.label}</span>
+                    </div>
+                    {item.count !== undefined && (
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
+                        isActive
+                          ? 'bg-slate-950 text-amber-400'
+                          : isLight
+                          ? 'bg-slate-100 text-slate-700 border border-slate-200'
+                          : 'bg-[#1c1917] text-zinc-400'
+                      }`}>
+                        {item.count}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Icon className={`w-5 h-5 ${isActive ? 'text-slate-950' : 'text-amber-500'}`} />
+                    {item.count !== undefined && item.count > 0 && (
+                      <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-[#0d0c0a]" />
+                    )}
+                  </>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
         {/* Profile / Bottom Section */}
-        <div className={`p-4 border-t transition-colors ${
+        <div className={`border-t transition-colors ${
+          isNavExpanded ? 'p-4 w-full' : 'p-2.5 w-full flex flex-col items-center gap-2'
+        } ${
           isLight ? 'border-slate-200 bg-slate-50' : 'border-[#1c1917] bg-[#090807]'
         }`}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold text-xs ${
-                isMasterSuperAdmin
-                  ? 'bg-amber-500/20 border border-amber-500/50 text-amber-400'
-                  : (isLight ? 'bg-amber-100 border border-amber-300 text-amber-900' : 'bg-amber-500/10 border border-amber-500/30 text-amber-400')
-              }`}>
-                {isMasterSuperAdmin ? <Crown className="w-4 h-4 text-amber-400" /> : 'PO'}
+          {isNavExpanded ? (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5 overflow-hidden">
+                <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold text-xs shrink-0 ${
+                  isMasterSuperAdmin
+                    ? 'bg-amber-500/20 border border-amber-500/50 text-amber-400'
+                    : (isLight ? 'bg-amber-100 border border-amber-300 text-amber-900' : 'bg-amber-500/10 border border-amber-500/30 text-amber-400')
+                }`}>
+                  {isMasterSuperAdmin ? <Crown className="w-4 h-4 text-amber-400" /> : 'PO'}
+                </div>
+                <div className="text-left overflow-hidden">
+                  <div className={`text-xs font-bold capitalize leading-tight flex items-center gap-1 truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                    {usernameDisplay}
+                    {isMasterSuperAdmin && <Crown className="w-3 h-3 text-amber-400 shrink-0" />}
+                  </div>
+                  <div className={`text-[10px] font-extrabold uppercase truncate ${isMasterSuperAdmin ? 'text-amber-400 font-mono tracking-wider' : (isLight ? 'text-amber-800' : 'text-amber-400')}`}>
+                    {isMasterSuperAdmin ? 'SUPERADMIN (MASTER)' : 'Platform Owner'}
+                  </div>
+                </div>
               </div>
-              <div className="text-left">
-                <div className={`text-xs font-bold capitalize leading-tight flex items-center gap-1 ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  {usernameDisplay}
-                  {isMasterSuperAdmin && <Crown className="w-3 h-3 text-amber-400 shrink-0" />}
-                </div>
-                <div className={`text-[10px] font-extrabold uppercase ${isMasterSuperAdmin ? 'text-amber-400 font-mono tracking-wider' : (isLight ? 'text-amber-800' : 'text-amber-400')}`}>
-                  {isMasterSuperAdmin ? 'SUPERADMIN (MASTER)' : 'Platform Owner'}
-                </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  onClick={handleToggleTheme}
+                  className={`p-2 rounded-lg border transition cursor-pointer ${
+                    isLight
+                      ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900 shadow-sm'
+                      : 'bg-[#141210] border-[#27272a] text-amber-400 hover:text-white'
+                  }`}
+                  title={isLight ? 'Switch to Dark Mode' : 'Switch to Bright Mode'}
+                >
+                  {isLight ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+                </button>
+
+                <button
+                  onClick={onLogout}
+                  className={`p-2 rounded-lg border transition cursor-pointer ${
+                    isLight
+                      ? 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100'
+                      : 'bg-rose-500/10 border-rose-500/20 text-rose-400 hover:bg-rose-500/20'
+                  }`}
+                  title="Sign Out Platform Admin"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
               </div>
             </div>
-
-            <div className="flex items-center gap-1.5">
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <div
+                title={`${usernameDisplay} (${isMasterSuperAdmin ? 'SUPERADMIN MASTER' : 'Platform Owner'})`}
+                className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs cursor-pointer ${
+                  isMasterSuperAdmin
+                    ? 'bg-amber-500/20 border border-amber-500/50 text-amber-400'
+                    : (isLight ? 'bg-amber-100 border border-amber-300 text-amber-900' : 'bg-amber-500/10 border border-amber-500/30 text-amber-400')
+                }`}
+              >
+                {isMasterSuperAdmin ? <Crown className="w-4 h-4 text-amber-400" /> : 'PO'}
+              </div>
               <button
                 onClick={handleToggleTheme}
                 className={`p-2 rounded-lg border transition cursor-pointer ${
                   isLight
-                    ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900 shadow-sm'
+                    ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100 shadow-sm'
                     : 'bg-[#141210] border-[#27272a] text-amber-400 hover:text-white'
                 }`}
                 title={isLight ? 'Switch to Dark Mode' : 'Switch to Bright Mode'}
               >
                 {isLight ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
               </button>
-
               <button
                 onClick={onLogout}
                 className={`p-2 rounded-lg border transition cursor-pointer ${
@@ -1012,7 +1050,7 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                 <LogOut className="w-4 h-4" />
               </button>
             </div>
-          </div>
+          )}
         </div>
       </aside>
 
@@ -1025,6 +1063,17 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
           isLight ? 'bg-white/95 border-slate-200 shadow-sm' : 'bg-[#0d0c0a]/90 border-[#1c1917]'
         }`}>
           <div className="flex items-center gap-3">
+            <button
+              onClick={toggleNavPinned}
+              title={isNavPinned ? "Unpin Navigation Sidebar (Collapse)" : "Pin Navigation Sidebar Open"}
+              className={`p-2 rounded-xl border transition-all cursor-pointer mr-1 ${
+                isNavPinned
+                  ? (isLight ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-amber-500/15 border-amber-500/30 text-amber-400')
+                  : (isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700' : 'bg-[#141210] hover:bg-[#1a1815] border-[#27272a] text-zinc-400 hover:text-white')
+              }`}
+            >
+              <Menu className="w-4 h-4 stroke-[2.5]" />
+            </button>
             <h2 className={`text-sm font-extrabold uppercase tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
               {activeTab === 'overview' && 'Platform Overview & Telemetry'}
               {activeTab === 'workspaces' && 'Customer Workspaces & Entitlements'}
@@ -1559,19 +1608,19 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
-                      <tr className={`border-b text-[11px] uppercase tracking-wider font-semibold ${
+                      <tr className={`border-b text-[10px] uppercase tracking-wider font-semibold ${
                         isLight ? 'border-slate-200 bg-slate-50 text-slate-600' : 'border-[#1c1917] bg-[#12110e] text-zinc-400'
                       }`}>
-                        <th className="py-2.5 px-3.5 font-bold">Company / Workspace</th>
-                        <th className="py-2.5 px-3.5 font-bold">Owner</th>
-                        <th className="py-2.5 px-3.5 font-bold">Type</th>
-                        <th className="py-2.5 px-3.5 font-bold">Plan</th>
-                        <th className="py-2.5 px-3.5 font-bold">Users</th>
-                        <th className="py-2.5 px-3.5 font-bold">Seats</th>
-                        <th className="py-2.5 px-3.5 font-bold">Modules</th>
-                        <th className="py-2.5 px-3.5 font-bold">Status</th>
-                        <th className="py-2.5 px-3.5 font-bold">Created</th>
-                        <th className="py-2.5 px-3.5 font-bold text-right">Actions</th>
+                        <th className="py-2 px-2.5 font-bold">Company / Workspace</th>
+                        <th className="py-2 px-2.5 font-bold">Owner</th>
+                        <th className="py-2 px-2 font-bold">Type</th>
+                        <th className="py-2 px-2 font-bold">Plan</th>
+                        <th className="py-2 px-2 font-bold">Users</th>
+                        <th className="py-2 px-2 font-bold">Seats</th>
+                        <th className="py-2 px-2 font-bold">Modules</th>
+                        <th className="py-2 px-2 font-bold">Status</th>
+                        <th className="py-2 px-2 font-bold">Created</th>
+                        <th className="py-2 px-2.5 font-bold text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className={`divide-y ${isLight ? 'divide-slate-100' : 'divide-[#181614]'}`}>
@@ -1587,8 +1636,8 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                             }`}
                             onClick={() => { fetchTenantDetail(t.id); setDetailTab('summary'); }}
                           >
-                            <td className="py-2.5 px-3.5">
-                              <div className="flex items-center gap-2.5">
+                            <td className="py-2 px-2.5">
+                              <div className="flex items-center gap-2">
                                 <div className={`w-7 h-7 rounded-lg border flex items-center justify-center font-bold text-xs shrink-0 ${
                                   isLight
                                     ? 'bg-amber-100 border-amber-300 text-amber-900'
@@ -1596,22 +1645,24 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                                 }`}>
                                   {t.name.charAt(0).toUpperCase()}
                                 </div>
-                                <div>
-                                  <div className={`font-bold transition leading-snug ${isLight ? 'text-slate-900 group-hover:text-amber-800' : 'text-white group-hover:text-amber-400'}`}>
+                                <div className="min-w-0">
+                                  <div className={`font-bold transition leading-snug truncate max-w-[140px] xl:max-w-[180px] ${isLight ? 'text-slate-900 group-hover:text-amber-800' : 'text-white group-hover:text-amber-400'}`}>
                                     {t.name}
                                   </div>
-                                  <div className={`text-[10px] font-mono leading-none ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{t.slug}</div>
+                                  <div className={`text-[10px] font-mono leading-none truncate max-w-[140px] xl:max-w-[180px] ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{t.slug}</div>
                                 </div>
                               </div>
                             </td>
 
-                            <td className="py-2.5 px-3.5">
-                              <div className={`font-semibold leading-snug ${isLight ? 'text-slate-900' : 'text-white'}`}>{t.primaryOwner?.username || '—'}</div>
-                              <div className={`text-[10px] leading-none ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{t.ownerEmail || t.primaryOwner?.email || '—'}</div>
+                            <td className="py-2 px-2.5">
+                              <div className="min-w-0">
+                                <div className={`font-semibold leading-snug truncate max-w-[130px] xl:max-w-[160px] ${isLight ? 'text-slate-900' : 'text-white'}`}>{t.primaryOwner?.username || '—'}</div>
+                                <div className={`text-[10px] leading-none truncate max-w-[130px] xl:max-w-[160px] ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{t.ownerEmail || t.primaryOwner?.email || '—'}</div>
+                              </div>
                             </td>
 
-                            <td className="py-2.5 px-3.5">
-                              <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold tracking-wide ${
+                            <td className="py-2 px-2">
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold tracking-wide ${
                                 t.customerType === 'PERSONAL'
                                   ? (isLight ? 'bg-purple-100 text-purple-700 border border-purple-200' : 'bg-purple-500/10 text-purple-400 border border-purple-500/20')
                                   : (isLight ? 'bg-blue-100 text-blue-700 border border-blue-200' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20')
@@ -1620,19 +1671,19 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                               </span>
                             </td>
 
-                            <td className="py-2.5 px-3.5">
-                              <span className={`text-xs uppercase font-bold ${isLight ? 'text-amber-800' : 'text-amber-400'}`}>
+                            <td className="py-2 px-2">
+                              <span className={`text-[11px] uppercase font-bold ${isLight ? 'text-amber-800' : 'text-amber-400'}`}>
                                 {getDisplayPlan(t.tier || t.plan)}
                               </span>
                             </td>
 
-                            <td className={`py-2.5 px-3.5 font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                            <td className={`py-2 px-2 font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
                               {seatsUsed}
                             </td>
 
-                            <td className="py-2.5 px-3.5">
-                              <div className="space-y-1 w-24">
-                                <div className="flex items-center justify-between text-[11px]">
+                            <td className="py-2 px-2">
+                              <div className="space-y-0.5 w-20">
+                                <div className="flex items-center justify-between text-[10px]">
                                   <span className={`font-semibold ${
                                     isMaxed
                                       ? (isLight ? 'text-rose-600' : 'text-rose-400')
@@ -1652,8 +1703,8 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                               </div>
                             </td>
 
-                            <td className="py-2.5 px-3.5 whitespace-nowrap">
-                              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold ${
+                            <td className="py-2 px-2 whitespace-nowrap">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
                                 isLight ? 'bg-slate-100 text-slate-800 border border-slate-200' : 'bg-zinc-900 text-zinc-200 border border-zinc-700/80 shadow-sm'
                               }`}>
                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
@@ -1665,22 +1716,22 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                               </span>
                             </td>
 
-                            <td className="py-2.5 px-3.5 whitespace-nowrap">
+                            <td className="py-2 px-2 whitespace-nowrap">
                               {(t.status === 'trial' || t.isTrial) ? (
-                                <div className="flex flex-col items-start gap-1">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className={`inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                                <div className="flex flex-col items-start gap-0.5">
+                                  <div className="flex items-center gap-1">
+                                    <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
                                       isLight ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
                                     }`}>
-                                      <span className="relative flex h-2 w-2">
+                                      <span className="relative flex h-1.5 w-1.5">
                                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                                        <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                                        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
                                       </span>
                                       Trial
                                     </span>
                                     <button
                                       onClick={(e) => { e.stopPropagation(); setAdjustingTrialTenant(t); }}
-                                      className={`text-[10px] px-1.5 py-0.5 rounded font-bold border transition cursor-pointer ${
+                                      className={`text-[9px] px-1 py-0.2 rounded font-bold border transition cursor-pointer ${
                                         isLight ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-300' : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40'
                                       }`}
                                       title="Adjust Trial Duration (Add / Reduce Time)"
@@ -1688,17 +1739,17 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                                       ⏱️ Adjust
                                     </button>
                                   </div>
-                                  <LiveTrialCountdown targetDate={t.trialEndsAt} className="text-[11px]" />
+                                  <LiveTrialCountdown targetDate={t.trialEndsAt} className="text-[10px]" />
                                 </div>
                               ) : t.status === 'active' ? (
-                                <span className={`inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                                <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
                                   isLight ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                                 }`}>
                                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                                   Active
                                 </span>
                               ) : (
-                                <span className={`inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                                <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
                                   isLight ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
                                 }`}>
                                   <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
@@ -1707,7 +1758,7 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
                               )}
                             </td>
 
-                            <td className={`py-2.5 px-3.5 text-xs whitespace-nowrap ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
+                            <td className={`py-2 px-2 text-[11px] whitespace-nowrap ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
                               {new Date(t.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
                             </td>
 
