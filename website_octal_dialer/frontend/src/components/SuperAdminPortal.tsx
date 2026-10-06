@@ -837,63 +837,50 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
   const isMasterSuperAdmin = usernameDisplay.toLowerCase() === 'master_mohsin7' || currentUser?.role === 'superadmin';
 
   return (
-    <div className={`min-h-screen flex flex-row font-sans selection:bg-amber-500/20 selection:text-amber-500 antialiased transition-colors duration-200 ${
+    <div className={`h-screen w-full overflow-hidden flex flex-row font-sans selection:bg-amber-500/20 selection:text-amber-500 antialiased transition-colors duration-200 ${
       isLight ? 'bg-slate-100 text-slate-900' : 'bg-[#080706] text-slate-100'
     }`}>
       {/* ── 1. PLATFORM OWNER SIDEBAR ── */}
       <aside
         onMouseEnter={() => setIsNavHovered(true)}
         onMouseLeave={() => setIsNavHovered(false)}
-        className={`border-r flex flex-col shrink-0 z-30 select-none transition-all duration-300 ease-in-out ${
+        className={`h-screen border-r flex flex-col justify-between shrink-0 z-30 select-none transition-all duration-300 ease-in-out ${
           isNavExpanded ? 'w-64' : 'w-16 items-center'
         } ${
           isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#0d0c0a] border-[#1c1917]'
         }`}
       >
         {/* Brand Header */}
-        <div className={`border-b flex items-center transition-all ${
-          isNavExpanded ? 'p-4 justify-between w-full' : 'p-3.5 justify-center'
+        <div className={`shrink-0 border-b flex items-center transition-all ${
+          isNavExpanded ? 'p-4 justify-start w-full' : 'p-3.5 justify-center'
         } ${
           isLight ? 'border-slate-200 bg-white' : 'border-[#1c1917] bg-[#0d0c0a]'
         }`}>
           {isNavExpanded ? (
-            <>
-              <div className="flex items-center gap-3 overflow-hidden">
-                <div className="w-9 h-9 rounded-xl bg-amber-500 shadow-lg shadow-amber-500/20 flex items-center justify-center shrink-0">
-                  <Shield className="w-5 h-5 text-slate-950" />
+            <div className="flex items-center gap-3 overflow-hidden cursor-pointer" onClick={() => setActiveTab('overview')}>
+              <div className="w-9 h-9 rounded-xl bg-amber-500 shadow-lg shadow-amber-500/20 flex items-center justify-center shrink-0">
+                <Shield className="w-5 h-5 text-slate-950" />
+              </div>
+              <div className="overflow-hidden select-none">
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-sm font-extrabold tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                    ZESTIFY
+                  </span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    isLight ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                  }`}>
+                    ROOT
+                  </span>
                 </div>
-                <div className="overflow-hidden">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`text-sm font-extrabold tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                      ZESTIFY
-                    </span>
-                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                      isLight ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                    }`}>
-                      ROOT
-                    </span>
-                  </div>
-                  <div className={`text-[10px] font-semibold tracking-wider uppercase truncate ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>
-                    PLATFORM CONSOLE
-                  </div>
+                <div className={`text-[10px] font-semibold tracking-wider uppercase truncate ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>
+                  PLATFORM CONSOLE
                 </div>
               </div>
-              <button
-                onClick={toggleNavPinned}
-                title={isNavPinned ? "Unpin Navigation Sidebar (Collapse)" : "Pin Navigation Sidebar Open"}
-                className={`p-1.5 rounded-lg border transition cursor-pointer shrink-0 ${
-                  isNavPinned
-                    ? (isLight ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-amber-500/20 border-amber-500/40 text-amber-400')
-                    : (isLight ? 'border-slate-200 text-slate-500 hover:bg-slate-100' : 'border-[#27272a] text-zinc-400 hover:bg-[#181614]')
-                }`}
-              >
-                <Menu className="w-4 h-4 stroke-[2.5]" />
-              </button>
-            </>
+            </div>
           ) : (
             <button
               onClick={toggleNavPinned}
-              title="Pin Navigation Sidebar Open"
+              title={isNavPinned ? "Unpin Navigation Sidebar" : "Pin Navigation Sidebar Open"}
               className="w-9 h-9 rounded-xl bg-amber-500 shadow-lg shadow-amber-500/20 flex items-center justify-center shrink-0 cursor-pointer hover:scale-105 transition-transform"
             >
               <Shield className="w-5 h-5 text-slate-950" />
@@ -902,7 +889,7 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
         </div>
 
         {/* Navigation Menu */}
-        <nav className={`flex-1 space-y-1 overflow-y-auto overflow-x-hidden ${isNavExpanded ? 'p-3 w-full' : 'p-2 w-full flex flex-col items-center'}`}>
+        <nav className={`flex-1 min-h-0 space-y-1 overflow-y-auto overflow-x-hidden ${isNavExpanded ? 'p-3 w-full' : 'p-2 w-full flex flex-col items-center'}`}>
           {[
             { id: 'overview', label: 'OVERVIEW', icon: Activity },
             { id: 'workspaces', label: 'COMPANIES', icon: Building2, count: totalTenants },
@@ -963,7 +950,7 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
         </nav>
 
         {/* Profile / Bottom Section */}
-        <div className={`border-t transition-colors ${
+        <div className={`shrink-0 border-t transition-colors ${
           isNavExpanded ? 'p-4 w-full' : 'p-2.5 w-full flex flex-col items-center gap-2'
         } ${
           isLight ? 'border-slate-200 bg-slate-50' : 'border-[#1c1917] bg-[#090807]'
@@ -1055,7 +1042,7 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
       </aside>
 
       {/* ── 2. MAIN APPLICATION CONTENT AREA ── */}
-      <div className={`flex-1 flex flex-col min-w-0 overflow-hidden transition-colors duration-200 ${
+      <div className={`flex-1 h-screen flex flex-col min-w-0 overflow-hidden transition-colors duration-200 ${
         isLight ? 'bg-slate-100 text-slate-900' : 'bg-[#080706] text-slate-100'
       }`}>
         {/* Executive Top Bar */}
@@ -1138,7 +1125,7 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
         </header>
 
         {/* Content Body */}
-        <main className="flex-1 overflow-y-auto p-6 space-y-6">
+        <main className="flex-1 min-h-0 overflow-y-auto p-6 space-y-6">
           {/* Notifications */}
           {successMsg && (
             <div className="p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between shadow-lg">

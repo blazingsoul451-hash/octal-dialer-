@@ -745,7 +745,7 @@ export default function App() {
   // If not impersonating a customer workspace, render Platform SuperAdminPortal directly!
   if (isPlatformUser && !isImpersonating) {
     return (
-      <div className={`min-h-screen w-full flex flex-col font-sans ${isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'}`}>
+      <div className={`h-screen w-full overflow-hidden flex flex-col font-sans ${isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'}`}>
         <SuperAdminPortal
           serverUrl={WEB_API_BASE}
           authToken={effectiveAuthToken}
