@@ -557,11 +557,29 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       const currentLeads = leadsRef.current;
       let nextIdx = -1;
       if (lastDispositionSaved.nextLeadId) {
-        nextIdx = currentLeads.findIndex(l => l.id === lastDispositionSaved.nextLeadId);
+        const candidate = currentLeads.findIndex(l => l.id === lastDispositionSaved.nextLeadId);
+        if (candidate !== -1 && currentLeads[candidate].status === 'PENDING') {
+          nextIdx = candidate;
+        }
       }
       if (nextIdx === -1) {
         const currIdx = currentCampaignIndexRef.current !== null ? currentCampaignIndexRef.current : currentIndex;
-        nextIdx = currIdx + 1;
+        // Search forward from currIdx + 1 for the next callable (PENDING) lead
+        for (let i = currIdx + 1; i < currentLeads.length; i++) {
+          if (currentLeads[i].status === 'PENDING') {
+            nextIdx = i;
+            break;
+          }
+        }
+        // If no pending lead found ahead, search from beginning up to currIdx
+        if (nextIdx === -1) {
+          for (let i = 0; i <= currIdx; i++) {
+            if (currentLeads[i].status === 'PENDING') {
+              nextIdx = i;
+              break;
+            }
+          }
+        }
       }
 
       if (nextIdx >= 0 && nextIdx < currentLeads.length) {
@@ -571,7 +589,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
         setSelectedLeadId(next.id);
         scheduleNextDial(next);
       } else {
-        setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — reached end of lead list.`]);
+        setLogs(prev => [...prev, `[Auto Dialer] ✅ Campaign complete — all pending leads processed.`]);
         setIsAutoDialing(false);
         currentCampaignIndexRef.current = null;
       }
@@ -647,19 +665,33 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       return;
     }
 
-    // CRITICAL BEHAVIOR RULE: MANUAL LEAD SELECTION OVERRIDES CALL HISTORY
+    // CRITICAL BEHAVIOR RULE: DIAL ONLY CALLABLE (PENDING) LEADS
     let startIdx = -1;
     if (selectedLeadId) {
-      startIdx = leads.findIndex(l => l.id === selectedLeadId);
-    }
-    if (startIdx === -1 && currentIndex >= 0 && currentIndex < leads.length) {
-      startIdx = currentIndex;
+      const selIdx = leads.findIndex(l => l.id === selectedLeadId);
+      if (selIdx !== -1) {
+        if (leads[selIdx].status === 'PENDING') {
+          startIdx = selIdx;
+        } else {
+          setLogs(prev => [...prev, `[Queue] Selected lead (${leads[selIdx].name}) is already completed. Advancing to next pending lead...`]);
+        }
+      }
     }
     if (startIdx === -1) {
-      startIdx = leads.findIndex(l => l.status === 'PENDING');
+      // Find the first pending lead starting from current index
+      for (let i = currentIndex; i < leads.length; i++) {
+        if (leads[i].status === 'PENDING') {
+          startIdx = i;
+          break;
+        }
+      }
+      if (startIdx === -1) {
+        startIdx = leads.findIndex(l => l.status === 'PENDING');
+      }
     }
     if (startIdx === -1) {
-      startIdx = 0;
+      setLogs(prev => [...prev, '[Auto Dialer] All leads in this campaign are already completed. Use "Reset Statuses" to redial.']);
+      return;
     }
 
     const targetLead = leads[startIdx];
@@ -1073,15 +1105,28 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-[9px] font-mono font-extrabold tracking-wider px-2.5 py-0.5 rounded-full border uppercase ${
-                        lead.status === 'COMPLETED'
-                          ? isLight ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                        : lead.status === 'CALLING'
-                          ? isLight ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-amber-500/10 border-amber-500/30 text-amber-400 animate-pulse'
-                        : isLight ? 'bg-slate-200 border-slate-300 text-slate-700' : 'bg-[#18181b] border-[#27272a] text-zinc-400'
-                      }`}>
-                        {lead.status === 'COMPLETED' ? lead.outcome || 'DONE' : lead.status}
-                      </span>
+                      {(() => {
+                        const outcomeUpper = (lead.outcome || '').toUpperCase();
+                        let badgeStyle = isLight ? 'bg-slate-200 border-slate-300 text-slate-700' : 'bg-[#18181b] border-[#27272a] text-zinc-400';
+                        if (lead.status === 'CALLING') {
+                          badgeStyle = isLight ? 'bg-amber-50 border-amber-300 text-amber-800 animate-pulse' : 'bg-amber-500/10 border-amber-500/30 text-amber-400 animate-pulse';
+                        } else if (lead.status === 'COMPLETED') {
+                          if (outcomeUpper === 'ANSWERED' || outcomeUpper === 'CONNECTED') {
+                            badgeStyle = isLight ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400';
+                          } else if (outcomeUpper === 'BUSY' || outcomeUpper === 'NO_ANSWER') {
+                            badgeStyle = isLight ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-amber-500/10 border-amber-500/30 text-amber-400';
+                          } else if (outcomeUpper === 'FAILED' || outcomeUpper === 'REJECTED' || outcomeUpper === 'NOT_INTERESTED' || outcomeUpper === 'DNC') {
+                            badgeStyle = isLight ? 'bg-rose-50 border-rose-300 text-rose-800' : 'bg-rose-500/10 border-rose-500/30 text-rose-400';
+                          } else {
+                            badgeStyle = isLight ? 'bg-sky-50 border-sky-300 text-sky-800' : 'bg-sky-500/10 border-sky-500/30 text-sky-400';
+                          }
+                        }
+                        return (
+                          <span className={`text-[9px] font-mono font-extrabold tracking-wider px-2.5 py-0.5 rounded-full border uppercase ${badgeStyle}`}>
+                            {lead.status === 'COMPLETED' ? lead.outcome || 'DONE' : lead.status}
+                          </span>
+                        );
+                      })()}
 
                       {/* Tiny Trash/Bin Delete Icon */}
                       <button

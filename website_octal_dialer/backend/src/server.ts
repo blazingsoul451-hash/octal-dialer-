@@ -10809,7 +10809,7 @@ function emailLog(tenantId: string, msg: string) {
 }
 
 // ── GET /email/leads
-app.get('/email/leads', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+app.get(['/email/leads', '/api/email/leads'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -10820,7 +10820,7 @@ app.get('/email/leads', requireAuth, requirePermission(['autoEmailer', 'autoEmai
 });
 
 // ── POST /email/upload
-app.post('/email/upload', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'leads:import']), async (req: express.Request, res: express.Response): Promise<void> => {
+app.post(['/email/upload', '/api/email/upload'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'leads:import']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -10847,7 +10847,7 @@ app.post('/email/upload', requireAuth, requirePermission(['autoEmailer', 'autoEm
 });
 
 // ── DELETE /email/leads
-app.delete('/email/leads', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+app.delete(['/email/leads', '/api/email/leads'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -10858,7 +10858,7 @@ app.delete('/email/leads', requireAuth, requirePermission(['autoEmailer', 'autoE
 });
 
 // ── GET /email/accounts
-app.get('/email/accounts', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+app.get(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -10869,7 +10869,7 @@ app.get('/email/accounts', requireAuth, requirePermission(['autoEmailer', 'autoE
 });
 
 // ── POST /email/accounts
-app.post('/email/accounts', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+app.post(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -10907,7 +10907,7 @@ app.post('/email/accounts', requireAuth, requirePermission(['autoEmailer', 'auto
 });
 
 // ── GET /email/templates
-app.get('/email/templates', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+app.get(['/email/templates', '/api/email/templates'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -10918,7 +10918,7 @@ app.get('/email/templates', requireAuth, requirePermission(['autoEmailer', 'auto
 });
 
 // ── POST /email/templates
-app.post('/email/templates', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+app.post(['/email/templates', '/api/email/templates'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -10938,7 +10938,7 @@ app.post('/email/templates', requireAuth, requirePermission(['autoEmailer', 'aut
 });
 
 // ── POST /email/start — fire-and-forget campaign runner
-app.post('/email/start', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'email:send']), (req: express.Request, res: express.Response): void => {
+app.post(['/email/start', '/api/email/start'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'email:send']), (req: express.Request, res: express.Response): void => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -11041,7 +11041,7 @@ app.post('/email/start', requireAuth, requirePermission(['autoEmailer', 'autoEma
 });
 
 // ── POST /emailer/stop
-app.post('/emailer/stop', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), (req: express.Request, res: express.Response): void => {
+app.post(['/emailer/stop', '/api/emailer/stop'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), (req: express.Request, res: express.Response): void => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -11053,7 +11053,7 @@ app.post('/emailer/stop', requireAuth, requirePermission(['autoEmailer', 'autoEm
 });
 
 // ── GET /emailer/status
-app.get('/emailer/status', requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), (req: express.Request, res: express.Response): void => {
+app.get(['/emailer/status', '/api/emailer/status'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), (req: express.Request, res: express.Response): void => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -11066,6 +11066,32 @@ app.get('/emailer/status', requireAuth, requirePermission(['autoEmailer', 'autoE
   });
 });
 
+// ─── HEALTH & READINESS PROBES ────────────────────────────────────────────────
+app.get(['/health', '/api/health'], (_req: express.Request, res: express.Response): void => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get(['/ready', '/api/ready'], async (_req: express.Request, res: express.Response): Promise<void> => {
+  try {
+    await db.queryOne('SELECT 1');
+    res.status(200).json({
+      status: 'ready',
+      database: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(503).json({
+      status: 'not_ready',
+      database: 'disconnected',
+      error: err?.message || 'Database unavailable'
+    });
+  }
+});
+
 // Serve frontend SPA from backend port 3000
 const frontendDistPath = path.resolve(__dirname, '../../frontend/dist');
 if (fs.existsSync(frontendDistPath)) {
@@ -11074,12 +11100,24 @@ if (fs.existsSync(frontendDistPath)) {
     if (
       req.path.startsWith('/api') ||
       req.path.startsWith('/auth') ||
+      req.path.startsWith('/admin') ||
       req.path.startsWith('/email') ||
+      req.path.startsWith('/emailer') ||
       req.path.startsWith('/download') ||
       req.path.startsWith('/info') ||
       req.path.startsWith('/health') ||
       req.path.startsWith('/ready') ||
       req.path.startsWith('/join') ||
+      req.path.startsWith('/campaigns') ||
+      req.path.startsWith('/leads') ||
+      req.path.startsWith('/logs') ||
+      req.path.startsWith('/billing') ||
+      req.path.startsWith('/teams') ||
+      req.path.startsWith('/users') ||
+      req.path.startsWith('/invitations') ||
+      req.path.startsWith('/activity') ||
+      req.path.startsWith('/metrics') ||
+      req.path.startsWith('/onboarding') ||
       req.path.startsWith('/socket.io')
     ) {
       return next();
@@ -11087,6 +11125,30 @@ if (fs.existsSync(frontendDistPath)) {
     res.sendFile(path.join(frontendDistPath, 'index.html'));
   });
 }
+
+// ─── TERMINAL API 404 HANDLER ────────────────────────────────────────────────
+// Any request reaching this point that was intended for an API or backend namespace
+// MUST receive a clean JSON 404 response, NEVER an Express default HTML page.
+app.use((req: express.Request, res: express.Response) => {
+  res.status(404).json({
+    success: false,
+    error: 'Route not found',
+    message: `Cannot ${req.method} ${req.path}`,
+    path: req.path
+  });
+});
+
+// ─── GLOBAL EXPRESS ERROR HANDLER ────────────────────────────────────────────
+// Catches unhandled exceptions, next(err), and middleware errors.
+// Guarantees all errors return Content-Type: application/json; charset=utf-8.
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[Unhandled Express Error]:', err?.message || err);
+  const status = typeof err.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
+  res.status(status).json({
+    success: false,
+    error: err?.message || (status >= 500 ? 'Internal Server Error' : 'Request Error')
+  });
+});
 
 async function startServer() {
   try {
