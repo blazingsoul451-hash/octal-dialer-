@@ -378,7 +378,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
           res = await fetch(`${baseUrl}/auth/google/initiate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ intent, captchaToken }),
+            body: JSON.stringify({ intent, captchaToken, completion: 'code' }),
             signal: controller.signal
           });
           clearTimeout(timeoutId);
@@ -396,7 +396,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         } catch {}
       }
 
-      window.location.href = `${serverUrl}/auth/google?intent=${intent}`;
+      window.location.href = `${serverUrl}/auth/google?intent=${intent}&completion=code`;
     } catch (err: any) {
       setError(err.message || 'Failed to initiate Google authentication.');
       setLoading(false);

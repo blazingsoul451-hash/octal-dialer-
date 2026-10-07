@@ -819,8 +819,104 @@ app.post(['/auth/contact-admin', '/api/auth/contact-admin'], async (req, res) =>
   }
 });
 
-// In-memory OAuth state storage for CSRF protection & origin routing
-const oauthStates = new Map<string, { clientOrigin: string; intent: string; redirectUri?: string; createdAt: number }>();
+// OAuth completion-code flow is opt-in during rollout. Old clients that do not
+// request it continue receiving the existing token-fragment response.
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const OAUTH_COMPLETION_TTL_MS = 60 * 1000;
+const MAX_PENDING_OAUTH_ENTRIES = 5000;
+type OAuthIntent = 'signin' | 'signup';
+type OAuthCompletionMode = 'legacy' | 'code';
+const oauthStates = new Map<string, {
+  clientOrigin: string;
+  intent: OAuthIntent;
+  redirectUri: string;
+  completionMode: OAuthCompletionMode;
+  createdAt: number;
+}>();
+const oauthCompletionCodes = new Map<string, {
+  clientOrigin: string;
+  token: string;
+  user: any;
+  isNewUser: boolean;
+  createdAt: number;
+}>();
+
+function pruneOAuthEntries<T extends { createdAt: number }>(store: Map<string, T>, ttlMs: number): void {
+  const now = Date.now();
+  for (const [key, value] of store) {
+    if (now - value.createdAt > ttlMs) store.delete(key);
+  }
+  while (store.size >= MAX_PENDING_OAUTH_ENTRIES) {
+    const oldest = store.keys().next();
+    if (oldest.done) break;
+    store.delete(oldest.value);
+  }
+}
+
+function normalizeOAuthOrigin(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.origin === 'null' || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function configuredOrigin(value: string | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    return normalizeOAuthOrigin(new URL(value.trim()).origin);
+  } catch {
+    return null;
+  }
+}
+
+function isOAuthClientOriginAllowed(value: string | undefined): boolean {
+  const origin = normalizeOAuthOrigin(value);
+  if (!origin) return false;
+  if (!isProduction) return isOriginAllowed(origin);
+
+  const parsed = new URL(origin);
+  if (parsed.protocol !== 'https:') return false;
+
+  const hostname = parsed.hostname.toLowerCase();
+  const isFirstPartyDomain = hostname === 'zestify7.online' || hostname.endsWith('.zestify7.online');
+  if (isFirstPartyDomain && (!parsed.port || parsed.port === '443')) return true;
+
+  const configured = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map(value => configuredOrigin(value))
+    .filter((value): value is string => value !== null && value.startsWith('https://'));
+  for (const value of [process.env.SERVER_URL, process.env.PUBLIC_URL]) {
+    const normalized = configuredOrigin(value);
+    if (normalized?.startsWith('https://')) configured.push(normalized);
+  }
+  return configured.includes(origin);
+}
+
+function requestOAuthClientOrigin(req: express.Request): string | null {
+  const origin = req.get('origin');
+  let candidate: string | null = null;
+  if (origin !== undefined) {
+    candidate = normalizeOAuthOrigin(origin);
+  } else if (req.get('referer')) {
+    try {
+      candidate = normalizeOAuthOrigin(new URL(req.get('referer')!).origin);
+    } catch {
+      candidate = null;
+    }
+  }
+  return candidate && isOAuthClientOriginAllowed(candidate) ? candidate : null;
+}
+
+function oauthCompletionModeRequested(value: unknown): OAuthCompletionMode {
+  const enabled = process.env.GOOGLE_OAUTH_CODE_EXCHANGE_ENABLED?.trim().toLowerCase() === 'true';
+  return enabled && value === 'code' ? 'code' : 'legacy';
+}
 
 // GET /auth/config & GET /api/auth/config — Public client configuration
 app.get(['/auth/config', '/api/auth/config'], (_req, res) => {
@@ -832,140 +928,209 @@ app.get(['/auth/config', '/api/auth/config'], (_req, res) => {
   });
 });
 
-// Helper: calculate OAuth redirect URI dynamically based on client origin or host
-function getOAuthRedirectUri(clientOrigin: string, req: express.Request): string {
-  // Explicit env override has highest priority
-  if (process.env.GOOGLE_REDIRECT_URI) {
-    return process.env.GOOGLE_REDIRECT_URI;
+// Keep the registered production callback fixed; never derive it from Host headers.
+function getOAuthRedirectUri(): string | null {
+  const configured = process.env.GOOGLE_REDIRECT_URI?.trim();
+  if (configured) {
+    try {
+      const parsed = new URL(configured);
+      const origin = normalizeOAuthOrigin(parsed.origin);
+      const isLocalDevelopmentCallback = !isProduction && parsed.protocol === 'http:' &&
+        ['localhost', '127.0.0.1'].includes(parsed.hostname) && parsed.port === String(PORT);
+      if (parsed.pathname !== '/auth/google/callback' || parsed.search || parsed.hash || !origin ||
+          (isProduction && !origin.startsWith('https://')) ||
+          (!isOAuthClientOriginAllowed(origin) && !isLocalDevelopmentCallback)) {
+        return null;
+      }
+      return `${origin}${parsed.pathname}`;
+    } catch {
+      return null;
+    }
   }
 
-  // Detect real domain from host headers or client origin
-  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
-  
-  if (host.includes('zestify7.online') || clientOrigin.includes('zestify7.online')) {
-    return 'https://zestify7.online/auth/google/callback';
+  return isProduction
+    ? 'https://zestify7.online/auth/google/callback'
+    : `http://localhost:${PORT}/auth/google/callback`;
+}
+
+function buildGoogleOAuthAuthorization(
+  req: express.Request,
+  intent: OAuthIntent,
+  requestedMode: OAuthCompletionMode
+): { success: true; clientOrigin: string; authUrl: string } | { success: false; status: number; error: string } {
+  const clientOrigin = requestOAuthClientOrigin(req);
+  if (!clientOrigin) {
+    return { success: false, status: 403, error: 'OAuth client origin is not allowed.' };
   }
 
-  // HTTPS / custom domain / Vercel
-  if (clientOrigin && clientOrigin.startsWith('https://')) {
-    return `${clientOrigin.replace(/\/$/, '')}/auth/google/callback`;
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const redirectUri = getOAuthRedirectUri();
+  if (!clientId || !redirectUri) {
+    return { success: false, status: 503, error: 'Google authentication is not configured.' };
   }
 
-  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
-  if (host && !host.includes('127.0.0.1') && !host.includes('localhost')) {
-    return `${proto}://${host}/auth/google/callback`;
-  }
+  pruneOAuthEntries(oauthStates, OAUTH_STATE_TTL_MS);
+  const state = crypto.randomBytes(24).toString('hex');
+  const completionMode = oauthCompletionModeRequested(requestedMode);
+  oauthStates.set(state, { clientOrigin, intent, redirectUri, completionMode, createdAt: Date.now() });
 
-  return `http://localhost:${PORT}/auth/google/callback`;
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id', clientId);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', 'openid email profile');
+  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set('prompt', 'select_account');
+  return { success: true, clientOrigin, authUrl: authUrl.toString() };
 }
 
 // POST /auth/google/initiate — Returns direct Google OAuth URL
 app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
-  const { intent = 'signin' } = req.body || {};
-  const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : (req.headers.origin || `http://${req.headers.host || 'localhost'}`);
-  const clientId = (process.env.GOOGLE_CLIENT_ID || '');
-
-  const redirectUri = getOAuthRedirectUri(clientOrigin, req);
-  const state = crypto.randomBytes(24).toString('hex');
-
-  oauthStates.set(state, {
-    clientOrigin,
-    intent,
-    redirectUri,
-    createdAt: Date.now()
-  });
-
-  const scope = encodeURIComponent('openid email profile');
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&state=${state}&prompt=select_account`;
-
-  res.json({ success: true, authUrl });
+  const intent = req.body?.intent === undefined ? 'signin' : req.body.intent;
+  if (intent !== 'signin' && intent !== 'signup') {
+    res.status(400).json({ error: 'A valid Google sign-in intent is required.' });
+    return;
+  }
+  const authorization = buildGoogleOAuthAuthorization(req, intent, req.body?.completion);
+  if (!authorization.success) {
+    res.status(authorization.status).json({ error: authorization.error });
+    return;
+  }
+  res.set('Cache-Control', 'no-store').json({ success: true, authUrl: authorization.authUrl });
 });
 
 // GET /auth/google & GET /api/auth/google — Initiates OAuth Redirect
 app.get(['/auth/google', '/api/auth/google'], (req, res) => {
-  const clientOrigin = req.headers.referer ? new URL(req.headers.referer).origin : `http://${req.headers.host || 'localhost'}`;
-  const clientId = (process.env.GOOGLE_CLIENT_ID || '');
-
-  const redirectUri = getOAuthRedirectUri(clientOrigin, req);
-  const intent = (req.query.intent as string) || 'signin';
-  const state = crypto.randomBytes(24).toString('hex');
-
-  oauthStates.set(state, {
-    clientOrigin,
-    intent,
-    redirectUri,
-    createdAt: Date.now()
-  });
-
-  const scope = encodeURIComponent('openid email profile');
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&state=${state}&prompt=select_account`;
-
-  console.log(`[OAuth] Redirecting user to Google OAuth consent screen (intent: ${intent}, redirect: ${redirectUri})`);
-  res.redirect(authUrl);
+  const intent = req.query.intent === undefined ? 'signin' : req.query.intent;
+  if (intent !== 'signin' && intent !== 'signup') {
+    res.status(400).json({ error: 'A valid Google sign-in intent is required.' });
+    return;
+  }
+  const authorization = buildGoogleOAuthAuthorization(req, intent, req.query.completion);
+  if (!authorization.success) {
+    res.status(authorization.status).json({ error: authorization.error });
+    return;
+  }
+  console.log(`[OAuth] Redirecting to Google (intent: ${intent})`);
+  res.set('Cache-Control', 'no-store').redirect(302, authorization.authUrl);
 });
 
 // GET /auth/google/callback & GET /api/auth/google/callback — Handles OAuth Code Exchange
 app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res) => {
-  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
-  const isProd = host.includes('zestify7.online') || !host.includes('localhost');
-  const fallbackOrigin = isProd ? 'https://zestify7.online' : 'http://localhost:5173';
-  let clientOrigin = fallbackOrigin;
-  let storedRedirectUri: string | undefined;
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  const stored = state ? oauthStates.get(state) : undefined;
+  if (!stored || Date.now() - stored.createdAt > OAUTH_STATE_TTL_MS) {
+    if (state) oauthStates.delete(state);
+    res.status(400).json({ error: 'Invalid or expired OAuth state. Please start sign-in again.' });
+    return;
+  }
+  oauthStates.delete(state);
+
+  const clientOrigin = normalizeOAuthOrigin(stored.clientOrigin);
+  if (!clientOrigin || !isOAuthClientOriginAllowed(clientOrigin)) {
+    res.status(400).json({ error: 'OAuth client origin is no longer allowed.' });
+    return;
+  }
 
   try {
-    const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
-
-    let authIntent: 'signin' | 'signup' = 'signin';
-    if (!state || !oauthStates.has(state) || Date.now() - oauthStates.get(state)!.createdAt > 10 * 60 * 1000) {
-      if (state) oauthStates.delete(state);
-      res.status(400).json({ error: 'Invalid or expired OAuth state. Please start sign-in again.' });
-      return;
-    }
-    if (state && oauthStates.has(state)) {
-      const stored = oauthStates.get(state)!;
-      clientOrigin = stored.clientOrigin;
-      authIntent = (stored as any).intent || 'signin';
-      storedRedirectUri = (stored as any).redirectUri;
-      oauthStates.delete(state);
-    }
-
-    if (error || !code) {
-      res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(error || 'Google authorization cancelled')}`);
+    const providerError = typeof req.query.error === 'string' ? req.query.error : '';
+    const authorizationCode = typeof req.query.code === 'string' ? req.query.code : '';
+    if (providerError || !authorizationCode) {
+      res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer')
+        .redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(providerError || 'Google authorization cancelled')}`);
       return;
     }
 
-    const clientId = (process.env.GOOGLE_CLIENT_ID || '');
-    const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '');
-    const redirectUri = storedRedirectUri || getOAuthRedirectUri(clientOrigin, req);
+    const clientId = process.env.GOOGLE_CLIENT_ID || '';
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
+    if (!clientId || !clientSecret) throw new Error('Google authentication is not configured.');
 
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        code,
+        code: authorizationCode,
         client_id: clientId,
         client_secret: clientSecret,
-        redirect_uri: redirectUri,
+        redirect_uri: stored.redirectUri,
         grant_type: 'authorization_code'
       })
     });
 
     const tokenData = await tokenRes.json() as any;
-    if (!tokenData.id_token && !tokenData.access_token) {
-      throw new Error(tokenData.error_description || tokenData.error || 'Failed to obtain Google tokens.');
+    if (!tokenRes.ok || typeof tokenData?.id_token !== 'string') {
+      throw new Error('Google token exchange failed.');
     }
 
     const profile = await verifyGoogleIdToken(tokenData.id_token);
-    const result = await handleGoogleAuthWithIntent(profile, authIntent);
+    const result = await handleGoogleAuthWithIntent(profile, stored.intent);
 
-    res.redirect(`${clientOrigin}/#token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&displayName=${encodeURIComponent((result.user as any).displayName || result.user.username)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
+    if (stored.completionMode === 'code') {
+      pruneOAuthEntries(oauthCompletionCodes, OAUTH_COMPLETION_TTL_MS);
+      const completionCode = crypto.randomBytes(32).toString('hex');
+      oauthCompletionCodes.set(completionCode, {
+        clientOrigin,
+        token: result.token,
+        user: result.user,
+        isNewUser: result.isNewUser,
+        createdAt: Date.now()
+      });
+      res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer')
+        .redirect(303, `${clientOrigin}/#oauth_code=${completionCode}`);
+      return;
+    }
+
+    // Legacy mode remains available until each client has deployed the dual-handshake frontend.
+    const displayName = (result.user as any).displayName || result.user.username;
+    res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer')
+      .redirect(`${clientOrigin}/#token=${encodeURIComponent(result.token)}&username=${encodeURIComponent(result.user.username)}&displayName=${encodeURIComponent(displayName)}&user=${encodeURIComponent(result.user.username)}&isNewUser=${result.isNewUser}`);
   } catch (err: any) {
-    console.error('[Google OAuth Callback Error]:', err);
-    const code = err.code || 'GOOGLE_AUTH_FAILED';
-    const emailParam = err.email ? `&email=${encodeURIComponent(err.email)}` : '';
-    const tenantParam = err.tenantName ? `&tenant=${encodeURIComponent(err.tenantName)}` : '';
-    res.redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(code)}&message=${encodeURIComponent(err.message || 'Google authentication failed.')}${emailParam}${tenantParam}`);
+    console.error('[Google OAuth Callback Error]:', err?.code || err?.message || 'authentication failed');
+    const errorCode = err?.code || 'GOOGLE_AUTH_FAILED';
+    const emailParam = err?.email ? `&email=${encodeURIComponent(err.email)}` : '';
+    const tenantParam = err?.tenantName ? `&tenant=${encodeURIComponent(err.tenantName)}` : '';
+    res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer')
+      .redirect(`${clientOrigin}/?auth_error=${encodeURIComponent(errorCode)}&message=${encodeURIComponent(err?.message || 'Google authentication failed.')}${emailParam}${tenantParam}`);
   }
+});
+
+// POST /auth/google/exchange — redeems a single-use code only for its initiating origin.
+app.post(['/auth/google/exchange', '/api/auth/google/exchange'], (req, res) => {
+  res.set('Cache-Control', 'no-store, private');
+  const code = typeof req.body?.code === 'string' ? req.body.code : '';
+  if (!/^[a-f0-9]{64}$/.test(code)) {
+    res.status(400).json({ error: 'A valid OAuth completion code is required.' });
+    return;
+  }
+
+  const completion = oauthCompletionCodes.get(code);
+  if (!completion) {
+    res.status(401).json({ error: 'OAuth completion code is invalid or already used.' });
+    return;
+  }
+  if (Date.now() - completion.createdAt > OAUTH_COMPLETION_TTL_MS) {
+    oauthCompletionCodes.delete(code);
+    res.status(410).json({ error: 'OAuth completion code has expired. Please sign in again.' });
+    return;
+  }
+
+  const requestOrigin = normalizeOAuthOrigin(req.get('origin')) || (() => {
+    try { return normalizeOAuthOrigin(new URL(req.get('referer') || '').origin); } catch { return null; }
+  })();
+  if (!requestOrigin || requestOrigin !== completion.clientOrigin || !isOAuthClientOriginAllowed(requestOrigin)) {
+    res.status(403).json({ error: 'OAuth completion code is bound to a different client origin.' });
+    return;
+  }
+
+  // Delete synchronously after caller validation, before sending the token, to prevent replay.
+  oauthCompletionCodes.delete(code);
+  res.json({
+    success: true,
+    token: completion.token,
+    user: completion.user,
+    role: completion.user?.role,
+    isNewUser: completion.isNewUser
+  });
 });
 
 // POST /auth/google/verify & /api/auth/google/verify — Google One-Tap / Pop-up verification with intent

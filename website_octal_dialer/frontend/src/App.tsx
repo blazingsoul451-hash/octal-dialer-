@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   PhoneCall, Database, Upload, History,
   Bluetooth, PlaySquare, Sun, Moon, ShieldAlert, LayoutDashboard, Menu, Mail,
@@ -62,6 +62,7 @@ const WEB_API_BASE = getBackendUrl();
 const SERVER_URL = WEB_API_BASE;
 
 export default function App() {
+  const authInitializationStarted = useRef(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs' | 'team-lead' | 'super-admin'>('dashboard');
   const [prevTabBeforeSettings, setPrevTabBeforeSettings] = useState<string>('dashboard');
   const [settingsSubView, setSettingsSubView] = useState<'overview' | 'company-profile' | 'users-roles' | 'account' | 'billing'>('overview');
@@ -456,6 +457,9 @@ export default function App() {
 
   // Verify stored auth token on mount & check URL query params from Google OAuth redirects or impersonation
   useEffect(() => {
+    if (authInitializationStarted.current) return;
+    authInitializationStarted.current = true;
+
     // Enforce strict tab isolation: purge any legacy platform admin tokens from localStorage
     try {
       localStorage.removeItem('octal_platform_auth_token');
@@ -471,7 +475,7 @@ export default function App() {
       }
     } catch {}
 
-    // Check URL parameters for OAuth tokens or auth errors
+    // Read both the legacy token response and the staged one-time code response.
     const urlParams = new URLSearchParams(window.location.search);
     let oauthToken = urlParams.get('token');
     let oauthUser = urlParams.get('displayName') || urlParams.get('username') || urlParams.get('user') || 'Google User';
@@ -481,6 +485,7 @@ export default function App() {
     // Also supports secure fragment-based OAuth tokens (#token=...) to avoid query string exposure
     let hashImpToken: string | null = null;
     let hashImpTenant: string | null = null;
+    let oauthCode: string | null = null;
     if (typeof window !== 'undefined' && window.location.hash && window.location.hash.startsWith('#')) {
       const hashParams = new URLSearchParams(window.location.hash.slice(1));
       hashImpToken = hashParams.get('impersonateToken');
@@ -488,6 +493,10 @@ export default function App() {
       if (hashParams.get('token')) {
         oauthToken = hashParams.get('token');
         oauthUser = hashParams.get('displayName') || hashParams.get('username') || hashParams.get('user') || 'Google User';
+      }
+      oauthCode = hashParams.get('oauth_code');
+      if (oauthCode) {
+        window.history.replaceState(null, document.title, window.location.pathname + window.location.search);
       }
     }
 
@@ -518,6 +527,41 @@ export default function App() {
     }
 
     const verifyToken = async () => {
+      if (oauthCode) {
+        try {
+          const exchangeResponse = await fetch(`${WEB_API_BASE}/auth/google/exchange`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: oauthCode })
+          });
+          const contentType = exchangeResponse.headers.get('content-type') || '';
+          if (!contentType.toLowerCase().includes('application/json')) {
+            throw new Error('The authentication server returned an invalid response.');
+          }
+          const exchangeData = await exchangeResponse.json();
+          if (!exchangeResponse.ok || typeof exchangeData.token !== 'string' || !exchangeData.token) {
+            throw new Error('The sign-in code expired or could not be redeemed.');
+          }
+
+          const redeemedToken = exchangeData.token as string;
+          oauthUser = exchangeData.user?.displayName || exchangeData.user?.username || 'Google User';
+          localStorage.setItem('octal_auth_token', redeemedToken);
+          localStorage.setItem('octal_auth_user', oauthUser);
+          setAuthToken(redeemedToken);
+          setAuthUser(oauthUser);
+          currentToken = redeemedToken;
+          const hint = getInitialIdentityHintFromToken(redeemedToken);
+          if (hint) setAuthIdentity(hint);
+        } catch (err) {
+          console.warn('Google OAuth completion could not be redeemed:', err);
+          setToast({ message: 'Google sign-in could not be completed. Please try again.', type: 'info' });
+          if (!currentToken) {
+            setAuthChecked(true);
+            return;
+          }
+        }
+      }
+
       if (!currentToken) {
         setAuthChecked(true);
         return;
