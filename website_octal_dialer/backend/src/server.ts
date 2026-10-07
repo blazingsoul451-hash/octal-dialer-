@@ -228,38 +228,42 @@ if (!SMTP_REJECT_UNAUTHORIZED) {
 
 export const app = express();
 
-// Canonical configured origins
+// First-party production apps and tenant portals remain available. Other production
+// apps must be listed as exact HTTPS origins in ALLOWED_ORIGINS/CORS_ORIGIN.
 const getCanonicalAllowedOrigins = (): string[] => {
-  const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  const serverUrl = process.env.SERVER_URL?.trim();
-  const publicUrl = process.env.PUBLIC_URL?.trim();
-
   const origins = new Set<string>([
-    ...envOrigins,
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:5174',
-    'http://127.0.0.1:5174',
-    'http://140.245.215.156',
-    'http://140.245.215.156:5000',
-    'http://140.245.215.156.sslip.io',
     'https://zestify7.online',
-    'http://zestify7.online',
     'https://www.zestify7.online',
-    'http://www.zestify7.online',
     'https://admin.zestify7.online',
     'https://app.zestify7.online',
     'https://api.zestify7.online'
   ]);
 
-  if (serverUrl) origins.add(serverUrl.replace(/\/$/, ''));
-  if (publicUrl) origins.add(publicUrl.replace(/\/$/, ''));
+  const configuredValues = [
+    ...(process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '').split(','),
+    process.env.SERVER_URL,
+    process.env.PUBLIC_URL
+  ];
+  for (const configuredValue of configuredValues) {
+    const normalized = configuredOrigin(configuredValue);
+    if (normalized && (!isProduction || normalized.startsWith('https://'))) origins.add(normalized);
+  }
+
+  if (!isProduction) {
+    for (const origin of [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      'http://localhost:5174',
+      'http://127.0.0.1:5174',
+      'http://140.245.215.156',
+      'http://140.245.215.156:5000',
+      'http://140.245.215.156.sslip.io',
+      'http://zestify7.online',
+      'http://www.zestify7.online'
+    ]) origins.add(origin);
+  }
 
   return Array.from(origins);
 };
@@ -268,18 +272,23 @@ export const isOriginAllowed = (origin: string | undefined): boolean => {
   // Non-browser clients (native Flutter/Dart mobile app, curl, server-to-server) do not send Origin header
   if (!origin) return true;
 
+  const normalized = normalizeOAuthOrigin(origin);
+  if (!normalized) return false;
   const allowedOrigins = getCanonicalAllowedOrigins();
-  if (allowedOrigins.includes(origin)) return true;
+  if (allowedOrigins.includes(normalized)) return true;
 
   try {
-    const parsed = new URL(origin);
+    const parsed = new URL(normalized);
     const host = parsed.hostname.toLowerCase();
 
-    // Always allow production domain zestify7.online and all its subdomains
+    // Tenant subdomains are first-party only; production requires HTTPS on the default port.
     if (host === 'zestify7.online' || host.endsWith('.zestify7.online')) {
-      return true;
+      return (!isProduction || parsed.protocol === 'https:') && (!parsed.port || parsed.port === '443');
     }
 
+    if (isProduction) return false;
+
+    // Local/private-network and temporary tunnel origins are development-only.
     if (
       host === 'localhost' ||
       host === '127.0.0.1' ||
@@ -877,25 +886,7 @@ function configuredOrigin(value: string | undefined): string | null {
 
 function isOAuthClientOriginAllowed(value: string | undefined): boolean {
   const origin = normalizeOAuthOrigin(value);
-  if (!origin) return false;
-  if (!isProduction) return isOriginAllowed(origin);
-
-  const parsed = new URL(origin);
-  if (parsed.protocol !== 'https:') return false;
-
-  const hostname = parsed.hostname.toLowerCase();
-  const isFirstPartyDomain = hostname === 'zestify7.online' || hostname.endsWith('.zestify7.online');
-  if (isFirstPartyDomain && (!parsed.port || parsed.port === '443')) return true;
-
-  const configured = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '')
-    .split(',')
-    .map(value => configuredOrigin(value))
-    .filter((value): value is string => value !== null && value.startsWith('https://'));
-  for (const value of [process.env.SERVER_URL, process.env.PUBLIC_URL]) {
-    const normalized = configuredOrigin(value);
-    if (normalized?.startsWith('https://')) configured.push(normalized);
-  }
-  return configured.includes(origin);
+  return origin !== null && isOriginAllowed(origin);
 }
 
 function requestOAuthClientOrigin(req: express.Request): string | null {
