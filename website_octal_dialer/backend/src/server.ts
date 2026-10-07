@@ -215,6 +215,17 @@ import {
 
 const isProduction = process.env.NODE_ENV === 'production';
 
+// Campaign SMTP verifies certificates by default. Set SMTP_REJECT_UNAUTHORIZED=false
+// only when a tenant's SMTP relay uses a certificate that cannot be validated.
+const smtpRejectUnauthorizedValue = process.env.SMTP_REJECT_UNAUTHORIZED?.trim().toLowerCase();
+const SMTP_REJECT_UNAUTHORIZED = smtpRejectUnauthorizedValue !== 'false';
+if (smtpRejectUnauthorizedValue && !['true', 'false'].includes(smtpRejectUnauthorizedValue)) {
+  console.warn('[SMTP TLS] Invalid SMTP_REJECT_UNAUTHORIZED value; defaulting to certificate verification.');
+}
+if (!SMTP_REJECT_UNAUTHORIZED) {
+  console.warn('[SMTP TLS] Certificate verification is disabled for campaign SMTP by explicit configuration. Use only for legacy relays; prefer installing a trusted CA.');
+}
+
 export const app = express();
 
 // Canonical configured origins
@@ -10868,6 +10879,45 @@ app.get(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermissi
   res.json(rows);
 });
 
+// POST /email/accounts/:accountId/verify — validates SMTP connectivity without sending mail.
+app.post(['/email/accounts/:accountId/verify', '/api/email/accounts/:accountId/verify'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+
+  const account = await db.queryOne<{ email: string; password: string; smtpHost: string; smtpPort: number }>(
+    'SELECT email, password, "smtpHost", "smtpPort" FROM email_accounts WHERE id = $1 AND "tenantId" = $2 AND status = \'active\'',
+    [req.params.accountId, tenantId]
+  );
+  if (!account) {
+    res.status(404).json({ error: 'Active SMTP account not found.' });
+    return;
+  }
+
+  const { default: nodemailer } = await import('nodemailer');
+  const transporter = nodemailer.createTransport({
+    host: account.smtpHost,
+    port: account.smtpPort,
+    secure: false,
+    auth: { user: account.email, pass: account.password },
+    tls: { rejectUnauthorized: SMTP_REJECT_UNAUTHORIZED }
+  });
+
+  try {
+    await transporter.verify();
+    res.json({ success: true, message: 'SMTP connection and authentication succeeded.' });
+  } catch (err: unknown) {
+    const code = (err as { code?: unknown })?.code;
+    const safeCode = typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'SMTP_VERIFY_FAILED';
+    console.warn(`[SMTP Verify] Account ${account.email} verification failed (${safeCode}).`);
+    res.status(502).json({ success: false, error: 'SMTP connection or authentication failed.', code: safeCode });
+  } finally {
+    transporter.close();
+  }
+});
+
 // ── POST /email/accounts
 app.post(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
@@ -10991,7 +11041,7 @@ app.post(['/email/start', '/api/email/start'], requireAuth, requirePermission(['
           port: acc.smtpPort,
           secure: false,
           auth: { user: acc.email, pass: acc.password },
-          tls: { rejectUnauthorized: false }
+          tls: { rejectUnauthorized: SMTP_REJECT_UNAUTHORIZED }
         });
 
         let sent = 0;
