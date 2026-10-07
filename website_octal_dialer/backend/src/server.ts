@@ -947,7 +947,7 @@ function getOAuthRedirectUri(): string | null {
 function buildGoogleOAuthAuthorization(
   req: express.Request,
   intent: OAuthIntent,
-  requestedMode: OAuthCompletionMode
+  requestedMode: unknown
 ): { success: true; clientOrigin: string; authUrl: string } | { success: false; status: number; error: string } {
   const clientOrigin = requestOAuthClientOrigin(req);
   if (!clientOrigin) {
