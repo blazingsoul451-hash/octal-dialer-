@@ -368,6 +368,10 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
     });
   }, [companies, companyStatusFilter, companyPaymentFilter, searchQuery]);
 
+  const modalCompanies = useMemo(() => companies.map(c => ({ id: c.id, name: c.name })), [companies]);
+  const modalCampaigns = useMemo(() => campaigns.map(c => ({ id: c.id, name: c.name })), [campaigns]);
+  const modalLeads = useMemo(() => leads.map(l => ({ id: l.id, name: l.name || l.businessName || 'Lead' })), [leads]);
+
   // Filtered Contacts
   const filteredContacts = useMemo(() => {
     return contacts.filter(c => {
@@ -2127,7 +2131,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
       {showAddContact && (
         <AddContactModal
           isOpen={true}
-          companies={companies.map(c => ({ id: c.id, name: c.name }))}
+          companies={modalCompanies}
           onClose={() => setShowAddContact(false)}
           onSuccess={() => {
             setShowAddContact(false);
@@ -2142,8 +2146,8 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
       {showAddLead && (
         <AddLeadModal
           isOpen={true}
-          companies={companies.map(c => ({ id: c.id, name: c.name }))}
-          campaigns={campaigns.map(c => ({ id: c.id, name: c.name }))}
+          companies={modalCompanies}
+          campaigns={modalCampaigns}
           onClose={() => setShowAddLead(false)}
           onSuccess={() => {
             setShowAddLead(false);
@@ -2159,8 +2163,8 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
         <CreateTaskModal
           isOpen={true}
           defaultTaskType={activeSubTab === 'meetings' ? 'meeting' : 'follow_up'}
-          companies={companies.map(c => ({ id: c.id, name: c.name }))}
-          leads={leads.map(l => ({ id: l.id, name: l.name || l.businessName || 'Lead' }))}
+          companies={modalCompanies}
+          leads={modalLeads}
           users={users}
           onClose={() => setShowCreateTask(false)}
           onSuccess={() => {

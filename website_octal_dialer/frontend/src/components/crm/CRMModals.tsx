@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X, CheckCircle2, Calendar, AlertTriangle, AlertCircle,
   Building2, User, Phone, CalendarCheck, Clock, PhoneCall
@@ -680,9 +680,10 @@ export const AddCompanyModal: React.FC<AddCompanyModalProps> = ({
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const prevOpenRef = useRef(false);
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !prevOpenRef.current) {
       setName('');
       setIndustry('');
       setCountry('');
@@ -701,6 +702,7 @@ export const AddCompanyModal: React.FC<AddCompanyModalProps> = ({
       setInitialNote('');
       setError(null);
     }
+    prevOpenRef.current = isOpen;
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -1049,9 +1051,10 @@ export const AddContactModal: React.FC<AddContactModalProps> = ({
   const [assignedUserId, setAssignedUserId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const prevOpenRef = useRef(false);
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !prevOpenRef.current) {
       setCrmCompanyId(defaultCompanyId || (companies[0]?.id || ''));
       setName('');
       setRoleTitle('');
@@ -1060,8 +1063,11 @@ export const AddContactModal: React.FC<AddContactModalProps> = ({
       setNotes('');
       setAssignedUserId('');
       setError(null);
+    } else if (isOpen && !crmCompanyId && (defaultCompanyId || companies[0]?.id)) {
+      setCrmCompanyId(defaultCompanyId || (companies[0]?.id || ''));
     }
-  }, [isOpen, defaultCompanyId, companies]);
+    prevOpenRef.current = isOpen;
+  }, [isOpen, defaultCompanyId]);
 
   if (!isOpen) return null;
 
@@ -1296,9 +1302,10 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
   const [taskPriority, setTaskPriority] = useState<CrmTaskPriority>('normal');
   const [taskType, setTaskType] = useState<CrmTaskType>('follow_up');
   const [taskTitle, setTaskTitle] = useState('');
+  const prevOpenRef = useRef(false);
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !prevOpenRef.current) {
       setName('');
       setPhone('');
       setCompanyName('');
@@ -1316,7 +1323,8 @@ export const AddLeadModal: React.FC<AddLeadModalProps> = ({
       setTaskType('follow_up');
       setTaskTitle('');
     }
-  }, [isOpen, defaultCompanyId, campaigns]);
+    prevOpenRef.current = isOpen;
+  }, [isOpen, defaultCompanyId]);
 
   if (!isOpen) return null;
 
@@ -1760,9 +1768,10 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const prevOpenRef = useRef(false);
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !prevOpenRef.current) {
       setTitle('');
       setTaskType(defaultTaskType || 'follow_up');
       setPriority('normal');
@@ -1795,7 +1804,8 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       tmrw.setMinutes(tmrw.getMinutes() - tmrw.getTimezoneOffset());
       setDueAt(tmrw.toISOString().slice(0, 16));
     }
-  }, [isOpen, defaultEntityType, defaultEntityId, defaultTaskType]);
+    prevOpenRef.current = isOpen;
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
