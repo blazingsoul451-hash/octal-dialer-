@@ -596,7 +596,7 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
               }`}>
                 {trialInfo?.isTrial
                   ? (liveTrialText === 'Expired' ? 'Expired' : `${trialInfo.daysLeft}d Trial`)
-                  : (planName || 'Active Plan')}
+                  : (typeof planName === 'object' && planName !== null ? ((planName as any).name || (planName as any).id || 'Active Plan') : (planName || 'Active Plan'))}
               </span>
             </div>
 
@@ -609,7 +609,7 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
                     <span>⏳ {liveTrialText || `${trialInfo.daysLeft}d left`}</span>
                   )
                 ) : (
-                  <span>{planName || 'Professional Plan'}</span>
+                  <span>{typeof planName === 'object' && planName !== null ? ((planName as any).name || (planName as any).id || 'Professional Plan') : (planName || 'Professional Plan')}</span>
                 )}
               </div>
               <button

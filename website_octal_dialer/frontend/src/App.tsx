@@ -216,7 +216,11 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           if (data.planName || data.plan) {
-            setPlanName(data.planName || data.plan);
+            const rawPlan = data.planName || data.plan;
+            const safeName = typeof rawPlan === 'object' && rawPlan !== null
+              ? (rawPlan.name || rawPlan.id || 'Professional')
+              : (typeof rawPlan === 'string' && rawPlan.trim() ? rawPlan.trim() : 'Professional');
+            setPlanName(safeName);
           }
           if (data.isTrial || data.status === 'trial') {
             setTrialInfo({

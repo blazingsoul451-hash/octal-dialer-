@@ -100,9 +100,10 @@ export function LiveTrialCountdown({ targetDate, className = '' }: { targetDate?
   );
 }
 
-export function getDisplayPlan(planOrTier?: string | null): string {
+export function getDisplayPlan(planOrTier?: any): string {
   if (!planOrTier) return 'STARTER';
-  const clean = String(planOrTier).toLowerCase().replace(/^plan_/, '').trim();
+  const val = typeof planOrTier === 'object' ? (planOrTier.name || planOrTier.id || '') : planOrTier;
+  const clean = String(val).toLowerCase().replace(/^plan_/, '').trim();
   if (clean === 'standard') return 'STARTER';
   return clean.toUpperCase() || 'STARTER';
 }
@@ -369,7 +370,9 @@ export const SuperAdminPortal: React.FC<SuperAdminPortalProps> = ({
           let list = tenJson.tenants || [];
           if (planFilter !== 'all') {
             list = list.filter((t: any) => {
-              const p = (t.tier || t.plan || '').toLowerCase().replace(/^plan_/, '');
+              const rawP = t.tier || t.plan || '';
+              const pStr = typeof rawP === 'object' && rawP !== null ? (rawP.name || rawP.id || '') : String(rawP);
+              const p = pStr.toLowerCase().replace(/^plan_/, '');
               const normalized = p === 'standard' ? 'starter' : p;
               return normalized === planFilter.toLowerCase();
             });

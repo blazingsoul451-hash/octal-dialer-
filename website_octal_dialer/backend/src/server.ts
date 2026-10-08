@@ -6297,6 +6297,8 @@ app.get(['/billing/subscription', '/api/billing/subscription', '/api/company/sub
         currentPeriodEnd: periodEnd || new Date(Date.now() + 14 * 86400000).toISOString(),
         trialEndsAt: periodEnd
       },
+      planName: plan?.name || 'Starter Plan',
+      planId: plan?.id || sub?.planId || 'plan_starter',
       plan: plan || { id: 'plan_starter', name: 'Starter Plan', priceMonthly: 29 }
     });
   } catch (err: any) {
