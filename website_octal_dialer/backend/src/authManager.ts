@@ -406,7 +406,7 @@ export async function registerCustomerWithEmail(params: {
   }
 
   // Duplicate safety check
-  const existing = await db.queryOne<any>(`SELECT id, email, username FROM users WHERE email = $1 OR username = $2`, [email, email]);
+  const existing = await db.queryOne<any>(`SELECT * FROM users WHERE email = $1 OR username = $2`, [email, email]);
   if (existing) {
     const access = await checkAccountAccess(existing);
     if (!access.accessible) {
@@ -949,6 +949,15 @@ export interface AccountAccessResult {
 
 export async function checkAccountAccess(user: any): Promise<AccountAccessResult> {
   if (!user) return { accessible: false, code: 'USER_DISABLED', message: 'User account not found.' };
+
+  // If user object only has partial fields, hydrate full record from DB
+  if (user.id && (user.role === undefined || user.status === undefined || user.tenantId === undefined)) {
+    try {
+      const full = await db.queryOne<any>('SELECT * FROM users WHERE id = $1', [user.id]);
+      if (full) user = full;
+    } catch {}
+  }
+
   if (isPlatformRole(user.role)) return { accessible: true };
 
   const userStatus = (user.status || '').toLowerCase();

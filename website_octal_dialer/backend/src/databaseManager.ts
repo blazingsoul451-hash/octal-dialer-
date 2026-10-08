@@ -3045,7 +3045,8 @@ export async function getDetailedTenantsList(options: {
       effectiveStatus = (t.status === 'trial' ? 'trial' : 'active');
     }
 
-    const defaultTrialEnd = new Date(new Date(t.createdAt).getTime() + 14 * 86400000).toISOString();
+    const createdTime = t.createdAt ? new Date(t.createdAt).getTime() : NaN;
+    const defaultTrialEnd = new Date((!isNaN(createdTime) ? createdTime : Date.now()) + 14 * 86400000).toISOString();
     const trialEndsAt = isTrial ? (sub.currentPeriodEnd || sub.trialEnd || defaultTrialEnd) : null;
 
     // Concrete Health Status computation (Section 4)
@@ -3236,7 +3237,8 @@ export async function getTenantDetail(tenantId: string): Promise<any> {
     effectiveStatus = (tenant.status === 'trial' ? 'trial' : 'active');
   }
 
-  const defaultTrialEnd = new Date(new Date(tenant.createdAt).getTime() + 14 * 86400000).toISOString();
+  const createdTime = tenant.createdAt ? new Date(tenant.createdAt).getTime() : NaN;
+  const defaultTrialEnd = new Date((!isNaN(createdTime) ? createdTime : Date.now()) + 14 * 86400000).toISOString();
   const trialEndsAt = isTrial ? (subscription?.currentPeriodEnd || subscription?.trialEnd || defaultTrialEnd) : null;
 
   return {
