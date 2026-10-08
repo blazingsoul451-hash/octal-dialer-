@@ -388,6 +388,9 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                   <span>Download Android APK</span>
                 </a>
               </div>
+              <p className={`text-[11px] text-center max-w-sm mx-auto pt-1 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
+                💡 <span className="font-medium">Note:</span> If an older test build is already on the phone, uninstall it first before installing the new APK.
+              </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3.5">
@@ -551,8 +554,8 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
                   <span>Instant QR Pairing Instructions</span>
                 </h3>
                 <ol className={`text-xs space-y-2 list-decimal list-inside leading-relaxed ${isLight ? 'text-slate-600' : 'text-zinc-400'}`}>
-                  <li>Install and open the Octal Dialer Android APK on your device.</li>
-                  <li>Tap the <strong>SCAN QR</strong> button on the connect screen.</li>
+                  <li>Download & install the APK (uninstall any older test version first).</li>
+                  <li>Open the Octal Dialer app and tap the <strong>SCAN QR</strong> button.</li>
                   <li>Scan the pairing QR code displayed here to pair instantly.</li>
                 </ol>
               </div>
