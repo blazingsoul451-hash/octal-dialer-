@@ -23,5 +23,13 @@ BEGIN
   END IF;
 END $$;
 
--- 4. Re-grant privileges to octal_admin
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO octal_admin;
+-- 4. Re-grant privileges conditionally based on existing database roles
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'octal_admin') THEN
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO octal_admin;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'octal_admin_dev') THEN
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO octal_admin_dev;
+  END IF;
+END $$;
