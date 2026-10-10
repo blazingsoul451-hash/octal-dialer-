@@ -189,6 +189,7 @@ import {
 } from './authManager';
 
 import { registerScraperRoutes } from './scraperRoutes';
+import { facebookPosterRouter } from './facebookPosterRoutes';
 import { getTenantScraperStatus, stopTenantScraperJob } from './googleMapsScraperService';
 
 import {
@@ -4174,6 +4175,27 @@ const DEFAULT_PACKAGES = [
 ];
 
 const DEFAULT_ADDONS = [
+  // Authentic Octal Accounts CRM & ERP Modules (from live audit)
+  { id: 'addon_advance_rights', name: 'Advance Rights', priceMonthly: 6.00, priceAnnual: 60.00, unit: 'user/month', perUser: true },
+  { id: 'addon_analytical_reports', name: 'Analytical Reports', priceMonthly: 5.00, priceAnnual: 50.00, unit: 'module' },
+  { id: 'addon_api', name: 'API Integration', priceMonthly: 7.00, priceAnnual: 70.00, unit: 'module' },
+  { id: 'addon_assembly', name: 'Assembly & Production', priceMonthly: 0.00, priceAnnual: 0.00, unit: 'module' },
+  { id: 'addon_attachments', name: 'Document Attachments', priceMonthly: 0.00, priceAnnual: 0.00, unit: 'module' },
+  { id: 'addon_batch', name: 'Batch & Lot Tracking', priceMonthly: 7.00, priceAnnual: 70.00, unit: 'user/month', perUser: true },
+  { id: 'addon_budget', name: 'Budgeting & Cost Centers', priceMonthly: 3.00, priceAnnual: 30.00, unit: 'module' },
+  { id: 'addon_draft', name: 'Draft Transactions', priceMonthly: 6.00, priceAnnual: 60.00, unit: 'module' },
+  { id: 'addon_expiry_date', name: 'Expiry Date Management', priceMonthly: 0.00, priceAnnual: 0.00, unit: 'user/month', perUser: true },
+  { id: 'addon_fbr_pos', name: 'FBR Digital Invoicing & POS', priceMonthly: 5.00, priceAnnual: 50.00, unit: 'module' },
+  { id: 'addon_fixed_assets', name: 'Fixed Assets Management', priceMonthly: 3.00, priceAnnual: 30.00, unit: 'module' },
+  { id: 'addon_gdn', name: 'GDN (Goods Dispatch Note)', priceMonthly: 3.00, priceAnnual: 30.00, unit: 'module' },
+  { id: 'addon_landed_cost', name: 'Landed Cost Automation', priceMonthly: 0.00, priceAnnual: 0.00, unit: 'module' },
+  { id: 'addon_letter_of_credit', name: 'Letter of Credit (LC)', priceMonthly: 4.00, priceAnnual: 40.00, unit: 'module' },
+  { id: 'addon_location', name: 'Multi-Location Warehouses', priceMonthly: 0.00, priceAnnual: 0.00, unit: 'module' },
+  { id: 'addon_multi_currency', name: 'Multi-Currency Trading', priceMonthly: 0.00, priceAnnual: 0.00, unit: 'module' },
+  { id: 'addon_multi_units', name: 'Multi-Units & Conversion', priceMonthly: 0.00, priceAnnual: 0.00, unit: 'module' },
+  { id: 'addon_online_payment', name: 'Online Payment Gateway', priceMonthly: 10.00, priceAnnual: 120.00, unit: 'module' },
+  { id: 'addon_sms', name: 'SMS Alerts & Dispatch', priceMonthly: 0.00, priceAnnual: 0.00, unit: 'module' },
+  // Telephony & Communications Addons
   { id: 'addon_phone', name: 'Extra Dedicated DID Phone Number', priceMonthly: 5.00, priceAnnual: 50.00, unit: 'number' },
   { id: 'addon_ai_transcribe', name: 'AI Voice Transcription & Summary', priceMonthly: 29.00, priceAnnual: 290.00, unit: 'license' },
   { id: 'addon_omnichannel', name: 'WhatsApp & SMS Outreach Gateway', priceMonthly: 49.00, priceAnnual: 490.00, unit: 'gateway' },
@@ -4355,18 +4377,23 @@ async function calculateQuoteInternal(tenantId: string, user: any, body: any) {
     });
   }
 
-  // Selected add-ons
-  const selectedAddons: any[] = Array.isArray(body.selectedAddons) ? body.selectedAddons : [];
-  for (const sel of selectedAddons) {
+  // Selected add-ons: support array of IDs or array of objects { addonId/id, quantity }
+  const rawAddons: any[] = Array.isArray(body.addonIds)
+    ? body.addonIds.map((id: string) => ({ id, quantity: 1 }))
+    : (Array.isArray(body.selectedAddons) ? body.selectedAddons : []);
+
+  for (const sel of rawAddons) {
     const addon = addons.find((a: any) => a.id === sel.addonId || a.id === sel.id);
     if (addon) {
+      const isPerUser = !!addon.perUser;
       const qty = Math.max(1, parseInt(String(sel.quantity || 1), 10));
       const uPrice = billingCycle === 'annual' ? Number(addon.priceAnnual) : Number(addon.priceMonthly);
-      const lTotal = qty * uPrice;
+      const multiplier = isPerUser ? userCount : 1;
+      const lTotal = qty * uPrice * multiplier;
       lineItems.push({
         itemType: 'addon',
-        name: addon.name,
-        quantity: qty,
+        name: isPerUser ? `${addon.name} (${userCount} users @ $${uPrice}/${billingCycle === 'annual' ? 'yr' : 'mo'})` : addon.name,
+        quantity: qty * multiplier,
         unitPrice: uPrice,
         lineTotal: lTotal
       });
@@ -4483,7 +4510,7 @@ app.post('/api/crm/quotes', requireAuth, requirePermission(['crm:create', 'crm:e
       return;
     }
 
-    const { crmCompanyId, contactId, leadId, packageId, userCount, billingCycle, selectedAddons, discountPct, notes, validUntil, assignedUserId } = req.body;
+    const { crmCompanyId, contactId, leadId, packageId, userCount, billingCycle, selectedAddons, addonIds, discountPct, notes, validUntil, assignedUserId } = req.body;
 
     let finalAssignedUserId: string | null = null;
     try {
@@ -4498,6 +4525,7 @@ app.post('/api/crm/quotes', requireAuth, requirePermission(['crm:create', 'crm:e
       userCount,
       billingCycle,
       selectedAddons,
+      addonIds,
       discountPct
     });
 
@@ -6951,6 +6979,7 @@ app.get(['/api/metrics/agents', '/metrics/agents'], requireAuth, async (req, res
 });
 
 registerScraperRoutes(app, requireAuth, io);
+app.use('/api/facebook-poster', requireAuth, facebookPosterRouter);
 
 // ─── LEAD GEN Z INTEGRATION BOUNDARY ───────────────────────────────
 // POST /api/integrations/leadgen/import — Ingests leads from LEAD GEN Z
@@ -10956,6 +10985,7 @@ interface TenantEmailerJob {
   running: boolean;
   logs: string[];
   stop: boolean;
+  currentRunId?: string;
 }
 
 const tenantEmailerJobs = new Map<string, TenantEmailerJob>();
@@ -10977,6 +11007,153 @@ function emailLog(tenantId: string, msg: string) {
   console.log(`[Emailer][${tenantId}]`, msg);
 }
 
+// Spintax syntax parser: {Hello|Hi|Hey} -> dynamically picks one option per recipient
+// Strictly requires at least one pipe `|` between braces so CSS rules (e.g. <style>div{color:red}</style>) are never corrupted.
+function resolveSpintax(str: string): string {
+  if (!str) return '';
+  const spintaxRegex = /\{([^{}]+?\|[^{}]+?)\}/;
+  let match: RegExpExecArray | null;
+  let result = str;
+  let loopCount = 0;
+  while ((match = spintaxRegex.exec(result)) !== null && loopCount++ < 50) {
+    const options = match[1].split('|');
+    const chosen = options[Math.floor(Math.random() * options.length)].trim();
+    result = result.slice(0, match.index) + chosen + result.slice(match.index + match[0].length);
+  }
+  return result;
+}
+
+// Template dynamic token interpolator + Spintax resolver
+function interpolateEmail(tpl: string, data: Record<string, any>): string {
+  let text = tpl || '';
+  for (const [key, val] of Object.entries(data)) {
+    const reg = new RegExp(`{{${key}}}`, 'gi');
+    text = text.replace(reg, val !== undefined && val !== null ? String(val) : '');
+  }
+  return resolveSpintax(text);
+}
+
+// Rewrites hyperlinks in HTML to route through the public click tracking endpoint (skipping unsubscribe links)
+function rewriteLinksForTracking(html: string, trackingToken: string, baseUrl: string): string {
+  if (!html) return '';
+  return html.replace(/<a\b([^>]*?)href=(["'])(https?:\/\/[^"']+)\2([^>]*?)>/gi, (match, prefix, quote, originalUrl, suffix) => {
+    if (originalUrl.includes('/api/email/unsubscribe') || originalUrl.includes('/email/unsubscribe')) {
+      return match;
+    }
+    const trackingUrl = `${baseUrl}/api/email/track/click/${trackingToken}?url=${encodeURIComponent(originalUrl)}`;
+    return `<a${prefix}href="${trackingUrl}"${suffix}>`;
+  });
+}
+
+// 1x1 Transparent GIF buffer for email open tracking
+const TRACKING_PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+
+// ── Public Open Tracking Pixel
+app.get(['/api/email/track/open/:token', '/email/track/open/:token'], async (req: express.Request, res: express.Response): Promise<void> => {
+  const token = req.params.token;
+  try {
+    if (token && token.length > 5) {
+      const now = new Date().toISOString();
+      const updated = await db.queryOne<{ campaignRunId: string; openedAt: string }>(`
+        UPDATE email_dispatch_logs 
+        SET "openedAt" = COALESCE("openedAt", $1), status = CASE WHEN status = 'sent' THEN 'opened' ELSE status END
+        WHERE "trackingToken" = $2
+        RETURNING "campaignRunId", "openedAt"
+      `, [now, token]);
+      if (updated?.campaignRunId && !updated.openedAt) {
+        await db.execute('UPDATE email_campaign_runs SET "openedCount" = "openedCount" + 1 WHERE id = $1', [updated.campaignRunId]);
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Email Track Open Error]', err?.message);
+  }
+  res.writeHead(200, {
+    'Content-Type': 'image/gif',
+    'Content-Length': TRACKING_PIXEL_GIF.length,
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+    'Pragma': 'no-cache',
+    'Expires': '0'
+  });
+  res.end(TRACKING_PIXEL_GIF);
+});
+
+// ── Public Click Tracking Link Redirector
+app.get(['/api/email/track/click/:token', '/email/track/click/:token'], async (req: express.Request, res: express.Response): Promise<void> => {
+  const token = req.params.token;
+  const target = req.query.url as string;
+  try {
+    if (token && token.length > 5) {
+      const now = new Date().toISOString();
+      const updated = await db.queryOne<{ campaignRunId: string; clickedAt: string }>(`
+        UPDATE email_dispatch_logs 
+        SET "clickedAt" = COALESCE("clickedAt", $1), status = 'clicked'
+        WHERE "trackingToken" = $2
+        RETURNING "campaignRunId", "clickedAt"
+      `, [now, token]);
+      if (updated?.campaignRunId && !updated.clickedAt) {
+        await db.execute('UPDATE email_campaign_runs SET "clickedCount" = "clickedCount" + 1 WHERE id = $1', [updated.campaignRunId]);
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Email Track Click Error]', err?.message);
+  }
+  if (target && /^https?:\/\//i.test(target)) {
+    res.redirect(302, target);
+  } else {
+    res.redirect(302, '/');
+  }
+});
+
+// ── Public 1-Click Unsubscribe Handler
+app.get(['/api/email/unsubscribe/:token', '/email/unsubscribe/:token'], async (req: express.Request, res: express.Response): Promise<void> => {
+  const token = req.params.token;
+  let email = '';
+  try {
+    if (token && token.length > 5) {
+      const lead = await db.queryOne<{ id: string; email: string; tenantId: string }>(
+        'SELECT id, email, "tenantId" FROM email_leads WHERE "unsubscribeToken" = $1',
+        [token]
+      );
+      if (lead) {
+        email = lead.email;
+        const now = new Date().toISOString();
+        await db.execute('UPDATE email_leads SET status = \'unsubscribed\', "unsubscribedAt" = $1 WHERE id = $2', [now, lead.id]);
+        await db.execute(`
+          INSERT INTO email_unsubscribes (id, "tenantId", email, "unsubscribedAt")
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT ("tenantId", email) DO NOTHING
+        `, [`uns_rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, lead.tenantId, lead.email.toLowerCase(), now]);
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Email Unsubscribe Error]', err?.message);
+  }
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Unsubscribed Successfully</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #09090b; color: #f4f4f5; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 1rem; }
+    .card { background: #18181b; border: 1px solid #27272a; border-radius: 16px; padding: 2.5rem; max-width: 440px; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); }
+    .icon { font-size: 40px; margin-bottom: 1rem; }
+    h1 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #f4f4f5; }
+    p { font-size: 0.875rem; color: #a1a1aa; line-height: 1.5; margin: 0 0 1.5rem; }
+    .badge { display: inline-block; background: #27272a; color: #fbbf24; padding: 0.35rem 0.75rem; border-radius: 8px; font-size: 0.8rem; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✉️</div>
+    <h1>You Have Been Unsubscribed</h1>
+    <p>You have been safely removed from our outreach list. You will not receive any further automated emails.</p>
+    ${email ? `<div class="badge">${email}</div>` : ''}
+  </div>
+</body>
+</html>`);
+});
+
 // ── GET /email/leads
 app.get(['/email/leads', '/api/email/leads'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
@@ -10984,11 +11161,11 @@ app.get(['/email/leads', '/api/email/leads'], requireAuth, requirePermission(['a
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const rows = await db.queryAll('SELECT * FROM email_leads WHERE "tenantId" = $1 ORDER BY "createdAt" ASC', [tenantId]);
+  const rows = await db.queryAll('SELECT * FROM email_leads WHERE "tenantId" = $1 ORDER BY "createdAt" DESC', [tenantId]);
   res.json(rows);
 });
 
-// ── POST /email/upload
+// ── POST /email/upload — Genuine deduplication with ("tenantId", email) unique constraint & suppression list preservation
 app.post(['/email/upload', '/api/email/upload'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'leads:import']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
@@ -11000,22 +11177,42 @@ app.post(['/email/upload', '/api/email/upload'], requireAuth, requirePermission(
     res.status(400).json({ error: 'leads array required' });
     return;
   }
+
+  // Cross-reference suppression list so unsubscribed contacts are NEVER imported as pending
+  const unsubRows = await db.queryAll<{ email: string }>(
+    'SELECT email FROM email_unsubscribes WHERE "tenantId" = $1',
+    [tenantId]
+  );
+  const unsubSet = new Set((unsubRows || []).map(r => r.email.toLowerCase().trim()));
+
   let added = 0;
   let skipped = 0;
   for (const lead of leads) {
-    if (!lead.email?.includes('@')) continue;
+    const cleanEmail = (lead.email || '').toLowerCase().trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) continue;
+
+    const isUnsub = unsubSet.has(cleanEmail);
+    const status = isUnsub ? 'unsubscribed' : 'pending';
     const leadId = `eml_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const unsubToken = `uns_${crypto.randomBytes(16).toString('hex')}`;
+    const now = new Date().toISOString();
+
     const result = await db.execute(`
-      INSERT INTO email_leads (id, email, name, company, status, stage, "tenantId")
-      VALUES ($1, $2, $3, $4, 'pending', 1, $5)
-      ON CONFLICT ("id") DO NOTHING
-    `, [leadId, lead.email.toLowerCase().trim(), lead.name || 'Client', lead.company || '', tenantId]);
-    if (result.rowCount > 0) added++; else skipped++;
+      INSERT INTO email_leads (id, email, name, company, status, stage, "tenantId", "unsubscribeToken", "createdAt", "unsubscribedAt")
+      VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9)
+      ON CONFLICT ("tenantId", email) DO NOTHING
+    `, [leadId, cleanEmail, lead.name || 'Client', lead.company || '', status, tenantId, unsubToken, now, isUnsub ? now : null]);
+
+    if (result.rowCount > 0) {
+      added++;
+    } else {
+      skipped++;
+    }
   }
   res.json({ success: true, added, duplicates: skipped });
 });
 
-// ── DELETE /email/leads
+// ── DELETE /email/leads (Bulk clear)
 app.delete(['/email/leads', '/api/email/leads'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
@@ -11026,6 +11223,21 @@ app.delete(['/email/leads', '/api/email/leads'], requireAuth, requirePermission(
   res.json({ success: true });
 });
 
+// ── DELETE /email/leads/:leadId (Single delete)
+app.delete(['/email/leads/:leadId', '/api/email/leads/:leadId'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const result = await db.execute('DELETE FROM email_leads WHERE id = $1 AND "tenantId" = $2', [req.params.leadId, tenantId]);
+  if (result.rowCount === 0) {
+    res.status(404).json({ error: 'Lead not found or access denied.' });
+    return;
+  }
+  res.json({ success: true, message: 'Lead removed successfully.' });
+});
+
 // ── GET /email/accounts
 app.get(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
@@ -11033,47 +11245,8 @@ app.get(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermissi
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const rows = await db.queryAll('SELECT id, email, "senderName", "smtpHost", "smtpPort", status FROM email_accounts WHERE "tenantId" = $1', [tenantId]);
+  const rows = await db.queryAll('SELECT id, email, "senderName", "smtpHost", "smtpPort", status, "dailyLimit", "sentToday", "lastResetDate", "authType" FROM email_accounts WHERE "tenantId" = $1 ORDER BY "createdAt" DESC', [tenantId]);
   res.json(rows);
-});
-
-// POST /email/accounts/:accountId/verify — validates SMTP connectivity without sending mail.
-app.post(['/email/accounts/:accountId/verify', '/api/email/accounts/:accountId/verify'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
-  const tenantId = (req as any).user?.tenantId;
-  if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-    return;
-  }
-
-  const account = await db.queryOne<{ email: string; password: string; smtpHost: string; smtpPort: number }>(
-    'SELECT email, password, "smtpHost", "smtpPort" FROM email_accounts WHERE id = $1 AND "tenantId" = $2 AND status = \'active\'',
-    [req.params.accountId, tenantId]
-  );
-  if (!account) {
-    res.status(404).json({ error: 'Active SMTP account not found.' });
-    return;
-  }
-
-  const { default: nodemailer } = await import('nodemailer');
-  const transporter = nodemailer.createTransport({
-    host: account.smtpHost,
-    port: account.smtpPort,
-    secure: false,
-    auth: { user: account.email, pass: account.password },
-    tls: { rejectUnauthorized: SMTP_REJECT_UNAUTHORIZED }
-  });
-
-  try {
-    await transporter.verify();
-    res.json({ success: true, message: 'SMTP connection and authentication succeeded.' });
-  } catch (err: unknown) {
-    const code = (err as { code?: unknown })?.code;
-    const safeCode = typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'SMTP_VERIFY_FAILED';
-    console.warn(`[SMTP Verify] Account ${account.email} verification failed (${safeCode}).`);
-    res.status(502).json({ success: false, error: 'SMTP connection or authentication failed.', code: safeCode });
-  } finally {
-    transporter.close();
-  }
 });
 
 // ── POST /email/accounts
@@ -11083,35 +11256,92 @@ app.post(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermiss
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const { accounts } = req.body as { accounts: { email: string; password: string; senderName?: string; smtpHost?: string; smtpPort?: number; status?: string }[] };
+  const { accounts } = req.body as { accounts: { id?: string; email: string; password: string; senderName?: string; smtpHost?: string; smtpPort?: number; status?: string; dailyLimit?: number }[] };
   if (!Array.isArray(accounts)) {
     res.status(400).json({ error: 'accounts array required' });
     return;
   }
   for (const acc of accounts) {
-    const accId = `eml_acc_${acc.email.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    const accId = acc.id || `eml_acc_${acc.email.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
     await db.execute(`
-      INSERT INTO email_accounts (id, email, password, "senderName", "smtpHost", "smtpPort", status, "tenantId")
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO email_accounts (id, email, password, "senderName", "smtpHost", "smtpPort", status, "tenantId", "dailyLimit", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       ON CONFLICT ("id") DO UPDATE SET
         password = CASE WHEN excluded.password = '***keep***' THEN email_accounts.password ELSE excluded.password END,
         "senderName" = excluded."senderName",
         "smtpHost" = excluded."smtpHost",
         "smtpPort" = excluded."smtpPort",
         status = excluded.status,
+        "dailyLimit" = COALESCE(excluded."dailyLimit", email_accounts."dailyLimit", 50),
         "tenantId" = excluded."tenantId"
     `, [
       accId,
-      acc.email.toLowerCase(),
+      acc.email.toLowerCase().trim(),
       acc.password,
       acc.senderName || null,
       acc.smtpHost || 'smtp.office365.com',
       acc.smtpPort || 587,
       acc.status || 'active',
-      tenantId
+      tenantId,
+      acc.dailyLimit || 50,
+      new Date().toISOString()
     ]);
   }
   res.json({ success: true });
+});
+
+// ── DELETE /email/accounts/:accountId
+app.delete(['/email/accounts/:accountId', '/api/email/accounts/:accountId'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const result = await db.execute('DELETE FROM email_accounts WHERE id = $1 AND "tenantId" = $2', [req.params.accountId, tenantId]);
+  if (result.rowCount === 0) {
+    res.status(404).json({ error: 'Email account not found or access denied.' });
+    return;
+  }
+  res.json({ success: true, message: 'Email account deleted.' });
+});
+
+// ── POST /email/accounts/:accountId/verify
+app.post(['/email/accounts/:accountId/verify', '/api/email/accounts/:accountId/verify'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+
+  const account = await db.queryOne<{ email: string; password: string; smtpHost: string; smtpPort: number }>(
+    'SELECT email, password, "smtpHost", "smtpPort" FROM email_accounts WHERE id = $1 AND "tenantId" = $2',
+    [req.params.accountId, tenantId]
+  );
+  if (!account) {
+    res.status(404).json({ error: 'SMTP account not found.' });
+    return;
+  }
+
+  const { default: nodemailer } = await import('nodemailer');
+  const transporter = nodemailer.createTransport({
+    host: account.smtpHost,
+    port: Number(account.smtpPort) || 587,
+    secure: Number(account.smtpPort) === 465,
+    auth: { user: account.email, pass: account.password },
+    tls: { rejectUnauthorized: SMTP_REJECT_UNAUTHORIZED }
+  });
+
+  try {
+    await transporter.verify();
+    res.json({ success: true, message: 'SMTP connection and authentication succeeded.' });
+  } catch (err: any) {
+    const code = err?.code;
+    const safeCode = typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'SMTP_VERIFY_FAILED';
+    console.warn(`[SMTP Verify] Account ${account.email} verification failed (${safeCode}): ${err?.message}`);
+    res.status(502).json({ success: false, error: 'SMTP connection or authentication failed: ' + err?.message, code: safeCode });
+  } finally {
+    transporter.close();
+  }
 });
 
 // ── GET /email/templates
@@ -11132,21 +11362,131 @@ app.post(['/email/templates', '/api/email/templates'], requireAuth, requirePermi
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const { templates } = req.body as { templates: { subject: string; body: string; stage?: number }[] };
+  const { templates } = req.body as { templates: { id?: string; subject: string; body: string; bodyHtml?: string; stage?: number }[] };
   if (!Array.isArray(templates)) {
     res.status(400).json({ error: 'templates array required' });
     return;
   }
   await db.execute('DELETE FROM email_templates WHERE "tenantId" = $1', [tenantId]);
   for (const t of templates) {
-    const tplId = `tpl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    await db.execute('INSERT INTO email_templates (id, subject, body, stage, "tenantId") VALUES ($1, $2, $3, $4, $5)', [tplId, t.subject, t.body, t.stage || 1, tenantId]);
+    const tplId = t.id || `tpl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    await db.execute('INSERT INTO email_templates (id, subject, body, "bodyHtml", stage, "tenantId", "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7)', [
+      tplId, t.subject, t.body, t.bodyHtml || null, t.stage || 1, tenantId, new Date().toISOString()
+    ]);
   }
   res.json({ success: true });
 });
 
-// ── POST /email/start — fire-and-forget campaign runner
-app.post(['/email/start', '/api/email/start'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'email:send']), (req: express.Request, res: express.Response): void => {
+// ── DELETE /email/templates/:templateId
+app.delete(['/email/templates/:templateId', '/api/email/templates/:templateId'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const result = await db.execute('DELETE FROM email_templates WHERE id = $1 AND "tenantId" = $2', [req.params.templateId, tenantId]);
+  if (result.rowCount === 0) {
+    res.status(404).json({ error: 'Template not found or access denied.' });
+    return;
+  }
+  res.json({ success: true, message: 'Template removed successfully.' });
+});
+
+// ── GET /email/stats — High-level KPI and deliverability metrics
+app.get(['/email/stats', '/api/email/stats'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  try {
+    const [leadsSummary, accountsSummary, runsSummary, dispatchSummary] = await Promise.all([
+      db.queryOne<{ total: string; pending: string; sent: string; completed: string; unsubscribed: string }>(`
+        SELECT 
+          COUNT(*)::text as total,
+          COUNT(CASE WHEN status = 'pending' THEN 1 END)::text as pending,
+          COUNT(CASE WHEN status = 'sent' THEN 1 END)::text as sent,
+          COUNT(CASE WHEN status = 'completed' THEN 1 END)::text as completed,
+          COUNT(CASE WHEN status = 'unsubscribed' THEN 1 END)::text as unsubscribed
+        FROM email_leads WHERE "tenantId" = $1
+      `, [tenantId]),
+      db.queryOne<{ total: string; active: string }>(`
+        SELECT 
+          COUNT(*)::text as total,
+          COUNT(CASE WHEN status = 'active' THEN 1 END)::text as active
+        FROM email_accounts WHERE "tenantId" = $1
+      `, [tenantId]),
+      db.queryOne<{ totalRuns: string; activeRuns: string }>(`
+        SELECT 
+          COUNT(*)::text as totalRuns,
+          COUNT(CASE WHEN status = 'running' THEN 1 END)::text as activeRuns
+        FROM email_campaign_runs WHERE "tenantId" = $1
+      `, [tenantId]),
+      db.queryOne<{ totalDispatched: string; opened: string; clicked: string; failed: string }>(`
+        SELECT 
+          COUNT(*)::text as totalDispatched,
+          COUNT(CASE WHEN "openedAt" IS NOT NULL THEN 1 END)::text as opened,
+          COUNT(CASE WHEN "clickedAt" IS NOT NULL THEN 1 END)::text as clicked,
+          COUNT(CASE WHEN status = 'failed' THEN 1 END)::text as failed
+        FROM email_dispatch_logs WHERE "tenantId" = $1
+      `, [tenantId])
+    ]);
+
+    const totalDispatched = parseInt(dispatchSummary?.totalDispatched || '0', 10);
+    const opened = parseInt(dispatchSummary?.opened || '0', 10);
+    const clicked = parseInt(dispatchSummary?.clicked || '0', 10);
+
+    res.json({
+      leads: {
+        total: parseInt(leadsSummary?.total || '0', 10),
+        pending: parseInt(leadsSummary?.pending || '0', 10),
+        sent: parseInt(leadsSummary?.sent || '0', 10),
+        completed: parseInt(leadsSummary?.completed || '0', 10),
+        unsubscribed: parseInt(leadsSummary?.unsubscribed || '0', 10)
+      },
+      accounts: {
+        total: parseInt(accountsSummary?.total || '0', 10),
+        active: parseInt(accountsSummary?.active || '0', 10)
+      },
+      campaigns: {
+        totalRuns: parseInt(runsSummary?.totalRuns || '0', 10),
+        activeRuns: parseInt(runsSummary?.activeRuns || '0', 10)
+      },
+      telemetry: {
+        totalDispatched,
+        opened,
+        clicked,
+        failed: parseInt(dispatchSummary?.failed || '0', 10),
+        openRate: totalDispatched > 0 ? Math.round((opened / totalDispatched) * 100) : 0,
+        clickRate: totalDispatched > 0 ? Math.round((clicked / totalDispatched) * 100) : 0
+      }
+    });
+  } catch (err: any) {
+    console.error('[GET /email/stats Error]', err);
+    res.status(500).json({ error: 'Failed to retrieve email statistics' });
+  }
+});
+
+// ── GET /email/logs — Recent dispatch history with telemetry
+app.get(['/email/logs', '/api/email/logs'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+  const tenantId = (req as any).user?.tenantId;
+  if (!tenantId) {
+    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    return;
+  }
+  const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10), 1), 500);
+  const rows = await db.queryAll(`
+    SELECT id, "leadEmail", "accountEmail", stage, subject, status, "errorMessage", "sentAt", "openedAt", "clickedAt"
+    FROM email_dispatch_logs
+    WHERE "tenantId" = $1
+    ORDER BY "sentAt" DESC
+    LIMIT $2
+  `, [tenantId, limit]);
+  res.json(rows);
+});
+
+// ── POST /email/start — Multi-Account Round-Robin Cold Campaign Runner with Link Tracking & Quota Guard
+app.post(['/email/start', '/api/email/start'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'email:send']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
@@ -11154,98 +11494,250 @@ app.post(['/email/start', '/api/email/start'], requireAuth, requirePermission(['
   }
   const job = getTenantEmailerJob(tenantId);
   if (job.running) {
-    res.json({ success: true, message: 'Campaign already running.' });
+    res.json({ success: true, message: 'Campaign already running for this tenant.' });
     return;
   }
-  const { limit = 300 } = req.body as { limit?: number };
+  const { limit = 300, accountIds, minDelaySecs = 5, maxDelaySecs = 12 } = req.body as {
+    limit?: number;
+    accountIds?: (string | number)[];
+    minDelaySecs?: number;
+    maxDelaySecs?: number;
+  };
 
   job.running = true;
   job.stop = false;
 
+  const campaignRunId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  job.currentRunId = campaignRunId;
+  const nowIso = new Date().toISOString();
+
+  // Record initial run in database
+  await db.execute(`
+    INSERT INTO email_campaign_runs (id, "tenantId", name, status, "totalLeads", "sentCount", "failedCount", "selectedAccountIds", "limitCount", "startedAt", "createdAt")
+    VALUES ($1, $2, 'Multi-Account Cold Campaign', 'running', 0, 0, 0, $3, $4, $5, $6)
+  `, [campaignRunId, tenantId, JSON.stringify(accountIds || []), limit, nowIso, nowIso]);
+
+  res.json({ success: true, message: 'Campaign started in background.', runId: campaignRunId });
+
+  // Background Async Execution
   (async () => {
     try {
       const { default: nodemailer } = await import('nodemailer');
-      const leads = await db.queryAll(`SELECT * FROM email_leads WHERE "tenantId" = $1 AND status IN ('pending','sent')`, [tenantId]) as any[];
-      const accounts = await db.queryAll(`SELECT * FROM email_accounts WHERE "tenantId" = $1 AND status = 'active'`, [tenantId]) as any[];
-      const templates = await db.queryAll(`SELECT * FROM email_templates WHERE ("tenantId" = $1 OR "systemTemplate" = 1) ORDER BY stage ASC, id ASC`, [tenantId]) as any[];
+      const todayStr = new Date().toISOString().slice(0, 10);
 
-      emailLog(tenantId, `=== Campaign Started [Tenant: ${tenantId}]: ${leads.length} eligible leads, ${accounts.length} accounts, ${templates.length} templates ===`);
+      // 1. Fetch eligible accounts (respecting user-selected accountIds)
+      let accountsQuery = `SELECT * FROM email_accounts WHERE "tenantId" = $1 AND status = 'active'`;
+      const accountsParams: any[] = [tenantId];
+      if (Array.isArray(accountIds) && accountIds.length > 0) {
+        const placeholders = accountIds.map((_, i) => `$${i + 2}`).join(',');
+        accountsQuery += ` AND id IN (${placeholders})`;
+        accountsParams.push(...accountIds.map(String));
+      }
+      let accounts = await db.queryAll<any>(accountsQuery, accountsParams);
 
-      if (!accounts.length) { emailLog(tenantId, '❌ No active SMTP accounts for tenant!'); return; }
-      if (!templates.length) { emailLog(tenantId, '❌ No email templates for tenant!'); return; }
+      if (!accounts.length) {
+        emailLog(tenantId, '❌ No active SMTP accounts available matching selection!');
+        await db.execute('UPDATE email_campaign_runs SET status = \'failed\', "completedAt" = $1 WHERE id = $2', [new Date().toISOString(), campaignRunId]);
+        job.running = false;
+        return;
+      }
 
+      // Reset daily limits for any accounts from previous days
+      for (const acc of accounts) {
+        if (acc.lastResetDate !== todayStr) {
+          await db.execute('UPDATE email_accounts SET "sentToday" = 0, "lastResetDate" = $1 WHERE id = $2', [todayStr, acc.id]);
+          acc.sentToday = 0;
+          acc.lastResetDate = todayStr;
+        }
+      }
+
+      // 2. Fetch templates
+      const templates = await db.queryAll<any>('SELECT * FROM email_templates WHERE ("tenantId" = $1 OR "systemTemplate" = 1) ORDER BY stage ASC, id ASC', [tenantId]);
+      if (!templates.length) {
+        emailLog(tenantId, '❌ No email templates found for tenant!');
+        await db.execute('UPDATE email_campaign_runs SET status = \'failed\', "completedAt" = $1 WHERE id = $2', [new Date().toISOString(), campaignRunId]);
+        job.running = false;
+        return;
+      }
+
+      // 3. Fetch suppression list to guarantee compliance
+      const unsubscribes = await db.queryAll<{ email: string }>('SELECT email FROM email_unsubscribes WHERE "tenantId" = $1', [tenantId]);
+      const unsubscribedSet = new Set((unsubscribes || []).map(u => u.email.toLowerCase()));
+
+      // 4. Fetch leads
+      const leads = await db.queryAll<any>(`SELECT * FROM email_leads WHERE "tenantId" = $1 AND status IN ('pending', 'sent') ORDER BY "createdAt" ASC`, [tenantId]);
       const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
-      const now = Date.now();
+      const nowMs = Date.now();
 
       const eligible = leads.filter((l: any) => {
+        if (unsubscribedSet.has(l.email.toLowerCase())) return false;
         if (l.status === 'pending') return true;
         if (l.status === 'sent' && l.stage < 3 && l.lastSentAt) {
-          return now - new Date(l.lastSentAt).getTime() >= SEVEN_DAYS;
+          return nowMs - new Date(l.lastSentAt).getTime() >= SEVEN_DAYS;
         }
         return false;
       });
 
-      emailLog(tenantId, `Found ${eligible.length} leads eligible for sending.`);
+      await db.execute('UPDATE email_campaign_runs SET "totalLeads" = $1 WHERE id = $2', [eligible.length, campaignRunId]);
+      emailLog(tenantId, `=== Campaign [${campaignRunId}] Started: ${eligible.length} eligible leads, ${accounts.length} active senders, ${templates.length} templates ===`);
 
-      let leadIdx = 0;
-      let tplIdx = 0;
+      // Determine public application base URL for click/open tracking & unsubscribe links
+      const baseUrl = (process.env.PUBLIC_APP_URL || process.env.BASE_URL || 'https://zestify7.online').replace(/\/$/, '');
 
-      for (const acc of accounts) {
-        if (leadIdx >= eligible.length || job.stop) break;
-
-        emailLog(tenantId, `Using sender: ${acc.email}`);
-        const transporter = nodemailer.createTransport({
-          host: acc.smtpHost,
-          port: acc.smtpPort,
-          secure: false,
-          auth: { user: acc.email, pass: acc.password },
-          tls: { rejectUnauthorized: SMTP_REJECT_UNAUTHORIZED }
-        });
-
-        let sent = 0;
-        while (sent < limit && leadIdx < eligible.length && !job.stop) {
-          const lead = eligible[leadIdx++];
-          const tpl = templates[tplIdx++ % templates.length];
-
-          const subject = tpl.subject.replace(/{{name}}/g, lead.name).replace(/{{company}}/g, lead.company);
-          const body = tpl.body.replace(/{{name}}/g, lead.name).replace(/{{company}}/g, lead.company);
-
-          try {
-            emailLog(tenantId, `Sending Stage ${lead.stage} to: ${lead.email}`);
-            await transporter.sendMail({
-              from: `"${acc.senderName || 'Office'}" <${acc.email}>`,
-              to: lead.email,
-              subject,
-              text: body
-            });
-            const newStage = Math.min(lead.stage + 1, 3);
-            const newStatus = newStage >= 3 ? 'completed' : 'sent';
-            await db.execute('UPDATE email_leads SET status = $1, stage = $2, "lastSentAt" = $3 WHERE id = $4 AND "tenantId" = $5', [newStatus, newStage, new Date().toISOString(), lead.id, tenantId]);
-            emailLog(tenantId, `✅ Sent to ${lead.email} (Stage ${lead.stage})`);
-            sent++;
-            const delay = 30000 + Math.random() * 30000;
-            await new Promise(r => setTimeout(r, delay));
-          } catch (err: unknown) {
-            emailLog(tenantId, `❌ Failed: ${lead.email} — ${(err as Error).message}`);
-            if ((err as Error).message?.includes('Authentication') || (err as Error).message?.includes('Username and Password')) {
-              await db.execute('UPDATE email_accounts SET status = \'disabled\' WHERE id = $1 AND "tenantId" = $2', [acc.id, tenantId]);
-              emailLog(tenantId, `⚠️ Disabled account ${acc.email} (auth failure)`);
-              break;
-            }
-          }
+      // Cache nodemailer transports to reuse connections
+      const transporterCache = new Map<string, any>();
+      function getTransporter(acc: any) {
+        let t = transporterCache.get(acc.id);
+        if (!t) {
+          t = nodemailer.createTransport({
+            host: acc.smtpHost,
+            port: Number(acc.smtpPort) || 587,
+            secure: Number(acc.smtpPort) === 465,
+            auth: { user: acc.email, pass: acc.password },
+            tls: { rejectUnauthorized: SMTP_REJECT_UNAUTHORIZED }
+          });
+          transporterCache.set(acc.id, t);
         }
-        transporter.close();
+        return t;
       }
 
-      emailLog(tenantId, `=== Campaign Completed [Tenant: ${tenantId}] ===`);
-    } catch (err: unknown) {
-      emailLog(tenantId, `❌ Campaign error: ${(err as Error).message}`);
+      let sentCount = 0;
+      let failedCount = 0;
+      let accIndex = 0;
+
+      for (let leadIdx = 0; leadIdx < eligible.length && sentCount < limit; leadIdx++) {
+        if (job.stop) {
+          emailLog(tenantId, `⏸️ Campaign paused by user.`);
+          break;
+        }
+
+        const lead = eligible[leadIdx];
+
+        // Round-Robin Account Selection with Daily Quota Protection
+        let attempts = 0;
+        let chosenAccount: any = null;
+        while (attempts < accounts.length) {
+          const candidate = accounts[accIndex % accounts.length];
+          accIndex++;
+          attempts++;
+          const limitForAcc = candidate.dailyLimit || 50;
+          if (candidate.status === 'active' && (candidate.sentToday || 0) < limitForAcc) {
+            chosenAccount = candidate;
+            break;
+          }
+        }
+
+        if (!chosenAccount) {
+          emailLog(tenantId, `⚠️ All active senders have reached their daily sending quota! Pausing for sender reputation safety.`);
+          break;
+        }
+
+        // Pick template matching lead stage
+        const matchingTemplates = templates.filter((t: any) => t.stage === lead.stage);
+        const tpl = matchingTemplates.length > 0 ? matchingTemplates[0] : templates[leadIdx % templates.length];
+
+        // Generate tokens
+        const trackingToken = `trk_${crypto.randomBytes(16).toString('hex')}`;
+        const unsubToken = lead.unsubscribeToken || `uns_${crypto.randomBytes(16).toString('hex')}`;
+        if (!lead.unsubscribeToken) {
+          await db.execute('UPDATE email_leads SET "unsubscribeToken" = $1 WHERE id = $2', [unsubToken, lead.id]);
+          lead.unsubscribeToken = unsubToken;
+        }
+
+        const dataTokens = {
+          name: lead.name || 'Client',
+          company: lead.company || '',
+          email: lead.email,
+          senderName: chosenAccount.senderName || 'Account Manager'
+        };
+
+        const subject = interpolateEmail(tpl.subject, dataTokens);
+        const bodyText = interpolateEmail(tpl.body, dataTokens);
+        const unsubUrl = `${baseUrl}/api/email/unsubscribe/${unsubToken}`;
+        const trackingPixel = `<img src="${baseUrl}/api/email/track/open/${trackingToken}" width="1" height="1" alt="" style="display:none;" />`;
+        const footerText = `\n\n---\nTo unsubscribe: ${unsubUrl}`;
+        const footerHtml = `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;font-size:12px;color:#888;">If you prefer not to receive these emails, <a href="${unsubUrl}" style="color:#666;">click here to unsubscribe</a>.</div>`;
+
+        const rawHtml = tpl.bodyHtml
+          ? interpolateEmail(tpl.bodyHtml, dataTokens) + footerHtml + trackingPixel
+          : `<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#222;">${bodyText.replace(/\n/g, '<br/>')}</div>` + footerHtml + trackingPixel;
+
+        // Rewrite all links in HTML to route through click tracking proxy
+        const trackedHtml = rewriteLinksForTracking(rawHtml, trackingToken, baseUrl);
+        const fullText = bodyText + footerText;
+
+        try {
+          emailLog(tenantId, `[Sender: ${chosenAccount.email}] Sending Stage ${lead.stage} to ${lead.email}`);
+          const transporter = getTransporter(chosenAccount);
+          await transporter.sendMail({
+            from: `"${chosenAccount.senderName || 'Sales'}" <${chosenAccount.email}>`,
+            to: lead.email,
+            subject,
+            text: fullText,
+            html: trackedHtml,
+            headers: {
+              'List-Unsubscribe': `<${unsubUrl}>`,
+              'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+              'X-Campaign-ID': campaignRunId
+            }
+          });
+
+          // Update mailbox daily sent counter
+          chosenAccount.sentToday = (chosenAccount.sentToday || 0) + 1;
+          await db.execute('UPDATE email_accounts SET "sentToday" = $1, "lastResetDate" = $2 WHERE id = $3', [chosenAccount.sentToday, todayStr, chosenAccount.id]);
+
+          // Update lead stage & status
+          const newStage = Math.min(lead.stage + 1, 3);
+          const newStatus = newStage >= 3 ? 'completed' : 'sent';
+          const sentTimestamp = new Date().toISOString();
+          await db.execute('UPDATE email_leads SET status = $1, stage = $2, "lastSentAt" = $3 WHERE id = $4 AND "tenantId" = $5', [newStatus, newStage, sentTimestamp, lead.id, tenantId]);
+
+          // Record audit dispatch log
+          const dispatchId = `dsp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          await db.execute(`
+            INSERT INTO email_dispatch_logs (id, "tenantId", "campaignRunId", "leadId", "leadEmail", "accountId", "accountEmail", stage, subject, status, "sentAt", "trackingToken")
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'sent', $10, $11)
+          `, [dispatchId, tenantId, campaignRunId, lead.id, lead.email, chosenAccount.id, chosenAccount.email, lead.stage, subject, sentTimestamp, trackingToken]);
+
+          sentCount++;
+          emailLog(tenantId, `✅ Delivered to ${lead.email} (Stage ${lead.stage}, sender: ${chosenAccount.email}) [${sentCount}/${Math.min(eligible.length, limit)}]`);
+          await db.execute('UPDATE email_campaign_runs SET "sentCount" = $1 WHERE id = $2', [sentCount, campaignRunId]);
+
+          // Humanized jitter delay
+          const delayRange = Math.max(1, (maxDelaySecs - minDelaySecs));
+          const delayMs = (minDelaySecs + Math.random() * delayRange) * 1000;
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+
+        } catch (sendErr: any) {
+          failedCount++;
+          const errMsg = sendErr?.message || 'SMTP send failure';
+          emailLog(tenantId, `❌ Failed to ${lead.email} via ${chosenAccount.email}: ${errMsg}`);
+
+          const dispatchId = `dsp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          await db.execute(`
+            INSERT INTO email_dispatch_logs (id, "tenantId", "campaignRunId", "leadId", "leadEmail", "accountId", "accountEmail", stage, subject, status, "errorMessage", "sentAt")
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'failed', $10, $11)
+          `, [dispatchId, tenantId, campaignRunId, lead.id, lead.email, chosenAccount.id, chosenAccount.email, lead.stage, subject, errMsg, new Date().toISOString()]);
+
+          await db.execute('UPDATE email_campaign_runs SET "failedCount" = $1 WHERE id = $2', [failedCount, campaignRunId]);
+
+          if (errMsg.includes('Authentication') || errMsg.includes('Username and Password') || errMsg.includes('Invalid login')) {
+            await db.execute('UPDATE email_accounts SET status = \'disabled\' WHERE id = $1 AND "tenantId" = $2', [chosenAccount.id, tenantId]);
+            chosenAccount.status = 'disabled';
+            emailLog(tenantId, `⚠️ Automatically disabled account ${chosenAccount.email} due to authentication rejection.`);
+          }
+        }
+      }
+
+      await db.execute('UPDATE email_campaign_runs SET status = \'completed\', "completedAt" = $1 WHERE id = $2', [new Date().toISOString(), campaignRunId]);
+      emailLog(tenantId, `=== Campaign Completed: Dispatched ${sentCount} emails (${failedCount} failed) ===`);
+    } catch (err: any) {
+      emailLog(tenantId, `❌ Fatal campaign runner error: ${err?.message}`);
+      await db.execute('UPDATE email_campaign_runs SET status = \'failed\', "completedAt" = $1 WHERE id = $2', [new Date().toISOString(), campaignRunId]);
     } finally {
       job.running = false;
     }
   })();
-
-  res.json({ success: true, message: 'Campaign started in background.' });
 });
 
 // ── POST /emailer/stop
@@ -11257,7 +11749,7 @@ app.post(['/emailer/stop', '/api/emailer/stop'], requireAuth, requirePermission(
   }
   const job = getTenantEmailerJob(tenantId);
   job.stop = true;
-  res.json({ success: true });
+  res.json({ success: true, message: 'Stop signal dispatched to campaign runner.' });
 });
 
 // ── GET /emailer/status

@@ -160,6 +160,18 @@ export const CreateWorkItemModal: React.FC<CreateWorkItemModalProps> = ({
                 onChange={(e) => setCategory(e.target.value)}
                 className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
               >
+                <option value="General Ledger & Reports">General Ledger & Reports</option>
+                <option value="Sales & Digital Invoicing">Sales & Digital Invoicing</option>
+                <option value="Purchases & Vendors">Purchases & Vendors</option>
+                <option value="Inventory & Stock">Inventory & Stock</option>
+                <option value="Bank & Cash Reconciliation">Bank & Cash Reconciliation</option>
+                <option value="Budgeting & Cost Centers">Budgeting & Cost Centers</option>
+                <option value="Analytical Reports">Analytical Reports</option>
+                <option value="Assembly & Production">Assembly & Production</option>
+                <option value="Landed Cost & Shipping">Landed Cost & Shipping</option>
+                <option value="Letter of Credit (LC)">Letter of Credit (LC)</option>
+                <option value="Fixed Assets & Projects">Fixed Assets & Projects</option>
+                <option value="Settings & Integrations">Settings & Integrations</option>
                 <option value="Deliverable">Deliverable</option>
                 <option value="Onboarding">Onboarding</option>
                 <option value="Integration">Integration</option>
@@ -470,6 +482,18 @@ export const EditWorkItemModal: React.FC<EditWorkItemModalProps> = ({
                 onChange={(e) => setCategory(e.target.value)}
                 className="w-full px-3 py-2 bg-[#18181b] border border-[#27272a] rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
               >
+                <option value="General Ledger & Reports">General Ledger & Reports</option>
+                <option value="Sales & Digital Invoicing">Sales & Digital Invoicing</option>
+                <option value="Purchases & Vendors">Purchases & Vendors</option>
+                <option value="Inventory & Stock">Inventory & Stock</option>
+                <option value="Bank & Cash Reconciliation">Bank & Cash Reconciliation</option>
+                <option value="Budgeting & Cost Centers">Budgeting & Cost Centers</option>
+                <option value="Analytical Reports">Analytical Reports</option>
+                <option value="Assembly & Production">Assembly & Production</option>
+                <option value="Landed Cost & Shipping">Landed Cost & Shipping</option>
+                <option value="Letter of Credit (LC)">Letter of Credit (LC)</option>
+                <option value="Fixed Assets & Projects">Fixed Assets & Projects</option>
+                <option value="Settings & Integrations">Settings & Integrations</option>
                 <option value="Deliverable">Deliverable</option>
                 <option value="Onboarding">Onboarding</option>
                 <option value="Integration">Integration</option>

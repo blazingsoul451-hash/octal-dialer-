@@ -8,7 +8,8 @@ import type {
   PricingPackage,
   PricingAddon,
   CrmCompany,
-  CrmContact
+  CrmContact,
+  CrmQuote
 } from '../../types/crm';
 
 interface ModalBaseProps {
@@ -413,13 +414,29 @@ export const QuoteBuilderModal: React.FC<QuoteBuilderModalProps> = ({
           {/* Add-ons Checklist */}
           {rules?.addons && rules.addons.length > 0 && (
             <div>
-              <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-2">
-                Available Add-ons
-              </label>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-mono font-bold uppercase text-zinc-400">
+                  Included Modules & Add-ons ({rules.addons.length})
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedAddonIds.length === rules.addons.length) {
+                      setSelectedAddonIds([]);
+                    } else {
+                      setSelectedAddonIds(rules.addons.map(a => a.id));
+                    }
+                  }}
+                  className="text-[11px] font-mono text-amber-400 hover:text-amber-300 transition"
+                >
+                  {selectedAddonIds.length === rules.addons.length ? 'Deselect All' : 'Select All Modules'}
+                </button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
                 {rules.addons.map(addon => {
                   const checked = selectedAddonIds.includes(addon.id);
                   const price = billingCycle === 'annual' ? addon.priceAnnual : addon.priceMonthly;
+                  const isPerUser = !!addon.perUser;
                   return (
                     <label
                       key={addon.id}
@@ -438,7 +455,7 @@ export const QuoteBuilderModal: React.FC<QuoteBuilderModalProps> = ({
                       <div className="min-w-0 flex-1">
                         <div className="text-[11px] font-bold truncate">{addon.name}</div>
                         <div className="text-[10px] text-zinc-500">
-                          +{currencySymbol}{price}/{billingCycle === 'annual' ? 'yr' : 'mo'}
+                          +{currencySymbol}{price}{isPerUser ? '/user' : ''}/{billingCycle === 'annual' ? 'yr' : 'mo'}
                         </div>
                       </div>
                     </label>
@@ -822,3 +839,193 @@ export const PricingRulesModal: React.FC<PricingRulesModalProps> = ({
     </div>
   );
 };
+
+// -------------------------------------------------------------
+// 3. PRINT / PDF EXPORT QUOTE MODAL
+// -------------------------------------------------------------
+interface PrintQuoteModalProps {
+  isOpen: boolean;
+  quote: CrmQuote | null;
+  onClose: () => void;
+  serverUrl: string;
+  authToken: string;
+}
+
+export const PrintQuoteModal: React.FC<PrintQuoteModalProps> = ({
+  isOpen,
+  quote,
+  onClose,
+  serverUrl,
+  authToken
+}) => {
+  const [quoteDetails, setQuoteDetails] = useState<CrmQuote | null>(quote);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && quote) {
+      setLoading(true);
+      fetch(`${serverUrl}/api/crm/quotes/${quote.id}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.quote) setQuoteDetails(data.quote);
+          else setQuoteDetails(quote);
+        })
+        .catch(() => setQuoteDetails(quote))
+        .finally(() => setLoading(false));
+    } else {
+      setQuoteDetails(null);
+    }
+  }, [isOpen, quote, serverUrl, authToken]);
+
+  if (!isOpen || !quote) return null;
+
+  const q = quoteDetails || quote;
+  const currencySymbol = q.currency === 'USD' ? '$' : q.currency || '$';
+
+  const handlePrint = () => {
+    window.print();
+  };
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in select-none"
+    >
+      <div className="w-full max-w-3xl bg-[#0e0e11] border border-[#27272a] rounded-2xl shadow-2xl overflow-hidden flex flex-col text-left max-h-[90vh]">
+        {/* Modal Top Bar */}
+        <div className="p-4 border-b border-[#1f1f23] flex items-center justify-between bg-[#121216] print:hidden">
+          <div className="flex items-center gap-2">
+            <Tag className="w-4 h-4 text-amber-500" />
+            <span className="text-xs font-mono font-bold uppercase text-white">Quotation Document #{q.quoteNumber}</span>
+            {loading && <span className="text-[10px] text-zinc-500 italic">(Syncing latest...)</span>}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handlePrint}
+              className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl shadow transition"
+            >
+              Print / Save PDF
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded-lg border border-[#27272a] text-zinc-400 hover:text-white hover:bg-[#1f1f23]">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Printable Paper Area */}
+        <div className="p-8 overflow-y-auto space-y-6 bg-white text-zinc-900 print:p-0 print:m-0 font-sans">
+          {/* Header */}
+          <div className="flex items-start justify-between border-b pb-6">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="w-7 h-7 rounded-lg bg-amber-500 flex items-center justify-center font-black text-black text-base">O</span>
+                <span className="text-xl font-black text-zinc-950 tracking-tight">OCTAL ACCOUNTS</span>
+              </div>
+              <p className="text-xs text-zinc-600">Enterprise CRM, Telephony & Cloud ERP Solutions</p>
+              <p className="text-[11px] text-zinc-500">https://octalaccounts.com</p>
+            </div>
+            <div className="text-right">
+              <span className="px-2.5 py-1 rounded bg-amber-100 text-amber-900 font-mono font-bold text-xs">
+                OFFICIAL QUOTATION
+              </span>
+              <div className="mt-2 text-sm font-mono font-bold text-zinc-900">{q.quoteNumber}</div>
+              <div className="text-xs text-zinc-500">Date: {new Date(q.createdAt || Date.now()).toLocaleDateString()}</div>
+              {q.validUntil && (
+                <div className="text-xs text-amber-700 font-semibold">Valid Until: {new Date(q.validUntil).toLocaleDateString()}</div>
+              )}
+            </div>
+          </div>
+
+          {/* Client & Proposal Info */}
+          <div className="grid grid-cols-2 gap-6 bg-zinc-50 p-4 rounded-xl border border-zinc-200 text-xs">
+            <div>
+              <span className="font-mono font-bold uppercase text-zinc-500 block mb-1">Client Organization:</span>
+              <div className="font-bold text-sm text-zinc-900">{q.companyName || 'Valued Client'}</div>
+              {q.contactName && <div className="text-zinc-600">Attn: {q.contactName}</div>}
+              {q.leadName && q.leadName !== q.companyName && <div className="text-zinc-500">Project: {q.leadName}</div>}
+            </div>
+            <div>
+              <span className="font-mono font-bold uppercase text-zinc-500 block mb-1">Package Plan:</span>
+              <div className="font-bold text-sm text-zinc-900">{q.packageName || 'Commercial Tier'}</div>
+              <div className="text-zinc-600">Licensed User Seats: {q.userCount} users</div>
+              <div className="text-zinc-600 uppercase font-mono font-semibold">Billing Frequency: {q.billingCycle}</div>
+            </div>
+          </div>
+
+          {/* Itemized Table */}
+          <div className="border border-zinc-200 rounded-xl overflow-hidden">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-zinc-100 border-b border-zinc-200 text-zinc-600 font-mono font-bold">
+                  <th className="py-2.5 px-3">Item / Module</th>
+                  <th className="py-2.5 px-3">Type</th>
+                  <th className="py-2.5 px-3 text-center">Qty / Seats</th>
+                  <th className="py-2.5 px-3 text-right">Unit Price</th>
+                  <th className="py-2.5 px-3 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-200">
+                {q.items && q.items.length > 0 ? (
+                  q.items.map((it, idx) => (
+                    <tr key={idx} className="hover:bg-zinc-50/50">
+                      <td className="py-2.5 px-3 font-semibold text-zinc-900">{it.name}</td>
+                      <td className="py-2.5 px-3 uppercase text-[11px] font-mono text-zinc-500">{it.itemType}</td>
+                      <td className="py-2.5 px-3 text-center font-mono">{it.quantity}</td>
+                      <td className="py-2.5 px-3 text-right font-mono">{currencySymbol}{Number(it.unitPrice).toFixed(2)}</td>
+                      <td className="py-2.5 px-3 text-right font-mono font-bold text-zinc-950">{currencySymbol}{Number(it.lineTotal).toFixed(2)}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td className="py-2.5 px-3 font-semibold text-zinc-900">{q.packageName || 'Base Package'} ({q.userCount} Seats)</td>
+                    <td className="py-2.5 px-3 uppercase text-[11px] font-mono text-zinc-500">Package</td>
+                    <td className="py-2.5 px-3 text-center font-mono">1</td>
+                    <td className="py-2.5 px-3 text-right font-mono">{currencySymbol}{Number(q.subtotal).toFixed(2)}</td>
+                    <td className="py-2.5 px-3 text-right font-mono font-bold text-zinc-950">{currencySymbol}{Number(q.subtotal).toFixed(2)}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pricing Totals */}
+          <div className="flex justify-end">
+            <div className="w-64 space-y-2 text-xs font-mono">
+              <div className="flex justify-between text-zinc-600">
+                <span>Subtotal:</span>
+                <span>{currencySymbol}{Number(q.subtotal).toFixed(2)}</span>
+              </div>
+              {Number(q.discountAmount) > 0 && (
+                <div className="flex justify-between text-emerald-600 font-bold">
+                  <span>Discount ({q.discountPct}%):</span>
+                  <span>-{currencySymbol}{Number(q.discountAmount).toFixed(2)}</span>
+                </div>
+              )}
+              {Number(q.taxAmount) > 0 && (
+                <div className="flex justify-between text-zinc-600">
+                  <span>Applicable Tax:</span>
+                  <span>+{currencySymbol}{Number(q.taxAmount).toFixed(2)}</span>
+                </div>
+              )}
+              <div className="border-t-2 border-zinc-900 pt-2 flex justify-between text-base font-black text-zinc-950">
+                <span>Net Payable:</span>
+                <span className="text-amber-600">{currencySymbol}{Number(q.totalAmount).toFixed(2)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Notes */}
+          {q.notes && (
+            <div className="border-t pt-4 text-xs">
+              <span className="font-mono font-bold text-zinc-500 block mb-1">Proposal Terms & Notes:</span>
+              <p className="text-zinc-600 whitespace-pre-wrap">{q.notes}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+

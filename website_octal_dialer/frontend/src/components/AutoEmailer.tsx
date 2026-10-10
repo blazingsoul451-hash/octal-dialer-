@@ -8,31 +8,35 @@ import {
 } from 'lucide-react';
 
 interface EmailLead {
-  id: number;
+  id: string | number;
   email: string;
   name: string;
   company: string;
-  status: 'pending' | 'sent' | 'completed';
+  status: 'pending' | 'sent' | 'completed' | 'unsubscribed';
   stage: number;
   lastSentAt: string | null;
   createdAt: string;
+  unsubscribeToken?: string;
 }
 
 interface EmailAccount {
-  id: number;
+  id: string | number;
   email: string;
   senderName: string;
   smtpHost: string;
   smtpPort: number;
   status: 'active' | 'disabled';
+  dailyLimit?: number;
+  sentToday?: number;
   authType?: string;
   createdAt?: string;
 }
 
 interface EmailTemplate {
-  id: number;
+  id: string | number;
   subject: string;
   body: string;
+  bodyHtml?: string;
   stage: number;
 }
 
@@ -95,12 +99,20 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
 
   // --- Campaign Account Selection State
   const [senderMode, setSenderMode] = useState<'all' | 'specific'>('all');
-  const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<(string | number)[]>([]);
   const [campaignLimit, setCampaignLimit] = useState<number>(200);
+
+  // --- Telemetry stats
+  const [stats, setStats] = useState<{
+    leads?: { total: number; pending: number; sent: number; completed: number; unsubscribed: number };
+    accounts?: { total: number; active: number };
+    campaigns?: { totalRuns: number; activeRuns: number };
+    telemetry?: { totalDispatched: number; opened: number; clicked: number; failed: number; openRate: number; clickRate: number };
+  } | null>(null);
 
   // --- Template form
   const [tplForm, setTplForm] = useState({ subject: '', body: '', stage: '1' });
-  const [editTplId, setEditTplId] = useState<number | null>(null);
+  const [editTplId, setEditTplId] = useState<string | number | null>(null);
 
   const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` };
 
@@ -241,11 +253,12 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [l, a, t, s] = await Promise.all([
+      const [l, a, t, s, st] = await Promise.all([
         fetch(`${serverUrl}/email/leads`, { headers }).then(r => r.ok ? r.json() : []),
         fetch(`${serverUrl}/email/accounts`, { headers }).then(r => r.ok ? r.json() : []),
         fetch(`${serverUrl}/email/templates`, { headers }).then(r => r.ok ? r.json() : []),
         fetch(`${serverUrl}/emailer/status`, { headers }).then(r => r.ok ? r.json() : { status: 'idle', logs: [] }),
+        fetch(`${serverUrl}/email/stats`, { headers }).then(r => r.ok ? r.json() : null),
       ]);
       if (Array.isArray(l)) setLeads(l);
       if (Array.isArray(a)) {
@@ -255,6 +268,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
       if (Array.isArray(t)) setTemplates(t);
       setCampaignStatus(s?.status === 'running' ? 'running' : 'idle');
       if (Array.isArray(s?.logs)) setLogs(s.logs.slice(-150));
+      if (st) setStats(st);
     } catch (err: any) {
       console.error('[Emailer] Fetch error:', err);
     }
@@ -352,10 +366,11 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
     }
   }
 
-  async function handleDeleteAccount(id: number) {
+  async function handleDeleteAccount(id: string | number) {
     if (!confirm('Remove this email mailbox from your dialer?')) return;
     try {
-      await fetch(`${serverUrl}/email/accounts/${id}`, { method: 'DELETE', headers });
+      const res = await fetch(`${serverUrl}/email/accounts/${id}`, { method: 'DELETE', headers });
+      if (!res.ok) throw new Error('Failed to delete account');
       showToast('Account removed.');
       fetchAll();
     } catch {
@@ -379,10 +394,25 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
     } catch { showToast('Failed to save template', false); }
   }
 
-  async function handleDeleteTemplate(id: number) {
-    const updated = templates.filter(t => t.id !== id);
-    await fetch(`${serverUrl}/email/templates`, { method: 'POST', headers, body: JSON.stringify({ templates: updated }) });
-    fetchAll();
+  async function handleDeleteTemplate(id: string | number) {
+    if (!confirm('Delete this template?')) return;
+    try {
+      const res = await fetch(`${serverUrl}/email/templates/${id}`, { method: 'DELETE', headers });
+      if (!res.ok) {
+        const updated = templates.filter(t => t.id !== id);
+        await fetch(`${serverUrl}/email/templates`, { method: 'POST', headers, body: JSON.stringify({ templates: updated }) });
+      }
+      showToast('Template deleted.');
+      fetchAll();
+    } catch { showToast('Failed to delete template', false); }
+  }
+
+  async function handleDeleteLead(id: string | number) {
+    try {
+      await fetch(`${serverUrl}/email/leads/${id}`, { method: 'DELETE', headers });
+      showToast('Lead removed.');
+      fetchAll();
+    } catch { showToast('Failed to delete lead', false); }
   }
 
   // ── Campaign Control ─────────────────────────────────────────────────────────
@@ -406,7 +436,10 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
       return;
     }
     if (!templates.length) { showToast('Please create at least one email template first!', false); return; }
-    if (!leads.filter(l => l.status !== 'completed').length) { showToast('No pending leads found! Please upload leads first.', false); return; }
+    if (!leads.filter(l => l.status !== 'completed' && l.status !== 'unsubscribed').length) {
+      showToast('No pending leads found! Please upload leads first.', false);
+      return;
+    }
 
     try {
       const res = await fetch(`${serverUrl}/email/start`, {
@@ -435,7 +468,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
     }
   }
 
-  const toggleAccountSelection = (id: number) => {
+  const toggleAccountSelection = (id: string | number) => {
     setSelectedAccountIds(prev =>
       prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
     );
@@ -443,7 +476,6 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
 
   const pendingLeads = leads.filter(l => l.status === 'pending').length;
   const sentLeads = leads.filter(l => l.status === 'sent').length;
-  const completedLeads = leads.filter(l => l.status === 'completed').length;
   const activeAccounts = accounts.filter(a => a.status === 'active').length;
 
   const filteredAccounts = accounts.filter(a => {
@@ -1226,17 +1258,20 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
       {/* ═══════════════════════════════════════════════════════════════════════ */}
       {activeSubTab === 'emailer-campaign' && (
         <div className="space-y-5">
-          {/* Stats Row */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          {/* Stats Row with Live Telemetry */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             {[
-              { label: 'Total Leads', value: leads.length, color: 'text-white' },
-              { label: 'Pending', value: pendingLeads, color: 'text-amber-400' },
-              { label: 'Sent (Follow-Up)', value: sentLeads, color: 'text-blue-400' },
-              { label: 'Completed', value: completedLeads, color: 'text-emerald-400' },
-            ].map(({ label, value, color }) => (
-              <div key={label} className={card}>
+              { label: 'Total Leads', value: stats?.leads?.total ?? leads.length, color: 'text-white' },
+              { label: 'Pending', value: stats?.leads?.pending ?? pendingLeads, color: 'text-amber-400' },
+              { label: 'Total Sent', value: stats?.telemetry?.totalDispatched ?? sentLeads, color: 'text-blue-400' },
+              { label: 'Open Rate', value: `${stats?.telemetry?.openRate ?? 0}%`, sub: `${stats?.telemetry?.opened ?? 0} opens`, color: 'text-emerald-400' },
+              { label: 'Click Rate', value: `${stats?.telemetry?.clickRate ?? 0}%`, sub: `${stats?.telemetry?.clicked ?? 0} clicks`, color: 'text-purple-400' },
+              { label: 'Unsubscribed', value: stats?.leads?.unsubscribed ?? 0, color: 'text-rose-400' },
+            ].map(({ label, value, sub, color }) => (
+              <div key={label} className={card + ' p-4'}>
                 <p className={`text-[10px] font-mono font-bold uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{label}</p>
-                <p className={`text-3xl font-black font-mono mt-1 ${isLight ? 'text-slate-900' : color}`}>{value}</p>
+                <p className={`text-2xl font-black font-mono mt-1 ${isLight ? 'text-slate-900' : color}`}>{value}</p>
+                {sub && <p className="text-[10px] font-mono text-slate-500 mt-0.5">{sub}</p>}
               </div>
             ))}
           </div>
@@ -1419,7 +1454,8 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
                   <th className="pb-2 pr-4">Name</th>
                   <th className="pb-2 pr-4">Company</th>
                   <th className="pb-2 pr-4">Status</th>
-                  <th className="pb-2">Stage</th>
+                  <th className="pb-2 pr-4">Stage</th>
+                  <th className="pb-2 text-right">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -1432,14 +1468,24 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
                       <span className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold border ${
                         lead.status === 'completed' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500'
                         : lead.status === 'sent' ? 'bg-blue-500/10 border-blue-500/30 text-blue-500'
+                        : lead.status === 'unsubscribed' ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
                         : 'bg-amber-500/10 border-amber-500/30 text-amber-500'
                       }`}>{lead.status}</span>
                     </td>
-                    <td className={`py-2 font-mono font-bold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>{lead.stage}/3</td>
+                    <td className={`py-2 pr-4 font-mono font-bold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>{lead.stage}/3</td>
+                    <td className="py-2 text-right">
+                      <button
+                        onClick={() => handleDeleteLead(lead.id)}
+                        title="Delete lead"
+                        className="p-1.5 text-slate-500 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {leads.length === 0 && (
-                  <tr><td colSpan={5} className={`py-8 text-center text-xs ${isLight ? 'text-slate-400' : 'text-slate-600'}`}>No leads loaded yet. Upload your contact list above.</td></tr>
+                  <tr><td colSpan={6} className={`py-8 text-center text-xs ${isLight ? 'text-slate-400' : 'text-slate-600'}`}>No leads loaded yet. Upload your contact list above.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1456,8 +1502,9 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
             <h2 className={`text-sm font-black mb-4 ${isLight ? 'text-slate-900' : 'text-white'}`}>
               {editTplId ? 'Edit Template' : 'Add Email Template'}
             </h2>
-            <p className={`text-xs mb-3 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              Use <code className="font-mono bg-slate-800 text-amber-400 px-1.5 py-0.5 rounded">{'{{name}}'}</code> and <code className="font-mono bg-slate-800 text-amber-400 px-1.5 py-0.5 rounded">{'{{company}}'}</code> for automatic personalization.
+            <p className={`text-xs mb-3 leading-relaxed ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
+              Personalization tokens: <code className="font-mono bg-slate-800 text-amber-400 px-1.5 py-0.5 rounded">{'{{name}}'}</code>, <code className="font-mono bg-slate-800 text-amber-400 px-1.5 py-0.5 rounded">{'{{company}}'}</code>.<br />
+              <span className="text-emerald-400 font-bold">✨ Spintax Variations Supported:</span> Write <code className="font-mono bg-slate-800 text-emerald-300 px-1.5 py-0.5 rounded">{'{Hi|Hello|Hey}'}</code> or <code className="font-mono bg-slate-800 text-emerald-300 px-1.5 py-0.5 rounded">{'{Quick question|Reaching out}'}</code> in the subject or body to randomize text and maximize deliverability!
             </p>
             <form onSubmit={handleSaveTemplate} className="space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

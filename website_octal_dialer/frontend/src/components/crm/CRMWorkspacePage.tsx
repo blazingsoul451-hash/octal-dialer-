@@ -5,7 +5,8 @@ import {
   Activity, Layers, RefreshCw, Phone,
   Briefcase, CalendarCheck, Edit3,
   Calculator, Settings, X, UserCheck,
-  TrendingUp, Award, CheckSquare, Video, Check
+  TrendingUp, Award, CheckSquare, Video, Check,
+  Printer, Download
 } from 'lucide-react';
 import { LeadProfileDrawer } from './LeadProfileDrawer';
 import { CompanyProfileDrawer } from './CompanyProfileDrawer';
@@ -26,7 +27,8 @@ import {
   CreateWorkItemModal,
   EditWorkItemModal,
   QuoteBuilderModal,
-  PricingRulesModal
+  PricingRulesModal,
+  PrintQuoteModal
 } from './CRMModals';
 import type { Campaign } from '../../types';
 import type {
@@ -73,7 +75,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   // Date Range for Overview Metrics & Performance
-  const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7d' | '30d' | 'this_month' | 'all'>('30d');
+  const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7d' | '30d' | 'this_month' | 'last_month' | 'all'>('30d');
   const [performancePeriod, setPerformancePeriod] = useState<'today' | 'this_week' | 'this_month' | 'all_time'>('this_month');
 
   // CRM Data State
@@ -102,6 +104,34 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   const [showCreateWorkItem, setShowCreateWorkItem] = useState(false);
   const [showQuoteBuilder, setShowQuoteBuilder] = useState(false);
   const [showPricingRules, setShowPricingRules] = useState(false);
+  const [selectedQuoteForPrint, setSelectedQuoteForPrint] = useState<CrmQuote | null>(null);
+
+  // Client-side CSV Exporter
+  const exportToCsv = (filename: string, rows: Record<string, any>[]) => {
+    if (!rows || !rows.length) return;
+    const headers = Object.keys(rows[0]);
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row =>
+        headers
+          .map(h => {
+            let val = row[h];
+            if (val === null || val === undefined) val = '';
+            const str = String(val).replace(/"/g, '""');
+            return `"${str}"`;
+          })
+          .join(',')
+      )
+    ].join('\r\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute('download', `${filename}_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   // Entity specific edit modals
   const [editingCompany, setEditingCompany] = useState<CrmCompany | null>(null);
@@ -650,6 +680,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
                 { id: '7d', label: '7 Days' },
                 { id: '30d', label: '30 Days' },
                 { id: 'this_month', label: 'This Month' },
+                { id: 'last_month', label: 'Last Month' },
                 { id: 'all', label: 'All Time' }
               ].map(r => (
                 <button
@@ -871,6 +902,27 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
               </select>
 
               <button
+                onClick={() => exportToCsv('companies', filteredCompanies.map(c => ({
+                  Name: c.name,
+                  Website: c.website || '',
+                  Industry: c.industry || '',
+                  Country: c.country || '',
+                  Address: c.address || '',
+                  Contacts: c.contactCount ?? 0,
+                  Leads: c.leadCount ?? 0,
+                  OpenTasks: c.openTaskCount ?? 0,
+                  PaymentStatus: c.paymentStatus || '',
+                  Status: c.status || ''
+                })))}
+                disabled={filteredCompanies.length === 0}
+                className="px-3 py-2.5 bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] text-zinc-300 hover:text-white font-medium text-xs rounded-xl flex items-center gap-1.5 transition shrink-0 disabled:opacity-50"
+                title="Export Companies to CSV"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export CSV</span>
+              </button>
+
+              <button
                 onClick={() => setShowAddCompany(true)}
                 className="px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl flex items-center gap-1.5 transition shrink-0"
               >
@@ -1015,6 +1067,23 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
+
+              <button
+                onClick={() => exportToCsv('contacts', filteredContacts.map(c => ({
+                  Name: c.name,
+                  Company: c.companyName || '',
+                  Title: c.roleTitle || '',
+                  Phone: c.phone || '',
+                  Email: c.email || '',
+                  Notes: c.notes || ''
+                })))}
+                disabled={filteredContacts.length === 0}
+                className="px-3 py-2.5 bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] text-zinc-300 hover:text-white font-medium text-xs rounded-xl flex items-center gap-1.5 transition shrink-0 disabled:opacity-50"
+                title="Export Contacts to CSV"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export CSV</span>
+              </button>
 
               <button
                 onClick={() => setShowAddContact(true)}
@@ -1326,6 +1395,25 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
               </select>
 
               <button
+                onClick={() => exportToCsv('tasks', filteredTasks.map(t => ({
+                  Title: t.title,
+                  Type: t.taskType,
+                  Priority: t.priority,
+                  Status: t.status,
+                  DueDate: t.dueAt || '',
+                  Company: t.companyName || '',
+                  Contact: t.contactName || '',
+                  Instructions: t.description || ''
+                })))}
+                disabled={filteredTasks.length === 0}
+                className="px-3 py-2.5 bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] text-zinc-300 hover:text-white font-medium text-xs rounded-xl flex items-center gap-1.5 transition shrink-0 disabled:opacity-50"
+                title="Export Tasks to CSV"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export CSV</span>
+              </button>
+
+              <button
                 onClick={() => setShowCreateTask(true)}
                 className="px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl flex items-center gap-1.5 transition shrink-0"
               >
@@ -1587,13 +1675,34 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
               />
             </div>
 
-            <button
-              onClick={() => setShowCreateWorkItem(true)}
-              className="px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl flex items-center gap-1.5 transition shrink-0"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Create Work Item</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => exportToCsv('client_work', filteredWorkItems.map(w => ({
+                  Title: w.title,
+                  Scope: w.description || '',
+                  Category: w.category || '',
+                  Company: w.companyName || '',
+                  Priority: w.priority,
+                  Status: w.status,
+                  Assignee: w.assignedUserName || '',
+                  DueDate: w.dueAt || ''
+                })))}
+                disabled={filteredWorkItems.length === 0}
+                className="px-3 py-2.5 bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] text-zinc-300 hover:text-white font-medium text-xs rounded-xl flex items-center gap-1.5 transition shrink-0 disabled:opacity-50"
+                title="Export Client Work to CSV"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export CSV</span>
+              </button>
+
+              <button
+                onClick={() => setShowCreateWorkItem(true)}
+                className="px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl flex items-center gap-1.5 transition shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Create Work Item</span>
+              </button>
+            </div>
           </div>
 
           {/* Status Pipeline Filter Tabs */}
@@ -1759,6 +1868,27 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
               )}
 
               <button
+                onClick={() => exportToCsv('quotes', filteredQuotes.map(q => ({
+                  QuoteNumber: q.quoteNumber,
+                  Company: q.companyName || '',
+                  Contact: q.contactName || '',
+                  Package: q.packageName || '',
+                  Users: q.userCount,
+                  Cycle: q.billingCycle,
+                  DiscountPct: q.discountPct,
+                  TotalAmount: q.totalAmount,
+                  Status: q.status,
+                  ValidUntil: q.validUntil || ''
+                })))}
+                disabled={filteredQuotes.length === 0}
+                className="px-3 py-2.5 bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] text-zinc-300 hover:text-white font-medium text-xs rounded-xl flex items-center gap-1.5 transition shrink-0 disabled:opacity-50"
+                title="Export Quotes to CSV"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export CSV</span>
+              </button>
+
+              <button
                 onClick={() => setShowQuoteBuilder(true)}
                 className="px-3.5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-xs rounded-xl flex items-center gap-1.5 transition shrink-0 shadow-lg shadow-amber-500/20"
               >
@@ -1837,6 +1967,14 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
 
                         <td className="py-3.5 px-4 text-right">
                           <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => setSelectedQuoteForPrint(quote)}
+                              className="px-2.5 py-1 bg-[#18181b] hover:bg-[#222227] text-zinc-300 hover:text-white border border-[#27272a] rounded-lg text-xs font-medium transition flex items-center gap-1"
+                              title="Print / View Formal Quotation"
+                            >
+                              <Printer className="w-3 h-3 text-amber-400" />
+                              <span>Print</span>
+                            </button>
                             {quote.status === 'DRAFT' && (
                               <button
                                 onClick={() => handleUpdateQuoteStatus(quote.id, 'SENT')}
@@ -2346,6 +2484,16 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
             setSelectedTaskForCancel(null);
             fetchCRMData();
           }}
+          serverUrl={serverUrl}
+          authToken={authToken}
+        />
+      )}
+
+      {selectedQuoteForPrint && (
+        <PrintQuoteModal
+          isOpen={true}
+          quote={selectedQuoteForPrint}
+          onClose={() => setSelectedQuoteForPrint(null)}
           serverUrl={serverUrl}
           authToken={authToken}
         />

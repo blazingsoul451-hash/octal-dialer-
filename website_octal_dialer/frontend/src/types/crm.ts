@@ -8,6 +8,7 @@ export interface CrmCompany {
   email?: string;
   website?: string;
   address?: string;
+  city?: string;
   status: 'active' | 'inactive' | 'client' | 'lead' | 'partner' | 'archived';
   paymentStatus: 'paid' | 'pending' | 'overdue' | 'due_soon' | 'partially_paid' | 'disputed';
   assignedUserId?: string;
@@ -31,6 +32,7 @@ export interface CrmContact {
   phone?: string;
   roleTitle?: string;
   notes?: string;
+  isPrimary?: boolean;
   assignedUserId?: string;
   assignedUserName?: string;
   createdAt: string;
@@ -155,6 +157,7 @@ export interface PricingAddon {
   priceMonthly: number;
   priceAnnual: number;
   unit: string;
+  perUser?: boolean;
 }
 
 export interface CrmPricingRules {

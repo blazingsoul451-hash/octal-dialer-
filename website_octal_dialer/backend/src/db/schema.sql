@@ -370,7 +370,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "idx_ota_versions_version" ON "ota_versions" (
 
 -- Table: email_leads
 CREATE TABLE IF NOT EXISTS "email_leads" (
-  "id" INTEGER PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "email" TEXT NOT NULL,
   "name" TEXT NOT NULL DEFAULT 'Client',
   "company" TEXT NOT NULL DEFAULT '',
@@ -378,12 +378,15 @@ CREATE TABLE IF NOT EXISTS "email_leads" (
   "stage" INTEGER NOT NULL DEFAULT 1,
   "lastSentAt" TEXT,
   "createdAt" TEXT NOT NULL DEFAULT '',
-  "tenantId" TEXT
+  "tenantId" TEXT,
+  "unsubscribeToken" TEXT,
+  "unsubscribedAt" TEXT,
+  CONSTRAINT "uq_email_leads_tenant_email" UNIQUE ("tenantId", "email")
 );
 
 -- Table: email_accounts
 CREATE TABLE IF NOT EXISTS "email_accounts" (
-  "id" INTEGER PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "email" TEXT NOT NULL,
   "password" TEXT NOT NULL,
   "senderName" TEXT,
@@ -394,19 +397,69 @@ CREATE TABLE IF NOT EXISTS "email_accounts" (
   "tenantId" TEXT,
   "authType" TEXT DEFAULT 'password',
   "refreshToken" TEXT,
-  "accessToken" TEXT
+  "accessToken" TEXT,
+  "dailyLimit" INTEGER NOT NULL DEFAULT 50,
+  "sentToday" INTEGER NOT NULL DEFAULT 0,
+  "lastResetDate" TEXT
 );
 
 -- Table: email_templates
 CREATE TABLE IF NOT EXISTS "email_templates" (
-  "id" INTEGER PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "subject" TEXT NOT NULL,
   "body" TEXT NOT NULL,
   "stage" INTEGER NOT NULL DEFAULT 1,
   "createdAt" TEXT NOT NULL DEFAULT '',
   "templateType" TEXT DEFAULT 'campaign',
   "systemTemplate" INTEGER DEFAULT 0,
-  "tenantId" TEXT
+  "tenantId" TEXT,
+  "bodyHtml" TEXT
+);
+
+-- Table: email_campaign_runs
+CREATE TABLE IF NOT EXISTS "email_campaign_runs" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "name" TEXT NOT NULL DEFAULT 'Outreach Campaign',
+  "status" TEXT NOT NULL DEFAULT 'idle',
+  "totalLeads" INTEGER NOT NULL DEFAULT 0,
+  "sentCount" INTEGER NOT NULL DEFAULT 0,
+  "failedCount" INTEGER NOT NULL DEFAULT 0,
+  "openedCount" INTEGER NOT NULL DEFAULT 0,
+  "clickedCount" INTEGER NOT NULL DEFAULT 0,
+  "selectedAccountIds" TEXT,
+  "limitCount" INTEGER NOT NULL DEFAULT 300,
+  "startedAt" TEXT,
+  "completedAt" TEXT,
+  "createdAt" TEXT NOT NULL
+);
+
+-- Table: email_dispatch_logs
+CREATE TABLE IF NOT EXISTS "email_dispatch_logs" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "campaignRunId" TEXT,
+  "leadId" TEXT NOT NULL,
+  "leadEmail" TEXT NOT NULL,
+  "accountId" TEXT NOT NULL,
+  "accountEmail" TEXT NOT NULL,
+  "stage" INTEGER NOT NULL DEFAULT 1,
+  "subject" TEXT NOT NULL,
+  "status" TEXT NOT NULL DEFAULT 'sent',
+  "errorMessage" TEXT,
+  "sentAt" TEXT NOT NULL,
+  "openedAt" TEXT,
+  "clickedAt" TEXT,
+  "trackingToken" TEXT UNIQUE
+);
+
+-- Table: email_unsubscribes
+CREATE TABLE IF NOT EXISTS "email_unsubscribes" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "email" TEXT NOT NULL,
+  "unsubscribedAt" TEXT NOT NULL,
+  UNIQUE("tenantId", "email")
 );
 
 -- Table: scraped_leads
