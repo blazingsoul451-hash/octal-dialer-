@@ -627,7 +627,7 @@ class PhoneBridgeService extends ChangeNotifier {
           'osType': _deviceOs,
           'ipAddress': _deviceIp,
           'platform': 'android',
-          'appVersion': '1.2.0',
+          'appVersion': '1.2.5',
           'sims': _sims,
           'selectedSimSlot': _selectedSimSlot,
           'selectedCarrierName': _selectedCarrierName,
@@ -874,7 +874,7 @@ class PhoneBridgeService extends ChangeNotifier {
         'osType': _deviceOs,
         'ipAddress': _deviceIp,
         'platform': 'android',
-        'appVersion': '1.2.0',
+        'appVersion': '1.2.5',
       });
     }
   }

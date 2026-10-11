@@ -159,7 +159,7 @@ class _LoginScreenState extends State<LoginScreen> {
             'name': deviceName,
             'platform': 'android',
             'osType': Platform.isAndroid ? 'Android' : 'iOS',
-            'appVersion': '1.2.0',
+            'appVersion': '1.2.5',
             'deviceUid': deviceUid
           }),
         ).timeout(const Duration(seconds: 4));

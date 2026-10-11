@@ -10199,13 +10199,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('app:version_check', ({ currentVersion }: { currentVersion: string }) => {
-    const SERVER_APP_VERSION = '1.2.0'; // Latest released version
+    const SERVER_APP_VERSION = '1.2.5'; // Latest released version with latency and performance optimizations
     if (currentVersion !== SERVER_APP_VERSION) {
       socket.emit('app:update_available', {
         latestVersion: SERVER_APP_VERSION,
         apkUrl: `${getPublicBaseUrl({ handshake: socket.handshake })}/download/apk`,
         forceUpdate: false,
-        releaseNotes: 'v1.2.0 Fixes: Auto-dialer now ACTUALLY dials (ACTION_CALL), Ring timeout with auto-hangup, NO_ANSWER tracking, Dashboard tab fix, BT Link tab moved to last.'
+        releaseNotes: 'v1.2.5 Performance Update: Zero-delay keypad dialing, precomputed instant T9 search, fast-path call dispatch gate, and 60fps contacts scrolling virtualization.'
       });
     } else {
       socket.emit('app:up_to_date', { version: SERVER_APP_VERSION });
