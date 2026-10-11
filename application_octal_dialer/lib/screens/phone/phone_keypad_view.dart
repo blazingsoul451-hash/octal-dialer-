@@ -55,7 +55,9 @@ class _PhoneKeypadViewState extends State<PhoneKeypadView> {
 
   void _onKeyPress(String key) {
     HapticFeedback.lightImpact();
-    TelecomService.instance.sendDtmf(key);
+    if (TelecomService.instance.hasActiveCall) {
+      TelecomService.instance.sendDtmf(key);
+    }
     setState(() {
       _phoneNumber += key;
     });
@@ -286,7 +288,7 @@ class _PhoneKeypadViewState extends State<PhoneKeypadView> {
     // Dynamic real-time T9 & numeric filtering
     final suggestions = _phoneNumber.isEmpty
         ? _dataService.contacts.take(4).toList()
-        : _dataService.searchContacts(_phoneNumber);
+        : _dataService.searchContacts(_phoneNumber).take(6).toList();
 
     return Scaffold(
       backgroundColor: OctalColors.bgDark,

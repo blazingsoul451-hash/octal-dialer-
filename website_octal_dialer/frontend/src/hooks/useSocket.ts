@@ -44,11 +44,14 @@ export function useSocket(serverUrl: string = 'http://localhost:5000', authToken
       return;
     }
 
+    // Immediately measure latency upon connection
+    socketRef.current.emit('client:ping', { sessionId, timestamp: Date.now() });
+
     const intervalId = setInterval(() => {
       if (socketRef.current) {
         socketRef.current.emit('client:ping', { sessionId, timestamp: Date.now() });
       }
-    }, 3000);
+    }, 2500);
 
     return () => clearInterval(intervalId);
   }, [isConnected, sessionId, phoneConnected]);

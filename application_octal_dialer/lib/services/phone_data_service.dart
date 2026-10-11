@@ -186,25 +186,6 @@ class PhoneDataService {
     return _recentCalls;
   }
 
-  static const Map<String, String> _t9Map = {
-    'a': '2', 'b': '2', 'c': '2',
-    'd': '3', 'e': '3', 'f': '3',
-    'g': '4', 'h': '4', 'i': '4',
-    'j': '5', 'k': '5', 'l': '5',
-    'm': '6', 'n': '6', 'o': '6',
-    'p': '7', 'q': '7', 'r': '7', 's': '7',
-    't': '8', 'u': '8', 'v': '8',
-    'w': '9', 'x': '9', 'y': '9', 'z': '9',
-  };
-
-  String _nameToT9(String name) {
-    final sb = StringBuffer();
-    for (int i = 0; i < name.length; i++) {
-      final c = name[i].toLowerCase();
-      sb.write(_t9Map[c] ?? '');
-    }
-    return sb.toString();
-  }
 
   List<PhoneContact> searchContacts(String query) {
     if (query.isEmpty) return _contacts;
@@ -212,9 +193,9 @@ class PhoneDataService {
     final numberQ = query.replaceAll(RegExp(r'[^0-9+]'), '');
 
     return _contacts.where((c) {
-      final matchesName = c.name.toLowerCase().contains(cleanQ);
-      final matchesNumber = numberQ.isNotEmpty && c.number.replaceAll(RegExp(r'[^0-9+]'), '').contains(numberQ);
-      final matchesT9 = numberQ.isNotEmpty && _nameToT9(c.name).contains(numberQ);
+      final matchesName = c.lowerName.contains(cleanQ);
+      final matchesNumber = numberQ.isNotEmpty && c.cleanNumber.contains(numberQ);
+      final matchesT9 = numberQ.isNotEmpty && c.t9Name.contains(numberQ);
       return matchesName || matchesNumber || matchesT9;
     }).toList();
   }

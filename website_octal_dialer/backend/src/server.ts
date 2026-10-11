@@ -10167,12 +10167,23 @@ io.on('connection', (socket) => {
   // Web dashboard sends ping to measure phone latency
   socket.on('client:ping', ({ sessionId, timestamp }: { sessionId: string; timestamp: number }) => {
     const session = getSessionById(sessionId);
-    if (session && session.phoneSocketId) {
-      const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
+    if (!session) {
+      socket.emit('client:pong', { timestamp, serverOnly: true });
+      return;
+    }
+    let targetPhoneSocketId = session.phoneSocketId;
+    if (!targetPhoneSocketId && session.phoneDeviceId) {
+      const authPhone = authenticatedPhoneSockets.get(session.phoneDeviceId);
+      if (authPhone) targetPhoneSocketId = authPhone.socketId;
+    }
+    if (targetPhoneSocketId) {
+      const phoneSocket = io.sockets.sockets.get(targetPhoneSocketId);
       if (phoneSocket) {
         phoneSocket.emit('phone:ping', { timestamp });
+        return;
       }
     }
+    socket.emit('client:pong', { timestamp, serverOnly: true });
   });
 
   // Phone responds to latency ping — must be the authoritative paired phone socket
@@ -10180,7 +10191,10 @@ io.on('connection', (socket) => {
     const sid = socket.data.sessionId || sessionId;
     if (!sid) return;
     const session = getSessionById(sid);
-    if (!session || session.phoneSocketId !== socket.id) return;
+    if (!session) return;
+    const isAuthorizedPhone = session.phoneSocketId === socket.id ||
+      (socket.data.deviceId && session.phoneDeviceId === socket.data.deviceId);
+    if (!isAuthorizedPhone) return;
     io.to(sid).emit('client:pong', { timestamp });
   });
 

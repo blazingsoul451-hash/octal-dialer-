@@ -9,6 +9,9 @@ class PhoneContact {
   final bool isFavorite;
   final String? photoUri;
   final Color avatarColor;
+  final String cleanNumber;
+  final String lowerName;
+  final String t9Name;
 
   PhoneContact({
     required this.id,
@@ -17,7 +20,29 @@ class PhoneContact {
     this.isFavorite = false,
     this.photoUri,
     Color? avatarColor,
-  }) : avatarColor = avatarColor ?? _generateAvatarColor(name);
+  })  : avatarColor = avatarColor ?? _generateAvatarColor(name),
+        cleanNumber = number.replaceAll(RegExp(r'[^0-9+]'), ''),
+        lowerName = name.toLowerCase(),
+        t9Name = _computeT9(name);
+
+  static String _computeT9(String str) {
+    const t9Map = {
+      'a': '2', 'b': '2', 'c': '2',
+      'd': '3', 'e': '3', 'f': '3',
+      'g': '4', 'h': '4', 'i': '4',
+      'j': '5', 'k': '5', 'l': '5',
+      'm': '6', 'n': '6', 'o': '6',
+      'p': '7', 'q': '7', 'r': '7', 's': '7',
+      't': '8', 'u': '8', 'v': '8',
+      'w': '9', 'x': '9', 'y': '9', 'z': '9',
+    };
+    final sb = StringBuffer();
+    for (int i = 0; i < str.length; i++) {
+      final c = str[i].toLowerCase();
+      sb.write(t9Map[c] ?? '');
+    }
+    return sb.toString();
+  }
 
   String get initials {
     if (name.isEmpty) return '#';

@@ -67,15 +67,28 @@ class TelecomService {
   /// to prevent MainShellScreen from pushing a duplicate SharedInCallScreen.
   bool isAutoDialerCallActive = false;
 
+  int _activeCallCount = 0;
+  bool get hasActiveCall => _activeCallCount > 0;
+
+  bool? _cachedDefaultDialer;
+  bool? _cachedCallPermission;
+
+  void invalidatePrerequisitesCache() {
+    _cachedDefaultDialer = null;
+    _cachedCallPermission = null;
+  }
+
   void _initMethodCallHandler() {
     _channel.setMethodCallHandler((call) async {
       try {
         final args = call.arguments is Map ? call.arguments as Map : {};
         switch (call.method) {
           case 'onTelecomCallAdded':
+            _activeCallCount++;
             _callEventController.add(TelecomCallEvent.fromMap('added', args));
             break;
           case 'onTelecomCallRemoved':
+            if (_activeCallCount > 0) _activeCallCount--;
             _callEventController.add(TelecomCallEvent.fromMap('removed', args));
             break;
           case 'onTelecomCallStateChanged':
@@ -96,6 +109,7 @@ class TelecomService {
             ));
             break;
           case 'onCallEnded':
+            _activeCallCount = 0;
             final String reason = args['reason']?.toString() ?? 'NO_ANSWER';
             final int duration = args['duration'] is int
                 ? args['duration'] as int
@@ -123,10 +137,14 @@ class TelecomService {
   }
 
   /// Checks if Octal is currently the system Default Dialer / Default Phone App.
-  Future<bool> isDefaultDialer() async {
+  Future<bool> isDefaultDialer({bool forceRefresh = false}) async {
+    if (!forceRefresh && _cachedDefaultDialer != null) {
+      return _cachedDefaultDialer!;
+    }
     try {
       final bool? res = await _channel.invokeMethod<bool>('isDefaultDialer');
-      return res ?? false;
+      _cachedDefaultDialer = res ?? false;
+      return _cachedDefaultDialer!;
     } catch (e) {
       debugPrint('[TelecomService] isDefaultDialer error: $e');
       return false;
@@ -151,13 +169,18 @@ class TelecomService {
     bool requestIfMissing = true,
   }) async {
     try {
+      // 0. Fast-path check: if both already verified true, return in 0ms without IPC
+      if (_cachedDefaultDialer == true && _cachedCallPermission == true) {
+        return true;
+      }
+
       // 1. Default Dialer check
       bool defaultDialer = await isDefaultDialer();
       if (!defaultDialer) {
         if (!requestIfMissing) return false;
         debugPrint('[PrerequisiteGate] Octal is not default dialer. Requesting ROLE_DIALER...');
         await requestDefaultDialerRole();
-        defaultDialer = await isDefaultDialer();
+        defaultDialer = await isDefaultDialer(forceRefresh: true);
         if (!defaultDialer) {
           debugPrint('[PrerequisiteGate] User declined Default Dialer role.');
           return false;
@@ -165,12 +188,14 @@ class TelecomService {
       }
 
       // 2. Mandatory call permissions (CALL_PHONE & READ_PHONE_STATE)
-      bool hasPerm = await _channel.invokeMethod<bool>('checkCallPermission') ?? false;
+      bool hasPerm = _cachedCallPermission ?? (await _channel.invokeMethod<bool>('checkCallPermission') ?? false);
+      _cachedCallPermission = hasPerm;
       if (!hasPerm) {
         if (!requestIfMissing) return false;
         debugPrint('[PrerequisiteGate] Calling permissions missing. Requesting...');
         await _channel.invokeMethod('requestCallPermission');
         hasPerm = await _channel.invokeMethod<bool>('checkCallPermission') ?? false;
+        _cachedCallPermission = hasPerm;
         if (!hasPerm) {
           debugPrint('[PrerequisiteGate] Mandatory calling permissions denied.');
           return false;

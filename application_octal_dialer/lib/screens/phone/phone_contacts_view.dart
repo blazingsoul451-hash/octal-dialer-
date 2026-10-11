@@ -30,6 +30,13 @@ class _PhoneContactsViewState extends State<PhoneContactsView> {
       grouped.putIfAbsent(letter, () => []).add(c);
     }
     final sortedKeys = grouped.keys.toList()..sort();
+    final List<_ContactListItem> items = [];
+    for (final key in sortedKeys) {
+      items.add(_ContactListItem.header(key));
+      for (final c in grouped[key]!) {
+        items.add(_ContactListItem.contact(c));
+      }
+    }
 
     return Scaffold(
       backgroundColor: OctalColors.bgDark,
@@ -90,66 +97,61 @@ class _PhoneContactsViewState extends State<PhoneContactsView> {
               ),
             ),
 
-            // Contacts List
+            // Contacts List (Lazily Virtualized)
             Expanded(
-              child: contacts.isEmpty
+              child: items.isEmpty
                   ? const Center(
                       child: Text('No contacts found', style: TextStyle(color: OctalColors.textSecondary)),
                     )
                   : ListView.builder(
-                      itemCount: sortedKeys.length,
+                      itemCount: items.length,
                       itemBuilder: (ctx, idx) {
-                        final key = sortedKeys[idx];
-                        final list = grouped[key]!;
-
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 6.0),
-                              child: Text(
-                                key,
-                                style: const TextStyle(
-                                  color: OctalColors.primaryGold,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                        final item = items[idx];
+                        if (item.header != null) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 6.0),
+                            child: Text(
+                              item.header!,
+                              style: const TextStyle(
+                                color: OctalColors.primaryGold,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
-                            ...list.map((contact) {
-                              return ListTile(
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 18.0, vertical: 2.0),
-                                leading: CircleAvatar(
-                                  radius: 20,
-                                  backgroundColor: contact.avatarColor,
-                                  child: Text(
-                                    contact.initials,
-                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                                title: Text(
-                                  contact.name,
-                                  style: const TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.w600),
-                                ),
-                                subtitle: Text(
-                                  contact.number,
-                                  style: const TextStyle(color: OctalColors.textSecondary, fontSize: 12),
-                                ),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.call_rounded, color: OctalColors.primaryGold, size: 22),
-                                  onPressed: () => TelecomService.instance.placeCall(contact.number),
-                                ),
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) => ContactDetailScreen(contact: contact),
-                                    ),
-                                  );
-                                },
-                              );
-                            }),
-                          ],
+                          );
+                        }
+
+                        final contact = item.contact!;
+                        return ListTile(
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 18.0, vertical: 2.0),
+                          leading: CircleAvatar(
+                            radius: 20,
+                            backgroundColor: contact.avatarColor,
+                            child: Text(
+                              contact.initials,
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          title: Text(
+                            contact.name,
+                            style: const TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(
+                            contact.number,
+                            style: const TextStyle(color: OctalColors.textSecondary, fontSize: 12),
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.call_rounded, color: OctalColors.primaryGold, size: 22),
+                            onPressed: () => TelecomService.instance.placeCall(contact.number),
+                          ),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => ContactDetailScreen(contact: contact),
+                              ),
+                            );
+                          },
                         );
                       },
                     ),
@@ -159,4 +161,11 @@ class _PhoneContactsViewState extends State<PhoneContactsView> {
       ),
     );
   }
+}
+
+class _ContactListItem {
+  final String? header;
+  final PhoneContact? contact;
+  _ContactListItem.header(this.header) : contact = null;
+  _ContactListItem.contact(this.contact) : header = null;
 }
