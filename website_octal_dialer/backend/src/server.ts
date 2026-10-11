@@ -11352,7 +11352,7 @@ app.post(['/email/accounts/:accountId/verify', '/api/email/accounts/:accountId/v
     const code = err?.code;
     const safeCode = typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'SMTP_VERIFY_FAILED';
     console.warn(`[SMTP Verify] Account ${account.email} verification failed (${safeCode}): ${err?.message}`);
-    res.status(502).json({ success: false, error: 'SMTP connection or authentication failed: ' + err?.message, code: safeCode });
+    res.status(400).json({ success: false, error: 'SMTP connection or authentication failed: ' + err?.message, code: safeCode });
   } finally {
     transporter.close();
   }
