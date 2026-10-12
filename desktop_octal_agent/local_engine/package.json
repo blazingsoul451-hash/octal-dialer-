@@ -1,0 +1,13 @@
+{
+  "name": "octal-desktop-agent-engine",
+  "version": "1.0.0",
+  "description": "Local Edge Engine for Octal Desktop Agent - Zero Server Load & Residential IP Automation",
+  "main": "local_cookie_grabber.js",
+  "scripts": {
+    "login": "node local_cookie_grabber.js",
+    "post": "node local_fb_bot.js"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
