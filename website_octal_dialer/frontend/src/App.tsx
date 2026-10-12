@@ -1670,39 +1670,65 @@ export default function App() {
                 )}
               </div>
             ) : (
-              /* Collapsed Icon-Only Vertical Docked Rail */
-              (userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.octalDialer) && (
-                <div className="space-y-3 flex flex-col items-center pt-2">
-                  {[
-                    { id: 'dialer', label: 'Auto Dialer', icon: PlaySquare },
-                    { id: 'pair', label: 'Connect to Phone', icon: Bluetooth },
-                    { id: 'upload', label: 'Upload Sheet', icon: Upload },
-                    { id: 'dnc', label: 'DNC Suppression', icon: ShieldAlert },
-                    { id: 'history', label: 'Call Logs', icon: History },
-                  ].map((item) => {
-                    const Icon = item.icon;
-                    const active = activeTab === item.id;
-                    return (
-                      <button
-                        key={item.id}
-                        onClick={() => setActiveTab(item.id as any)}
-                        title={item.label}
-                        className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
-                          active
-                            ? isLight
-                              ? 'bg-amber-500/20 text-amber-800 border-amber-500 shadow-sm'
-                              : 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-sm'
-                            : isLight
-                              ? 'text-slate-600 hover:bg-slate-100 border-transparent'
-                              : 'text-slate-400 hover:text-white hover:bg-slate-800/60 border-transparent'
-                        }`}
-                      >
-                        <Icon className="w-5 h-5" />
-                      </button>
-                    );
-                  })}
-                </div>
-              )
+              /* Collapsed Icon-Only Vertical Docked Rail: Only Show Main Modules Logos */
+              <div className="space-y-3 flex flex-col items-center pt-2">
+                {/* 1. OCTAL Dialer Main Module */}
+                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.octalDialer) && (
+                  <button
+                    onClick={() => setActiveTab('dialer')}
+                    title="OCTAL Dialer"
+                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                      ['dialer', 'pair', 'upload', 'dnc', 'history'].includes(activeTab)
+                        ? isLight
+                          ? 'bg-amber-500/20 text-amber-800 border-amber-500 shadow-sm'
+                          : 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-sm'
+                        : isLight
+                          ? 'text-slate-600 hover:bg-slate-100 hover:text-amber-600 border-transparent'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-800/60 border-transparent'
+                    }`}
+                  >
+                    <PhoneCall className="w-5 h-5" />
+                  </button>
+                )}
+
+                {/* 2. Auto Emailer Main Module */}
+                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.autoEmailer) && (
+                  <button
+                    onClick={() => setActiveTab('emailer-gmail')}
+                    title="Auto Emailer"
+                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                      ['emailer-gmail', 'emailer-campaign', 'emailer-templates', 'emailer-leads'].includes(activeTab)
+                        ? isLight
+                          ? 'bg-amber-500/20 text-amber-800 border-amber-500 shadow-sm'
+                          : 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-sm'
+                        : isLight
+                          ? 'text-slate-600 hover:bg-slate-100 hover:text-amber-600 border-transparent'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-800/60 border-transparent'
+                    }`}
+                  >
+                    <Mail className="w-5 h-5" />
+                  </button>
+                )}
+
+                {/* 3. Facebook Poster Main Module */}
+                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.facebookPoster) && (
+                  <button
+                    onClick={() => setActiveTab('fb-poster-accounts')}
+                    title="Facebook Auto-Poster"
+                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                      ['fb-poster-accounts', 'fb-poster-campaigns', 'fb-poster-scheduler', 'fb-poster-joiner', 'fb-poster-logs'].includes(activeTab)
+                        ? isLight
+                          ? 'bg-amber-500/20 text-amber-800 border-amber-500 shadow-sm'
+                          : 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-sm'
+                        : isLight
+                          ? 'text-slate-600 hover:bg-slate-100 hover:text-amber-600 border-transparent'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-800/60 border-transparent'
+                    }`}
+                  >
+                    <Share2 className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
@@ -1885,6 +1911,7 @@ export default function App() {
           {activeTab === 'team-lead' && (
             (userRole === 'team_lead' || userRole === 'admin' || userRole === 'platform_admin') ? (
               <TeamLeadDashboard
+                isLight={isLight}
                 serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken}
                 onSelectCampaign={(_cId) => setActiveTab('campaigns')}
