@@ -7142,7 +7142,7 @@ app.get(['/api/admin/overview', '/admin/overview'], requireAuth, requireAdmin, a
 const handleGetUsers = async (req: express.Request, res: express.Response) => {
   const user = (req as any).user;
   const isPlatform = isPlatformRole(user.role);
-  const targetTenantId = (isPlatform && (req.query.tenantId as string)) || user.tenantId;
+  const targetTenantId = (isPlatform && ((req.headers['x-tenant-id'] as string) || (req.query.tenantId as string))) || user.tenantId;
 
   const users = targetTenantId
     ? await db.queryAll(`
@@ -8384,8 +8384,8 @@ app.delete(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requireCom
 app.get(['/api/admin/teams', '/admin/teams', '/api/teams', '/teams'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:view', 'users:view', 'settings:view']), async (req, res) => {
   try {
     const caller = (req as any).user;
-    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-    const tenantId = isPlatform ? (req.query.tenantId as string || caller.tenantId) : caller.tenantId;
+    const isPlatform = isPlatformRole(caller.role);
+    const tenantId = (isPlatform && ((req.headers['x-tenant-id'] as string) || (req.query.tenantId as string))) || caller.tenantId || 'tenant_default';
 
     const teams = await getTeams(tenantId);
 
@@ -8413,8 +8413,8 @@ app.get(['/api/admin/teams', '/admin/teams', '/api/teams', '/teams'], requireAut
 app.get(['/api/teams/my-teams', '/teams/my-teams'], requireAuth, async (req, res) => {
   try {
     const caller = (req as any).user;
-    const isPlatform = caller.role === 'platform_admin' || caller.role === 'master_admin';
-    const tenantId = caller.tenantId;
+    const isPlatform = isPlatformRole(caller.role);
+    const tenantId = (isPlatform && ((req.headers['x-tenant-id'] as string) || (req.query.tenantId as string))) || caller.tenantId || 'tenant_default';
 
     if (caller.role !== 'team_lead' && caller.role !== 'admin' && !isPlatform) {
       res.status(403).json({ error: 'Forbidden: Access restricted to Team Leads and Administrators.' });
