@@ -129,11 +129,14 @@ export const QuickAddUserModal: React.FC<QuickAddUserModalProps> = ({
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+        <form onSubmit={handleSubmit} autoComplete="off" className="space-y-4 text-xs">
           <div>
             <label className={`block font-semibold mb-1 ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>Username *</label>
             <input
               type="text"
+              name="new_agent_username"
+              id="new_agent_username"
+              autoComplete="off"
               required
               value={username}
               onChange={e => setUsername(e.target.value)}
@@ -148,6 +151,9 @@ export const QuickAddUserModal: React.FC<QuickAddUserModalProps> = ({
             <label className={`block font-semibold mb-1 ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>Full / Display Name</label>
             <input
               type="text"
+              name="new_agent_displayname"
+              id="new_agent_displayname"
+              autoComplete="off"
               value={displayName}
               onChange={e => setDisplayName(e.target.value)}
               placeholder="e.g. John Doe"
@@ -162,6 +168,9 @@ export const QuickAddUserModal: React.FC<QuickAddUserModalProps> = ({
               <label className={`block font-semibold mb-1 ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>Email Address</label>
               <input
                 type="email"
+                name="new_agent_email"
+                id="new_agent_email"
+                autoComplete="off"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 placeholder="john@company.com"
@@ -191,6 +200,9 @@ export const QuickAddUserModal: React.FC<QuickAddUserModalProps> = ({
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
+                  name="new_agent_password"
+                  id="new_agent_password"
+                  autoComplete="new-password"
                   required
                   value={password}
                   onChange={e => setPassword(e.target.value)}

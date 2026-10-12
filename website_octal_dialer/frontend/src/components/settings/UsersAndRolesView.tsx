@@ -2147,12 +2147,15 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleCreateUser} className="space-y-4">
+            <form onSubmit={handleCreateUser} autoComplete="off" className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-slate-300">Username *</label>
                   <input
                     type="text"
+                    name="modal_create_username"
+                    id="modal_create_username"
+                    autoComplete="off"
                     required
                     value={newUsername}
                     onChange={e => setNewUsername(e.target.value)}
@@ -2164,6 +2167,9 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                   <label className="text-xs font-semibold text-slate-300">Full Name</label>
                   <input
                     type="text"
+                    name="modal_create_fullname"
+                    id="modal_create_fullname"
+                    autoComplete="off"
                     value={newDisplayName}
                     onChange={e => setNewDisplayName(e.target.value)}
                     placeholder="e.g. John Doe"
@@ -2177,6 +2183,9 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                   <label className="text-xs font-semibold text-slate-300">Email</label>
                   <input
                     type="email"
+                    name="modal_create_email"
+                    id="modal_create_email"
+                    autoComplete="off"
                     value={newEmail}
                     onChange={e => setNewEmail(e.target.value)}
                     placeholder="john@company.com"
@@ -2187,6 +2196,9 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                   <label className="text-xs font-semibold text-slate-300">Phone</label>
                   <input
                     type="tel"
+                    name="modal_create_phone"
+                    id="modal_create_phone"
+                    autoComplete="off"
                     value={newPhone}
                     onChange={e => setNewPhone(e.target.value)}
                     placeholder="+1 (555) 000-0000"
@@ -2199,6 +2211,9 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                 <label className="text-xs font-semibold text-slate-300">Password *</label>
                 <input
                   type="password"
+                  name="modal_create_password"
+                  id="modal_create_password"
+                  autoComplete="new-password"
                   required
                   value={newPassword}
                   onChange={e => setNewPassword(e.target.value)}
