@@ -26,6 +26,7 @@ class MainShellScreen extends StatefulWidget {
 class _MainShellScreenState extends State<MainShellScreen> {
   late int _currentIndex;
   StreamSubscription<TelecomCallEvent>? _telecomSub;
+  StreamSubscription<int>? _tabSwitchSub;
   bool _isCallScreenActive = false;
 
   @override
@@ -35,12 +36,21 @@ class _MainShellScreenState extends State<MainShellScreen> {
     PhoneBridgeService.instance.addListener(_onBridgeUpdate);
     TelecomService.instance.reinitialize();
     _listenToTelecomEvents();
+    _tabSwitchSub = TelecomService.instance.onSwitchTab.listen((tab) {
+      if (mounted) _switchToTab(tab);
+    });
+    const MethodChannel('com.octal.dialer/call').invokeMethod<int>('getInitialTab').then((tab) {
+      if (tab != null && tab > 0 && mounted) {
+        _switchToTab(tab);
+      }
+    });
   }
 
   @override
   void dispose() {
     PhoneBridgeService.instance.removeListener(_onBridgeUpdate);
     _telecomSub?.cancel();
+    _tabSwitchSub?.cancel();
     super.dispose();
   }
 
@@ -131,20 +141,76 @@ class _MainShellScreenState extends State<MainShellScreen> {
   @override
   Widget build(BuildContext context) {
     final bool isPairedInAutoDialer = _currentIndex == 2 && PhoneBridgeService.instance.isPaired;
+    final bool isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
     return Scaffold(
       backgroundColor: OctalColors.bgDark,
-      body: IndexedStack(
-        index: _currentIndex,
+      body: isLandscape
+          ? Row(
+              children: [
+                if (!isPairedInAutoDialer) _buildLandscapeNavRail(),
+                Expanded(
+                  child: IndexedStack(
+                    index: _currentIndex,
+                    children: [
+                      PhoneHomeTab(
+                        onOpenKeypad: () => _switchToTab(1),
+                      ),
+                      const PhoneKeypadView(),
+                      const AutoDialerTab(),
+                    ],
+                  ),
+                ),
+              ],
+            )
+          : IndexedStack(
+              index: _currentIndex,
+              children: [
+                PhoneHomeTab(
+                  onOpenKeypad: () => _switchToTab(1),
+                ),
+                const PhoneKeypadView(),
+                const AutoDialerTab(),
+              ],
+            ),
+      bottomNavigationBar: (isLandscape || isPairedInAutoDialer) ? null : _buildBottomNav(),
+    );
+  }
+
+  Widget _buildLandscapeNavRail() {
+    return Container(
+      width: 80,
+      decoration: const BoxDecoration(
+        color: Color(0xFF160F0B),
+        border: Border(
+          right: BorderSide(color: Color(0xFF261D18), width: 1.0),
+        ),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          PhoneHomeTab(
-            onOpenKeypad: () => _switchToTab(1),
+          _buildNavItem(
+            index: 0,
+            icon: Icons.home_outlined,
+            activeIcon: Icons.home_rounded,
+            label: 'Home',
           ),
-          const PhoneKeypadView(),
-          const AutoDialerTab(),
+          const SizedBox(height: 20),
+          _buildNavItem(
+            index: 1,
+            icon: Icons.dialpad_outlined,
+            activeIcon: Icons.dialpad_rounded,
+            label: 'Keypad',
+          ),
+          const SizedBox(height: 20),
+          _buildNavItem(
+            index: 2,
+            icon: Icons.laptop_chromebook_outlined,
+            activeIcon: Icons.laptop_chromebook_rounded,
+            label: 'Auto Dialer',
+          ),
         ],
       ),
-      bottomNavigationBar: isPairedInAutoDialer ? null : _buildBottomNav(),
     );
   }
 
@@ -152,16 +218,17 @@ class _MainShellScreenState extends State<MainShellScreen> {
     final bottomPadding = MediaQuery.of(context).padding.bottom;
 
     return Container(
+      height: 80 + bottomPadding,
       padding: EdgeInsets.only(
-        left: 16,
-        right: 16,
-        top: 6,
-        bottom: bottomPadding > 0 ? bottomPadding + 4 : 10,
+        left: 12,
+        right: 12,
+        top: 10,
+        bottom: bottomPadding > 0 ? bottomPadding : 8,
       ),
       decoration: const BoxDecoration(
-        color: OctalColors.bgDark,
+        color: Color(0xFF160F0B),
         border: Border(
-          top: BorderSide(color: Color(0xFF28231F), width: 1.0),
+          top: BorderSide(color: Color(0xFF261D18), width: 1.0),
         ),
       ),
       child: Row(
@@ -170,19 +237,22 @@ class _MainShellScreenState extends State<MainShellScreen> {
           // Tab 0: Home
           _buildNavItem(
             index: 0,
-            icon: Icons.home_rounded,
+            icon: Icons.home_outlined,
+            activeIcon: Icons.home_rounded,
             label: 'Home',
           ),
           // Tab 1: Keypad
           _buildNavItem(
             index: 1,
-            icon: Icons.dialpad_rounded,
+            icon: Icons.dialpad_outlined,
+            activeIcon: Icons.dialpad_rounded,
             label: 'Keypad',
           ),
           // Tab 2: Auto Dialer
           _buildNavItem(
             index: 2,
-            icon: Icons.laptop_chromebook_rounded,
+            icon: Icons.laptop_chromebook_outlined,
+            activeIcon: Icons.laptop_chromebook_rounded,
             label: 'Auto Dialer',
           ),
         ],
@@ -193,6 +263,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
   Widget _buildNavItem({
     required int index,
     required IconData icon,
+    required IconData activeIcon,
     required String label,
   }) {
     final bool isSelected = _currentIndex == index;
@@ -205,24 +276,27 @@ class _MainShellScreenState extends State<MainShellScreen> {
         children: [
           AnimatedContainer(
             duration: const Duration(milliseconds: 180),
-            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 4),
+            width: 64,
+            height: 32,
             decoration: BoxDecoration(
-              color: isSelected ? OctalColors.pillActive : Colors.transparent,
-              borderRadius: BorderRadius.circular(18),
+              color: isSelected ? const Color(0xFF564137) : Colors.transparent,
+              borderRadius: BorderRadius.circular(16),
             ),
-            child: Icon(
-              icon,
-              size: 24,
-              color: isSelected ? Colors.white : OctalColors.textSecondary,
+            child: Center(
+              child: Icon(
+                isSelected ? activeIcon : icon,
+                size: 24,
+                color: isSelected ? const Color(0xFFF0DFD8) : const Color(0xFFB8A9A3),
+              ),
             ),
           ),
-          const SizedBox(height: 3),
+          const SizedBox(height: 4),
           Text(
             label,
             style: TextStyle(
-              fontSize: 11.5,
-              fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-              color: isSelected ? Colors.white : OctalColors.textSecondary,
+              fontSize: 12,
+              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+              color: isSelected ? const Color(0xFFF0DFD8) : const Color(0xFFB8A9A3),
               letterSpacing: 0.2,
             ),
           ),

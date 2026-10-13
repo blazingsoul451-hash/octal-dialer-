@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../widgets/octal_logo.dart';
 import '../../models/phone_models.dart';
 import '../../services/phone_data_service.dart';
 import '../../services/telecom_service.dart';
 import 'phone_contacts_view.dart';
 import 'create_contact_screen.dart';
+import 'settings/settings_main_screen.dart';
+import 'help_feedback_screen.dart';
 
 class PhoneHomeTab extends StatefulWidget {
   final Function(String number, int? simSlot)? onDirectCall;
@@ -29,6 +32,7 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
   String _selectedFilter = 'All';
   String _searchQuery = '';
   bool _isFavouritesExpanded = true;
+  String? _expandedCallKey;
 
   @override
   void initState() {
@@ -335,6 +339,48 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
     );
   }
 
+  void _confirmClearCallHistory() {
+    Navigator.pop(context);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF28231F),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Clear call history?',
+          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        content: const Text(
+          'This will delete all calls from your history',
+          style: TextStyle(color: OctalColors.textSecondary, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: OctalColors.textSecondary)),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _dataService.clearAllCallLogs();
+              if (mounted) {
+                setState(() {});
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Call history cleared'),
+                    backgroundColor: Color(0xFF28231F),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            },
+            child: const Text('Clear', style: TextStyle(color: Color(0xFF5BB974), fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   String _formatCallTime(DateTime ts, String number, String name) {
     final now = DateTime.now();
     final diff = now.difference(ts);
@@ -613,23 +659,26 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
               title: 'Settings',
               onTap: () {
                 Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SettingsMainScreen()),
+                );
               },
             ),
             _buildDrawerItem(
               icon: Icons.history_toggle_off_rounded,
               title: 'Clear call history',
-              onTap: () {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Call history cleared')),
-                );
-              },
+              onTap: _confirmClearCallHistory,
             ),
             _buildDrawerItem(
               icon: Icons.help_outline_rounded,
               title: 'Help and feedback',
               onTap: () {
                 Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HelpFeedbackScreen()),
+                );
               },
             ),
             const Spacer(),
@@ -830,87 +879,340 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
     }
 
     final subtitleText = customTime != null ? 'Mobile • $customTime' : _formatCallTime(call.timestamp, call.number, displayName);
+    final String callKey = '${call.id}_${call.number}_${call.timestamp.millisecondsSinceEpoch}';
+    final bool isExpanded = _expandedCallKey == callKey;
 
     return InkWell(
       onTapDown: (details) => _lastTapPosition = details.globalPosition,
-      onTap: () => _showContactContextMenu(context, call.number, call.id),
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() {
+          if (_expandedCallKey == callKey) {
+            _expandedCallKey = null;
+          } else {
+            _expandedCallKey = callKey;
+          }
+        });
+      },
       onLongPress: () => _showContactContextMenu(context, call.number, call.id),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 11.0),
-        child: Row(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 9.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Avatar
-            CircleAvatar(
-              radius: 22,
-              backgroundColor: avatarBg,
-              child: initial.isNotEmpty
-                  ? Text(
-                      initial,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    )
-                  : const Icon(
-                      Icons.person_outline,
-                      color: OctalColors.textSecondary,
-                      size: 20,
-                    ),
-            ),
-            const SizedBox(width: 14),
-
-            // Name & Info
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    displayName,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Row(
-                    children: [
-                      Icon(directionIcon, size: 14, color: directionColor),
-                      const SizedBox(width: 4),
-                      Text(
-                        subtitleText,
-                        style: const TextStyle(
+            Row(
+              children: [
+                // Avatar
+                CircleAvatar(
+                  radius: 22,
+                  backgroundColor: avatarBg,
+                  child: initial.isNotEmpty
+                      ? Text(
+                          initial,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.person_outline,
                           color: OctalColors.textSecondary,
-                          fontSize: 12.5,
+                          size: 20,
+                        ),
+                ),
+                const SizedBox(width: 14),
+
+                // Name & Info
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        displayName,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          Icon(directionIcon, size: 14, color: directionColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            subtitleText,
+                            style: const TextStyle(
+                              color: OctalColors.textSecondary,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (call.simName != null && call.simName!.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          call.simName!,
+                          style: const TextStyle(
+                            color: OctalColors.purpleSim,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.4,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
-                  if (call.simName != null && call.simName!.isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      call.simName!,
-                      style: const TextStyle(
-                        color: OctalColors.purpleSim,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.4,
+                ),
+
+                // Call handset button on right
+                IconButton(
+                  icon: const Icon(
+                    Icons.phone_outlined,
+                    color: OctalColors.textSecondary,
+                    size: 21,
+                  ),
+                  onPressed: () => _callNumber(call.number),
+                ),
+              ],
+            ),
+            if (isExpanded) ...[
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.only(left: 58.0),
+                child: Row(
+                  children: [
+                    _buildInlineActionButton(
+                      icon: Icons.phone_outlined,
+                      label: 'Call',
+                      onTap: () => _callNumber(call.number),
+                    ),
+                    const SizedBox(width: 8),
+                    _buildInlineActionButton(
+                      icon: Icons.chat_bubble_outline_rounded,
+                      label: 'Message',
+                      onTap: () => _sendSms(call.number),
+                    ),
+                    const SizedBox(width: 8),
+                    _buildInlineActionButton(
+                      icon: Icons.history_rounded,
+                      label: 'History',
+                      onTap: () => _showCallDetailsDialog(call, displayName),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInlineActionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xFF28201B),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0xFF382923), width: 0.8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: const Color(0xFF5BB974)),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFFF0DFD8),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _sendSms(String number) async {
+    final uri = Uri.parse('sms:$number');
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri);
+      } else {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+    } catch (_) {
+      const channel = MethodChannel('com.octal.dialer/call');
+      await channel.invokeMethod('openSms', {'phoneNumber': number});
+    }
+  }
+
+  void _showCallDetailsDialog(PhoneRecentCall call, String displayName) {
+    HapticFeedback.lightImpact();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF28201B),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        final durationText = call.durationSeconds > 0
+            ? '${call.durationSeconds ~/ 60}m ${call.durationSeconds % 60}s'
+            : (call.direction == CallDirection.missed ? 'Missed' : 'Cancelled');
+        final timeText = '${call.timestamp.hour.toString().padLeft(2, '0')}:${call.timestamp.minute.toString().padLeft(2, '0')}';
+        final dateText = '${call.timestamp.day}/${call.timestamp.month}/${call.timestamp.year}';
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 22,
+                    backgroundColor: const Color(0xFF382923),
+                    child: Text(
+                      displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
+                      style: const TextStyle(color: Color(0xFFF0DFD8), fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          displayName,
+                          style: const TextStyle(color: Color(0xFFF0DFD8), fontSize: 18, fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          call.number,
+                          style: const TextStyle(color: Color(0xFFA49691), fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1713),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      call.direction == CallDirection.missed
+                          ? Icons.call_missed_rounded
+                          : (call.direction == CallDirection.incoming
+                              ? Icons.call_received_rounded
+                              : Icons.call_made_rounded),
+                      size: 20,
+                      color: call.direction == CallDirection.missed ? Colors.redAccent : const Color(0xFF5BB974),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${call.direction.name.toUpperCase()} • $durationText',
+                            style: const TextStyle(color: Color(0xFFF0DFD8), fontSize: 13.5, fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '$dateText at $timeText ${call.simName != null && call.simName!.isNotEmpty ? '• ${call.simName}' : ''}',
+                            style: const TextStyle(color: Color(0xFFA49691), fontSize: 12),
+                          ),
+                        ],
                       ),
                     ),
                   ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildCallDetailActionButton(
+                    icon: Icons.phone_rounded,
+                    label: 'Call',
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _callNumber(call.number);
+                    },
+                  ),
+                  _buildCallDetailActionButton(
+                    icon: Icons.chat_bubble_outline_rounded,
+                    label: 'Message',
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _sendSms(call.number);
+                    },
+                  ),
+                  _buildCallDetailActionButton(
+                    icon: Icons.copy_rounded,
+                    label: 'Copy',
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _copyNumber(call.number);
+                    },
+                  ),
+                  _buildCallDetailActionButton(
+                    icon: Icons.delete_outline_rounded,
+                    label: 'Delete',
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _deleteCallLog(call.id, call.number);
+                    },
+                  ),
                 ],
               ),
-            ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
-            // Call handset button on right
-            IconButton(
-              icon: const Icon(
-                Icons.phone_outlined,
-                color: OctalColors.textSecondary,
-                size: 21,
-              ),
-              onPressed: () => _callNumber(call.number),
+  Widget _buildCallDetailActionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Column(
+          children: [
+            CircleAvatar(
+              radius: 20,
+              backgroundColor: const Color(0xFF382923),
+              child: Icon(icon, color: const Color(0xFF5BB974), size: 18),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: const TextStyle(color: Color(0xFFF0DFD8), fontSize: 12, fontWeight: FontWeight.w500),
             ),
           ],
         ),

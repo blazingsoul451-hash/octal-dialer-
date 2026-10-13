@@ -222,6 +222,9 @@ class MainActivity: FlutterActivity() {
                     if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
                         permissionsNeeded.add(Manifest.permission.READ_CALL_LOG)
                     }
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+                        permissionsNeeded.add(Manifest.permission.WRITE_CALL_LOG)
+                    }
                     if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
                         permissionsNeeded.add(Manifest.permission.READ_CONTACTS)
                     }
@@ -361,6 +364,24 @@ class MainActivity: FlutterActivity() {
                 "getDeviceCallLogs" -> {
                     getDeviceCallLogs(result)
                 }
+                "clearDeviceCallLogs" -> {
+                    clearDeviceCallLogs(result)
+                }
+                "deleteDeviceCallLog" -> {
+                    val id = call.argument<String>("id") ?: ""
+                    deleteDeviceCallLog(id, result)
+                }
+                "getInitialTab" -> {
+                    val tab = intent.getIntExtra("tab", -1)
+                    val action = intent.action
+                    if (tab != -1) {
+                        result.success(tab)
+                    } else if (action == Intent.ACTION_DIAL || action == Intent.ACTION_VIEW) {
+                        result.success(1)
+                    } else {
+                        result.success(0)
+                    }
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -417,6 +438,22 @@ class MainActivity: FlutterActivity() {
         OctalPhoneAccountManager.registerPhoneAccount(this)
 
         registerTelephonyListeners()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val tab = intent.getIntExtra("tab", -1)
+        val action = intent.action
+        if (tab != -1) {
+            methodChannel?.invokeMethod("onSwitchTab", tab)
+        } else if (action == Intent.ACTION_DIAL || action == Intent.ACTION_VIEW) {
+            val phone = intent.data?.schemeSpecificPart ?: ""
+            methodChannel?.invokeMethod("onSwitchTab", 1)
+            if (phone.isNotEmpty()) {
+                methodChannel?.invokeMethod("onDialNumber", phone)
+            }
+        }
     }
 
     // ==========================================
@@ -1228,6 +1265,38 @@ class MainActivity: FlutterActivity() {
             } catch (e: Exception) {
                 Log.e(TAG, "getDeviceCallLogs error: ${e.message}")
                 runOnUiThread { result.success(emptyList<Map<String, Any?>>()) }
+            }
+        }.start()
+    }
+
+    private fun clearDeviceCallLogs(result: MethodChannel.Result) {
+        Thread {
+            try {
+                val hasPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALL_LOG) == PackageManager.PERMISSION_GRANTED
+                if (hasPerm) {
+                    contentResolver.delete(CallLog.Calls.CONTENT_URI, null, null)
+                }
+                runOnUiThread { result.success(true) }
+            } catch (e: Exception) {
+                Log.e(TAG, "clearDeviceCallLogs error: ${e.message}")
+                runOnUiThread { result.success(false) }
+            }
+        }.start()
+    }
+
+    private fun deleteDeviceCallLog(id: String, result: MethodChannel.Result) {
+        Thread {
+            try {
+                var deleted = false
+                val hasPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALL_LOG) == PackageManager.PERMISSION_GRANTED
+                if (hasPerm && id.isNotEmpty()) {
+                    val count = contentResolver.delete(CallLog.Calls.CONTENT_URI, "${CallLog.Calls._ID} = ?", arrayOf(id))
+                    deleted = count > 0
+                }
+                runOnUiThread { result.success(deleted) }
+            } catch (e: Exception) {
+                Log.e(TAG, "deleteDeviceCallLog error: ${e.message}")
+                runOnUiThread { result.success(false) }
             }
         }.start()
     }

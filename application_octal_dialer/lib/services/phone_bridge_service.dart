@@ -196,7 +196,7 @@ class PhoneBridgeService extends ChangeNotifier {
       debugPrint('[PhoneBridge] Uncorrelated terminal event; retaining placement for reconciliation.');
       return;
     }
-    final targetCallId = placement!.callId;
+    final targetCallId = placement.callId;
 
     if (_enqueuedCallIds.contains(targetCallId)) {
       debugPrint('[PhoneBridge] Terminal outcome for $targetCallId already enqueued; skipping duplicate app-level capture.');
@@ -207,9 +207,9 @@ class PhoneBridgeService extends ChangeNotifier {
     final effectiveDuration = event.duration ?? 0;
     final effectiveAnswered = event.answered ?? (effectiveReason == 'ANSWERED' || effectiveDuration > 0);
 
-    final effectiveTenantId = _tenantId.isNotEmpty ? _tenantId : (placement?.tenantId ?? '');
-    final effectiveDeviceId = _deviceId.isNotEmpty ? _deviceId : (placement?.deviceId ?? '');
-    final effectiveOrigin = _serverUrl.isNotEmpty ? _serverUrl : (placement?.serverOrigin ?? '');
+    final effectiveTenantId = _tenantId.isNotEmpty ? _tenantId : placement.tenantId;
+    final effectiveDeviceId = _deviceId.isNotEmpty ? _deviceId : placement.deviceId;
+    final effectiveOrigin = _serverUrl.isNotEmpty ? _serverUrl : placement.serverOrigin;
 
     if (effectiveTenantId.isEmpty || effectiveDeviceId.isEmpty || effectiveOrigin.isEmpty) {
       debugPrint('[PhoneBridge] Cannot enqueue app-level terminal outcome: missing tenant ($effectiveTenantId), device ($effectiveDeviceId), or origin ($effectiveOrigin)');
@@ -219,11 +219,11 @@ class PhoneBridgeService extends ChangeNotifier {
     final outboxEntry = CallOutboxEntry(
       outboxId: 'ob_${DateTime.now().millisecondsSinceEpoch}_$targetCallId',
       callId: targetCallId,
-      sessionId: placement?.sessionId ?? _currentSessionId ?? '',
-      leadId: placement?.leadId,
-      commandId: placement?.commandId,
-      phone: placement?.phone ?? event.phoneNumber,
-      name: placement?.name,
+      sessionId: placement.sessionId ?? _currentSessionId ?? '',
+      leadId: placement.leadId,
+      commandId: placement.commandId,
+      phone: placement.phone.isNotEmpty ? placement.phone : event.phoneNumber,
+      name: placement.name,
       reason: effectiveReason,
       duration: effectiveDuration,
       answered: effectiveAnswered,

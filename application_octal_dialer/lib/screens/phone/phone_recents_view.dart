@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../../widgets/octal_logo.dart';
 import '../../models/phone_models.dart';
 import '../../services/phone_data_service.dart';
 import '../../services/telecom_service.dart';
@@ -16,24 +15,86 @@ class _PhoneRecentsViewState extends State<PhoneRecentsView> {
   final PhoneDataService _dataService = PhoneDataService.instance;
   String _selectedFilter = 'All';
 
+  void _confirmClearCallHistory() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF28231F),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Clear call history?',
+          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        content: const Text(
+          'This will delete all calls from your history',
+          style: TextStyle(color: Color(0xFFA49691), fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFFA49691))),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _dataService.clearAllCallLogs();
+              if (mounted) {
+                setState(() {});
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Call history cleared'),
+                    backgroundColor: Color(0xFF28231F),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            },
+            child: const Text('Clear', style: TextStyle(color: Color(0xFF5BB974), fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final calls = _dataService.filterRecentCalls(_selectedFilter);
 
     return Scaffold(
-      backgroundColor: OctalColors.bgDark,
+      backgroundColor: const Color(0xFF1F1C19),
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
+        backgroundColor: const Color(0xFF1F1C19),
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 20),
+          icon: const Icon(Icons.arrow_back, color: Color(0xFFF0DFD8)),
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
-          'Call History',
-          style: TextStyle(fontFamily: 'Ubuntu', fontSize: 17, fontWeight: FontWeight.bold, color: Colors.white),
+          'Recents',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500, color: Color(0xFFF0DFD8)),
         ),
-        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.more_vert, color: Color(0xFFF0DFD8)),
+            onPressed: () {
+              showModalBottomSheet(
+                context: context,
+                backgroundColor: const Color(0xFF28231F),
+                shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+                builder: (ctx) => SafeArea(
+                  child: ListTile(
+                    leading: const Icon(Icons.delete_sweep_outlined, color: Color(0xFFF0DFD8)),
+                    title: const Text('Clear call history', style: TextStyle(color: Color(0xFFF0DFD8))),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _confirmClearCallHistory();
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
       ),
       body: SafeArea(
         child: Column(
@@ -63,7 +124,7 @@ class _PhoneRecentsViewState extends State<PhoneRecentsView> {
             Expanded(
               child: calls.isEmpty
                   ? const Center(
-                      child: Text('No call logs in this category', style: TextStyle(color: OctalColors.textSecondary)),
+                      child: Text('No call history', style: TextStyle(color: Color(0xFFA49691), fontSize: 14)),
                     )
                   : ListView.builder(
                       itemCount: calls.length,
@@ -76,21 +137,21 @@ class _PhoneRecentsViewState extends State<PhoneRecentsView> {
                         switch (call.direction) {
                           case CallDirection.outgoing:
                             dirIcon = Icons.call_made_rounded;
-                            dirColor = const Color(0xFF38BDF8);
+                            dirColor = const Color(0xFFA49691);
                             break;
                           case CallDirection.missed:
                           case CallDirection.rejected:
                             dirIcon = Icons.call_missed_rounded;
-                            dirColor = OctalColors.error;
+                            dirColor = const Color(0xFFE57373);
                             break;
                           case CallDirection.blocked:
                             dirIcon = Icons.block_rounded;
-                            dirColor = Colors.grey;
+                            dirColor = const Color(0xFFA49691);
                             break;
                           case CallDirection.incoming:
                           default:
                             dirIcon = Icons.call_received_rounded;
-                            dirColor = OctalColors.success;
+                            dirColor = const Color(0xFFA49691);
                         }
 
                         return ListTile(
@@ -106,29 +167,21 @@ class _PhoneRecentsViewState extends State<PhoneRecentsView> {
                           title: Text(
                             call.name,
                             style: TextStyle(
-                              color: isMissed ? OctalColors.error : Colors.white,
-                              fontSize: 14.5,
-                              fontWeight: FontWeight.w600,
+                              color: isMissed ? const Color(0xFFE57373) : const Color(0xFFF0DFD8),
+                              fontSize: 15,
+                              fontWeight: FontWeight.w500,
                             ),
                           ),
                           subtitle: Row(
                             children: [
-                              Icon(dirIcon, size: 13, color: dirColor),
+                              Icon(dirIcon, size: 14, color: dirColor),
                               const SizedBox(width: 4),
-                              Text(call.formattedTime, style: const TextStyle(color: OctalColors.textSecondary, fontSize: 11.5)),
-                              if (call.simName != null) ...[
+                              Text(call.formattedTime, style: const TextStyle(color: Color(0xFFA49691), fontSize: 12.5)),
+                              if (call.simName != null && call.simName!.isNotEmpty) ...[
                                 const SizedBox(width: 6),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                                  decoration: BoxDecoration(
-                                    color: OctalColors.purpleSim.withOpacity(0.2),
-                                    borderRadius: BorderRadius.circular(4),
-                                    border: Border.all(color: OctalColors.purpleSim.withOpacity(0.4), width: 0.8),
-                                  ),
-                                  child: Text(
-                                    call.simName!,
-                                    style: const TextStyle(fontSize: 9.5, color: Color(0xFFC4B5FD), fontWeight: FontWeight.bold),
-                                  ),
+                                Text(
+                                  call.simName!,
+                                  style: const TextStyle(fontSize: 11, color: Color(0xFFC4B5FD), fontWeight: FontWeight.bold),
                                 ),
                               ],
                             ],
@@ -137,11 +190,11 @@ class _PhoneRecentsViewState extends State<PhoneRecentsView> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               IconButton(
-                                icon: const Icon(Icons.call_rounded, color: Colors.white, size: 20),
+                                icon: const Icon(Icons.phone_outlined, color: Color(0xFFA49691), size: 21),
                                 onPressed: () => TelecomService.instance.placeCall(call.number),
                               ),
                               IconButton(
-                                icon: const Icon(Icons.info_outline_rounded, color: OctalColors.textSecondary, size: 20),
+                                icon: const Icon(Icons.info_outline, color: Color(0xFFA49691), size: 20),
                                 onPressed: () {
                                   Navigator.push(
                                     context,
@@ -172,16 +225,16 @@ class _PhoneRecentsViewState extends State<PhoneRecentsView> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
         decoration: BoxDecoration(
-          color: isSelected ? OctalColors.primaryGold : OctalColors.surfaceCard,
+          color: isSelected ? const Color(0xFF382923) : const Color(0xFF28231F),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: isSelected ? OctalColors.primaryGold : OctalColors.border),
+          border: Border.all(color: isSelected ? const Color(0xFF5BB974) : const Color(0xFF382923)),
         ),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 12.5,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-            color: isSelected ? Colors.black : Colors.white,
+            fontSize: 13,
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+            color: isSelected ? const Color(0xFF5BB974) : const Color(0xFFA49691),
           ),
         ),
       ),

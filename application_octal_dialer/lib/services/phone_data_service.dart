@@ -44,8 +44,36 @@ class PhoneDataService {
     }
   }
 
+  void unblockNumber(String number) {
+    final clean = number.replaceAll(RegExp(r'[^0-9+]'), '');
+    _blockedNumbers.remove(clean);
+  }
+
+  void toggleFavorite(String contactId) {
+    for (int i = 0; i < _contacts.length; i++) {
+      if (_contacts[i].id == contactId) {
+        _contacts[i] = PhoneContact(
+          id: _contacts[i].id,
+          name: _contacts[i].name,
+          number: _contacts[i].number,
+          isFavorite: !_contacts[i].isFavorite,
+        );
+        break;
+      }
+    }
+  }
+
   void deleteCallLog(String id) {
     _recentCalls.removeWhere((c) => c.id == id);
+  }
+
+  Future<void> clearAllCallLogs() async {
+    try {
+      await _channel.invokeMethod('clearDeviceCallLogs');
+    } catch (e) {
+      debugPrint('[PhoneDataService] clearDeviceCallLogs error: $e');
+    }
+    _recentCalls.clear();
   }
 
   String? getContactNameForNumber(String number) {

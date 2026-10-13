@@ -148,35 +148,27 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
 
               const Spacer(),
 
-              // Animated Pulsing Avatar DP
+              // Avatar DP (Matching Native Android Incoming Call)
               Container(
-                width: 130,
-                height: 130,
+                width: 120,
+                height: 120,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: OctalColors.surfaceCard,
-                  border: Border.all(color: OctalColors.primaryGold, width: 2),
-                  boxShadow: [
-                    BoxShadow(
-                      color: OctalColors.primaryGold.withOpacity(0.35),
-                      blurRadius: 36,
-                      spreadRadius: 4,
-                    ),
-                  ],
+                  color: const Color(0xFF2A221E),
+                  border: Border.all(color: const Color(0xFF3E3732), width: 1.5),
                 ),
                 child: Center(
                   child: initials.isNotEmpty
                       ? Text(
                           initials,
                           style: const TextStyle(
-                            color: OctalColors.primaryGold,
-                            fontSize: 48,
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Ubuntu',
-                            letterSpacing: 1.5,
+                            color: Color(0xFFF0DFD8),
+                            fontSize: 46,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 1.0,
                           ),
                         )
-                      : const Icon(Icons.person, color: OctalColors.primaryGold, size: 70),
+                      : const Icon(Icons.person, color: Color(0xFFF0DFD8), size: 66),
                 ),
               ),
 
@@ -197,11 +189,11 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                             width: 68,
                             height: 68,
                             decoration: BoxDecoration(
-                              color: OctalColors.error,
+                              color: const Color(0xFFD93025),
                               shape: BoxShape.circle,
                               boxShadow: [
                                 BoxShadow(
-                                  color: OctalColors.error.withOpacity(0.4),
+                                  color: const Color(0xFFD93025).withOpacity(0.35),
                                   blurRadius: 18,
                                   offset: const Offset(0, 4),
                                 ),
@@ -226,18 +218,18 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                             width: 68,
                             height: 68,
                             decoration: BoxDecoration(
-                              color: OctalColors.success,
+                              color: const Color(0xFF5BB974),
                               shape: BoxShape.circle,
                               boxShadow: [
                                 BoxShadow(
-                                  color: OctalColors.success.withOpacity(0.4),
+                                  color: const Color(0xFF5BB974).withOpacity(0.35),
                                   blurRadius: 18,
                                   offset: const Offset(0, 4),
                                 ),
                               ],
                             ),
                             child: const Center(
-                              child: Icon(Icons.call_rounded, color: Colors.white, size: 32),
+                              child: Icon(Icons.call_rounded, color: Color(0xFF202124), size: 32),
                             ),
                           ),
                           const SizedBox(height: 10),

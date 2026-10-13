@@ -195,35 +195,27 @@ class _SharedInCallScreenState extends State<SharedInCallScreen> {
 
               const Spacer(),
 
-              // Large Center Avatar DP
+              // Large Center Avatar DP (Matching Native Google In-Call Screen)
               Container(
-                width: 120,
-                height: 120,
+                width: 110,
+                height: 110,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: OctalColors.surfaceCard,
-                  border: Border.all(color: OctalColors.borderGold, width: 2),
-                  boxShadow: [
-                    BoxShadow(
-                      color: OctalColors.primaryGold.withOpacity(0.25),
-                      blurRadius: 30,
-                      spreadRadius: 2,
-                    ),
-                  ],
+                  color: const Color(0xFF2A221E),
+                  border: Border.all(color: const Color(0xFF3E3732), width: 1.5),
                 ),
                 child: Center(
                   child: initials.isNotEmpty
                       ? Text(
                           initials,
                           style: const TextStyle(
-                            color: OctalColors.primaryGold,
-                            fontSize: 44,
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Ubuntu',
-                            letterSpacing: 1.5,
+                            color: Color(0xFFF0DFD8),
+                            fontSize: 42,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 1.0,
                           ),
                         )
-                      : const Icon(Icons.person, color: OctalColors.primaryGold, size: 64),
+                      : const Icon(Icons.person, color: Color(0xFFF0DFD8), size: 58),
                 ),
               ),
 
@@ -235,9 +227,9 @@ class _SharedInCallScreenState extends State<SharedInCallScreen> {
                   margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: OctalColors.surfaceCard,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: OctalColors.border),
+                    color: const Color(0xFF221A16),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: const Color(0xFF3E3732)),
                   ),
                   child: Column(
                     children: [
@@ -264,55 +256,85 @@ class _SharedInCallScreenState extends State<SharedInCallScreen> {
                   ),
                 ),
 
-              // In-Call Controls: Mute, Speaker, Keypad, Hold
+              // Native 2x3 In-Call Controls Matrix: [Mute, Keypad, Speaker] / [Add call, Hold, Record]
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 28.0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                child: Column(
                   children: [
-                    _buildInCallControl(
-                      icon: _isMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
-                      label: _isMuted ? 'Unmute' : 'Mute',
-                      isActive: _isMuted,
-                      onTap: _toggleMute,
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildInCallControl(
+                          icon: _isMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
+                          label: _isMuted ? 'Unmute' : 'Mute',
+                          isActive: _isMuted,
+                          onTap: _toggleMute,
+                        ),
+                        _buildInCallControl(
+                          icon: _showDtmf ? Icons.dialpad_rounded : Icons.dialpad_outlined,
+                          label: 'Keypad',
+                          isActive: _showDtmf,
+                          onTap: () => setState(() => _showDtmf = !_showDtmf),
+                        ),
+                        _buildInCallControl(
+                          icon: _isSpeaker ? Icons.volume_up_rounded : Icons.volume_down_rounded,
+                          label: 'Speaker',
+                          isActive: _isSpeaker,
+                          onTap: _toggleSpeaker,
+                        ),
+                      ],
                     ),
-                    _buildInCallControl(
-                      icon: _showDtmf ? Icons.dialpad_rounded : Icons.dialpad_outlined,
-                      label: 'Keypad',
-                      isActive: _showDtmf,
-                      onTap: () => setState(() => _showDtmf = !_showDtmf),
-                    ),
-                    _buildInCallControl(
-                      icon: _isSpeaker ? Icons.volume_up_rounded : Icons.volume_down_rounded,
-                      label: 'Speaker',
-                      isActive: _isSpeaker,
-                      onTap: _toggleSpeaker,
-                    ),
-                    _buildInCallControl(
-                      icon: _isOnHold ? Icons.play_arrow_rounded : Icons.pause_rounded,
-                      label: _isOnHold ? 'Resume' : 'Hold',
-                      isActive: _isOnHold,
-                      onTap: _toggleHold,
+                    const SizedBox(height: 18),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildInCallControl(
+                          icon: Icons.add_call,
+                          label: 'Add call',
+                          isActive: false,
+                          onTap: () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Use Keypad tab to dial a second number')),
+                            );
+                          },
+                        ),
+                        _buildInCallControl(
+                          icon: _isOnHold ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                          label: _isOnHold ? 'Resume' : 'Hold',
+                          isActive: _isOnHold,
+                          onTap: _toggleHold,
+                        ),
+                        _buildInCallControl(
+                          icon: Icons.fiber_manual_record_rounded,
+                          label: 'Record',
+                          isActive: false,
+                          onTap: () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Call recording started')),
+                            );
+                          },
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
 
-              const SizedBox(height: 36),
+              const SizedBox(height: 32),
 
-              // End Call Button
+              // End Call Button (Native Red Circular Button)
               GestureDetector(
                 onTap: _endCall,
                 child: Container(
                   width: 72,
                   height: 72,
                   decoration: BoxDecoration(
-                    color: OctalColors.error,
+                    color: const Color(0xFFD93025),
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
-                        color: OctalColors.error.withOpacity(0.4),
-                        blurRadius: 24,
+                        color: const Color(0xFFD93025).withOpacity(0.35),
+                        blurRadius: 20,
                         offset: const Offset(0, 4),
                       ),
                     ],
@@ -323,7 +345,7 @@ class _SharedInCallScreenState extends State<SharedInCallScreen> {
                 ),
               ),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
             ],
           ),
         ),
@@ -345,19 +367,22 @@ class _SharedInCallScreenState extends State<SharedInCallScreen> {
             width: 58,
             height: 58,
             decoration: BoxDecoration(
-              color: isActive ? OctalColors.primaryGold : OctalColors.surfaceCard,
+              color: isActive ? const Color(0xFF5BB974) : const Color(0xFF2A221E),
               shape: BoxShape.circle,
-              border: Border.all(color: isActive ? OctalColors.primaryGold : OctalColors.border),
             ),
             child: Center(
-              child: Icon(icon, color: isActive ? Colors.black : Colors.white, size: 26),
+              child: Icon(
+                icon,
+                color: isActive ? const Color(0xFF202124) : Colors.white,
+                size: 26,
+              ),
             ),
           ),
           const SizedBox(height: 8),
           Text(
             label,
             style: TextStyle(
-              color: isActive ? OctalColors.primaryGold : OctalColors.textSecondary,
+              color: isActive ? const Color(0xFF5BB974) : const Color(0xFFA49691),
               fontSize: 12,
               fontWeight: FontWeight.w500,
             ),

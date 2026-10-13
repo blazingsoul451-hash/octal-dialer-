@@ -63,6 +63,10 @@ class TelecomService {
   /// Stream of genuine hardware Telecom call events (added, removed, state changes, audio routes).
   Stream<TelecomCallEvent> get callEvents => _callEventController.stream;
 
+  final StreamController<int> _tabSwitchController =
+      StreamController<int>.broadcast();
+  Stream<int> get onSwitchTab => _tabSwitchController.stream;
+
   /// Flag indicating an active Auto Dialer call (managed by CallingScreen)
   /// to prevent MainShellScreen from pushing a duplicate SharedInCallScreen.
   bool isAutoDialerCallActive = false;
@@ -83,6 +87,12 @@ class TelecomService {
       try {
         final args = call.arguments is Map ? call.arguments as Map : {};
         switch (call.method) {
+          case 'onSwitchTab':
+            final tab = call.arguments is int
+                ? call.arguments as int
+                : int.tryParse(call.arguments?.toString() ?? '0') ?? 0;
+            _tabSwitchController.add(tab);
+            break;
           case 'onTelecomCallAdded':
             _activeCallCount++;
             _callEventController.add(TelecomCallEvent.fromMap('added', args));

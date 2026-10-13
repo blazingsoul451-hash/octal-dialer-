@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
@@ -383,42 +382,24 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
 
               const SizedBox(height: 10),
 
-              // Hero Glowing Avatar
+              // Center Avatar (Matching Native Android In-Call UI)
               Center(
                 child: Container(
-                  width: 140,
-                  height: 140,
+                  width: 120,
+                  height: 120,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: OctalColors.surfaceCard,
-                    border: Border.all(color: OctalColors.primaryGold, width: 3.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: OctalColors.primaryGold.withOpacity(0.3),
-                        blurRadius: 36,
-                        spreadRadius: 4,
-                      ),
-                    ],
+                    color: const Color(0xFF2A221E),
+                    border: Border.all(color: const Color(0xFF3E3732), width: 1.5),
                   ),
                   child: Center(
-                    child: Container(
-                      width: 116,
-                      height: 116,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: OctalColors.bgDark,
-                        border: Border.all(color: OctalColors.secondaryGold.withOpacity(0.5), width: 1.5),
-                      ),
-                      child: Center(
-                        child: Text(
-                          initial,
-                          style: const TextStyle(
-                            fontFamily: 'Ubuntu',
-                            fontSize: 48,
-                            fontWeight: FontWeight.w900,
-                            color: OctalColors.primaryGold,
-                          ),
-                        ),
+                    child: Text(
+                      initial,
+                      style: const TextStyle(
+                        fontFamily: 'Ubuntu',
+                        fontSize: 44,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFFF0DFD8),
                       ),
                     ),
                   ),
@@ -456,14 +437,9 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     decoration: BoxDecoration(
                       color: isConnected
-                          ? OctalColors.success.withOpacity(0.15)
-                          : OctalColors.primaryGold.withOpacity(0.15),
+                          ? const Color(0xFF5BB974).withOpacity(0.15)
+                          : const Color(0xFF6E4D3E).withOpacity(0.3),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: isConnected
-                            ? OctalColors.success.withOpacity(0.4)
-                            : OctalColors.primaryGold.withOpacity(0.4),
-                      ),
                     ),
                     child: Column(
                       children: [
@@ -473,7 +449,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                             fontSize: 10,
                             fontWeight: FontWeight.w900,
                             letterSpacing: 1.5,
-                            color: isConnected ? OctalColors.success : OctalColors.primaryGold,
+                            color: isConnected ? const Color(0xFF5BB974) : const Color(0xFFF0DFD8),
                           ),
                         ),
                         const SizedBox(height: 2),
@@ -490,36 +466,6 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                     ),
                   ),
                 ],
-              ),
-
-              const SizedBox(height: 12),
-
-              // Animated Audio Waveform Visualizer
-              AnimatedBuilder(
-                animation: _waveAnimController,
-                builder: (context, child) {
-                  return SizedBox(
-                    height: 38,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(24, (index) {
-                        final waveVal = math.sin((index * 0.4) + (_waveAnimController.value * math.pi * 2));
-                        final height = isConnected
-                            ? 8.0 + (waveVal.abs() * 24.0)
-                            : 4.0 + (math.sin(index * 0.3).abs() * 12.0);
-                        return Container(
-                          width: 3.5,
-                          height: height,
-                          margin: const EdgeInsets.symmetric(horizontal: 2.5),
-                          decoration: BoxDecoration(
-                            color: isConnected ? OctalColors.primaryGold : OctalColors.textMuted,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        );
-                      }),
-                    ),
-                  );
-                },
               ),
 
               const SizedBox(height: 16),
@@ -544,7 +490,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                     isActive: false,
                     onTap: () {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('In-call DTMF Keypad active on native phone.')),
+                        const SnackBar(content: Text('In-call DTMF Keypad active')),
                       );
                     },
                   ),
@@ -561,14 +507,12 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                 ],
               ),
 
-              const SizedBox(height: 20),
+              const SizedBox(height: 32),
 
-              // End Call Full Width Gold Button
-              SizedBox(
-                width: double.infinity,
-                height: 54,
-                child: ElevatedButton.icon(
-                  onPressed: () {
+              // End Call Circular Red Button (Matching Native Android Phone)
+              Center(
+                child: GestureDetector(
+                  onTap: () {
                     _cancelRequested = true;
                     TelecomService.instance.disconnect(callId: widget.callId).catchError((_) => false);
                     _nativeChannel.invokeMethod('endCall').catchError((_) {});
@@ -578,23 +522,22 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                       }
                     });
                   },
-                  icon: const Icon(Icons.call_end, color: OctalColors.bgDark, size: 22),
-                  label: const Text(
-                    'End Call',
-                    style: TextStyle(
-                      fontFamily: 'Ubuntu',
-                      fontSize: 16,
-                      fontWeight: FontWeight.w900,
-                      color: OctalColors.bgDark,
-                      letterSpacing: 0.5,
+                  child: Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD93025),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFD93025).withOpacity(0.35),
+                          blurRadius: 20,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
                     ),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: OctalColors.primaryGold,
-                    elevation: 6,
-                    shadowColor: OctalColors.primaryGold.withOpacity(0.4),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
+                    child: const Center(
+                      child: Icon(Icons.call_end_rounded, color: Colors.white, size: 36),
                     ),
                   ),
                 ),
@@ -622,21 +565,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
             height: 58,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: isActive ? OctalColors.primaryGold : OctalColors.surfaceCard,
-              border: Border.all(
-                color: isActive ? OctalColors.primaryGold : OctalColors.border,
-                width: 1.5,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.3),
-                  blurRadius: 8,
-                ),
-              ],
+              color: isActive ? const Color(0xFF5BB974) : const Color(0xFF2A221E),
             ),
             child: Icon(
               icon,
-              color: isActive ? OctalColors.bgDark : Colors.white,
+              color: isActive ? const Color(0xFF202124) : Colors.white,
               size: 24,
             ),
           ),
@@ -644,7 +577,11 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         const SizedBox(height: 8),
         Text(
           label,
-          style: const TextStyle(fontSize: 12, color: OctalColors.textSecondary, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            fontSize: 12,
+            color: isActive ? const Color(0xFF5BB974) : const Color(0xFFA49691),
+            fontWeight: FontWeight.w500,
+          ),
         ),
       ],
     );

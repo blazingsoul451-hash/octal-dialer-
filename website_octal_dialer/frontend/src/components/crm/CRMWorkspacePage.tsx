@@ -167,92 +167,82 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
 
   const isOwner = userRole === 'platform_admin' || userRole === 'company_owner' || userRole === 'superadmin' || userRole === 'admin';
 
-  // Fetch all CRM workspace data
+  // Fetch all CRM workspace data concurrently
   const fetchCRMData = async () => {
     setLoading(true);
     setError(null);
     try {
       const headers = { 'Authorization': `Bearer ${authToken}` };
 
-      // 1. Overview metrics
-      const metricsRes = await fetch(`${serverUrl}/api/crm/overview?range=${dateRange}`, { headers });
-      if (metricsRes.ok) {
-        const json = await metricsRes.json();
+      const [
+        metricsRes,
+        compRes,
+        contRes,
+        leadsRes,
+        tasksRes,
+        meetingsRes,
+        workRes,
+        quotesRes,
+        perfRes,
+        timelineRes,
+        usersRes
+      ] = await Promise.allSettled([
+        fetch(`${serverUrl}/api/crm/overview?range=${dateRange}`, { headers }),
+        fetch(`${serverUrl}/api/crm/companies`, { headers }),
+        fetch(`${serverUrl}/api/crm/contacts`, { headers }),
+        fetch(`${serverUrl}/api/crm/leads?limit=100`, { headers }),
+        fetch(`${serverUrl}/api/crm/tasks`, { headers }),
+        fetch(`${serverUrl}/api/crm/meetings`, { headers }),
+        fetch(`${serverUrl}/api/crm/work-items`, { headers }),
+        fetch(`${serverUrl}/api/crm/quotes`, { headers }),
+        fetch(`${serverUrl}/api/crm/performance?period=${performancePeriod}`, { headers }),
+        fetch(`${serverUrl}/api/crm/timeline?limit=50`, { headers }),
+        fetch(`${serverUrl}/api/admin/users`, { headers })
+      ]);
+
+      if (metricsRes.status === 'fulfilled' && metricsRes.value.ok) {
+        const json = await metricsRes.value.json();
         setMetrics(json.metrics);
       }
-
-      // 2. Companies
-      const compRes = await fetch(`${serverUrl}/api/crm/companies`, { headers });
-      if (compRes.ok) {
-        const json = await compRes.json();
+      if (compRes.status === 'fulfilled' && compRes.value.ok) {
+        const json = await compRes.value.json();
         setCompanies(json.companies || []);
       }
-
-      // 3. Contacts
-      const contRes = await fetch(`${serverUrl}/api/crm/contacts`, { headers });
-      if (contRes.ok) {
-        const json = await contRes.json();
+      if (contRes.status === 'fulfilled' && contRes.value.ok) {
+        const json = await contRes.value.json();
         setContacts(json.contacts || []);
       }
-
-      // 4. Canonical leads
-      const leadsRes = await fetch(`${serverUrl}/api/crm/leads?limit=100`, { headers });
-      if (leadsRes.ok) {
-        const json = await leadsRes.json();
+      if (leadsRes.status === 'fulfilled' && leadsRes.value.ok) {
+        const json = await leadsRes.value.json();
         setLeads(json.leads || []);
       }
-
-      // 5. Tasks
-      const tasksRes = await fetch(`${serverUrl}/api/crm/tasks`, { headers });
-      if (tasksRes.ok) {
-        const json = await tasksRes.json();
+      if (tasksRes.status === 'fulfilled' && tasksRes.value.ok) {
+        const json = await tasksRes.value.json();
         setTasks(json.tasks || []);
       }
-
-      // 6. Meetings
-      const meetingsRes = await fetch(`${serverUrl}/api/crm/meetings`, { headers });
-      if (meetingsRes.ok) {
-        const json = await meetingsRes.json();
+      if (meetingsRes.status === 'fulfilled' && meetingsRes.value.ok) {
+        const json = await meetingsRes.value.json();
         setMeetings(json.meetings || []);
       }
-
-      // 7. Client Work Items
-      const workRes = await fetch(`${serverUrl}/api/crm/work-items`, { headers });
-      if (workRes.ok) {
-        const json = await workRes.json();
+      if (workRes.status === 'fulfilled' && workRes.value.ok) {
+        const json = await workRes.value.json();
         setWorkItems(json.workItems || []);
       }
-
-      // 8. Quotes
-      const quotesRes = await fetch(`${serverUrl}/api/crm/quotes`, { headers });
-      if (quotesRes.ok) {
-        const json = await quotesRes.json();
+      if (quotesRes.status === 'fulfilled' && quotesRes.value.ok) {
+        const json = await quotesRes.value.json();
         setQuotes(json.quotes || []);
       }
-
-      // 9. Performance
-      const perfRes = await fetch(`${serverUrl}/api/crm/performance?period=${performancePeriod}`, { headers });
-      if (perfRes.ok) {
-        const json = await perfRes.json();
+      if (perfRes.status === 'fulfilled' && perfRes.value.ok) {
+        const json = await perfRes.value.json();
         setPerformance(json);
       }
-
-      // 10. Timeline
-      const timelineRes = await fetch(`${serverUrl}/api/crm/timeline?limit=50`, { headers });
-      if (timelineRes.ok) {
-        const json = await timelineRes.json();
+      if (timelineRes.status === 'fulfilled' && timelineRes.value.ok) {
+        const json = await timelineRes.value.json();
         setTimeline(json.items || []);
       }
-
-      // 11. Users for assignment
-      try {
-        const usersRes = await fetch(`${serverUrl}/api/admin/users`, { headers });
-        if (usersRes.ok) {
-          const json = await usersRes.json();
-          setUsers((json.users || []).map((u: any) => ({ id: u.id, name: u.name || u.email })));
-        }
-      } catch {
-        // Ignored
+      if (usersRes.status === 'fulfilled' && usersRes.value.ok) {
+        const json = await usersRes.value.json();
+        setUsers((json.users || []).map((u: any) => ({ id: u.id, name: u.name || u.email })));
       }
     } catch (err: any) {
       setError(err.message || 'Error fetching CRM workspace data');

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../theme/octal_theme.dart';
-import '../services/api_service.dart';
 import '../services/fb_local_worker.dart';
 
 class MainDesktopScreen extends StatefulWidget {
@@ -293,7 +292,7 @@ class _MainDesktopScreenState extends State<MainDesktopScreen> {
                 },
                 icon: const Icon(Icons.login, size: 18),
                 label: const Text('1-Click Connect Facebook (No Extensions)'),
-                style: ElevatedButton.styleToFill(
+                style: ElevatedButton.styleFrom(
                   backgroundColor: OctalColors.primaryGold,
                   foregroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
@@ -392,18 +391,6 @@ class _MainDesktopScreenState extends State<MainDesktopScreen> {
           );
         },
       ),
-    );
-  }
-}
-
-extension on ElevatedButton {
-  static ButtonStyle styleToFill({required Color backgroundColor, required Color foregroundColor, required EdgeInsets padding}) {
-    return ElevatedButton.styleFrom(
-      backgroundColor: backgroundColor,
-      foregroundColor: foregroundColor,
-      padding: padding,
-      elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
     );
   }
 }
