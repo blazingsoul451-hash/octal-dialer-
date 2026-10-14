@@ -271,7 +271,7 @@ class TelecomService {
         'simSlot': simSlot,
         'callId': callId,
       });
-      return directRes ?? false;
+      return res ?? false;
     } catch (e) {
       debugPrint('[TelecomService] placeCall error: $e');
       return false;
