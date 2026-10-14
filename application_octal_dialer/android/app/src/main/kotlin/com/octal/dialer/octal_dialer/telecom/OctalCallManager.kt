@@ -23,6 +23,8 @@ object OctalCallManager {
     // Weak reference to the currently bound InCallService
     private var inCallServiceRef: WeakReference<OctalInCallService>? = null
 
+    var activeCall: Call? = null
+
     // In-memory active calls map (keyed by unique Call hash/id or server callId)
     private val activeCalls = ConcurrentHashMap<String, Call>()
 
@@ -125,6 +127,7 @@ object OctalCallManager {
         if (inCallServiceRef?.get() == service) {
             inCallServiceRef = null
         }
+        activeCall = null
         activeCalls.clear()
         callToExternalIdMap.clear()
         externalIdToCallMap.clear()
@@ -252,6 +255,7 @@ object OctalCallManager {
         }
 
         activeCalls[callId] = call
+        activeCall = call
 
         Log.d(TAG, "[Telecom] onCallAdded id=$callId (external=$externalId) number=$number isIncoming=$isIncoming state=${getStateString(call.state)}")
 
@@ -287,6 +291,10 @@ object OctalCallManager {
 
     fun onCallRemoved(call: Call) {
         val callId = getCallId(call)
+        if (activeCall == call) {
+            activeCall = null
+        }
+        activeCall = null
         activeCalls.remove(callId)
         callToExternalIdMap.remove(call)?.let { extId ->
             externalIdToCallMap.remove(extId)

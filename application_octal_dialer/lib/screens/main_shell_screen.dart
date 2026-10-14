@@ -44,6 +44,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
         _switchToTab(tab);
       }
     });
+    _checkDefaultDialer();
   }
 
   Future<void> _checkDefaultDialer() async {
@@ -70,7 +71,9 @@ class _MainShellScreenState extends State<MainShellScreen> {
     if (mounted) setState(() {});
   }
 
-  void _listenToTelecomEvents() {
+  void _listenToTelecomEvents() async {
+    await _telecomSub?.cancel();
+
     TelecomService.instance.getInCallDetails().then((details) {
       if (details != null && mounted && !_isCallScreenActive && !TelecomService.instance.isAutoDialerCallActive) {
         final isIncoming = details['isIncoming'] == true;
@@ -137,8 +140,13 @@ class _MainShellScreenState extends State<MainShellScreen> {
             _isCallScreenActive = false;
           });
         }
-      } else if (event.type == 'removed') {
-        _isCallScreenActive = false;
+      } else if (event.type == 'removed' || event.type == 'disconnected') {
+        if (_isCallScreenActive) {
+          if (mounted && Navigator.canPop(context)) {
+            Navigator.pop(context);
+          }
+          _isCallScreenActive = false;
+        }
       }
     });
   }

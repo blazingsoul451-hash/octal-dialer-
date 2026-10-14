@@ -39,8 +39,14 @@ class _NearbyPlacesScreenState extends State<NearbyPlacesScreen> {
             value: _settings.nearbyPlaces,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setNearbyPlaces(val));
+            onChanged: (val) async {
+              final prev = _settings.nearbyPlaces;
+              try {
+                await _settings.setNearbyPlaces(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setNearbyPlaces(prev));
+              }
             },
           ),
         ],

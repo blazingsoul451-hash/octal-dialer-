@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'screens/main_shell_screen.dart';
 import 'config/app_config.dart';
 import 'widgets/octal_logo.dart';
+import 'services/dialer_settings_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppConfig.init();
+  await DialerSettingsService.instance.init();
   runApp(const OctalDialerApp());
 }
 

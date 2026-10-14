@@ -59,11 +59,17 @@ class _SharedInCallScreenState extends State<SharedInCallScreen> {
     });
   }
 
-  void _startTimer() {
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() => _seconds++);
+  void _startDurationTimer() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() => _seconds++);
     });
   }
+
+  void _startTimer() => _startDurationTimer();
 
   @override
   void dispose() {
@@ -79,24 +85,49 @@ class _SharedInCallScreenState extends State<SharedInCallScreen> {
   }
 
   void _toggleMute() async {
+    final originalMute = _isMuted;
     final newMute = !_isMuted;
-    final ok = await _telecomService.setMuted(newMute);
-    if (ok && mounted) setState(() => _isMuted = newMute);
+    setState(() => _isMuted = newMute);
+    try {
+      final ok = await _telecomService.setMuted(newMute);
+      if (!ok && mounted) {
+        setState(() => _isMuted = originalMute);
+      }
+    } catch (e) {
+      debugPrint('[SharedInCallScreen] _toggleMute error: $e');
+      if (mounted) setState(() => _isMuted = originalMute);
+    }
   }
 
   void _toggleSpeaker() async {
+    final originalSpeaker = _isSpeaker;
     final newSpeaker = !_isSpeaker;
-    final ok = await _telecomService.setSpeaker(newSpeaker);
-    if (ok && mounted) setState(() => _isSpeaker = newSpeaker);
+    setState(() => _isSpeaker = newSpeaker);
+    try {
+      final ok = await _telecomService.setSpeaker(newSpeaker);
+      if (!ok && mounted) {
+        setState(() => _isSpeaker = originalSpeaker);
+      }
+    } catch (e) {
+      debugPrint('[SharedInCallScreen] _toggleSpeaker error: $e');
+      if (mounted) setState(() => _isSpeaker = originalSpeaker);
+    }
   }
 
   void _toggleHold() async {
+    final originalHold = _isOnHold;
     final nextHold = !_isOnHold;
-    final ok = nextHold
-        ? await _telecomService.holdCall()
-        : await _telecomService.unholdCall();
-    if (ok && mounted) {
-      setState(() => _isOnHold = nextHold);
+    setState(() => _isOnHold = nextHold);
+    try {
+      final ok = nextHold
+          ? await _telecomService.holdCall()
+          : await _telecomService.unholdCall();
+      if (!ok && mounted) {
+        setState(() => _isOnHold = originalHold);
+      }
+    } catch (e) {
+      debugPrint('[SharedInCallScreen] _toggleHold error: $e');
+      if (mounted) setState(() => _isOnHold = originalHold);
     }
   }
 

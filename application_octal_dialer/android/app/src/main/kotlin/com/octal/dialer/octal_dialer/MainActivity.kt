@@ -1,6 +1,7 @@
 package com.octal.dialer.octal_dialer
 
 import android.Manifest
+import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -35,6 +36,7 @@ class MainActivity: FlutterActivity() {
     private val PERMISSIONS_REQUEST_CODE = 1001
     private val DEFAULT_DIALER_REQUEST_CODE = 1002
     private val CONTACTS_PERMISSIONS_REQUEST_CODE = 1003
+    private val CONTACTS_PERM_REQUEST_CODE = 1003
     private val TAG = "OctalCall"
     private val PREFS_NAME = "OctalDialerPrefs"
     private val PREF_KEY_PREFERRED_SIM = "octal_preferred_sim"
@@ -58,7 +60,9 @@ class MainActivity: FlutterActivity() {
 
     private var pendingResult: MethodChannel.Result? = null
     private var pendingDefaultDialerResult: MethodChannel.Result? = null
+    private var pendingRoleResult: MethodChannel.Result? = null
     private var pendingContactsResult: MethodChannel.Result? = null
+    private var pendingContactsPermResult: MethodChannel.Result? = null
     private var telecomListener: OctalCallManager.CallEventListener? = null
     private var methodChannel: MethodChannel? = null
     private var telephonyManager: TelephonyManager? = null
@@ -250,21 +254,22 @@ class MainActivity: FlutterActivity() {
                     }
                 }
                 "checkContactsPermission" -> {
-                    val readGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
-                    val writeGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED
-                    result.success(readGranted && writeGranted)
+                    result.success(checkContactsPermission())
                 }
                 "requestContactsPermission" -> {
                     val perms = mutableListOf<String>()
                     if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
                         perms.add(Manifest.permission.READ_CONTACTS)
                     }
-                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-                        perms.add(Manifest.permission.WRITE_CONTACTS)
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+                        perms.add(Manifest.permission.READ_CALL_LOG)
+                    }
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+                        perms.add(Manifest.permission.WRITE_CALL_LOG)
                     }
                     if (perms.isNotEmpty()) {
-                        pendingContactsResult = result
-                        ActivityCompat.requestPermissions(this, perms.toTypedArray(), CONTACTS_PERMISSIONS_REQUEST_CODE)
+                        pendingContactsPermResult = result
+                        ActivityCompat.requestPermissions(this, perms.toTypedArray(), CONTACTS_PERM_REQUEST_CODE)
                     } else {
                         result.success(true)
                     }
@@ -276,15 +281,28 @@ class MainActivity: FlutterActivity() {
                     saveDeviceContact(name, number, email, result)
                 }
                 "isDefaultDialer" -> {
-                    result.success(OctalPhoneAccountManager.isDefaultDialer(this))
+                    result.success(isDefaultDialer())
                 }
                 "requestDefaultDialer" -> {
-                    val intent = OctalPhoneAccountManager.createDefaultDialerIntent(this)
+                    pendingRoleResult = result
+                    pendingDefaultDialerResult = result
+                    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        val roleManager = getSystemService(Context.ROLE_SERVICE) as? RoleManager
+                        if (roleManager != null && roleManager.isRoleAvailable(RoleManager.ROLE_DIALER)) {
+                            roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER)
+                        } else {
+                            OctalPhoneAccountManager.createDefaultDialerIntent(this)
+                        }
+                    } else {
+                        OctalPhoneAccountManager.createDefaultDialerIntent(this)
+                    }
                     if (intent != null) {
-                        pendingDefaultDialerResult = result
                         startActivityForResult(intent, DEFAULT_DIALER_REQUEST_CODE)
                     } else {
-                        result.success(false)
+                        val isDefault = isDefaultDialer()
+                        pendingRoleResult?.success(isDefault)
+                        pendingRoleResult = null
+                        pendingDefaultDialerResult = null
                     }
                 }
                 "getTelecomStatus" -> {
@@ -752,14 +770,14 @@ class MainActivity: FlutterActivity() {
 
             val (descriptors, effectiveSim, _) = getActiveSimsWithReconciliation()
             val targetSim = if (requestedSlot != null && requestedSlot >= 0) {
-                descriptors.find { it.simSlotIndex == requestedSlot }
+                val found = descriptors.find { it.simSlotIndex == requestedSlot }
+                if (found == null) {
+                    Log.w(TAG, "[Telecom] Requested SIM slot $requestedSlot out of bounds or inactive, falling back to default system SIM: ${effectiveSim?.simSlotIndex}")
+                    effectiveSim
+                } else {
+                    found
+                }
             } else effectiveSim
-
-            if (requestedSlot != null && requestedSlot >= 0 && targetSim == null) {
-                Log.e(TAG, "[Telecom] FAIL CLOSED: Requested SIM slot $requestedSlot not found in active descriptors")
-                result.error("SIM_UNAVAILABLE", "Requested SIM slot $requestedSlot is not available", null)
-                return
-            }
 
             val callAccounts = telecomManager.getCallCapablePhoneAccounts() ?: emptyList()
             val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
@@ -778,12 +796,6 @@ class MainActivity: FlutterActivity() {
                 isSystemDefault = targetSim?.isSystemDefault ?: false,
                 activeList = activeList
             )
-
-            if (requestedSlot != null && requestedSlot >= 0 && matchedHandle == null) {
-                Log.e(TAG, "[Telecom] FAIL CLOSED: Requested SIM slot $requestedSlot could not be resolved to a PhoneAccountHandle")
-                result.error("SIM_UNAVAILABLE", "Requested SIM slot $requestedSlot could not be resolved to a call-capable account", null)
-                return
-            }
 
             val extras = Bundle().apply {
                 if (matchedHandle != null) {
@@ -1056,10 +1068,11 @@ class MainActivity: FlutterActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == CONTACTS_PERMISSIONS_REQUEST_CODE) {
-            val readGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
-            val writeGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED
-            pendingContactsResult?.success(readGranted && writeGranted)
+        if (requestCode == CONTACTS_PERM_REQUEST_CODE || requestCode == CONTACTS_PERMISSIONS_REQUEST_CODE) {
+            val granted = checkContactsPermission()
+            pendingContactsPermResult?.success(granted)
+            pendingContactsPermResult = null
+            pendingContactsResult?.success(granted)
             pendingContactsResult = null
             return
         }
@@ -1088,8 +1101,10 @@ class MainActivity: FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == DEFAULT_DIALER_REQUEST_CODE) {
-            val isDefault = OctalPhoneAccountManager.isDefaultDialer(this)
+            val isDefault = isDefaultDialer()
             Log.d(TAG, "[Telecom] Default dialer request completed. isDefault=$isDefault")
+            pendingRoleResult?.success(isDefault)
+            pendingRoleResult = null
             pendingDefaultDialerResult?.success(isDefault)
             pendingDefaultDialerResult = null
         }
@@ -1285,14 +1300,18 @@ class MainActivity: FlutterActivity() {
     }
 
     private fun deleteDeviceCallLog(id: String, result: MethodChannel.Result) {
+        if (id.isBlank()) {
+            result.error("INVALID_ID", "Call log ID cannot be empty", null)
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+            result.error("PERMISSION_DENIED", "WRITE_CALL_LOG permission not granted", null)
+            return
+        }
         Thread {
             try {
-                var deleted = false
-                val hasPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALL_LOG) == PackageManager.PERMISSION_GRANTED
-                if (hasPerm && id.isNotEmpty()) {
-                    val count = contentResolver.delete(CallLog.Calls.CONTENT_URI, "${CallLog.Calls._ID} = ?", arrayOf(id))
-                    deleted = count > 0
-                }
+                val count = contentResolver.delete(CallLog.Calls.CONTENT_URI, "${CallLog.Calls._ID} = ?", arrayOf(id))
+                val deleted = count > 0
                 runOnUiThread { result.success(deleted) }
             } catch (e: Exception) {
                 Log.e(TAG, "deleteDeviceCallLog error: ${e.message}")
@@ -1354,6 +1373,17 @@ class MainActivity: FlutterActivity() {
                 runOnUiThread { result.error("SAVE_FAILED", e.message, null) }
             }
         }.start()
+    }
+
+    private fun isDefaultDialer(): Boolean {
+        return OctalPhoneAccountManager.isDefaultDialer(this)
+    }
+
+    private fun checkContactsPermission(): Boolean {
+        val readContacts = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+        val readCallLog = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED
+        val writeCallLog = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALL_LOG) == PackageManager.PERMISSION_GRANTED
+        return readContacts && readCallLog && writeCallLog
     }
 
     override fun onDestroy() {

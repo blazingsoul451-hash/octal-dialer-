@@ -42,26 +42,39 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     super.dispose();
   }
 
-  void _answer() async {
-    final ok = await _telecomService.answer();
-    if (ok && mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => SharedInCallScreen(
-            phoneNumber: widget.phoneNumber,
-            contactName: widget.callerName,
-            simName: widget.simName,
+  void _answerCall() async {
+    try {
+      await _telecomService.answer();
+    } catch (e) {
+      debugPrint('[IncomingCallScreen] answerCall error: $e');
+    } finally {
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => SharedInCallScreen(
+              phoneNumber: widget.phoneNumber,
+              contactName: widget.callerName,
+              simName: widget.simName,
+            ),
           ),
-        ),
-      );
+        );
+      }
     }
   }
 
-  void _decline() async {
-    await _telecomService.disconnect();
-    if (mounted) Navigator.pop(context);
+  void _rejectCall() async {
+    try {
+      await _telecomService.disconnect();
+    } catch (e) {
+      debugPrint('[IncomingCallScreen] rejectCall error: $e');
+    } finally {
+      if (mounted) Navigator.pop(context);
+    }
   }
+
+  void _answer() => _answerCall();
+  void _decline() => _rejectCall();
 
   @override
   Widget build(BuildContext context) {

@@ -151,6 +151,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   const [isSearchingGlobal, setIsSearchingGlobal] = useState(false);
   const [showGlobalDropdown, setShowGlobalDropdown] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
+  const prevOpenRef = useRef<boolean>(false);
 
   // Subtab Search & Filter states
   const [searchQuery, setSearchQuery] = useState('');
@@ -168,9 +169,12 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   const isOwner = userRole === 'platform_admin' || userRole === 'company_owner' || userRole === 'superadmin' || userRole === 'admin';
 
   // Fetch all CRM workspace data concurrently
-  const fetchCRMData = async () => {
-    setLoading(true);
-    setError(null);
+  const fetchCRMData = async (checkMounted?: () => boolean) => {
+    const isSafe = () => (!checkMounted || checkMounted());
+    if (isSafe()) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const headers = { 'Authorization': `Bearer ${authToken}` };
 
@@ -200,59 +204,65 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
         fetch(`${serverUrl}/api/admin/users`, { headers })
       ]);
 
+      if (!isSafe()) return;
+
       if (metricsRes.status === 'fulfilled' && metricsRes.value.ok) {
         const json = await metricsRes.value.json();
-        setMetrics(json.metrics);
+        if (isSafe()) setMetrics(json.metrics);
       }
       if (compRes.status === 'fulfilled' && compRes.value.ok) {
         const json = await compRes.value.json();
-        setCompanies(json.companies || []);
+        if (isSafe()) setCompanies(json.companies || []);
       }
       if (contRes.status === 'fulfilled' && contRes.value.ok) {
         const json = await contRes.value.json();
-        setContacts(json.contacts || []);
+        if (isSafe()) setContacts(json.contacts || []);
       }
       if (leadsRes.status === 'fulfilled' && leadsRes.value.ok) {
         const json = await leadsRes.value.json();
-        setLeads(json.leads || []);
+        if (isSafe()) setLeads(json.leads || []);
       }
       if (tasksRes.status === 'fulfilled' && tasksRes.value.ok) {
         const json = await tasksRes.value.json();
-        setTasks(json.tasks || []);
+        if (isSafe()) setTasks(json.tasks || []);
       }
       if (meetingsRes.status === 'fulfilled' && meetingsRes.value.ok) {
         const json = await meetingsRes.value.json();
-        setMeetings(json.meetings || []);
+        if (isSafe()) setMeetings(json.meetings || []);
       }
       if (workRes.status === 'fulfilled' && workRes.value.ok) {
         const json = await workRes.value.json();
-        setWorkItems(json.workItems || []);
+        if (isSafe()) setWorkItems(json.workItems || []);
       }
       if (quotesRes.status === 'fulfilled' && quotesRes.value.ok) {
         const json = await quotesRes.value.json();
-        setQuotes(json.quotes || []);
+        if (isSafe()) setQuotes(json.quotes || []);
       }
       if (perfRes.status === 'fulfilled' && perfRes.value.ok) {
         const json = await perfRes.value.json();
-        setPerformance(json);
+        if (isSafe()) setPerformance(json);
       }
       if (timelineRes.status === 'fulfilled' && timelineRes.value.ok) {
         const json = await timelineRes.value.json();
-        setTimeline(json.items || []);
+        if (isSafe()) setTimeline(json.items || []);
       }
       if (usersRes.status === 'fulfilled' && usersRes.value.ok) {
         const json = await usersRes.value.json();
-        setUsers((json.users || []).map((u: any) => ({ id: u.id, name: u.name || u.email })));
+        if (isSafe()) setUsers((json.users || []).map((u: any) => ({ id: u.id, name: u.name || u.email })));
       }
     } catch (err: any) {
-      setError(err.message || 'Error fetching CRM workspace data');
+      if (isSafe()) setError(err.message || 'Error fetching CRM workspace data');
     } finally {
-      setLoading(false);
+      if (isSafe()) setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchCRMData();
+    let isMounted = true;
+    fetchCRMData(() => isMounted);
+    return () => {
+      isMounted = false;
+    };
   }, [serverUrl, authToken, dateRange, performancePeriod]);
 
   useEffect(() => {

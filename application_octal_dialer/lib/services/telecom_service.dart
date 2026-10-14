@@ -172,6 +172,8 @@ class TelecomService {
     }
   }
 
+  Future<bool> requestDefaultDialer() => requestDefaultDialerRole();
+
   /// Centralized prerequisite gate for both Normal Calling and Auto Dialer.
   /// Enforces Default Dialer role and mandatory telephony permissions before placing calls.
   /// If missing, prompts the user and verifies. If declined, returns false.

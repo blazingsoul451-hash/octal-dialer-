@@ -112,8 +112,14 @@ class _AccessibilitySettingsScreenState extends State<AccessibilitySettingsScree
             value: _settings.hearingAids,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setHearingAids(val));
+            onChanged: (val) async {
+              final prev = _settings.hearingAids;
+              try {
+                await _settings.setHearingAids(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setHearingAids(prev));
+              }
             },
           ),
         ],

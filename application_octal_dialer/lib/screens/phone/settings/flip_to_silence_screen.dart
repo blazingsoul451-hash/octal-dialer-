@@ -69,8 +69,14 @@ class _FlipToSilenceScreenState extends State<FlipToSilenceScreen> {
             value: _settings.flipToSilence,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setFlipToSilence(val));
+            onChanged: (val) async {
+              final prev = _settings.flipToSilence;
+              try {
+                await _settings.setFlipToSilence(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setFlipToSilence(prev));
+              }
             },
           ),
         ],

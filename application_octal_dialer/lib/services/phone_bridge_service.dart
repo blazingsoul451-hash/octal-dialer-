@@ -7,6 +7,7 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../config/app_config.dart';
 import 'telecom_service.dart';
 import 'call_outbox_service.dart';
+import 'phone_data_service.dart';
 
 enum PairingMode {
   authenticated,
@@ -445,6 +446,7 @@ class PhoneBridgeService extends ChangeNotifier {
     _socket!.onConnect((_) {
       debugPrint('[PhoneBridge] Socket connected. Emitting phone:join...');
       emitJoin();
+      _checkAndReEmitMidCallStatus();
     });
 
     _socket!.on('call:ended-ack', (data) {
@@ -636,6 +638,7 @@ class PhoneBridgeService extends ChangeNotifier {
         debugPrint('[PhoneBridge] Connected to server in QR / unauthenticated mode.');
         _setStatus(BridgeStatus.online, '● Connected to Octal Bridge');
       }
+      _checkAndReEmitMidCallStatus();
     });
 
     _socket!.on('call:ended-ack', (data) {
@@ -940,6 +943,67 @@ class PhoneBridgeService extends ChangeNotifier {
   void emit(String event, [dynamic data]) {
     if (_socket != null && _socket!.connected) {
       _socket!.emit(event, data);
+    }
+  }
+
+  Future<void> _checkAndReEmitMidCallStatus() async {
+    try {
+      final inCall = await TelecomService.instance.getInCallDetails();
+      if (inCall != null) {
+        final bool isOngoing = inCall['isActive'] == true ||
+            inCall['isRinging'] == true ||
+            inCall['isDialing'] == true ||
+            inCall['hasActiveCall'] == true;
+        if (isOngoing) {
+          debugPrint('[PhoneBridge] Reconnected mid-call, re-emitting call_status: $inCall');
+          _socket?.emit('call_status', inCall);
+          _socket?.emit('phone:call-status', inCall);
+        }
+      }
+    } catch (e) {
+      debugPrint('[PhoneBridge] _checkAndReEmitMidCallStatus error: $e');
+    }
+  }
+
+  Future<void> syncCallLogs() async {
+    try {
+      await Future(() async {
+        final logs = await PhoneDataService.instance.fetchCallLogs();
+        if (_socket != null && _socket!.connected) {
+          _socket!.emit('phone:sync-call-logs', {
+            'logs': logs.map((l) => {
+              'id': l.id,
+              'name': l.name,
+              'number': l.number,
+              'direction': l.direction.toString(),
+              'timestamp': l.timestamp.millisecondsSinceEpoch,
+              'durationSeconds': l.durationSeconds,
+            }).toList(),
+          });
+        }
+      }).timeout(const Duration(seconds: 15));
+    } catch (e) {
+      debugPrint('[PhoneBridge] syncCallLogs error or timed out: $e');
+    }
+  }
+
+  Future<void> syncContacts() async {
+    try {
+      await Future(() async {
+        final contacts = await PhoneDataService.instance.fetchContacts();
+        if (_socket != null && _socket!.connected) {
+          _socket!.emit('phone:sync-contacts', {
+            'contacts': contacts.map((c) => {
+              'id': c.id,
+              'name': c.name,
+              'number': c.number,
+              'isFavorite': c.isFavorite,
+            }).toList(),
+          });
+        }
+      }).timeout(const Duration(seconds: 15));
+    } catch (e) {
+      debugPrint('[PhoneBridge] syncContacts error or timed out: $e');
     }
   }
 

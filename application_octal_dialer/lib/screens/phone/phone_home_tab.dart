@@ -45,12 +45,14 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
       const channel = MethodChannel('com.octal.dialer/call');
       final bool granted = await channel.invokeMethod<bool>('checkContactsPermission') ?? false;
       if (!granted) {
-        await channel.invokeMethod('requestContactsPermission');
+        await channel.invokeMethod<bool>('requestContactsPermission');
       }
     } catch (e) {
       debugPrint('[PhoneHomeTab] permission check error: $e');
     }
-    await _loadData();
+    if (mounted) {
+      await _loadData();
+    }
   }
 
   Future<void> _loadData() async {
@@ -62,11 +64,11 @@ class _PhoneHomeTabState extends State<PhoneHomeTab> {
 
   void _callNumber(String number) async {
     HapticFeedback.mediumImpact();
+    final bool prereqsPassed = await TelecomService.instance.ensureCallingPrerequisites();
+    if (!prereqsPassed) return;
     if (widget.onDirectCall != null) {
       widget.onDirectCall!(number, null);
     } else {
-      final bool prereqsPassed = await TelecomService.instance.ensureCallingPrerequisites();
-      if (!prereqsPassed) return;
       TelecomService.instance.placeCall(number);
     }
   }

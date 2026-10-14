@@ -31,9 +31,14 @@ if (signingFile.exists()) {
 def hasReleaseSigning = ["storeFile", "storePassword", "keyAlias", "keyPassword"].every {
     signingProperties.getProperty(it)
 }
+def allowUnsignedRelease = project.hasProperty('allowUnsignedRelease') && project.property('allowUnsignedRelease') == 'true'
 gradle.taskGraph.whenReady { graph ->
     if (graph.allTasks.any { it.project == project && it.name.toLowerCase().contains("release") } && !hasReleaseSigning) {
-        logger.warn("Notice: android/key.properties not configured; using fallback debug signing for release build.")
+        if (allowUnsignedRelease) {
+            logger.warn("Notice: android/key.properties not configured; using fallback debug signing for release build via -PallowUnsignedRelease=true.")
+        } else {
+            throw new GradleException("Release build requires android/key.properties configured or -PallowUnsignedRelease=true for local ADB testing.")
+        }
     }
 }
 
@@ -74,7 +79,7 @@ android {
 
     buildTypes {
         release {
-            signingConfig = hasReleaseSigning ? signingConfigs.release : signingConfigs.debug
+            signingConfig = hasReleaseSigning ? signingConfigs.release : (allowUnsignedRelease ? signingConfigs.debug : signingConfigs.release)
         }
     }
 }

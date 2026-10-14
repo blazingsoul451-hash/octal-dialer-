@@ -42,8 +42,14 @@ class _CallerIdSpamScreenState extends State<CallerIdSpamScreen> {
             value: _settings.callerIdAndSpam,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setCallerIdAndSpam(val));
+            onChanged: (val) async {
+              final prev = _settings.callerIdAndSpam;
+              try {
+                await _settings.setCallerIdAndSpam(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setCallerIdAndSpam(prev));
+              }
             },
           ),
           const Divider(color: Color(0xFF2E2622), height: 1),
@@ -59,8 +65,14 @@ class _CallerIdSpamScreenState extends State<CallerIdSpamScreen> {
             value: _settings.filterSpam,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setFilterSpam(val));
+            onChanged: (val) async {
+              final prev = _settings.filterSpam;
+              try {
+                await _settings.setFilterSpam(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setFilterSpam(prev));
+              }
             },
           ),
           const Divider(color: Color(0xFF2E2622), height: 1),
@@ -76,8 +88,14 @@ class _CallerIdSpamScreenState extends State<CallerIdSpamScreen> {
             value: _settings.verifiedCalls,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setVerifiedCalls(val));
+            onChanged: (val) async {
+              final prev = _settings.verifiedCalls;
+              try {
+                await _settings.setVerifiedCalls(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setVerifiedCalls(prev));
+              }
             },
           ),
         ],

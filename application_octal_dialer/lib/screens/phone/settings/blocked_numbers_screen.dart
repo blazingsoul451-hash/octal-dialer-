@@ -134,8 +134,14 @@ class _BlockedNumbersScreenState extends State<BlockedNumbersScreen> {
             value: _settings.blockUnknown,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setBlockUnknown(val));
+            onChanged: (val) async {
+              final prev = _settings.blockUnknown;
+              try {
+                await _settings.setBlockUnknown(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setBlockUnknown(prev));
+              }
             },
           ),
           const Divider(color: Color(0xFF2E2622), height: 1),

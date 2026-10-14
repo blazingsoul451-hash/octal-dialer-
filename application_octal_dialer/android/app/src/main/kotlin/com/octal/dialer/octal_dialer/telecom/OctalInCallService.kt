@@ -31,6 +31,7 @@ class OctalInCallService : InCallService() {
         const val INCOMING_NOTIFICATION_ID = 202
     }
 
+    var activeCall: Call? = null
     private val callCallbacks = mutableMapOf<Call, Call.Callback>()
 
     override fun onCreate() {
@@ -113,6 +114,7 @@ class OctalInCallService : InCallService() {
 
     override fun onCallAdded(call: Call) {
         super.onCallAdded(call)
+        activeCall = call
         Log.d(TAG, "[Telecom] InCallService onCallAdded: ${call.details?.handle} state=${call.state}")
 
         val callback = object : Call.Callback() {
@@ -147,6 +149,7 @@ class OctalInCallService : InCallService() {
     override fun onCallRemoved(call: Call) {
         super.onCallRemoved(call)
         Log.d(TAG, "[Telecom] InCallService onCallRemoved")
+        activeCall = null
         dismissIncomingCallNotification()
 
         val callback = callCallbacks.remove(call)

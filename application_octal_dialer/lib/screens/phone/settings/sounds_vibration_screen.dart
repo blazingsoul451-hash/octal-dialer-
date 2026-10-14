@@ -52,8 +52,14 @@ class _SoundsVibrationScreenState extends State<SoundsVibrationScreen> {
             value: _settings.callVibrate,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setCallVibrate(val));
+            onChanged: (val) async {
+              final prev = _settings.callVibrate;
+              try {
+                await _settings.setCallVibrate(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setCallVibrate(prev));
+              }
             },
           ),
           const Divider(color: Color(0xFF2E2622), height: 1),
@@ -66,8 +72,14 @@ class _SoundsVibrationScreenState extends State<SoundsVibrationScreen> {
             value: _settings.dialpadTones,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setDialpadTones(val));
+            onChanged: (val) async {
+              final prev = _settings.dialpadTones;
+              try {
+                await _settings.setDialpadTones(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setDialpadTones(prev));
+              }
             },
           ),
           const Divider(color: Color(0xFF2E2622), height: 1),
@@ -80,8 +92,14 @@ class _SoundsVibrationScreenState extends State<SoundsVibrationScreen> {
             value: _settings.dialpadVibrate,
             activeColor: const Color(0xFF5BB974),
             activeTrackColor: const Color(0xFF1E4D2B),
-            onChanged: (val) {
-              setState(() => _settings.setDialpadVibrate(val));
+            onChanged: (val) async {
+              final prev = _settings.dialpadVibrate;
+              try {
+                await _settings.setDialpadVibrate(val);
+                if (mounted) setState(() {});
+              } catch (e) {
+                if (mounted) setState(() => _settings.setDialpadVibrate(prev));
+              }
             },
           ),
         ],
