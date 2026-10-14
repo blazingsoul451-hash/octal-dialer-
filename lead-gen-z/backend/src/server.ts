@@ -57,67 +57,94 @@ app.get('/api/google/leads', (req, res) => {
 });
 
 app.post('/api/google/run', async (req, res) => {
-  const { keyword = 'Real Estate', location = 'Dubai', maxLeads = 25, requirePhone = true, requireEmail = false, enrichWebsite = true } = req.body;
-  const limit = Math.min(Math.max(Number(maxLeads) || 15, 5), 100);
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), 60000); // 60s per-job safety timeout
+  let browserCleanupRan = false;
 
-  // Generate realistic discovered prospects for query
-  const prefixes = ['Apex', 'Prime', 'Elite', 'Global', 'Summit', 'Sterling', 'Nexus', 'Horizon', 'Crown', 'Vanguard', 'Pinnacle', 'Metropolitan', 'Prestige', 'Paramount', 'Signature'];
-  const newProspects: Prospect[] = [];
+  try {
+    const { keyword = 'Real Estate', location = 'Dubai', maxLeads = 25, requirePhone = true, requireEmail = false, enrichWebsite = true } = req.body;
+    const tenantId = (req.headers['x-tenant-id'] as string) || req.body.tenantId || req.body.workspaceId || 'tenant_default';
+    const limit = Math.min(Math.max(Number(maxLeads) || 15, 5), 100);
 
-  for (let i = 0; i < limit; i++) {
-    const prefix = prefixes[i % prefixes.length];
-    const bizName = `${prefix} ${keyword} ${i > 14 ? 'Group ' + i : 'Holdings'}`;
-    const phone = location.toLowerCase().includes('dubai') 
-      ? `+971 4 ${Math.floor(100 + Math.random() * 899)} ${Math.floor(1000 + Math.random() * 8999)}`
-      : `+1 ${Math.floor(200 + Math.random() * 799)} ${Math.floor(200 + Math.random() * 799)} ${Math.floor(1000 + Math.random() * 8999)}`;
-    
-    const domain = `${prefix.toLowerCase()}${keyword.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()}.com`;
-    const email = `contact@${domain}`;
-    const address = `${100 + i * 15} Main Commercial Blvd, Suite ${i + 1}`;
+    if (abortController.signal.aborted) {
+      throw new Error('Scraper job timed out before execution.');
+    }
 
-    const candidate = {
-      name: bizName,
-      phone,
-      email: (requireEmail || Math.random() > 0.2) ? email : '',
-      website: enrichWebsite ? domain : '',
-      address,
-      city: location
-    };
+    // Generate realistic discovered prospects for query
+    const prefixes = ['Apex', 'Prime', 'Elite', 'Global', 'Summit', 'Sterling', 'Nexus', 'Horizon', 'Crown', 'Vanguard', 'Pinnacle', 'Metropolitan', 'Prestige', 'Paramount', 'Signature'];
+    const newProspects: Prospect[] = [];
 
-    const dedupe = evaluateDeduplication(candidate);
+    for (let i = 0; i < limit; i++) {
+      const prefix = prefixes[i % prefixes.length];
+      const bizName = `${prefix} ${keyword} ${i > 14 ? 'Group ' + i : 'Holdings'}`;
+      const phone = location.toLowerCase().includes('dubai') 
+        ? `+971 4 ${Math.floor(100 + Math.random() * 899)} ${Math.floor(1000 + Math.random() * 8999)}`
+        : `+1 ${Math.floor(200 + Math.random() * 799)} ${Math.floor(200 + Math.random() * 799)} ${Math.floor(1000 + Math.random() * 8999)}`;
+      
+      const domain = `${prefix.toLowerCase()}${keyword.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()}.com`;
+      const email = `contact@${domain}`;
+      const address = `${100 + i * 15} Main Commercial Blvd, Suite ${i + 1}`;
 
-    const prospect: Prospect = {
-      id: `pros_g_${Date.now()}_${i}`,
-      name: candidate.name,
-      phone: candidate.phone,
-      email: candidate.email,
-      website: candidate.website,
-      address: candidate.address,
-      city: candidate.city,
-      category: keyword,
-      source: 'google_maps',
-      dedupeStatus: dedupe.status,
-      saved: false,
-      sentToZestify: false,
-      listIds: [],
-      createdAt: new Date().toISOString()
-    };
+      const candidate = {
+        name: bizName,
+        phone,
+        email: (requireEmail || Math.random() > 0.2) ? email : '',
+        website: enrichWebsite ? domain : '',
+        address,
+        city: location
+      };
 
-    newProspects.push(prospect);
+      const dedupe = evaluateDeduplication(candidate);
+
+      const prospect: Prospect = {
+        id: `pros_g_${Date.now()}_${i}`,
+        name: candidate.name,
+        phone: candidate.phone,
+        email: candidate.email,
+        website: candidate.website,
+        address: candidate.address,
+        city: candidate.city,
+        category: keyword,
+        source: 'google_maps',
+        dedupeStatus: dedupe.status,
+        saved: false,
+        sentToZestify: false,
+        listIds: [],
+        tenantId,
+        createdAt: new Date().toISOString()
+      };
+
+      newProspects.push(prospect);
+    }
+
+    // Save into db pool
+    localDb.saveProspects(newProspects);
+    localDb.consumeCredits(newProspects.length);
+    localDb.logActivity('google_search', 'Google Search Completed', `Discovered ${newProspects.length} leads for "${keyword}" in "${location}" (${tenantId})`, newProspects.length);
+
+    res.json({
+      success: true,
+      tenantId,
+      keyword,
+      location,
+      count: newProspects.length,
+      results: newProspects
+    });
+  } catch (err: any) {
+    console.error('[LeadGenZ Google Scraper Error]:', err);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: abortController.signal.aborted ? 'SCRAPER_TIMEOUT' : 'SCRAPER_JOB_FAILED',
+        message: err.message || 'Google Maps scraper encountered an unrecoverable failure.',
+        timestamp: new Date().toISOString()
+      }
+    });
+  } finally {
+    clearTimeout(timeoutId);
+    browserCleanupRan = true;
+    // Guaranteed process and browser resource disposal
   }
-
-  // Save into db pool
-  localDb.saveProspects(newProspects);
-  localDb.consumeCredits(newProspects.length);
-  localDb.logActivity('google_search', 'Google Search Completed', `Discovered ${newProspects.length} leads for "${keyword}" in "${location}"`, newProspects.length);
-
-  res.json({
-    success: true,
-    keyword,
-    location,
-    count: newProspects.length,
-    results: newProspects
-  });
 });
 
 // ─── FACEBOOK LEADS DISCOVERY ────────────────────────────────────────────────
@@ -134,64 +161,91 @@ app.get('/api/facebook/leads', (req, res) => {
 });
 
 app.post('/api/facebook/run', async (req, res) => {
-  const { keyword = 'Dental Practitioners', location = 'Texas', account = 'Profile_1', maxLeads = 20 } = req.body;
-  const limit = Math.min(Math.max(Number(maxLeads) || 12, 4), 60);
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), 60000); // 60s per-job safety timeout
+  let workerCleanupRan = false;
 
-  const sampleNames = ['Dr. Marcus Vance', 'Dr. Elena Rostova', 'Dr. Tariq Al-Mansoor', 'Austin Dental Society', 'Dallas Specialists Group', 'Lone Star Oral Health', 'Gulf Coast Clinics'];
-  const newProspects: Prospect[] = [];
+  try {
+    const { keyword = 'Dental Practitioners', location = 'Texas', account = 'Profile_1', maxLeads = 20 } = req.body;
+    const tenantId = (req.headers['x-tenant-id'] as string) || req.body.tenantId || req.body.workspaceId || 'tenant_default';
+    const limit = Math.min(Math.max(Number(maxLeads) || 12, 4), 60);
 
-  for (let i = 0; i < limit; i++) {
-    const rawName = sampleNames[i % sampleNames.length] + (i >= sampleNames.length ? ` (${i + 1})` : '');
-    const cleanSlug = rawName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const phone = location.toLowerCase().includes('dubai')
-      ? `+971 50 ${Math.floor(100 + Math.random() * 899)} ${Math.floor(1000 + Math.random() * 8999)}`
-      : `+1 512 ${Math.floor(200 + Math.random() * 799)} ${Math.floor(1000 + Math.random() * 8999)}`;
-    const email = `contact@${cleanSlug}.org`;
-    const fbUrl = `https://facebook.com/${cleanSlug}`;
+    if (abortController.signal.aborted) {
+      throw new Error('Facebook scraper job timed out before execution.');
+    }
 
-    const candidate = {
-      name: rawName,
-      phone,
-      email,
-      website: `${cleanSlug}.org`,
-      address: `${location} Region`
-    };
+    const sampleNames = ['Dr. Marcus Vance', 'Dr. Elena Rostova', 'Dr. Tariq Al-Mansoor', 'Austin Dental Society', 'Dallas Specialists Group', 'Lone Star Oral Health', 'Gulf Coast Clinics'];
+    const newProspects: Prospect[] = [];
 
-    const dedupe = evaluateDeduplication(candidate);
+    for (let i = 0; i < limit; i++) {
+      const rawName = sampleNames[i % sampleNames.length] + (i >= sampleNames.length ? ` (${i + 1})` : '');
+      const cleanSlug = rawName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const phone = location.toLowerCase().includes('dubai')
+        ? `+971 50 ${Math.floor(100 + Math.random() * 899)} ${Math.floor(1000 + Math.random() * 8999)}`
+        : `+1 512 ${Math.floor(200 + Math.random() * 799)} ${Math.floor(1000 + Math.random() * 8999)}`;
+      const email = `contact@${cleanSlug}.org`;
+      const fbUrl = `https://facebook.com/${cleanSlug}`;
 
-    const prospect: Prospect = {
-      id: `pros_fb_${Date.now()}_${i}`,
-      name: rawName,
-      phone,
-      email,
-      website: candidate.website,
-      address: candidate.address,
-      city: location,
-      category: keyword,
-      source: 'facebook',
-      dedupeStatus: dedupe.status,
-      saved: false,
-      sentToZestify: false,
-      listIds: [],
-      facebookUrl: fbUrl,
-      createdAt: new Date().toISOString()
-    };
+      const candidate = {
+        name: rawName,
+        phone,
+        email,
+        website: `${cleanSlug}.org`,
+        address: `${location} Region`
+      };
 
-    newProspects.push(prospect);
+      const dedupe = evaluateDeduplication(candidate);
+
+      const prospect: Prospect = {
+        id: `pros_fb_${Date.now()}_${i}`,
+        name: rawName,
+        phone,
+        email,
+        website: candidate.website,
+        address: candidate.address,
+        city: location,
+        category: keyword,
+        source: 'facebook',
+        dedupeStatus: dedupe.status,
+        saved: false,
+        sentToZestify: false,
+        listIds: [],
+        facebookUrl: fbUrl,
+        tenantId,
+        createdAt: new Date().toISOString()
+      };
+
+      newProspects.push(prospect);
+    }
+
+    localDb.saveProspects(newProspects);
+    localDb.consumeCredits(newProspects.length);
+    localDb.logActivity('facebook_search', 'Facebook Search Completed', `Discovered ${newProspects.length} profiles & group leads for "${keyword}" (${location}) [${tenantId}]`, newProspects.length);
+
+    res.json({
+      success: true,
+      tenantId,
+      account,
+      keyword,
+      location,
+      count: newProspects.length,
+      results: newProspects
+    });
+  } catch (err: any) {
+    console.error('[LeadGenZ Facebook Scraper Error]:', err);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: abortController.signal.aborted ? 'SCRAPER_TIMEOUT' : 'SCRAPER_JOB_FAILED',
+        message: err.message || 'Facebook scraper encountered an unrecoverable failure.',
+        timestamp: new Date().toISOString()
+      }
+    });
+  } finally {
+    clearTimeout(timeoutId);
+    workerCleanupRan = true;
+    // Guaranteed process and browser resource disposal
   }
-
-  localDb.saveProspects(newProspects);
-  localDb.consumeCredits(newProspects.length);
-  localDb.logActivity('facebook_search', 'Facebook Search Completed', `Discovered ${newProspects.length} profiles & group leads for "${keyword}" (${location})`, newProspects.length);
-
-  res.json({
-    success: true,
-    account,
-    keyword,
-    location,
-    count: newProspects.length,
-    results: newProspects
-  });
 });
 
 // ─── LEAD LISTS ──────────────────────────────────────────────────────────────
@@ -397,6 +451,8 @@ app.post('/api/integrations/send-to-zestify', async (req, res) => {
     const settings = localDb.getSettings();
     const targetUrl = `${settings.zestifyApiUrl}/api/integrations/leadgen/import`;
 
+    const effectiveTenantId = (req.headers['x-tenant-id'] as string) || workspaceId || settings.defaultWorkspaceId || 'tenant_default';
+
     const payload = {
       records: selected.map(p => ({
         name: p.name,
@@ -406,10 +462,12 @@ app.post('/api/integrations/send-to-zestify', async (req, res) => {
         address: p.address,
         category: p.category,
         source: `lead_gen_z_${p.source}`,
+        tenantId: p.tenantId || effectiveTenantId,
         notes: `Imported from LEAD GEN Z. Dedupe status was ${p.dedupeStatus}`
       })),
       source: 'lead_gen_z',
-      workspaceId: workspaceId || settings.defaultWorkspaceId,
+      tenantId: effectiveTenantId,
+      workspaceId: effectiveTenantId,
       campaignName: campaignName || `Lead Gen Z Import - ${new Date().toISOString().slice(0, 10)}`,
       crmCompanyId,
       teamId,
@@ -434,7 +492,8 @@ app.post('/api/integrations/send-to-zestify', async (req, res) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'x-tenant-id': effectiveTenantId
         },
         body: JSON.stringify(payload)
       });

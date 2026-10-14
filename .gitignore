@@ -54,3 +54,12 @@ local_pg_cluster/
 
 
 
+
+# Audit & Evidence directories
+IMPORTANT_SECRETS/
+audit_screenshots/
+AUDIT_EVIDENCE/
+CLAUDE_FIX_COMPARISON_EVIDENCE/
+ZESTIFY_AUTONOMOUS_CRM_AUDIT/
+ZESTIFY_COMPLETE_UI_AUDIT/
+desktop_octal_agent/windows/

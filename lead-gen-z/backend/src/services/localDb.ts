@@ -18,6 +18,7 @@ export interface Prospect {
   createdAt: string;
   notes?: string;
   facebookUrl?: string;
+  tenantId?: string;
 }
 
 export interface LeadList {

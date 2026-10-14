@@ -100,7 +100,8 @@ function load(file, imports = {}, extraGlobals = {}) {
 
 const realDatabaseManager = load('databaseManager.ts', {
   './entitlementManager': { checkLimit: async () => ({ allowed: true, current: 0, limit: 100 }), initializeCatalogPlans: async () => {} },
-  './db/dbAdapter': { dbAdapter: mockDbAdapter }
+  './db/dbAdapter': { dbAdapter: mockDbAdapter },
+  './db/pool': { isInMemoryDatabase: () => true }
 });
 
 const ssrfProtection = load('ssrfProtection.ts');

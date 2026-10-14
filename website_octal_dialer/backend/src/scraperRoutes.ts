@@ -6,10 +6,18 @@ export function registerScraperRoutes(app: Express, requireAuth: RequestHandler,
   service: typeof scraper = scraper): void {
   service.setScraperSocketBroadcaster(io);
   const tenant: RequestHandler = (req, res, next) => {
-    if (!(req as any).user?.tenantId) {
+    const user = (req as any).user;
+    if (!user) {
+      res.status(401).json({ error: 'Missing authentication.' });
+      return;
+    }
+    const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+    const resolvedTenant = (isPlatform && ((req.headers['x-tenant-id'] as string) || (req.query.tenantId as string))) || user.tenantId || (isPlatform ? 'tenant_default' : null);
+    if (!resolvedTenant) {
       res.status(401).json({ error: 'Missing tenant identity.' });
       return;
     }
+    user.tenantId = resolvedTenant;
     next();
   };
   const errorResponse = (res: any, err: unknown) => {
@@ -91,7 +99,8 @@ export function registerScraperRoutes(app: Express, requireAuth: RequestHandler,
     try {
       const user = (req as any).user;
       const { targetTenantId, leads } = req.body;
-      if (targetTenantId && targetTenantId !== user.tenantId) {
+      const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
+      if (targetTenantId && targetTenantId !== user.tenantId && !isPlatform) {
         res.status(403).json({ error: 'Forbidden: Cannot import leads into another tenant workspace.' });
         return;
       }

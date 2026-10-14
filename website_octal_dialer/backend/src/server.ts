@@ -348,6 +348,13 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
       res.status(401).json({ error: 'Unauthorized. Please log in.' });
       return;
     }
+    // Consistent tenant resolution: allow platform roles to switch tenant workspace context via x-tenant-id header or tenantId query
+    if (isPlatformRole(user.role)) {
+      const targetTenant = (req.headers['x-tenant-id'] as string) || (req.query.tenantId as string);
+      if (targetTenant && typeof targetTenant === 'string' && targetTenant.trim()) {
+        user.tenantId = targetTenant.trim();
+      }
+    }
     (req as any).user = user;
     next();
   } catch (err: any) {
@@ -9340,11 +9347,139 @@ app.post('/api/leads/import/mobile', requireAuth, async (req, res) => {
   }
 });
 
+// REST: Batch sync call logs from mobile client (idempotent upsert)
+app.post(['/syncCallLogs', '/api/syncCallLogs'], requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const payload = Array.isArray(req.body)
+      ? req.body
+      : (req.body && (Array.isArray(req.body.callLogs) ? req.body.callLogs : Array.isArray(req.body.logs) ? req.body.logs : null));
+
+    if (!payload || !Array.isArray(payload)) {
+      res.status(400).json({ error: 'Invalid payload: call logs must be provided as an array.' });
+      return;
+    }
+
+    let syncedCount = 0;
+    for (const item of payload) {
+      if (!item || typeof item !== 'object') continue;
+      const phoneClean = (item.leadPhone || item.phone || '').toString().trim();
+      const id = (item.id && typeof item.id === 'string' && item.id.trim())
+        ? item.id.trim()
+        : `cl_${tenantId}_${phoneClean.replace(/[^a-zA-Z0-9]/g, '')}_${item.timestamp ? new Date(item.timestamp).getTime() : Date.now()}`;
+      const leadId = (item.leadId && typeof item.leadId === 'string' && item.leadId.trim())
+        ? item.leadId.trim()
+        : `sync_${phoneClean.replace(/[^a-zA-Z0-9]/g, '') || Date.now()}`;
+      const leadName = (item.leadName || item.name || 'Unknown Contact').toString().trim();
+      const campaignName = (item.campaignName || 'Mobile Call Sync').toString().trim();
+      const outcome = (item.outcome || item.status || 'COMPLETED').toString().trim();
+      const duration = Number(item.duration) || 0;
+      const timestamp = item.timestamp ? new Date(item.timestamp).toISOString() : new Date().toISOString();
+      const userId = user.id || item.userId || null;
+      const userName = user.username || item.userName || null;
+
+      await db.execute(`
+        INSERT INTO call_logs (id, "leadId", "leadName", "leadPhone", "campaignName", outcome, duration, "tenantId", "userId", "userName", timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT (id) DO UPDATE SET
+          duration = EXCLUDED.duration,
+          outcome = EXCLUDED.outcome,
+          "leadName" = COALESCE(NULLIF(EXCLUDED."leadName", 'Unknown Contact'), call_logs."leadName"),
+          "leadPhone" = COALESCE(NULLIF(EXCLUDED."leadPhone", ''), call_logs."leadPhone"),
+          "campaignName" = COALESCE(NULLIF(EXCLUDED."campaignName", 'Mobile Call Sync'), call_logs."campaignName")
+      `, [id, leadId, leadName, phoneClean, campaignName, outcome, duration, tenantId, userId, userName, timestamp]);
+
+      syncedCount++;
+    }
+
+    if (syncedCount > 0) {
+      io.to(`tenant_${tenantId}`).emit('call-logs:updated', { count: syncedCount });
+    }
+
+    res.status(200).json({ success: true, synced: syncedCount });
+  } catch (err: any) {
+    console.error('[SyncCallLogs Error]:', err);
+    res.status(500).json({ error: err.message || 'Failed to sync call logs' });
+  }
+});
+
+// REST: Batch sync contacts from mobile client (idempotent upsert)
+app.post(['/syncContacts', '/api/syncContacts'], requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const tenantId = user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const payload = Array.isArray(req.body)
+      ? req.body
+      : (req.body && (Array.isArray(req.body.contacts) ? req.body.contacts : null));
+
+    if (!payload || !Array.isArray(payload)) {
+      res.status(400).json({ error: 'Invalid payload: contacts must be provided as an array.' });
+      return;
+    }
+
+    let syncedCount = 0;
+    const nowIso = new Date().toISOString();
+
+    for (const item of payload) {
+      if (!item || typeof item !== 'object') continue;
+      const name = (item.name || item.leadName || 'Contact').toString().trim();
+      const phone = item.phone ? item.phone.toString().trim() : null;
+      const email = item.email ? item.email.toString().trim() : null;
+      const phoneClean = (phone || email || name).replace(/[^a-zA-Z0-9]/g, '');
+
+      const id = (item.id && typeof item.id === 'string' && item.id.trim())
+        ? item.id.trim()
+        : `ct_${tenantId}_${phoneClean || Math.random().toString(36).substring(2, 9)}`;
+      const crmCompanyId = item.crmCompanyId || item.companyId || null;
+      const roleTitle = item.roleTitle || item.role || null;
+      const notes = item.notes ? item.notes.toString() : null;
+      const assignedUserId = item.assignedUserId || user.id || null;
+      const createdAt = item.createdAt ? new Date(item.createdAt).toISOString() : nowIso;
+      const updatedAt = item.updatedAt ? new Date(item.updatedAt).toISOString() : nowIso;
+
+      await db.execute(`
+        INSERT INTO crm_contacts (id, "tenantId", "crmCompanyId", name, email, phone, "roleTitle", notes, "assignedUserId", "createdAt", "updatedAt")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT (id) DO UPDATE SET
+          name = COALESCE(NULLIF(EXCLUDED.name, ''), crm_contacts.name),
+          phone = COALESCE(NULLIF(EXCLUDED.phone, ''), crm_contacts.phone),
+          email = CASE WHEN EXCLUDED.email IS NOT NULL AND EXCLUDED.email <> '' THEN EXCLUDED.email ELSE crm_contacts.email END,
+          "crmCompanyId" = COALESCE(EXCLUDED."crmCompanyId", crm_contacts."crmCompanyId"),
+          "roleTitle" = COALESCE(EXCLUDED."roleTitle", crm_contacts."roleTitle"),
+          notes = COALESCE(EXCLUDED.notes, crm_contacts.notes),
+          "updatedAt" = EXCLUDED."updatedAt"
+      `, [id, tenantId, crmCompanyId, name, email, phone, roleTitle, notes, assignedUserId, createdAt, updatedAt]);
+
+      syncedCount++;
+    }
+
+    if (syncedCount > 0) {
+      io.to(`tenant_${tenantId}`).emit('contacts:updated', { count: syncedCount });
+    }
+
+    res.status(200).json({ success: true, synced: syncedCount });
+  } catch (err: any) {
+    console.error('[SyncContacts Error]:', err);
+    res.status(500).json({ error: err.message || 'Failed to sync contacts' });
+  }
+});
+
 // REST: Export logs to CSV (strictly Company Owner or Platform Admin)
 app.get(['/api/logs/export', '/logs/export'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
-    const tenantId = caller?.tenantId || (isPlatformRole(caller?.role) ? 'tenant_default' : null);
+    const tenantId = (isPlatformRole(caller?.role) && ((req.headers['x-tenant-id'] as string) || (req.query.tenantId as string))) || caller?.tenantId || (isPlatformRole(caller?.role) ? 'tenant_default' : null);
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
@@ -9386,7 +9521,7 @@ app.get(['/api/logs/export', '/logs/export'], requireAuth, requireCompanyOwnerOr
 app.get(['/api/leads/export', '/leads/export'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
-    const tenantId = caller?.tenantId || (isPlatformRole(caller?.role) ? 'tenant_default' : null);
+    const tenantId = (isPlatformRole(caller?.role) && ((req.headers['x-tenant-id'] as string) || (req.query.tenantId as string))) || caller?.tenantId || (isPlatformRole(caller?.role) ? 'tenant_default' : null);
     if (!tenantId) {
       res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
       return;
@@ -10593,6 +10728,243 @@ io.on('connection', (socket) => {
   // ─── STRICT CALL LIFECYCLE SOCKET HANDLERS ─────────────────────────────────
   // Server-side idempotency guard to prevent duplicate terminal processing per call
   const processedCallEndings = new Set<string>();
+
+  // Idempotent Socket.IO handlers for mobile bridge & reconnect snapshots
+  socket.on('call_status', async (payload: {
+    callId?: string;
+    commandId?: string;
+    state?: string;
+    status?: string;
+    sessionId?: string;
+    phone?: string;
+    duration?: number;
+    reason?: string;
+    leadId?: string;
+    name?: string;
+  }) => {
+    if (!payload || typeof payload !== 'object') return;
+    const rawState = (payload.state || payload.status || '').toUpperCase();
+    const callId = payload.callId;
+    const commandId = payload.commandId;
+    const cs = (callId ? getCallSession(callId) : null) || (commandId ? getCallSessionByCommandId(commandId) : null) || (payload.sessionId ? getCallSessionBySessionId(payload.sessionId) : null);
+
+    let normalizedState: CallState | null = null;
+    if (['COMMAND_RECEIVED', 'RECEIVED'].includes(rawState)) normalizedState = 'COMMAND_RECEIVED';
+    else if (['DIALING', 'CONNECTING', 'OUTGOING'].includes(rawState)) normalizedState = 'DIALING';
+    else if (['RINGING', 'ALERTING'].includes(rawState)) normalizedState = 'RINGING';
+    else if (['ACTIVE', 'CONNECTED', 'OFFHOOK', 'CALLING'].includes(rawState)) normalizedState = 'ACTIVE';
+    else if (['ENDING', 'DISCONNECTING'].includes(rawState)) normalizedState = 'ENDING';
+    else if (['ENDED', 'DISCONNECTED', 'COMPLETED', 'IDLE'].includes(rawState)) normalizedState = 'ENDED';
+    else if (['DIAL_FAILED', 'FAILED', 'REJECTED', 'BUSY', 'NO_ANSWER'].includes(rawState)) normalizedState = 'DIAL_FAILED';
+
+    if (!normalizedState) return;
+
+    // Terminal snapshot handling (Idempotent guard)
+    if (normalizedState === 'ENDED' || normalizedState === 'DIAL_FAILED') {
+      const targetCallId = cs?.callId || callId || commandId;
+      if (!targetCallId || processedCallEndings.has(targetCallId) || cs?.endedAt) {
+        return; // Idempotently ignore already finished / terminal calls
+      }
+      processedCallEndings.add(targetCallId);
+
+      const targetSessionId = cs?.sessionId || payload.sessionId || socket.data.sessionId;
+      if (cs) {
+        updateCallSessionState(cs.callId, normalizedState, { endReason: payload.reason });
+      }
+      if (targetSessionId) {
+        setSessionStatus(targetSessionId, 'PAIRED');
+        if (cs?.leadId || payload.leadId) {
+          await releaseLeadLock(cs?.leadId || payload.leadId!, targetSessionId).catch(() => {});
+        }
+        io.to(targetSessionId).emit('call:finished', {
+          callId: targetCallId,
+          reason: payload.reason || normalizedState,
+          duration: Number(payload.duration) || 0,
+          leadId: cs?.leadId || payload.leadId,
+          commandId: cs?.commandId || commandId
+        });
+        io.to(targetSessionId).emit('call:status-changed', {
+          callId: targetCallId,
+          state: normalizedState,
+          reason: payload.reason,
+          duration: Number(payload.duration) || 0
+        });
+      }
+      return;
+    }
+
+    // Active state snapshot handling
+    if (cs) {
+      if (cs.state === normalizedState) return; // Idempotent: ignore redundant state snapshot
+      if (!updateCallSessionState(cs.callId, normalizedState)) return;
+      io.to(cs.sessionId).emit('call:status-changed', {
+        callId: cs.callId,
+        state: normalizedState,
+        leadId: cs.leadId,
+        phone: cs.phone,
+        name: cs.name,
+        timestamp: new Date().toISOString()
+      });
+      console.log(`[CallEngine] Reconnect snapshot call_status: Call ${cs.callId} -> ${normalizedState}`);
+    }
+  });
+
+  socket.on('incoming_call', ({ sessionId, deviceId, phone, number, callId, name }: {
+    sessionId?: string;
+    deviceId?: string;
+    phone?: string;
+    number?: string;
+    callId?: string;
+    name?: string;
+  }) => {
+    const sid = sessionId || socket.data.sessionId;
+    const session = sid ? getSessionById(sid) : null;
+    if (!session) return;
+    if (session.phoneSocketId && session.phoneSocketId !== socket.id) return;
+
+    const callerNumber = phone || number || 'Unknown Caller';
+
+    // Idempotent guard: if an incoming call session already exists for this callId or active in this session, do not duplicate
+    const existing = (callId ? getCallSession(callId) : null) || getCallSessionBySessionId(session.id);
+    if (existing && !existing.endedAt && (existing.phone === callerNumber || existing.callId === callId)) {
+      return;
+    }
+
+    const cs = createCallSession({
+      sessionId: session.id,
+      tenantId: session.tenantId || 'default',
+      userId: session.userId || 'system',
+      phoneDeviceId: session.phoneDeviceId || deviceId || 'phone',
+      laptopSocketId: session.laptopSocketId || '',
+      phoneSocketId: socket.id,
+      phone: callerNumber,
+      name: name || 'Incoming Call',
+      direction: 'INCOMING'
+    });
+    updateCallSessionState(cs.callId, 'RINGING');
+
+    const payload = {
+      callId: cs.callId,
+      phone: callerNumber,
+      deviceId: session.phoneDeviceId || deviceId,
+      deviceName: session.phoneDeviceName || 'Connected Phone',
+      timestamp: new Date().toISOString(),
+      direction: 'INCOMING'
+    };
+    io.to(session.id).emit('call:incoming', payload);
+    io.to(session.id).emit('call:status-changed', { callId: cs.callId, state: 'RINGING', phone: cs.phone, direction: 'INCOMING' });
+    console.log(`[Socket PhoneLink] 📲 incoming_call bridge snapshot on session ${session.id} (${callerNumber})`);
+  });
+
+  socket.on('place_call', async ({ sessionId, phone, number, name, leadId, campaignId, timeout, forceRedial, simSlot, commandId, callId }: {
+    sessionId?: string;
+    phone?: string;
+    number?: string;
+    name?: string;
+    leadId?: string;
+    campaignId?: string;
+    timeout?: number;
+    forceRedial?: boolean;
+    simSlot?: number;
+    commandId?: string;
+    callId?: string;
+  }) => {
+    const sid = sessionId || socket.data.sessionId;
+    const targetPhone = phone || number;
+    if (!sid || !targetPhone) {
+      socket.emit('error', { code: 'INVALID_REQUEST', message: 'Missing sessionId or phone number.' });
+      return;
+    }
+
+    // Idempotent guard: if this commandId or callId is already in flight, respond idempotently
+    const existing = (callId ? getCallSession(callId) : null) || (commandId ? getCallSessionByCommandId(commandId) : null);
+    if (existing && !existing.endedAt) {
+      socket.emit('dial:dispatched', {
+        callId: existing.callId,
+        commandId: existing.commandId,
+        leadId: existing.leadId,
+        phone: existing.phone,
+        name: existing.name,
+        idempotent: true
+      });
+      return;
+    }
+
+    const session = getSessionById(sid);
+    if (!session) {
+      socket.emit('error', { code: 'INVALID_SESSION', message: 'No active session found.' });
+      return;
+    }
+    if (session.laptopSocketId !== socket.id && session.phoneSocketId !== socket.id) {
+      socket.emit('error', { code: 'UNAUTHORIZED_SOCKET', message: 'Unauthorized session emitter socket.' });
+      return;
+    }
+    if (!session.phoneSocketId) {
+      socket.emit('error', { code: 'NO_PHONE', message: 'No paired phone active.' });
+      return;
+    }
+    const phoneSocket = io.sockets.sockets.get(session.phoneSocketId);
+    if (!phoneSocket) {
+      socket.emit('error', { code: 'PHONE_UNREACHABLE', message: 'Phone socket not reachable. Reconnect your phone.' });
+      return;
+    }
+
+    const tenantId = session.tenantId || 'tenant_default';
+    if (pendingDialSessions.has(sid)) {
+      socket.emit('dial:blocked', { reason: 'DEVICE_BUSY', message: 'A dial request is already in progress.' });
+      return;
+    }
+    pendingDialSessions.add(sid);
+    try {
+      const check = await checkCallAllowed({ sessionId: sid, phone: targetPhone, leadId, campaignId, tenantId, allowCompleted: forceRedial === true });
+      if (!check.allowed) {
+        socket.emit('dial:blocked', { reason: check.reason, message: check.message, phone: targetPhone, name: name || 'Contact' });
+        return;
+      }
+      setSessionStatus(sid, 'CALLING');
+      const effectiveSimSlot = simSlot !== undefined ? simSlot : session.selectedSimSlot;
+      const callSession = createCallSession({
+        sessionId: sid,
+        tenantId,
+        userId: session.userId || socket.data.user?.id || 'system',
+        phoneDeviceId: session.phoneDeviceId || session.phoneDeviceName || 'dev_phone',
+        laptopSocketId: socket.id,
+        phoneSocketId: session.phoneSocketId,
+        leadId,
+        phone: targetPhone,
+        name: name || 'Contact',
+        direction: 'OUTBOUND',
+        commandId: check.commandId,
+        campaignId,
+        simSlot: effectiveSimSlot
+      });
+
+      const phoneDialPayload = {
+        sessionId: sid,
+        phone: targetPhone,
+        leadId: leadId || '',
+        name: name || 'Contact',
+        callId: callSession.callId,
+        commandId: check.commandId,
+        simSlot: effectiveSimSlot
+      };
+      phoneSocket.emit('phone:dial', phoneDialPayload);
+      socket.emit('dial:dispatched', { callId: callSession.callId, commandId: check.commandId, leadId, phone: targetPhone, name: name || 'Contact' });
+      io.to(sid).emit('call:status-changed', {
+        callId: callSession.callId,
+        state: 'COMMAND_SENT',
+        leadId,
+        phone: targetPhone,
+        name: name || 'Contact',
+        timestamp: new Date().toISOString()
+      });
+    } catch (err: any) {
+      if (leadId) await releaseLeadLock(leadId, sid).catch(() => {});
+      socket.emit('error', { code: 'DIAL_FAILED', message: 'Dial preparation failed: ' + err.message });
+    } finally {
+      pendingDialSessions.delete(sid);
+    }
+  });
 
   socket.on('call:picked-up', ({ sessionId, callId }: { sessionId?: string; callId?: string }) => {
     const session = getSessionById(sessionId || socket.data.sessionId || '');

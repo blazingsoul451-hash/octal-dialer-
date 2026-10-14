@@ -101,7 +101,7 @@ async function main() {
       return { getPayload: () => ({ sub: 'subject', email: 'test@example.invalid', email_verified: true }) };
     }
   }
-  const auth = load('authManager.ts', { './databaseManager': { db }, express: {}, jsonwebtoken: jwt, 'google-auth-library': { OAuth2Client }, './emailVerificationService': {} });
+  const auth = load('authManager.ts', { './databaseManager': { db, getTenantModuleEntitlements: async () => ({ autoEmailer: true }), normalizeModuleKey: (k) => k, getPendingInvitationForEmail: async () => null }, express: {}, jsonwebtoken: jwt, 'google-auth-library': { OAuth2Client }, './emailVerificationService': {} });
   await check('Google verification rejects missing/forged credentials', async () => {
     await assert.rejects(auth.verifyGoogleIdToken(undefined)); await assert.rejects(auth.verifyGoogleIdToken('forged'));
     assert.equal((await auth.verifyGoogleIdToken('verified-token')).googleId, 'subject');
