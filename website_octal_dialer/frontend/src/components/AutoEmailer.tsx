@@ -253,19 +253,24 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [l, a, t, s, st] = await Promise.all([
-        fetch(`${serverUrl}/email/leads`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`${serverUrl}/email/accounts`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`${serverUrl}/email/templates`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`${serverUrl}/emailer/status`, { headers }).then(r => r.ok ? r.json() : { status: 'idle', logs: [] }),
-        fetch(`${serverUrl}/email/stats`, { headers }).then(r => r.ok ? r.json() : null),
+      const [lRes, aRes, tRes, s, st] = await Promise.all([
+        fetch(`${serverUrl}/email/leads`, { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch(`${serverUrl}/email/accounts`, { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch(`${serverUrl}/email/templates`, { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch(`${serverUrl}/emailer/status`, { headers }).then(r => r.ok ? r.json() : { status: 'idle', logs: [] }).catch(() => ({ status: 'idle', logs: [] })),
+        fetch(`${serverUrl}/email/stats`, { headers }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
-      if (Array.isArray(l)) setLeads(l);
-      if (Array.isArray(a)) {
-        setAccounts(a);
-        setSelectedAccountIds(prev => prev.length ? prev : a.filter(acc => acc.status === 'active').map(acc => acc.id));
-      }
-      if (Array.isArray(t)) setTemplates(t);
+
+      const l = Array.isArray(lRes) ? lRes : (Array.isArray(lRes?.leads) ? lRes.leads : (Array.isArray(lRes?.data) ? lRes.data : []));
+      setLeads(l);
+
+      const a = Array.isArray(aRes) ? aRes : (Array.isArray(aRes?.accounts) ? aRes.accounts : (Array.isArray(aRes?.data) ? aRes.data : []));
+      setAccounts(a);
+      setSelectedAccountIds(prev => prev.length ? prev : a.filter((acc: any) => acc.status === 'active' || acc.status === 'verified').map((acc: any) => acc.id));
+
+      const t = Array.isArray(tRes) ? tRes : (Array.isArray(tRes?.templates) ? tRes.templates : (Array.isArray(tRes?.data) ? tRes.data : []));
+      setTemplates(t);
+
       setCampaignStatus(s?.status === 'running' ? 'running' : 'idle');
       if (Array.isArray(s?.logs)) setLogs(s.logs.slice(-150));
       if (st) setStats(st);
@@ -275,7 +280,9 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
     setLoading(false);
   }, [serverUrl, authToken]);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => { 
+    fetchAll(); 
+  }, [fetchAll, activeSubTab]);
 
   // Auto-scroll logs
   useEffect(() => {

@@ -2623,13 +2623,20 @@ export async function getTenantModuleEntitlements(tenantId: string): Promise<Rec
     }
   });
 
-  // Legacy scrapers default to FALSE (independent add-ons)
+  // Legacy scrapers default to FALSE (independent add-ons), EXCEPT for tenant_default
+  const isDefaultTenant = tenantId === 'tenant_default' || !tenantId;
   LEGACY_SCRAPER_MODULES.forEach(m => {
-    result[m.id] = false;
+    result[m.id] = isDefaultTenant;
     if (m.aliases) {
-      m.aliases.forEach(a => { result[a] = false; });
+      m.aliases.forEach(a => { result[a] = isDefaultTenant; });
     }
   });
+  if (isDefaultTenant) {
+    result['scraper'] = true;
+    result['fb-scraper'] = true;
+    result['googleScraper'] = true;
+    result['facebookScraper'] = true;
+  }
 
   if (!tenantId) return result;
 

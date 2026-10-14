@@ -152,6 +152,9 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   const [showGlobalDropdown, setShowGlobalDropdown] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const prevOpenRef = useRef<boolean>(false);
+  useEffect(() => {
+    prevOpenRef.current = true;
+  }, []);
 
   // Subtab Search & Filter states
   const [searchQuery, setSearchQuery] = useState('');
@@ -596,7 +599,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
               Role: {userRole}
             </span>
             <button
-              onClick={fetchCRMData}
+              onClick={() => { fetchCRMData(); }}
               disabled={loading}
               className={`p-2 rounded-xl border transition cursor-pointer ${
                 isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700' : 'bg-[#18181b] hover:bg-[#27272a] border-[#27272a] text-zinc-300'
