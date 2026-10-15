@@ -132,8 +132,15 @@ class _SharedInCallScreenState extends State<SharedInCallScreen> {
   }
 
   void _endCall() async {
-    await _telecomService.disconnect();
-    if (mounted) Navigator.pop(context);
+    try {
+      await _telecomService.disconnect();
+    } catch (e) {
+      debugPrint('[SharedInCallScreen] _endCall error: $e');
+    } finally {
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+    }
   }
 
   @override

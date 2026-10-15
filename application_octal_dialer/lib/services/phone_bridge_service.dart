@@ -440,6 +440,13 @@ class PhoneBridgeService extends ChangeNotifier {
           'phoneBtAddress': _deviceBtAddress,
           // A QR pairing grants only session access; never forward a saved login token.
         });
+
+        // Re-emit active call snapshot if a call is ongoing during reconnect
+        TelecomService.instance.getInCallDetails().then((details) {
+          if (details != null && _socket != null && _socket!.connected) {
+            _socket!.emit('call:snapshot', details);
+          }
+        }).catchError((_) {});
       }
     }
 
@@ -634,6 +641,13 @@ class PhoneBridgeService extends ChangeNotifier {
           'selectedSimSlot': _selectedSimSlot,
           'selectedCarrierName': _selectedCarrierName,
         });
+
+        // Re-emit active call snapshot if a call is ongoing during reconnect
+        TelecomService.instance.getInCallDetails().then((details) {
+          if (details != null && _socket != null && _socket!.connected) {
+            _socket!.emit('call:snapshot', details);
+          }
+        }).catchError((_) {});
       } else {
         debugPrint('[PhoneBridge] Connected to server in QR / unauthenticated mode.');
         _setStatus(BridgeStatus.online, '● Connected to Octal Bridge');

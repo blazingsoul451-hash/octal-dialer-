@@ -110,6 +110,8 @@ async function typeLikeAHuman(page, locator, text) {
       }
     } catch (err) {
       console.warn(`⚠️ Warning sharing ${postUrl}: ${err.message}`);
+      console.log('⏳ Error encountered. Applying 5-second backoff recovery before continuing...');
+      await sleep(5000);
     }
 
     if (postedCount < maxPostsPerDay && i < postUrls.length - 1) {

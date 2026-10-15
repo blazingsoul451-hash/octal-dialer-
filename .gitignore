@@ -52,9 +52,6 @@ reset_zakria.sql
 local_pg_cluster/
 **/local_pg_cluster/**
 
-
-
-
 # Audit & Evidence directories
 IMPORTANT_SECRETS/
 audit_screenshots/
@@ -62,4 +59,9 @@ AUDIT_EVIDENCE/
 CLAUDE_FIX_COMPARISON_EVIDENCE/
 ZESTIFY_AUTONOMOUS_CRM_AUDIT/
 ZESTIFY_COMPLETE_UI_AUDIT/
+ZESTIFY_*.md
+application_octal_dialer/*.png
+extracted_icons/
+generate_icons.py
+parse_now.py
 desktop_octal_agent/windows/

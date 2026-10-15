@@ -50,6 +50,8 @@ android {
                 storePassword = signingProperties["storePassword"]
                 keyAlias = signingProperties["keyAlias"]
                 keyPassword = signingProperties["keyPassword"]
+            } else if (allowUnsignedRelease) {
+                initWith(signingConfigs.debug)
             }
         }
     }

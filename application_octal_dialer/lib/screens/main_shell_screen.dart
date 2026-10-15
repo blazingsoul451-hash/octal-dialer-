@@ -108,6 +108,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
       }
     });
 
+    _telecomSub?.cancel();
     _telecomSub = TelecomService.instance.callEvents.listen((event) {
       if (!mounted) return;
 

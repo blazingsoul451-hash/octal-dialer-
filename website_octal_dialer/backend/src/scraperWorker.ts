@@ -531,10 +531,6 @@ export async function executeScraperRun(
 
   } catch (err: any) {
     log(`❌ Scraper worker exception: ${err.message}`);
-    if (activeBrowser) {
-      try { await activeBrowser.close(); } catch (_) {}
-      activeBrowser = null;
-    }
     sendToParent({
       type: 'ERROR',
       jobId,
@@ -542,6 +538,11 @@ export async function executeScraperRun(
       error: err.message,
       counters
     });
+  } finally {
+    if (activeBrowser) {
+      try { await activeBrowser.close(); } catch (_) {}
+      activeBrowser = null;
+    }
   }
 }
 

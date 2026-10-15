@@ -3,6 +3,7 @@ package com.octal.dialer.octal_dialer
 import android.Manifest
 import android.app.role.RoleManager
 import android.content.Context
+import android.content.ContentUris
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -386,7 +387,15 @@ class MainActivity: FlutterActivity() {
                     clearDeviceCallLogs(result)
                 }
                 "deleteDeviceCallLog" -> {
-                    val id = call.argument<String>("id") ?: ""
+                    val id = call.argument<String>("id")
+                    if (id.isNullOrBlank()) {
+                        result.error("INVALID_ID", "Call log ID must not be blank", null)
+                        return@setMethodCallHandler
+                    }
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+                        result.error("PERMISSION_DENIED", "WRITE_CALL_LOG permission not granted", null)
+                        return@setMethodCallHandler
+                    }
                     deleteDeviceCallLog(id, result)
                 }
                 "getInitialTab" -> {
@@ -419,6 +428,7 @@ class MainActivity: FlutterActivity() {
             }
 
             override fun onCallRemoved(callId: String, phoneNumber: String, reason: String, duration: Int) {
+                synchronized(callLock) { currentCall = null }
                 runOnUiThread {
                     methodChannel?.invokeMethod("onTelecomCallRemoved", mapOf(
                         "callId" to callId,
@@ -770,14 +780,17 @@ class MainActivity: FlutterActivity() {
 
             val (descriptors, effectiveSim, _) = getActiveSimsWithReconciliation()
             val targetSim = if (requestedSlot != null && requestedSlot >= 0) {
-                val found = descriptors.find { it.simSlotIndex == requestedSlot }
-                if (found == null) {
-                    Log.w(TAG, "[Telecom] Requested SIM slot $requestedSlot out of bounds or inactive, falling back to default system SIM: ${effectiveSim?.simSlotIndex}")
+                descriptors.find { it.simSlotIndex == requestedSlot } ?: run {
+                    Log.w(TAG, "[Telecom] Requested SIM slot $requestedSlot not found in active descriptors, falling back to default SIM: ${effectiveSim?.simSlotIndex}")
                     effectiveSim
-                } else {
-                    found
                 }
             } else effectiveSim
+
+            if (targetSim == null) {
+                Log.e(TAG, "[Telecom] No call-capable SIM found")
+                result.error("SIM_UNAVAILABLE", "No active SIM is available to place calls", null)
+                return
+            }
 
             val callAccounts = telecomManager.getCallCapablePhoneAccounts() ?: emptyList()
             val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
@@ -787,16 +800,28 @@ class MainActivity: FlutterActivity() {
             } else emptyList()
 
             val teleManager = telephonyManager ?: (getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager)
-            val matchedHandle = OctalPhoneAccountManager.resolvePhoneAccountHandle(
+            var matchedHandle = OctalPhoneAccountManager.resolvePhoneAccountHandle(
                 telecomManager = telecomManager,
                 telephonyManager = teleManager,
                 callAccounts = callAccounts,
-                subId = targetSim?.subscriptionId,
-                slotIndex = targetSim?.simSlotIndex,
-                isSystemDefault = targetSim?.isSystemDefault ?: false,
+                subId = targetSim.subscriptionId,
+                slotIndex = targetSim.simSlotIndex,
+                isSystemDefault = targetSim.isSystemDefault,
                 activeList = activeList
             )
 
+            if (matchedHandle == null && effectiveSim != null && effectiveSim != targetSim) {
+                Log.w(TAG, "[Telecom] Requested SIM could not resolve handle, falling back to default system SIM handle")
+                matchedHandle = OctalPhoneAccountManager.resolvePhoneAccountHandle(
+                    telecomManager = telecomManager,
+                    telephonyManager = teleManager,
+                    callAccounts = callAccounts,
+                    subId = effectiveSim.subscriptionId,
+                    slotIndex = effectiveSim.simSlotIndex,
+                    isSystemDefault = effectiveSim.isSystemDefault,
+                    activeList = activeList
+                )
+            }
             val extras = Bundle().apply {
                 if (matchedHandle != null) {
                     putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, matchedHandle)
@@ -1384,6 +1409,19 @@ class MainActivity: FlutterActivity() {
         val readCallLog = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED
         val writeCallLog = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALL_LOG) == PackageManager.PERMISSION_GRANTED
         return readContacts && readCallLog && writeCallLog
+    }
+
+    private fun deleteDeviceCallLog(id: String, result: MethodChannel.Result) {
+        Thread {
+            try {
+                val uri = ContentUris.withAppendedId(CallLog.Calls.CONTENT_URI, id.toLong())
+                val deleted = contentResolver.delete(uri, null, null)
+                runOnUiThread { result.success(deleted > 0) }
+            } catch (e: Exception) {
+                Log.e(TAG, "deleteDeviceCallLog error: ${e.message}")
+                runOnUiThread { result.error("DELETE_FAILED", e.message, null) }
+            }
+        }.start()
     }
 
     override fun onDestroy() {

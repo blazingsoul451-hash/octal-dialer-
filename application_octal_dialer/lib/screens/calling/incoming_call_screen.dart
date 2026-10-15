@@ -30,8 +30,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     super.initState();
     _sub = _telecomService.callEvents.listen((event) {
       if (!mounted) return;
-      if (event.type == 'removed') {
-        Navigator.pop(context);
+      if (event.type == 'removed' || event.type == 'disconnected') {
+        if (Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
       }
     });
   }
@@ -43,22 +45,27 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   }
 
   void _answerCall() async {
+    bool ok = false;
     try {
-      await _telecomService.answer();
+      ok = await _telecomService.answer();
     } catch (e) {
-      debugPrint('[IncomingCallScreen] answerCall error: $e');
+      debugPrint('[IncomingCallScreen] Error answering call: $e');
     } finally {
       if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => SharedInCallScreen(
-              phoneNumber: widget.phoneNumber,
-              contactName: widget.callerName,
-              simName: widget.simName,
+        if (ok) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => SharedInCallScreen(
+                phoneNumber: widget.phoneNumber,
+                contactName: widget.callerName,
+                simName: widget.simName,
+              ),
             ),
-          ),
-        );
+          );
+        } else if (Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
       }
     }
   }
@@ -67,9 +74,11 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     try {
       await _telecomService.disconnect();
     } catch (e) {
-      debugPrint('[IncomingCallScreen] rejectCall error: $e');
+      debugPrint('[IncomingCallScreen] Error declining call: $e');
     } finally {
-      if (mounted) Navigator.pop(context);
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
     }
   }
 
