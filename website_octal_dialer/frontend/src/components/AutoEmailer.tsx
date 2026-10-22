@@ -318,10 +318,15 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
     const lines = leadsText.trim().split('\n').filter(Boolean);
     const parsed = lines.map(line => {
       const parts = line.split(',');
-      return { email: parts[0]?.trim() ?? '', name: parts[1]?.trim() ?? 'Client', company: parts[2]?.trim() ?? '' };
+      return {
+        email: parts[0]?.trim() ?? '',
+        name: parts[1]?.trim() ?? 'Client',
+        company: parts[2]?.trim() ?? '',
+        phone: parts[3]?.trim() ?? '',
+      };
     }).filter(l => l.email.includes('@'));
 
-    if (!parsed.length) { showToast('No valid emails found. Format: email,name,company (one per line)', false); return; }
+    if (!parsed.length) { showToast('No valid emails found. Format: email,name,company,phone (one per line)', false); return; }
 
     try {
       const res = await fetch(`${serverUrl}/email/upload`, { method: 'POST', headers, body: JSON.stringify({ leads: parsed }) }).then(r => r.json());

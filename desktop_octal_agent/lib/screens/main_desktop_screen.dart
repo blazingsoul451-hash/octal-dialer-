@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/octal_theme.dart';
 import '../services/fb_local_worker.dart';
+import '../services/api_service.dart';
 
 class MainDesktopScreen extends StatefulWidget {
   const MainDesktopScreen({super.key});
@@ -24,6 +25,12 @@ class _MainDesktopScreenState extends State<MainDesktopScreen> {
   @override
   void initState() {
     super.initState();
+    // Authenticate Desktop Worker with Cloud Workspace on boot
+    ApiService.instance.login('owner@octal.local', 'OwnerPassword1234!').then((res) {
+      if (res['success'] == true) {
+        FbLocalWorker.instance.addLog('✅ Authenticated with Cloud Unibox ()');
+      }
+    });
     FbLocalWorker.instance.logStream.listen((log) {
       if (mounted) {
         setState(() {

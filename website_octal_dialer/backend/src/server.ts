@@ -11663,10 +11663,11 @@ app.post(['/email/upload', '/api/email/upload'], requireAuth, requirePermission(
     const unsubToken = `uns_${crypto.randomBytes(16).toString('hex')}`;
     try {
       const insertRes = await db.execute(
-        `INSERT INTO email_leads (id, email, name, company, status, stage, "tenantId", "unsubscribeToken", "createdAt")
-         VALUES ($1, $2, $3, $4, 'pending', 1, $5, $6, $7)
-         ON CONFLICT ("tenantId", email) DO NOTHING`,
-        [leadId, cleanEmail, (l.name || 'Client').trim(), (l.company || '').trim(), tenantId, unsubToken, now]
+        `INSERT INTO email_leads (id, email, name, company, phone, status, stage, "tenantId", "unsubscribeToken", "createdAt")
+         VALUES ($1, $2, $3, $4, $5, 'pending', 1, $6, $7, $8)
+         ON CONFLICT ("tenantId", email) DO UPDATE SET
+           phone = COALESCE(EXCLUDED.phone, email_leads.phone)`,
+        [leadId, cleanEmail, (l.name || 'Client').trim(), (l.company || '').trim(), l.phone ? normalizePhone(l.phone) : null, tenantId, unsubToken, now]
       );
       if (insertRes.rowCount > 0) {
         added++;

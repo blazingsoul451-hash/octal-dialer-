@@ -761,6 +761,25 @@ export default function App() {
     setTimeout(() => setToast(null), 4000);
   };
 
+  // Real-time sync when Omnichannel Unibox promotes a hot lead into the Dialer Queue
+  useEffect(() => {
+    const s = socketData.socket;
+    if (!s) return;
+    const handleHotLeadPromoted = (payload: any) => {
+      fetchCampaigns();
+      showToast(
+        `🔥 Hot Reply from ${payload?.senderName || payload?.name || 'Prospect'} auto-queued to Android Dialer!`,
+        'success'
+      );
+    };
+    s.on('dialer:hot_lead_queued', handleHotLeadPromoted);
+    s.on('campaigns:updated', fetchCampaigns);
+    return () => {
+      s.off('dialer:hot_lead_queued', handleHotLeadPromoted);
+      s.off('campaigns:updated', fetchCampaigns);
+    };
+  }, [socketData.socket, effectiveAuthToken]);
+
   const handleImportSuccess = (campaignName: string, count: number) => {
     showToast(`Campaign "${campaignName}" imported with ${count} leads!`, 'success');
     fetchCampaigns();

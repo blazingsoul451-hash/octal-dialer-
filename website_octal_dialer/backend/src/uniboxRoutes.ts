@@ -155,6 +155,63 @@ uniboxRouter.post('/unibox/threads/:threadId/reply', async (req: Request, res: R
       return res.status(400).json({ error: 'Reply body cannot be empty.' });
     }
 
+    const thread = await db.queryOne<any>(
+      `SELECT * FROM outreach_threads WHERE id = $1 AND "tenantId" = $2`,
+      [threadId, tenantId]
+    );
+    if (!thread) {
+      return res.status(404).json({ error: 'Thread not found.' });
+    }
+
+    // Route Facebook DM / Comment replies to the Desktop Agent Task Queue
+    if (thread.channel === 'facebook_dm' || thread.channel === 'facebook_comment') {
+      const now = new Date().toISOString();
+      const taskId = `fbt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+      await db.execute(
+        `INSERT INTO fb_task_queue (id, "tenantId", "profileId", "taskType", payload, status, "createdAt", "updatedAt")
+         VALUES ($1, $2, $3, 'send_dm', $4, 'pending', $5, $5)`,
+        [
+          taskId,
+          tenantId,
+          thread.accountId || 'default',
+          JSON.stringify({
+            externalThreadId: thread.externalThreadId,
+            recipientAddress: thread.prospectAddress,
+            body: String(body).trim(),
+          }),
+          now,
+        ]
+      );
+
+      await db.execute(
+        `INSERT INTO outreach_messages (
+          id, "threadId", "tenantId", direction, channel, "senderAddress", "recipientAddress",
+          "externalMessageId", "bodyRaw", "bodyClean", intent, "createdAt"
+        ) VALUES ($1, $2, $3, 'outbound', $4, $5, $6, $7, $8, $8, 'outbound_reply', $9)`,
+        [
+          msgId,
+          threadId,
+          tenantId,
+          thread.channel,
+          thread.accountId || 'fb_agent',
+          thread.prospectAddress,
+          taskId,
+          String(body).trim(),
+          now,
+        ]
+      );
+
+      await db.execute(
+        `UPDATE outreach_threads SET status = 'replied', "lastMessageSnippet" = $1, "lastMessageAt" = $2, "updatedAt" = $2 WHERE id = $3`,
+        [String(body).trim().slice(0, 180), now, threadId]
+      );
+
+      return res.json({ success: true, messageId: msgId, queuedTaskId: taskId });
+    }
+
+    // Standard Email Reply
     const result = await sendUniboxEmailReply({
       tenantId,
       threadId,

@@ -195,7 +195,7 @@ export async function ingestInboundOmnichannelReply(params: {
       [now, params.tenantId, `%${params.senderAddress}%`]
     );
 
-    // D. Upsert Omnichannel Thread in Unibox
+    // D. Upsert Omnichannel Thread in Unibox (Matches Root Thread ID, In-Reply-To Message, or Prospect Address)
     const threadStatus =
       intent === 'positive' || intent === 'phone_shared'
         ? 'replied_hot'
@@ -206,8 +206,25 @@ export async function ingestInboundOmnichannelReply(params: {
         : 'objection';
 
     let thread = await db.queryOne<{ id: string; leadId: string | null }>(
-      `SELECT id, "leadId" FROM outreach_threads WHERE "tenantId" = $1 AND channel = $2 AND "externalThreadId" = $3`,
-      [params.tenantId, params.channel, params.externalThreadId]
+      `SELECT t.id, t."leadId"
+       FROM outreach_threads t
+       LEFT JOIN outreach_messages m ON m."threadId" = t.id AND m."externalMessageId" = $4
+       WHERE t."tenantId" = $1
+         AND t.channel = $2
+         AND (
+           t."externalThreadId" = $3
+           OR m.id IS NOT NULL
+           OR LOWER(t."prospectAddress") = LOWER($5)
+         )
+       ORDER BY t."lastMessageAt" DESC
+       LIMIT 1`,
+      [
+        params.tenantId,
+        params.channel,
+        params.externalThreadId,
+        params.inReplyTo || '',
+        params.senderAddress,
+      ]
     );
 
     const threadId = thread?.id || `thd_${crypto.randomBytes(8).toString('hex')}`;
@@ -365,6 +382,64 @@ export async function ingestInboundOmnichannelReply(params: {
   });
 }
 
+async function ensureFreshOAuthToken(account: {
+  id: string;
+  tenantId: string;
+  authType?: string;
+  accessToken?: string;
+  refreshToken?: string;
+}): Promise<string | undefined> {
+  if (!account.authType?.startsWith('oauth_') || !account.refreshToken) {
+    return account.accessToken;
+  }
+
+  try {
+    let tokenUrl = '';
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: account.refreshToken,
+    });
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+
+    if (account.authType === 'oauth_google') {
+      tokenUrl = 'https://oauth2.googleapis.com/token';
+      body.append('client_id', process.env.GOOGLE_CLIENT_ID || '');
+      body.append('client_secret', process.env.GOOGLE_CLIENT_SECRET || '');
+    } else if (account.authType === 'oauth_microsoft') {
+      tokenUrl = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+      body.append('client_id', process.env.MICROSOFT_CLIENT_ID || process.env.AZURE_CLIENT_ID || '');
+      body.append('client_secret', process.env.MICROSOFT_CLIENT_SECRET || process.env.AZURE_CLIENT_SECRET || '');
+    } else if (account.authType === 'oauth_yahoo') {
+      tokenUrl = 'https://api.login.yahoo.com/oauth2/get_token';
+      const basic = Buffer.from(
+        `${process.env.YAHOO_CLIENT_ID || ''}:${process.env.YAHOO_CLIENT_SECRET || ''}`
+      ).toString('base64');
+      headers['Authorization'] = `Basic ${basic}`;
+    }
+
+    if (!tokenUrl) return account.accessToken;
+
+    const res = await fetch(tokenUrl, { method: 'POST', headers, body });
+    const data = (await res.json()) as any;
+    if (res.ok && data.access_token) {
+      await db.execute(
+        `UPDATE email_accounts SET "accessToken" = $1, "refreshToken" = COALESCE($2, "refreshToken") WHERE id = $3`,
+        [data.access_token, data.refresh_token || null, account.id]
+      );
+      account.accessToken = data.access_token;
+      if (data.refresh_token) {
+        account.refreshToken = data.refresh_token;
+      }
+      return data.access_token;
+    }
+  } catch (err: any) {
+    console.warn(`[OAuth Refresh Warning] Could not refresh token for ${account.id}:`, err.message);
+  }
+  return account.accessToken;
+}
+
 /**
  * 4. IMAP IDLE Real-Time Inbox Watcher per Mailbox (24/7 Perpetual Auto-Reconnect Watchdog)
  */
@@ -406,6 +481,9 @@ export async function startImapIdleForAccount(account: {
     imapReconnectTimers.set(key, timer);
   };
 
+  const freshAccessToken = await ensureFreshOAuthToken(account);
+  account.accessToken = freshAccessToken;
+
   const derivedImapHost =
     account.imapHost ||
     (account.authType === 'oauth_google' ? 'imap.gmail.com' :
@@ -415,8 +493,8 @@ export async function startImapIdleForAccount(account: {
        .replace(/^smtp\./i, 'imap.')
        .replace(/^smtpout\.secureserver\.net$/i, 'imap.secureserver.net'));
 
-  const authOptions: any = account.accessToken
-    ? { user: account.email, accessToken: account.accessToken }
+  const authOptions: any = freshAccessToken
+    ? { user: account.email, accessToken: freshAccessToken }
     : { user: account.email, pass: account.password || '' };
 
   const client = new ImapFlow({
