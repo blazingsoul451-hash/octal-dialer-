@@ -1,0 +1,221 @@
+/**
+ * website_octal_dialer/backend/src/uniboxRoutes.ts
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Unibox Router: Ingests real-time Facebook wire-sniffed DMs/comments, serves
+ * paginated threads and message history, triggers 1-click Android dialing,
+ * and handles direct omnichannel email/FB replies.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+import { Router, Request, Response } from 'express';
+import { db } from './databaseManager';
+import { getTenantId } from './authManager';
+import {
+  ingestInboundOmnichannelReply,
+  sendUniboxEmailReply,
+  triggerDialerCallForThread,
+} from './services/omnichannelReplyEngine';
+
+export const uniboxRouter = Router();
+
+/**
+ * POST /api/webhooks/facebook/incoming-reply
+ * Receives real-time wire-sniffed DMs and comments from desktop_octal_agent
+ */
+uniboxRouter.post('/webhooks/facebook/incoming-reply', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const {
+      channel = 'facebook_dm',
+      accountId = 'default',
+      externalMessageId,
+      externalThreadId,
+      senderAddress,
+      senderName,
+      bodyRaw,
+    } = req.body;
+
+    if (!externalMessageId || !bodyRaw) {
+      return res.status(400).json({ error: 'externalMessageId and bodyRaw are required.' });
+    }
+
+    const result = await ingestInboundOmnichannelReply({
+      tenantId,
+      channel: channel === 'facebook_comment' ? 'facebook_comment' : 'facebook_dm',
+      accountId,
+      externalMessageId: String(externalMessageId),
+      externalThreadId: String(externalThreadId || senderAddress),
+      senderAddress: String(senderAddress || 'fb_user'),
+      senderName: String(senderName || 'Facebook Prospect'),
+      recipientAddress: String(accountId),
+      bodyRaw: String(bodyRaw),
+    });
+
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to ingest Facebook reply' });
+  }
+});
+
+/**
+ * GET /api/unibox/stats
+ * Returns overall unread counts and intent breakdown
+ */
+uniboxRouter.get('/unibox/stats', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const totalRow = await db.queryOne<{ unread: string | number; total: string | number }>(
+      `SELECT SUM("unreadCount") as unread, COUNT(*) as total FROM outreach_threads WHERE "tenantId" = $1`,
+      [tenantId]
+    );
+
+    const intentRows = await db.queryAll<{ status: string; count: string | number }>(
+      `SELECT status, COUNT(*) as count FROM outreach_threads WHERE "tenantId" = $1 GROUP BY status`,
+      [tenantId]
+    );
+
+    res.json({
+      unreadCount: Number(totalRow?.unread || 0),
+      totalThreads: Number(totalRow?.total || 0),
+      statusBreakdown: intentRows || [],
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/unibox/threads
+ * Returns paginated omnichannel threads for the 3-Pane Unibox UI
+ */
+uniboxRouter.get('/unibox/threads', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { channel, status, search } = req.query;
+
+    let sql = `SELECT * FROM outreach_threads WHERE "tenantId" = $1`;
+    const params: any[] = [tenantId];
+
+    if (channel && channel !== 'all') {
+      params.push(channel);
+      sql += ` AND channel = $${params.length}`;
+    }
+    if (status && status !== 'all') {
+      params.push(status);
+      sql += ` AND status = $${params.length}`;
+    }
+    if (search && String(search).trim()) {
+      params.push(`%${String(search).trim()}%`);
+      sql += ` AND ("prospectName" ILIKE $${params.length} OR "prospectAddress" ILIKE $${params.length} OR "lastMessageSnippet" ILIKE $${params.length})`;
+    }
+
+    sql += ` ORDER BY "lastMessageAt" DESC LIMIT 100`;
+    const threads = await db.queryAll(sql, params);
+    res.json({ threads: threads || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/unibox/threads/:threadId/messages
+ * Returns chronological conversation messages + marks thread as read
+ */
+uniboxRouter.get('/unibox/threads/:threadId/messages', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { threadId } = req.params;
+
+    await db.execute(
+      `UPDATE outreach_threads SET "unreadCount" = 0 WHERE id = $1 AND "tenantId" = $2`,
+      [threadId, tenantId]
+    );
+
+    const messages = await db.queryAll(
+      `SELECT * FROM outreach_messages WHERE "threadId" = $1 AND "tenantId" = $2 ORDER BY "createdAt" ASC`,
+      [threadId, tenantId]
+    );
+    res.json({ messages: messages || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/unibox/threads/:threadId/reply
+ * Dispatches an outbound reply directly from Unibox
+ */
+uniboxRouter.post('/unibox/threads/:threadId/reply', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { threadId } = req.params;
+    const { body } = req.body;
+
+    if (!body || !String(body).trim()) {
+      return res.status(400).json({ error: 'Reply body cannot be empty.' });
+    }
+
+    const result = await sendUniboxEmailReply({
+      tenantId,
+      threadId,
+      body: String(body).trim(),
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    res.json({ success: true, messageId: result.messageId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to send reply' });
+  }
+});
+
+/**
+ * POST /api/unibox/threads/:threadId/trigger-call
+ * Immediately promotes/queues prospect to Android handset (Priority = 100)
+ */
+uniboxRouter.post('/unibox/threads/:threadId/trigger-call', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { threadId } = req.params;
+
+    const result = await triggerDialerCallForThread({
+      tenantId,
+      threadId,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    res.json({ success: true, phone: result.phone, leadId: result.leadId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to trigger dialer call' });
+  }
+});
+
+/**
+ * PATCH /api/unibox/threads/:threadId/status
+ * Updates thread triage status
+ */
+uniboxRouter.patch('/unibox/threads/:threadId/status', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { threadId } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+      return res.status(400).json({ error: 'Status is required.' });
+    }
+
+    await db.execute(
+      `UPDATE outreach_threads SET status = $1, "updatedAt" = $2 WHERE id = $3 AND "tenantId" = $4`,
+      [status, new Date().toISOString(), threadId, tenantId]
+    );
+
+    res.json({ success: true, status });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});

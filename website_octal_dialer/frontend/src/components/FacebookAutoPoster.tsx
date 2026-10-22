@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, RefreshCw, Plus, Trash2, Key, Save, Radio, Settings, Users } from 'lucide-react';
+import { Play, Square, RefreshCw, Plus, Trash2, Key, Save, Radio, Settings, Users, Share2, Inbox } from 'lucide-react';
 
 interface FacebookAutoPosterProps {
   isLight?: boolean;
   serverUrl: string;
   authToken?: string;
   activeSubTab?: string;
+  onNavigateTab?: (tab: string) => void;
 }
 
 interface Account {
@@ -34,7 +35,8 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
   isLight = false,
   serverUrl,
   authToken,
-  activeSubTab = 'fb-poster-accounts'
+  activeSubTab = 'fb-poster-accounts',
+  onNavigateTab
 }) => {
   // Common states
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -325,6 +327,25 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
     <div className="space-y-6 text-left select-none">
       {success && <div className="p-3.5 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs font-mono font-bold">{success}</div>}
       {error && <div className="p-3.5 rounded-2xl bg-red-500/10 text-red-400 border border-red-500/30 text-xs font-mono font-bold">{error}</div>}
+
+            <div className="flex items-center justify-between p-4 rounded-2xl border border-slate-800 bg-slate-900/60 mb-2">
+        <div className="flex items-center gap-2.5">
+          <Share2 className="w-5 h-5 text-amber-500" />
+          <div>
+            <h3 className="font-bold text-sm text-white">Facebook Residential Automation</h3>
+            <p className="text-xs text-slate-400">Automates group outreach and forwards replies to Omnichannel Unibox</p>
+          </div>
+        </div>
+        {onNavigateTab && (
+          <button
+            onClick={() => onNavigateTab('unibox')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 transition cursor-pointer"
+          >
+            <Inbox className="w-3.5 h-3.5" />
+            <span>Omnichannel Unibox</span>
+          </button>
+        )}
+      </div>
 
       {/* RENDER ACCOUNTS SUBTAB */}
       {activeSubTab === 'fb-poster-accounts' && (

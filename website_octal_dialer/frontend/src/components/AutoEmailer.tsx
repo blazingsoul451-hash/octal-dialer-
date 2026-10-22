@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Mail, Plus, Trash2, Play, Square, RefreshCw, Upload,
   FileText, CheckCircle, AlertCircle,
@@ -45,11 +45,12 @@ interface Props {
   serverUrl: string;
   authToken: string;
   activeSubTab?: string;
+  onNavigateTab?: (tab: string) => void;
 }
 
 type ProviderType = 'google' | 'business' | 'outlook' | 'yahoo';
 
-export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'emailer-gmail' }: Props) {
+export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'emailer-gmail', onNavigateTab }: Props) {
   const [leads, setLeads] = useState<EmailLead[]>([]);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
@@ -303,8 +304,13 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
   }, [campaignStatus, serverUrl, authToken]);
 
   // 1-Click Connect Google OAuth redirect
+  const getOAuthConnectUrl = (provider: 'google' | 'microsoft' | 'yahoo') => {
+    const returnUrl = `${window.location.origin}${window.location.pathname}`;
+    return `${serverUrl}/email/oauth/${provider}/connect?token=${encodeURIComponent(authToken)}&returnUrl=${encodeURIComponent(returnUrl)}`;
+  };
+
   const handleConnectGoogleOAuth = () => {
-    window.location.href = `${serverUrl}/email/oauth/google/connect`;
+    window.location.href = getOAuthConnectUrl('google');
   };
 
   // ── Lead Upload ──────────────────────────────────────────────────────────────
@@ -580,14 +586,25 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
               {activeSubTab === 'emailer-leads' && 'Upload and organize customer lists for automated email campaigns.'}
             </p>
           </div>
-          <button
-            onClick={fetchAll}
-            disabled={loading}
-            className="px-3.5 py-2 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 flex items-center gap-1.5 transition cursor-pointer self-start sm:self-auto"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>Sync</span>
-          </button>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            {onNavigateTab && (
+              <button
+                onClick={() => onNavigateTab('unibox')}
+                className="px-3.5 py-2 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+              >
+                <Inbox className="w-3.5 h-3.5" />
+                <span>Omnichannel Unibox</span>
+              </button>
+            )}
+            <button
+              onClick={fetchAll}
+              disabled={loading}
+              className="px-3.5 py-2 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 flex items-center gap-1.5 transition cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <span>Sync</span>
+            </button>
+          </div>
         </div>
 
         {/* ═══════════════════════════════════════════════════════════════════════ */}
@@ -947,7 +964,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
                     </div>
                     <button
                       type="button"
-                      onClick={() => { window.location.href = `${serverUrl}/email/oauth/microsoft/connect`; }}
+                      onClick={() => { window.location.href = `${getOAuthConnectUrl('microsoft')}`; }}
                       className="py-3 px-6 rounded-2xl font-black text-sm bg-[#0078D4] hover:bg-[#006cbd] text-white shadow-lg transition-all inline-flex items-center justify-center gap-3 cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
                     >
                       <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
@@ -1065,7 +1082,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
                     </div>
                     <button
                       type="button"
-                      onClick={() => { window.location.href = `${serverUrl}/email/oauth/yahoo/connect`; }}
+                      onClick={() => { window.location.href = `${getOAuthConnectUrl('yahoo')}`; }}
                       className="py-3 px-6 rounded-2xl font-black text-sm bg-[#6001d2] hover:bg-[#5200b3] text-white shadow-lg transition-all inline-flex items-center justify-center gap-3 cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
                     >
                       <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
@@ -1424,6 +1441,29 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
       {/* ═══════════════════════════════════════════════════════════════════════ */}
       {activeSubTab === 'emailer-leads' && (
         <div className="space-y-5">
+          <div className="p-4 rounded-2xl border border-amber-500/20 bg-amber-500/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-lg bg-amber-500/20 text-amber-500 shrink-0">
+                <Inbox className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className={`text-xs font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  Omnichannel Reply & Phone Extraction Active
+                </h4>
+                <p className="text-[11px] text-slate-400">
+                  When prospects reply to these outreach campaigns, their replies and phone numbers are triaged live in the Unibox and auto-promoted to the Android dialer.
+                </p>
+              </div>
+            </div>
+            {onNavigateTab && (
+              <button
+                onClick={() => onNavigateTab('unibox')}
+                className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black hover:bg-amber-400 transition cursor-pointer self-start sm:self-auto shrink-0"
+              >
+                Go to Unibox
+              </button>
+            )}
+          </div>
           <div className={card}>
             <h2 className={`text-sm font-black mb-1 ${isLight ? 'text-slate-900' : 'text-white'}`}>Upload Email Leads</h2>
             <p className={`text-xs mb-3 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>

@@ -190,6 +190,9 @@ import {
 
 import { registerScraperRoutes } from './scraperRoutes';
 import { facebookPosterRouter } from './facebookPosterRoutes';
+import { uniboxRouter } from './uniboxRoutes';
+import { setReplyEngineSocketIo, generateDeterministicMessageId, startImapIdleForAccount } from './services/omnichannelReplyEngine';
+import { config } from './config';
 import { getTenantScraperStatus, stopTenantScraperJob } from './googleMapsScraperService';
 
 import {
@@ -334,7 +337,7 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 
-// ─── Auth middleware ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Auth middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -401,11 +404,12 @@ export const io = new SocketIOServer(httpServer, {
   transports: ['websocket', 'polling'],
   allowEIO3: true,
   pingInterval: 25000,   // 25s between pings (was 10s)
-  pingTimeout: 20000,    // 20s timeout (was 5s — too short for mobile WiFi)
+  pingTimeout: 20000,    // 20s timeout (was 5s â€” too short for mobile WiFi)
   connectTimeout: 10000,
 });
+setReplyEngineSocketIo(io);
 
-// ─── TASK 1: Socket.IO Authentication & Tenant Isolation Middleware ──────────
+// â”€â”€â”€ TASK 1: Socket.IO Authentication & Tenant Isolation Middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 io.use(async (socket, next) => {
   const authObj = socket.handshake.auth || {};
   const headers = socket.handshake.headers || {};
@@ -551,7 +555,7 @@ function getPublicBaseUrl(context?: { headers?: any; handshake?: any }): string 
 
 const getEffectiveServerUrl = getPublicBaseUrl;
 
-// ─── Server Info Endpoint (Public) ──────────────────────────────────────────
+// â”€â”€â”€ Server Info Endpoint (Public) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // CRM endpoints must respect the CRM module ceiling even when an action also accepts lead/call permissions.
 app.use('/api/crm', requireAuth, requireModule('crm'));
 
@@ -566,7 +570,7 @@ app.get(['/info', '/api/info'], (req, res) => {
   });
 });
 
-// ─── Auth REST Endpoints (no requireAuth — public) ──────────────────────────
+// â”€â”€â”€ Auth REST Endpoints (no requireAuth â€” public) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // POST /auth/login & /api/auth/login
 app.post(['/auth/login', '/api/auth/login'], async (req, res) => {
@@ -612,7 +616,7 @@ app.post(['/auth/login', '/api/auth/login'], async (req, res) => {
   res.json({ token, username: user.username, role: user.role, user, enabledModules, modules: enabledModules, permissions: entitlements });
 });
 
-// POST /admin/login & /api/admin/login — Dedicated Platform Administrator Authentication
+// POST /admin/login & /api/admin/login â€” Dedicated Platform Administrator Authentication
 app.post(['/admin/login', '/api/admin/login'], async (req, res) => {
   const username = (req.body?.username || req.body?.identifier || '').trim();
   const password = req.body?.password || '';
@@ -650,7 +654,7 @@ app.post(['/admin/login', '/api/admin/login'], async (req, res) => {
   res.json({ token, username: user.username, role: user.role, user, enabledModules, modules: enabledModules, permissions: entitlements });
 });
 
-// POST /auth/register & /api/auth/register — Public Customer Registration (Email + Password)
+// POST /auth/register & /api/auth/register â€” Public Customer Registration (Email + Password)
 app.post(['/auth/register', '/api/auth/register'], async (req, res) => {
   try {
     const { name, fullName, email, password, captchaToken } = req.body;
@@ -698,7 +702,7 @@ app.post(['/auth/signup-tenant', '/api/auth/signup-tenant'], async (req, res) =>
   }
 });
 
-// GET /auth/verify & GET /api/auth/verify — Verifies current JWT auth token
+// GET /auth/verify & GET /api/auth/verify â€” Verifies current JWT auth token
 app.get(['/auth/verify', '/api/auth/verify'], async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -742,7 +746,7 @@ app.get(['/auth/verify', '/api/auth/verify'], async (req, res) => {
   });
 });
 
-// POST /auth/contact-admin & /api/auth/contact-admin — Public endpoint for suspended accounts to contact support
+// POST /auth/contact-admin & /api/auth/contact-admin â€” Public endpoint for suspended accounts to contact support
 app.post(['/auth/contact-admin', '/api/auth/contact-admin'], async (req, res) => {
   try {
     const email = (req.body?.email || '').trim().toLowerCase();
@@ -923,7 +927,7 @@ function oauthCompletionModeRequested(value: unknown): OAuthCompletionMode {
   return enabled && value === 'code' ? 'code' : 'legacy';
 }
 
-// GET /auth/config & GET /api/auth/config — Public client configuration
+// GET /auth/config & GET /api/auth/config â€” Public client configuration
 app.get(['/auth/config', '/api/auth/config'], (_req, res) => {
   const clientId = (process.env.GOOGLE_CLIENT_ID || '');
   res.json({
@@ -989,7 +993,7 @@ function buildGoogleOAuthAuthorization(
   return { success: true, clientOrigin, authUrl: authUrl.toString() };
 }
 
-// POST /auth/google/initiate — Returns direct Google OAuth URL
+// POST /auth/google/initiate â€” Returns direct Google OAuth URL
 app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
   const intent = req.body?.intent === undefined ? 'signin' : req.body.intent;
   if (intent !== 'signin' && intent !== 'signup') {
@@ -1004,7 +1008,7 @@ app.post(['/auth/google/initiate', '/api/auth/google/initiate'], (req, res) => {
   res.set('Cache-Control', 'no-store').json({ success: true, authUrl: authorization.authUrl });
 });
 
-// GET /auth/google & GET /api/auth/google — Initiates OAuth Redirect
+// GET /auth/google & GET /api/auth/google â€” Initiates OAuth Redirect
 app.get(['/auth/google', '/api/auth/google'], (req, res) => {
   const intent = req.query.intent === undefined ? 'signin' : req.query.intent;
   if (intent !== 'signin' && intent !== 'signup') {
@@ -1020,7 +1024,7 @@ app.get(['/auth/google', '/api/auth/google'], (req, res) => {
   res.set('Cache-Control', 'no-store').redirect(302, authorization.authUrl);
 });
 
-// GET /auth/google/callback & GET /api/auth/google/callback — Handles OAuth Code Exchange
+// GET /auth/google/callback & GET /api/auth/google/callback â€” Handles OAuth Code Exchange
 app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res) => {
   const state = typeof req.query.state === 'string' ? req.query.state : '';
   const stored = state ? oauthStates.get(state) : undefined;
@@ -1099,7 +1103,7 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
   }
 });
 
-// POST /auth/google/exchange — redeems a single-use code only for its initiating origin.
+// POST /auth/google/exchange â€” redeems a single-use code only for its initiating origin.
 app.post(['/auth/google/exchange', '/api/auth/google/exchange'], (req, res) => {
   res.set('Cache-Control', 'no-store, private');
   const code = typeof req.body?.code === 'string' ? req.body.code : '';
@@ -1138,7 +1142,7 @@ app.post(['/auth/google/exchange', '/api/auth/google/exchange'], (req, res) => {
   });
 });
 
-// POST /auth/google/verify & /api/auth/google/verify — Google One-Tap / Pop-up verification with intent
+// POST /auth/google/verify & /api/auth/google/verify â€” Google One-Tap / Pop-up verification with intent
 app.post(['/auth/google/verify', '/api/auth/google/verify', '/auth/google', '/api/auth/google'], async (req, res) => {
   const { credential, intent = 'signin' } = req.body || {};
   if (typeof credential !== 'string' || !credential || !['signin', 'signup'].includes(intent)) {
@@ -1160,7 +1164,7 @@ app.post(['/auth/google/verify', '/api/auth/google/verify', '/auth/google', '/ap
   }
 });
 
-// GET /auth/permissions & /api/auth/permissions — Module permissions for authenticated user
+// GET /auth/permissions & /api/auth/permissions â€” Module permissions for authenticated user
 app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, async (req, res) => {
   const user = (req as any).user;
   if (!user) {
@@ -1215,7 +1219,7 @@ app.get(['/auth/permissions', '/api/auth/permissions'], requireAuth, async (req,
   });
 });
 
-// POST /api/mobile/login — Dedicated Mobile App Login & Instant Session Sync
+// POST /api/mobile/login â€” Dedicated Mobile App Login & Instant Session Sync
 app.post('/api/mobile/login', async (req, res) => {
   const { username, password, email, googleAuthData, deviceName, phoneBtAddress, phoneOsType, phoneIpAddress } = req.body as {
     username?: string;
@@ -1347,7 +1351,7 @@ app.post('/auth/change-password', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// GET /auth/me — validate token and return current user
+// GET /auth/me â€” validate token and return current user
 app.get('/auth/me', requireAuth, async (req, res) => {
   const user = (req as any).user;
   let tenant: any = null;
@@ -1375,9 +1379,9 @@ app.get('/auth/me', requireAuth, async (req, res) => {
   });
 });
 
-// ─── User Profile & Account Management REST Endpoints ─────────────────────────
+// â”€â”€â”€ User Profile & Account Management REST Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// GET /api/user/profile — Return authenticated user's profile details
+// GET /api/user/profile â€” Return authenticated user's profile details
 app.get('/api/user/profile', requireAuth, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -1422,7 +1426,7 @@ app.get('/api/user/profile', requireAuth, async (req, res) => {
   }
 });
 
-// PUT /api/user/profile — Update personal information and preferences
+// PUT /api/user/profile â€” Update personal information and preferences
 app.put('/api/user/profile', requireAuth, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -1460,7 +1464,7 @@ app.put('/api/user/profile', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/user/avatar — Dedicated image upload/update endpoint
+// POST /api/user/avatar â€” Dedicated image upload/update endpoint
 app.post('/api/user/avatar', requireAuth, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -1480,7 +1484,7 @@ app.post('/api/user/avatar', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/user/change-password — Secure password update with validation rules
+// POST /api/user/change-password â€” Secure password update with validation rules
 app.post('/api/user/change-password', requireAuth, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -1528,7 +1532,7 @@ app.post('/api/user/change-password', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/user/revoke-devices — Remove all other trusted sessions
+// POST /api/user/revoke-devices â€” Remove all other trusted sessions
 app.post('/api/user/revoke-devices', requireAuth, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -1547,9 +1551,9 @@ app.post('/api/user/revoke-devices', requireAuth, async (req, res) => {
   }
 });
 
-// ─── Safety Controller REST Endpoints ───────────────────────────────────────
+// â”€â”€â”€ Safety Controller REST Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// GET /api/suppression-list — list all DNC numbers
+// GET /api/suppression-list â€” list all DNC numbers
 app.get('/api/suppression-list', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId;
@@ -1560,7 +1564,7 @@ app.get('/api/suppression-list', requireAuth, async (req, res) => {
   res.json(await getSuppressionList(tenantId));
 });
 
-// POST /api/suppression-list — add a number to DNC
+// POST /api/suppression-list â€” add a number to DNC
 app.post('/api/suppression-list', requireAuth, async (req, res) => {
   const { phone, reason } = req.body as { phone: string; reason?: string };
   if (!phone || !phone.trim()) {
@@ -1581,7 +1585,7 @@ app.post('/api/suppression-list', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/suppression-list/import — bulk add DNC numbers
+// POST /api/suppression-list/import â€” bulk add DNC numbers
 app.post('/api/suppression-list/import', requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const { entries, reason } = req.body as { entries: { phone: string; reason?: string }[]; reason?: string };
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -1603,7 +1607,7 @@ app.post('/api/suppression-list/import', requireAuth, requireCompanyOwnerOrPlatf
   res.json({ success: true, addedCount: result.added, skippedCount: result.skipped });
 });
 
-// DELETE /api/suppression-list/:id — remove from DNC
+// DELETE /api/suppression-list/:id â€” remove from DNC
 app.delete('/api/suppression-list/:id', requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId;
@@ -1619,7 +1623,7 @@ app.delete('/api/suppression-list/:id', requireAuth, requireCompanyOwnerOrPlatfo
   }
 });
 
-// POST /api/emergency-stop — halts all active calls immediately
+// POST /api/emergency-stop â€” halts all active calls immediately
 app.post('/api/emergency-stop', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
@@ -1642,7 +1646,7 @@ app.post('/api/emergency-stop', requireAuth, async (req, res) => {
   res.json({ success: true, message: 'Emergency stop activated. All dialing halted.' });
 });
 
-// POST /api/emergency-stop/clear — re-enable dialing after emergency stop
+// POST /api/emergency-stop/clear â€” re-enable dialing after emergency stop
 app.post('/api/emergency-stop/clear', requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user.tenantId;
@@ -1656,7 +1660,7 @@ app.post('/api/emergency-stop/clear', requireAuth, requireCompanyOwnerOrPlatform
   res.json({ success: true, message: 'Emergency stop cleared. Dialing re-enabled.' });
 });
 
-// GET /api/safety-status — current safety controller state
+// GET /api/safety-status â€” current safety controller state
 app.get('/api/safety-status', requireAuth, (req, res) => {
   res.json({
     emergencyStopped: isEmergencyStopped(),
@@ -1664,7 +1668,7 @@ app.get('/api/safety-status', requireAuth, (req, res) => {
   });
 });
 
-// GET /api/commands — active in-flight commands
+// GET /api/commands â€” active in-flight commands
 app.get('/api/commands', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const isPlatformAdmin = user?.role === 'platform_admin' || user?.role === 'master_admin';
@@ -1672,7 +1676,7 @@ app.get('/api/commands', requireAuth, async (req, res) => {
   res.json(await getActiveCommands(tenantId));
 });
 
-// GET /api/leads/locked — list all currently locked leads (scoped per actor role)
+// GET /api/leads/locked â€” list all currently locked leads (scoped per actor role)
 app.get('/api/leads/locked', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const isPlatformAdmin = user?.role === 'platform_admin' || user?.role === 'master_admin';
@@ -1680,7 +1684,7 @@ app.get('/api/leads/locked', requireAuth, async (req, res) => {
   res.json(await getScopedLockedLeads(user, tenantId));
 });
 
-// POST /api/devices/register — register or update a mobile device
+// POST /api/devices/register â€” register or update a mobile device
 app.post('/api/devices/register', requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
@@ -1707,7 +1711,7 @@ app.post('/api/devices/register', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/devices — list registered devices for current user and tenant
+// GET /api/devices â€” list registered devices for current user and tenant
 app.get('/api/devices', requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
@@ -1734,7 +1738,7 @@ app.get('/api/devices', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/devices/:id/revoke — revoke device access
+// POST /api/devices/:id/revoke â€” revoke device access
 app.post('/api/devices/:id/revoke', requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
@@ -1767,7 +1771,7 @@ app.post('/api/devices/:id/revoke', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/audit-logs & /admin/audit-logs — view system audit logs (strictly Company Owner / Platform Owner)
+// GET /api/audit-logs & /admin/audit-logs â€” view system audit logs (strictly Company Owner / Platform Owner)
 app.get(['/api/audit-logs', '/admin/audit-logs'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
@@ -1777,7 +1781,7 @@ app.get(['/api/audit-logs', '/admin/audit-logs'], requireAuth, requireCompanyOwn
   res.json({ logs, pagination: { total: logs.length, totalPages: 1 } });
 });
 
-// POST /api/leads/:id/unlock — manually unlock a lead (strictly scoped)
+// POST /api/leads/:id/unlock â€” manually unlock a lead (strictly scoped)
 app.post('/api/leads/:id/unlock', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId;
@@ -1816,7 +1820,7 @@ app.post('/api/leads/:id/unlock', requireAuth, async (req, res) => {
   res.json({ success: true, message: `Lead ${req.params.id} unlocked.` });
 });
 
-// GET /api/session/resolve — resolves and validates a session for pairing by authenticated mobile clients
+// GET /api/session/resolve â€” resolves and validates a session for pairing by authenticated mobile clients
 app.get('/api/session/resolve', requireAuth, (req, res) => {
   const user = (req as any).user;
   const sessionId = req.query.sessionId as string;
@@ -5126,7 +5130,7 @@ app.get('/api/crm/search', requireAuth, requirePermission(['crm:view', 'leads:vi
         type: 'company',
         id: c.id,
         title: c.name,
-        subtitle: `${c.industry || 'Company'} • ${c.phone || c.email || 'No contact info'}`,
+        subtitle: `${c.industry || 'Company'} â€¢ ${c.phone || c.email || 'No contact info'}`,
         status: c.status,
         entityId: c.id
       });
@@ -5143,7 +5147,7 @@ app.get('/api/crm/search', requireAuth, requirePermission(['crm:view', 'leads:vi
         type: 'contact',
         id: ct.id,
         title: ct.name,
-        subtitle: `${ct.roleTitle ? ct.roleTitle + ' at ' : ''}${ct.companyName || 'Individual'} • ${ct.phone || ct.email || ''}`,
+        subtitle: `${ct.roleTitle ? ct.roleTitle + ' at ' : ''}${ct.companyName || 'Individual'} â€¢ ${ct.phone || ct.email || ''}`,
         status: 'Active',
         entityId: ct.id
       });
@@ -5166,7 +5170,7 @@ app.get('/api/crm/search', requireAuth, requirePermission(['crm:view', 'leads:vi
         type: 'lead',
         id: l.id,
         title: l.name,
-        subtitle: `Lead • ${l.companyName || l.phone || l.contactEmail || ''}`,
+        subtitle: `Lead â€¢ ${l.companyName || l.phone || l.contactEmail || ''}`,
         status: l.status,
         entityId: l.id
       });
@@ -5183,7 +5187,7 @@ app.get('/api/crm/search', requireAuth, requirePermission(['crm:view', 'leads:vi
         type: (t.taskType === 'meeting' || t.taskType === 'online_meeting') ? 'meeting' : 'task',
         id: t.id,
         title: t.title,
-        subtitle: `${t.taskType.toUpperCase()} • Due: ${new Date(t.dueAt).toLocaleDateString()}`,
+        subtitle: `${t.taskType.toUpperCase()} â€¢ Due: ${new Date(t.dueAt).toLocaleDateString()}`,
         status: t.status,
         entityId: t.id
       });
@@ -5200,7 +5204,7 @@ app.get('/api/crm/search', requireAuth, requirePermission(['crm:view', 'leads:vi
         type: 'work',
         id: w.id,
         title: w.title,
-        subtitle: `Client Work • ${w.category} • Priority: ${w.priority}`,
+        subtitle: `Client Work â€¢ ${w.category} â€¢ Priority: ${w.priority}`,
         status: w.status,
         entityId: w.id
       });
@@ -5217,7 +5221,7 @@ app.get('/api/crm/search', requireAuth, requirePermission(['crm:view', 'leads:vi
         type: 'quote',
         id: qte.id,
         title: `Quote #${qte.quoteNumber}`,
-        subtitle: `${qte.packageName} • ${qte.currency} ${Number(qte.totalAmount).toFixed(2)}`,
+        subtitle: `${qte.packageName} â€¢ ${qte.currency} ${Number(qte.totalAmount).toFixed(2)}`,
         status: qte.status,
         entityId: qte.id
       });
@@ -5648,12 +5652,12 @@ app.put('/api/super-admin/tenants/:id/status', requirePlatformAdmin, async (req,
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SUPERADMIN ROUTES — Only master account (role: superadmin) can access these
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// SUPERADMIN ROUTES â€” Only master account (role: superadmin) can access these
 // Can suspend / restore / demote ANY user including platform_admins
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// GET /api/superadmin/users — list ALL users across the platform (including platform_admins)
+// GET /api/superadmin/users â€” list ALL users across the platform (including platform_admins)
 app.get('/api/superadmin/users', requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const rows = await db.queryAll<any>(`
@@ -5675,7 +5679,7 @@ app.get('/api/superadmin/users', requireAuth, requireSuperAdmin, async (req, res
   }
 });
 
-// PUT /api/superadmin/users/:id/status — suspend or restore ANY user (including platform_admins)
+// PUT /api/superadmin/users/:id/status â€” suspend or restore ANY user (including platform_admins)
 app.put('/api/superadmin/users/:id/status', requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -5722,7 +5726,7 @@ app.put('/api/superadmin/users/:id/status', requireAuth, requireSuperAdmin, asyn
       ]);
     } catch { /* audit log is best-effort */ }
 
-    console.log(`[Superadmin] ${caller.username} set ${target.username} (${target.role}) status → ${status}. Reason: ${reason || 'none'}`);
+    console.log(`[Superadmin] ${caller.username} set ${target.username} (${target.role}) status â†’ ${status}. Reason: ${reason || 'none'}`);
     res.json({ success: true, message: `User ${target.username} status updated to ${status}.`, userId: target.id, status });
   } catch (err: any) {
     console.error('[Superadmin] Update user status error:', err);
@@ -5730,7 +5734,7 @@ app.put('/api/superadmin/users/:id/status', requireAuth, requireSuperAdmin, asyn
   }
 });
 
-// PUT /api/superadmin/users/:id/role — change role of any user (downgrade platform_admin → admin, etc.)
+// PUT /api/superadmin/users/:id/role â€” change role of any user (downgrade platform_admin â†’ admin, etc.)
 app.put('/api/superadmin/users/:id/role', requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -5776,7 +5780,7 @@ app.put('/api/superadmin/users/:id/role', requireAuth, requireSuperAdmin, async 
       ]);
     } catch { /* audit log is best-effort */ }
 
-    console.log(`[Superadmin] ${caller.username} changed ${target.username} role: ${target.role} → ${role}`);
+    console.log(`[Superadmin] ${caller.username} changed ${target.username} role: ${target.role} â†’ ${role}`);
     res.json({ success: true, message: `User ${target.username} role changed to ${role}.`, userId: target.id, oldRole: target.role, newRole: role });
   } catch (err: any) {
     console.error('[Superadmin] Change user role error:', err);
@@ -5784,7 +5788,7 @@ app.put('/api/superadmin/users/:id/role', requireAuth, requireSuperAdmin, async 
   }
 });
 
-// DELETE /api/superadmin/users/:id — permanently delete any non-superadmin user
+// DELETE /api/superadmin/users/:id â€” permanently delete any non-superadmin user
 app.delete('/api/superadmin/users/:id', requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -6719,7 +6723,7 @@ app.post(['/campaigns/:id/reset-status', '/api/campaigns/:id/reset-status'], req
   res.json({ success: true, count, message: `Reset ${count} leads in campaign ${req.params.id} back to PENDING.` });
 });
 
-// REST: Call logs history (protected — scoped per actor role)
+// REST: Call logs history (protected â€” scoped per actor role)
 app.get(['/logs', '/api/logs', '/api/call-logs'], requireAuth, requirePermission(['history:view_logs', 'calls:view_queue']), async (req, res) => {
   const caller = (req as any).user;
   const tenantId = caller?.tenantId;
@@ -6730,7 +6734,7 @@ app.get(['/logs', '/api/logs', '/api/call-logs'], requireAuth, requirePermission
   res.json(await getScopedLogs(caller, tenantId));
 });
 
-// POST /api/logs/update & /logs/update — Update call disposition & sync CRM (protected)
+// POST /api/logs/update & /logs/update â€” Update call disposition & sync CRM (protected)
 app.post(['/api/logs/update', '/logs/update'], requireAuth, requirePermission(['calls:log_disposition', 'history:edit_disposition']), async (req, res) => {
   const {
     leadId,
@@ -6919,7 +6923,7 @@ app.post(['/api/logs/update', '/logs/update'], requireAuth, requirePermission(['
   }
 });
 
-// GET /api/campaigns/:id/next-lead — Authoritative backend next lead query (protected)
+// GET /api/campaigns/:id/next-lead â€” Authoritative backend next lead query (protected)
 app.get('/api/campaigns/:id/next-lead', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId;
@@ -6935,9 +6939,9 @@ app.get('/api/campaigns/:id/next-lead', requireAuth, async (req, res) => {
   });
 });
 
-// ─── Activity & Performance Metrics REST Endpoints ─────────────────────────
+// â”€â”€â”€ Activity & Performance Metrics REST Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// GET /api/activity/logs — Granular workspace activity trail (protected)
+// GET /api/activity/logs â€” Granular workspace activity trail (protected)
 app.get(['/api/activity/logs', '/activity/logs'], requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
@@ -6965,7 +6969,7 @@ app.get(['/api/activity/logs', '/activity/logs'], requireAuth, async (req, res) 
   }
 });
 
-// GET /api/metrics/agents — Daily agent call & talk time scorecard (protected)
+// GET /api/metrics/agents â€” Daily agent call & talk time scorecard (protected)
 app.get(['/api/metrics/agents', '/metrics/agents'], requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
@@ -6993,9 +6997,10 @@ app.get(['/api/metrics/agents', '/metrics/agents'], requireAuth, async (req, res
 
 registerScraperRoutes(app, requireAuth, io);
 app.use('/api/facebook-poster', requireAuth, facebookPosterRouter);
+app.use('/api', requireAuth, uniboxRouter);
 
-// ─── LEAD GEN Z INTEGRATION BOUNDARY ───────────────────────────────
-// POST /api/integrations/leadgen/import — Ingests leads from LEAD GEN Z
+// â”€â”€â”€ LEAD GEN Z INTEGRATION BOUNDARY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// POST /api/integrations/leadgen/import â€” Ingests leads from LEAD GEN Z
 app.post('/api/integrations/leadgen/import', requireAuth, async (req: express.Request, res: express.Response) => {
   try {
     const caller = (req as any).user;
@@ -7103,7 +7108,7 @@ app.post('/api/integrations/leadgen/import', requireAuth, async (req: express.Re
 });
 
 
-// ─── ADMIN AUTHORITY MASTER CONTROL REST ENDPOINTS ────────────────────────────
+// â”€â”€â”€ ADMIN AUTHORITY MASTER CONTROL REST ENDPOINTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // GET /api/admin/overview & /admin/overview
 app.get(['/api/admin/overview', '/admin/overview'], requireAuth, requireAdmin, async (req, res) => {
@@ -7479,7 +7484,7 @@ app.put(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCompan
       const owners = await db.queryOne<any>(`SELECT COUNT(*) as count FROM users WHERE "tenantId" = $1 AND role = 'admin' AND id <> $2 AND LOWER(status) = 'active'`, [tenantId, req.params.id]);
       if (Number(owners?.count || 0) === 0) throw new Error('Cannot disable or demote the final active Company Owner.');
     }
-    // 1. Update role if provided — enforce canonical role transition matrix
+    // 1. Update role if provided â€” enforce canonical role transition matrix
     if (role) {
       await updateUserRole(caller, req.params.id, role);
     }
@@ -7737,9 +7742,9 @@ app.delete(['/api/admin/users/:id', '/admin/users/:id'], requireAuth, requireCom
   }
 });
 
-// ─── Customer Workspace Onboarding Endpoints ─────────────────────────────────
+// â”€â”€â”€ Customer Workspace Onboarding Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// POST /api/onboarding/complete & /onboarding/complete — Completes customer onboarding
+// POST /api/onboarding/complete & /onboarding/complete â€” Completes customer onboarding
 app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -7888,9 +7893,9 @@ app.post(['/api/onboarding/complete', '/onboarding/complete'], requireAuth, asyn
   }
 });
 
-// ─── Workspace Invitations REST Endpoints ─────────────────────────────────────
+// â”€â”€â”€ Workspace Invitations REST Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// GET /api/admin/invitations & /admin/invitations — List invitations & seat usage
+// GET /api/admin/invitations & /admin/invitations â€” List invitations & seat usage
 app.get(['/api/admin/invitations', '/admin/invitations', '/api/invitations', '/invitations'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -7915,7 +7920,7 @@ app.get(['/api/admin/invitations', '/admin/invitations', '/api/invitations', '/i
   }
 });
 
-// POST /api/admin/invitations & /admin/invitations — Create workspace invitation
+// POST /api/admin/invitations & /admin/invitations â€” Create workspace invitation
 app.post(['/api/admin/invitations', '/admin/invitations', '/api/invitations', '/invitations'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -8004,7 +8009,7 @@ app.post(['/api/admin/invitations', '/admin/invitations', '/api/invitations', '/
   }
 });
 
-// DELETE /api/admin/invitations/:id & /admin/invitations/:id — Revoke invitation
+// DELETE /api/admin/invitations/:id & /admin/invitations/:id â€” Revoke invitation
 app.delete(['/api/admin/invitations/:id', '/admin/invitations/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -8023,7 +8028,7 @@ app.delete(['/api/admin/invitations/:id', '/admin/invitations/:id'], requireAuth
   }
 });
 
-// GET /api/invitations/resolve & /invitations/resolve — Public invitation query
+// GET /api/invitations/resolve & /invitations/resolve â€” Public invitation query
 app.get(['/api/invitations/resolve', '/invitations/resolve'], async (req, res) => {
   try {
     const token = req.query.token as string;
@@ -8072,7 +8077,7 @@ app.get(['/api/invitations/resolve', '/invitations/resolve'], async (req, res) =
   }
 });
 
-// POST /api/invitations/accept & /invitations/accept — Attach user to invited workspace
+// POST /api/invitations/accept & /invitations/accept â€” Attach user to invited workspace
 app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async (req, res) => {
   try {
     const caller = (req as any).user;
@@ -8227,7 +8232,7 @@ app.post(['/api/invitations/accept', '/invitations/accept'], requireAuth, async 
   }
 });
 
-// ─── Custom Roles Endpoints ──────────────────────────────────────────────────
+// â”€â”€â”€ Custom Roles Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // GET /api/admin/roles & /admin/roles
 app.get(['/api/admin/roles', '/admin/roles'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission('roles:view'), async (req, res) => {
@@ -8391,7 +8396,7 @@ app.delete(['/api/admin/roles/:id', '/admin/roles/:id'], requireAuth, requireCom
   res.json({ success: true, message: 'Role deleted.' });
 });
 
-// ─── Teams & Scoping Endpoints ───────────────────────────────────────────────
+// â”€â”€â”€ Teams & Scoping Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // GET /api/admin/teams & /admin/teams
 app.get(['/api/admin/teams', '/admin/teams', '/api/teams', '/teams'], requireAuth, requireCompanyOwnerOrPlatformAdmin, requirePermission(['teams:view', 'users:view', 'settings:view']), async (req, res) => {
@@ -8718,7 +8723,7 @@ app.post(['/api/admin/teams/:id/campaigns', '/admin/teams/:id/campaigns'], requi
   }
 });
 
-// ─── SaaS Structure v2: Team Lead & Team Policy Endpoints ────────────────────
+// â”€â”€â”€ SaaS Structure v2: Team Lead & Team Policy Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // GET /api/teams/:id/settings: Retrieves team visibility policy
 app.get(['/api/teams/:id/settings', '/teams/:id/settings'], requireAuth, async (req, res) => {
@@ -9137,7 +9142,7 @@ app.get('/join', (req, res) => {
   res.send(html);
 });
 
-// REST: Serve Mobile APK file download — dynamically resolves freshest build
+// REST: Serve Mobile APK file download â€” dynamically resolves freshest build
 const serveApkHandler = (_req: express.Request, res: express.Response): void => {
   const candidatePaths = [
     '/var/www/octal-frontend/OctalDialer.apk',
@@ -9600,7 +9605,7 @@ app.get(['/api/leads/export', '/leads/export'], requireAuth, requireCompanyOwner
   }
 });
 
-// ─── Authenticated Phone Sockets Registry ───────────────────────────────────────
+// â”€â”€â”€ Authenticated Phone Sockets Registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 interface ActivePhoneSocket {
   socketId: string;
   deviceId: string;
@@ -9656,7 +9661,7 @@ io.on('connection', (socket) => {
     socket.join('platform_admins');
   }
 
-  // ─── PLATFORM ADMIN OBSERVABILITY SUBSCRIBER ────────────────────────────────
+  // â”€â”€â”€ PLATFORM ADMIN OBSERVABILITY SUBSCRIBER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('platform:subscribe', async (data: { authToken: string }) => {
     if (!data?.authToken) return;
     try {
@@ -9673,7 +9678,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ─── AUTHENTICATED PHONE REGISTRATION ──────────────────────────────────────────
+  // â”€â”€â”€ AUTHENTICATED PHONE REGISTRATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('phone:auth-register', async (data: {
     token: string;
     deviceId?: string;
@@ -9835,7 +9840,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ─── LAPTOP EXPLICIT CONNECT TO REGISTERED DEVICE ─────────────────────────────
+  // â”€â”€â”€ LAPTOP EXPLICIT CONNECT TO REGISTERED DEVICE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('laptop:connect-device', async ({ sessionId, deviceId }: { sessionId: string; deviceId: string }) => {
     const session = getSessionById(sessionId);
     if (!session) {
@@ -9937,7 +9942,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ─── LAPTOP DISCONNECT / REVOKE PHONE ───────────────────────────────────────
+  // â”€â”€â”€ LAPTOP DISCONNECT / REVOKE PHONE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleLaptopRevoke = ({ sessionId, deviceId }: { sessionId: string; deviceId?: string }) => {
     const session = getSessionById(sessionId);
     if (!session) return;
@@ -9986,7 +9991,7 @@ io.on('connection', (socket) => {
   socket.on('laptop:disconnect-device', handleLaptopRevoke);
   socket.on('laptop:revoke-phone', handleLaptopRevoke);
 
-  // ─── PHONE DISCONNECT SESSION ────────────────────────────────────────────────
+  // â”€â”€â”€ PHONE DISCONNECT SESSION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('phone:disconnect-session', ({ sessionId }: { sessionId?: string } = {}) => {
     const sid = sessionId || socket.data.sessionId;
     if (!sid) return;
@@ -10327,7 +10332,7 @@ io.on('connection', (socket) => {
     socket.emit('client:pong', { timestamp, serverOnly: true });
   });
 
-  // Phone responds to latency ping — must be the authoritative paired phone socket
+  // Phone responds to latency ping â€” must be the authoritative paired phone socket
   socket.on('phone:pong', ({ sessionId, timestamp }: { sessionId?: string; timestamp: number }) => {
     const sid = socket.data.sessionId || sessionId;
     if (!sid) return;
@@ -10543,7 +10548,7 @@ io.on('connection', (socket) => {
         name,
         timestamp: new Date().toISOString()
       });
-      console.log(`[CallEngine] ✅ DIAL DISPATCHED | CallId: ${callSession.callId} | Phone Socket: ${session.phoneSocketId} | ${name} (${phone}) | Session: ${sessionId} | Cmd: ${check.commandId}`);
+      console.log(`[CallEngine] âœ… DIAL DISPATCHED | CallId: ${callSession.callId} | Phone Socket: ${session.phoneSocketId} | ${name} (${phone}) | Session: ${sessionId} | Cmd: ${check.commandId}`);
     } catch (err: any) {
       if (leadId) await releaseLeadLock(leadId, sessionId);
       updateCallSessionState(callSession.callId, 'DIAL_FAILED', { endReason: 'SOCKET_DISPATCH_ERROR' });
@@ -10644,9 +10649,9 @@ io.on('connection', (socket) => {
         name: cs.name,
         timestamp: new Date().toISOString()
       });
-      console.log(`[CallEngine] 📱 Phone ACK received: COMMAND_RECEIVED for Call ${cs.callId} (${cs.phone})`);
+      console.log(`[CallEngine] ðŸ“± Phone ACK received: COMMAND_RECEIVED for Call ${cs.callId} (${cs.phone})`);
     } else {
-      console.warn(`[CallEngine] ❌ Phone REJECTED dial command for Call ${cs.callId} | Reason: ${reason}`);
+      console.warn(`[CallEngine] âŒ Phone REJECTED dial command for Call ${cs.callId} | Reason: ${reason}`);
       updateCallSessionState(cs.callId, 'DIAL_FAILED', { endReason: reason || 'PHONE_REJECTED' });
       setSessionStatus(cs.sessionId, 'PAIRED');
       if (cs.leadId) {
@@ -10718,7 +10723,7 @@ io.on('connection', (socket) => {
       };
       io.to(session.id).emit('call:incoming', payload);
       io.to(session.id).emit('call:status-changed', { callId: cs.callId, state: 'RINGING', phone: cs.phone, direction: 'INCOMING' });
-      console.log(`[Socket PhoneLink] 📲 Incoming cellular call on phone ${session.phoneDeviceName} (${phone}) -> Notified laptop in session ${session.id}`);
+      console.log(`[Socket PhoneLink] ðŸ“² Incoming cellular call on phone ${session.phoneDeviceName} (${phone}) -> Notified laptop in session ${session.id}`);
     }
   });
 
@@ -10731,7 +10736,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ─── STRICT CALL LIFECYCLE SOCKET HANDLERS ─────────────────────────────────
+  // â”€â”€â”€ STRICT CALL LIFECYCLE SOCKET HANDLERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Server-side idempotency guard to prevent duplicate terminal processing per call
   const processedCallEndings = new Set<string>();
 
@@ -10859,7 +10864,7 @@ io.on('connection', (socket) => {
     };
     io.to(session.id).emit('call:incoming', payload);
     io.to(session.id).emit('call:status-changed', { callId: cs.callId, state: 'RINGING', phone: cs.phone, direction: 'INCOMING' });
-    console.log(`[Socket PhoneLink] 📲 incoming_call bridge snapshot on session ${session.id} (${callerNumber})`);
+    console.log(`[Socket PhoneLink] ðŸ“² incoming_call bridge snapshot on session ${session.id} (${callerNumber})`);
   });
 
   socket.on('place_call', async ({ sessionId, phone, number, name, leadId, campaignId, timeout, forceRedial, simSlot, commandId, callId }: {
@@ -11349,7 +11354,7 @@ io.on('connection', (socket) => {
     }
 
     if (session.laptopSocketId === socket.id) {
-      // Do NOT send session:ended to phone — laptop socket reclaims session instantly on reconnect!
+      // Do NOT send session:ended to phone â€” laptop socket reclaims session instantly on reconnect!
       console.log(`[Socket Disconnect] Laptop socket ${socket.id} disconnected from session ${session.id} (reclaimable)`);
       handleLaptopDisconnect(socket.id);
     } else if (session.phoneSocketId === socket.id) {
@@ -11357,7 +11362,7 @@ io.on('connection', (socket) => {
       // Carrier GSM call remains live on the mobile radio.
       // Preserve active CallSession and LeadLock so subsequent reconnect / outbox replay can record truthful duration.
       if (hasActiveCall) {
-        console.log(`[Socket Disconnect] Phone socket ${socket.id} transport disconnected from session ${session.id} — preserving live GSM call ${activeCs.callId}`);
+        console.log(`[Socket Disconnect] Phone socket ${socket.id} transport disconnected from session ${session.id} â€” preserving live GSM call ${activeCs.callId}`);
       }
       if (session.laptopSocketId) {
         io.to(session.laptopSocketId).emit('phone:disconnected');
@@ -11368,9 +11373,9 @@ io.on('connection', (socket) => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // AUTO-EMAILER MODULE ROUTES
-// ══════════════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 // Job state for the emailer campaign runner (strictly isolated per tenant)
 interface TenantEmailerJob {
@@ -11438,206 +11443,275 @@ function rewriteLinksForTracking(html: string, trackingToken: string, baseUrl: s
 }
 
 // 1x1 Transparent GIF buffer for email open tracking
-const TRACKING_PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+// ============================================================================
+// HARDENED OMNICHANNEL EMAIL SUITE: TRACKING, UNSUBSCRIBE, OAUTH, & CAMPAIGNS
+// ============================================================================
 
-// ── Public Open Tracking Pixel
-app.get(['/api/email/track/open/:token', '/email/track/open/:token'], async (req: express.Request, res: express.Response): Promise<void> => {
-  const token = req.params.token;
+type OAuthEmailProvider = 'google' | 'microsoft' | 'yahoo';
+
+interface SignedOAuthState {
+  tenantId: string;
+  userId: string;
+  provider: OAuthEmailProvider;
+  returnUrl: string;
+  exp: number;
+}
+
+function createSignedOAuthState(payload: SignedOAuthState): string {
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', config.jwtSecret)
+    .update(data)
+    .digest('base64url');
+  return `${data}.${sig}`;
+}
+
+function verifySignedOAuthState(stateToken: string): SignedOAuthState | null {
+  if (!stateToken || !stateToken.includes('.')) return null;
+  const [data, sig] = stateToken.split('.');
+  const expectedSig = crypto
+    .createHmac('sha256', config.jwtSecret)
+    .update(data)
+    .digest('base64url');
+  if (sig !== expectedSig) return null;
   try {
-    if (token && token.length > 5) {
-      const now = new Date().toISOString();
-      const updated = await db.queryOne<{ campaignRunId: string; openedAt: string }>(`
-        UPDATE email_dispatch_logs 
-        SET "openedAt" = COALESCE("openedAt", $1), status = CASE WHEN status = 'sent' THEN 'opened' ELSE status END
-        WHERE "trackingToken" = $2
-        RETURNING "campaignRunId", "openedAt"
-      `, [now, token]);
-      if (updated?.campaignRunId && !updated.openedAt) {
-        await db.execute('UPDATE email_campaign_runs SET "openedCount" = "openedCount" + 1 WHERE id = $1', [updated.campaignRunId]);
+    const parsed = JSON.parse(Buffer.from(data, 'base64url').toString('utf8')) as SignedOAuthState;
+    if (Date.now() > parsed.exp) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePublicServerOrigin(req: express.Request): string {
+  const envUrl = process.env.PUBLIC_APP_URL || process.env.BASE_URL;
+  if (envUrl) return envUrl.replace(/\/$/, '');
+  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+  const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'zestify7.online';
+  return `${proto}://${host}`;
+}
+
+/**
+ * Helper: Resolves Spintax {Hi|Hello|Hey} AND {{variable}} tokens
+ */
+function interpolateEmailWithSpintax(template: string, tokens: Record<string, string>): string {
+  if (!template) return '';
+  // 1. Replace {{variable}} tokens
+  let result = template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => {
+    return tokens[key] !== undefined && tokens[key] !== '' ? tokens[key] : '';
+  });
+  // 2. Resolve Spintax {Option A|Option B|Option C}
+  result = result.replace(/\{([^{}|]+(?:\|[^{}|]+)+)\}/g, (_, group) => {
+    const options = group.split('|');
+    return options[Math.floor(Math.random() * options.length)];
+  });
+  return result;
+}
+
+// ─── GET /api/email/track/open/:token ─── Pixel Open Tracker (Updates Run Counter)
+app.get(['/api/email/track/open/:token', '/email/track/open/:token'], async (req: express.Request, res: express.Response): Promise<void> => {
+  const { token } = req.params;
+  try {
+    const row = await db.queryOne<{
+      id: string;
+      tenantId: string;
+      campaignRunId: string | null;
+      leadEmail: string;
+      openedAt: string | null;
+    }>(
+      'SELECT id, "tenantId", "campaignRunId", "leadEmail", "openedAt" FROM email_dispatch_logs WHERE "trackingToken" = $1',
+      [token]
+    );
+    if (row && !row.openedAt) {
+      const nowIso = new Date().toISOString();
+      await db.execute('UPDATE email_dispatch_logs SET "openedAt" = $1 WHERE id = $2', [nowIso, row.id]);
+      if (row.campaignRunId) {
+        await db.execute(
+          'UPDATE email_campaign_runs SET "openedCount" = "openedCount" + 1 WHERE id = $1',
+          [row.campaignRunId]
+        );
       }
     }
-  } catch (err: any) {
-    console.warn('[Email Track Open Error]', err?.message);
-  }
+  } catch (_) {}
+
+  const transparentGif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
   res.writeHead(200, {
     'Content-Type': 'image/gif',
-    'Content-Length': TRACKING_PIXEL_GIF.length,
-    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
-    'Pragma': 'no-cache',
-    'Expires': '0'
+    'Content-Length': transparentGif.length,
+    'Cache-Control': 'no-store, no-cache, must-revalidate, private',
   });
-  res.end(TRACKING_PIXEL_GIF);
+  res.end(transparentGif);
 });
 
-// ── Public Click Tracking Link Redirector
+// ─── GET /api/email/track/click/:token ─── Link Click Redirector
 app.get(['/api/email/track/click/:token', '/email/track/click/:token'], async (req: express.Request, res: express.Response): Promise<void> => {
-  const token = req.params.token;
-  const target = req.query.url as string;
+  const { token } = req.params;
+  const targetUrl = req.query.url as string;
   try {
-    if (token && token.length > 5) {
-      const now = new Date().toISOString();
-      const updated = await db.queryOne<{ campaignRunId: string; clickedAt: string }>(`
-        UPDATE email_dispatch_logs 
-        SET "clickedAt" = COALESCE("clickedAt", $1), status = 'clicked'
-        WHERE "trackingToken" = $2
-        RETURNING "campaignRunId", "clickedAt"
-      `, [now, token]);
-      if (updated?.campaignRunId && !updated.clickedAt) {
-        await db.execute('UPDATE email_campaign_runs SET "clickedCount" = "clickedCount" + 1 WHERE id = $1', [updated.campaignRunId]);
-      }
-    }
-  } catch (err: any) {
-    console.warn('[Email Track Click Error]', err?.message);
-  }
-  if (target && /^https?:\/\//i.test(target)) {
-    res.redirect(302, target);
-  } else {
-    res.redirect(302, '/');
-  }
-});
-
-// ── Public 1-Click Unsubscribe Handler
-app.get(['/api/email/unsubscribe/:token', '/email/unsubscribe/:token'], async (req: express.Request, res: express.Response): Promise<void> => {
-  const token = req.params.token;
-  let email = '';
-  try {
-    if (token && token.length > 5) {
-      const lead = await db.queryOne<{ id: string; email: string; tenantId: string }>(
-        'SELECT id, email, "tenantId" FROM email_leads WHERE "unsubscribeToken" = $1',
-        [token]
+    const row = await db.queryOne<{
+      id: string;
+      campaignRunId: string | null;
+      clickedAt: string | null;
+      openedAt: string | null;
+    }>(
+      'SELECT id, "campaignRunId", "clickedAt", "openedAt" FROM email_dispatch_logs WHERE "trackingToken" = $1',
+      [token]
+    );
+    if (row && !row.clickedAt) {
+      const nowIso = new Date().toISOString();
+      await db.execute(
+        'UPDATE email_dispatch_logs SET "clickedAt" = $1, "openedAt" = COALESCE("openedAt", $1) WHERE id = $2',
+        [nowIso, row.id]
       );
-      if (lead) {
-        email = lead.email;
-        const now = new Date().toISOString();
-        await db.execute('UPDATE email_leads SET status = \'unsubscribed\', "unsubscribedAt" = $1 WHERE id = $2', [now, lead.id]);
-        await db.execute(`
-          INSERT INTO email_unsubscribes (id, "tenantId", email, "unsubscribedAt")
-          VALUES ($1, $2, $3, $4)
-          ON CONFLICT ("tenantId", email) DO NOTHING
-        `, [`uns_rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, lead.tenantId, lead.email.toLowerCase(), now]);
+      if (row.campaignRunId) {
+        await db.execute(
+          'UPDATE email_campaign_runs SET "clickedCount" = "clickedCount" + 1 WHERE id = $1',
+          [row.campaignRunId]
+        );
       }
     }
-  } catch (err: any) {
-    console.warn('[Email Unsubscribe Error]', err?.message);
+  } catch (_) {}
+
+  if (targetUrl && /^https?:\/\//i.test(targetUrl)) {
+    res.redirect(targetUrl);
+  } else {
+    res.redirect('https://zestify7.online');
   }
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Unsubscribed Successfully</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #09090b; color: #f4f4f5; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 1rem; }
-    .card { background: #18181b; border: 1px solid #27272a; border-radius: 16px; padding: 2.5rem; max-width: 440px; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); }
-    .icon { font-size: 40px; margin-bottom: 1rem; }
-    h1 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #f4f4f5; }
-    p { font-size: 0.875rem; color: #a1a1aa; line-height: 1.5; margin: 0 0 1.5rem; }
-    .badge { display: inline-block; background: #27272a; color: #fbbf24; padding: 0.35rem 0.75rem; border-radius: 8px; font-size: 0.8rem; font-family: monospace; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="icon">✉️</div>
-    <h1>You Have Been Unsubscribed</h1>
-    <p>You have been safely removed from our outreach list. You will not receive any further automated emails.</p>
-    ${email ? `<div class="badge">${email}</div>` : ''}
-  </div>
-</body>
-</html>`);
 });
 
-// ── GET /email/leads
+// ─── GET & POST /api/email/unsubscribe/:token ─── (RFC 8058 One-Click + Fixed "unsubscribedAt" Column)
+app.all(['/api/email/unsubscribe/:token', '/email/unsubscribe/:token'], async (req: express.Request, res: express.Response): Promise<void> => {
+  const { token } = req.params;
+  try {
+    const lead = await db.queryOne<{ id: string; email: string; tenantId: string }>(
+      'SELECT id, email, "tenantId" FROM email_leads WHERE "unsubscribeToken" = $1',
+      [token]
+    );
+    if (lead) {
+      const nowIso = new Date().toISOString();
+      await db.execute(
+        `UPDATE email_leads SET status = 'unsubscribed', "unsubscribedAt" = $1 WHERE id = $2`,
+        [nowIso, lead.id]
+      );
+      await db.execute(
+        `INSERT INTO email_unsubscribes (id, "tenantId", email, "unsubscribedAt")
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT ("tenantId", email) DO NOTHING`,
+        [
+          `uns_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          lead.tenantId,
+          lead.email.toLowerCase().trim(),
+          nowIso,
+        ]
+      );
+
+      res.status(200).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Unsubscribed</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+        <body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f8fafc;">
+          <div style="background:white;padding:40px;border-radius:12px;box-shadow:0 4px 6px -1px rgba(0,0,0,0.1);text-align:center;max-width:400px;">
+            <h2 style="color:#0f172a;margin-top:0;">You're Unsubscribed</h2>
+            <p style="color:#64748b;font-size:14px;line-height:1.5;">${lead.email} has been removed and will no longer receive emails from this sender.</p>
+          </div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+  } catch (err: any) {
+    console.error('[Unsubscribe Error]:', err.message);
+  }
+  res.status(404).send('Invalid or expired unsubscribe link.');
+});
+
+// ─── GET /email/leads ───
 app.get(['/email/leads', '/api/email/leads'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const rows = await db.queryAll('SELECT * FROM email_leads WHERE "tenantId" = $1 ORDER BY "createdAt" DESC', [tenantId]);
-  res.json(rows);
+  const rows = await db.queryAll(
+    'SELECT id, email, name, company, status, stage, "lastSentAt", "createdAt" FROM email_leads WHERE "tenantId" = $1 ORDER BY "createdAt" DESC LIMIT 1000',
+    [tenantId]
+  );
+  res.json(rows || []);
 });
 
-// ── POST /email/upload — Genuine deduplication with ("tenantId", email) unique constraint & suppression list preservation
+// ─── POST /email/upload ─── (Accurate Duplicate Detection)
 app.post(['/email/upload', '/api/email/upload'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'leads:import']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const { leads } = req.body as { leads: { email: string; name?: string; company?: string }[] };
-  if (!Array.isArray(leads) || !leads.length) {
+  const { leads } = req.body as { leads: { email: string; name?: string; company?: string; phone?: string }[] };
+  if (!Array.isArray(leads) || leads.length === 0) {
     res.status(400).json({ error: 'leads array required' });
     return;
   }
 
-  // Cross-reference suppression list so unsubscribed contacts are NEVER imported as pending
-  const unsubRows = await db.queryAll<{ email: string }>(
-    'SELECT email FROM email_unsubscribes WHERE "tenantId" = $1',
-    [tenantId]
-  );
-  const unsubSet = new Set((unsubRows || []).map(r => r.email.toLowerCase().trim()));
-
   let added = 0;
-  let skipped = 0;
-  for (const lead of leads) {
-    const cleanEmail = (lead.email || '').toLowerCase().trim();
-    if (!cleanEmail || !cleanEmail.includes('@')) continue;
+  let duplicates = 0;
+  const now = new Date().toISOString();
 
-    const isUnsub = unsubSet.has(cleanEmail);
-    const status = isUnsub ? 'unsubscribed' : 'pending';
-    const leadId = `eml_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  for (const l of leads) {
+    if (!l.email || !l.email.includes('@')) continue;
+    const cleanEmail = l.email.toLowerCase().trim();
+    const leadId = `eml_lead_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const unsubToken = `uns_${crypto.randomBytes(16).toString('hex')}`;
-    const now = new Date().toISOString();
-
-    const result = await db.execute(`
-      INSERT INTO email_leads (id, email, name, company, status, stage, "tenantId", "unsubscribeToken", "createdAt", "unsubscribedAt")
-      VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9)
-      ON CONFLICT ("tenantId", email) DO NOTHING
-    `, [leadId, cleanEmail, lead.name || 'Client', lead.company || '', status, tenantId, unsubToken, now, isUnsub ? now : null]);
-
-    if (result.rowCount > 0) {
-      added++;
-    } else {
-      skipped++;
+    try {
+      const insertRes = await db.execute(
+        `INSERT INTO email_leads (id, email, name, company, status, stage, "tenantId", "unsubscribeToken", "createdAt")
+         VALUES ($1, $2, $3, $4, 'pending', 1, $5, $6, $7)
+         ON CONFLICT ("tenantId", email) DO NOTHING`,
+        [leadId, cleanEmail, (l.name || 'Client').trim(), (l.company || '').trim(), tenantId, unsubToken, now]
+      );
+      if (insertRes.rowCount > 0) {
+        added++;
+      } else {
+        duplicates++;
+      }
+    } catch {
+      duplicates++;
     }
   }
-  res.json({ success: true, added, duplicates: skipped });
+  res.json({ success: true, added, duplicates });
 });
 
-// ── DELETE /email/leads (Bulk clear)
+// ─── DELETE /email/leads & DELETE /email/leads/:id ───
 app.delete(['/email/leads', '/api/email/leads'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    res.status(401).json({ error: 'Unauthorized' });
     return;
   }
   await db.execute('DELETE FROM email_leads WHERE "tenantId" = $1', [tenantId]);
   res.json({ success: true });
 });
 
-// ── DELETE /email/leads/:leadId (Single delete)
-app.delete(['/email/leads/:leadId', '/api/email/leads/:leadId'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+app.delete(['/email/leads/:id', '/api/email/leads/:id'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  const result = await db.execute('DELETE FROM email_leads WHERE id = $1 AND "tenantId" = $2', [req.params.leadId, tenantId]);
-  if (result.rowCount === 0) {
-    res.status(404).json({ error: 'Lead not found or access denied.' });
-    return;
-  }
-  res.json({ success: true, message: 'Lead removed successfully.' });
+  await db.execute('DELETE FROM email_leads WHERE id = $1 AND "tenantId" = $2', [req.params.id, tenantId]);
+  res.json({ success: true });
 });
 
-// ── GET /email/accounts
+// ─── GET /email/accounts ───
 app.get(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const rows = await db.queryAll('SELECT id, email, "senderName", "smtpHost", "smtpPort", status, "dailyLimit", "sentToday", "lastResetDate", "authType" FROM email_accounts WHERE "tenantId" = $1 ORDER BY "createdAt" DESC', [tenantId]);
+  const rows = await db.queryAll(
+    'SELECT id, email, "senderName", "smtpHost", "smtpPort", status, "dailyLimit", "sentToday", "lastResetDate", "authType" FROM email_accounts WHERE "tenantId" = $1 ORDER BY "createdAt" DESC',
+    [tenantId]
+  );
   if (!rows || rows.length === 0) {
     res.json([{
       id: "sandbox_default",
@@ -11655,79 +11729,117 @@ app.get(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermissi
   res.json(rows);
 });
 
-// ── POST /email/accounts
+// ─── POST /email/accounts ─── (Tenant-Scoped ID + Starts IMAP IDLE Watcher)
 app.post(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const { accounts } = req.body as { accounts: { id?: string; email: string; password: string; senderName?: string; smtpHost?: string; smtpPort?: number; status?: string; dailyLimit?: number }[] };
+  const { accounts } = req.body as {
+    accounts: {
+      id?: string;
+      email: string;
+      password: string;
+      senderName?: string;
+      smtpHost?: string;
+      smtpPort?: number;
+      imapHost?: string;
+      imapPort?: number;
+      status?: string;
+      dailyLimit?: number;
+      authType?: string;
+    }[];
+  };
   if (!Array.isArray(accounts)) {
     res.status(400).json({ error: 'accounts array required' });
     return;
   }
+
+  const safeTenant = tenantId.replace(/[^a-zA-Z0-9]/g, '_');
+
   for (const acc of accounts) {
-    const accId = acc.id || `eml_acc_${acc.email.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-    await db.execute(`
-      INSERT INTO email_accounts (id, email, password, "senderName", "smtpHost", "smtpPort", status, "tenantId", "dailyLimit", "createdAt")
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    const cleanEmail = acc.email.toLowerCase().trim();
+    const safeEmail = cleanEmail.replace(/[^a-z0-9]/g, '_');
+    const accId = acc.id && acc.id.includes(safeTenant) ? acc.id : `eml_acc_${safeTenant}_${safeEmail}`;
+    const smtpHost = acc.smtpHost || 'smtp.office365.com';
+    const smtpPort = Number(acc.smtpPort) || 587;
+    const imapHost = acc.imapHost || smtpHost.replace(/^smtp\./i, 'imap.');
+    const imapPort = Number(acc.imapPort) || 993;
+
+    await db.execute(
+      `INSERT INTO email_accounts (
+        id, email, password, "senderName", "smtpHost", "smtpPort", "imapHost", "imapPort",
+        status, "tenantId", "dailyLimit", "authType", "createdAt"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       ON CONFLICT ("id") DO UPDATE SET
-        password = CASE WHEN excluded.password = '***keep***' THEN email_accounts.password ELSE excluded.password END,
-        "senderName" = excluded."senderName",
-        "smtpHost" = excluded."smtpHost",
-        "smtpPort" = excluded."smtpPort",
-        status = excluded.status,
-        "dailyLimit" = COALESCE(excluded."dailyLimit", email_accounts."dailyLimit", 50),
-        "tenantId" = excluded."tenantId"
-    `, [
-      accId,
-      acc.email.toLowerCase().trim(),
-      acc.password,
-      acc.senderName || null,
-      acc.smtpHost || 'smtp.office365.com',
-      acc.smtpPort || 587,
-      acc.status || 'active',
-      tenantId,
-      acc.dailyLimit || 50,
-      new Date().toISOString()
-    ]);
+        password = CASE WHEN EXCLUDED.password = '***keep***' THEN email_accounts.password ELSE EXCLUDED.password END,
+        "senderName" = COALESCE(EXCLUDED."senderName", email_accounts."senderName"),
+        "smtpHost" = EXCLUDED."smtpHost",
+        "smtpPort" = EXCLUDED."smtpPort",
+        "imapHost" = EXCLUDED."imapHost",
+        "imapPort" = EXCLUDED."imapPort",
+        status = EXCLUDED.status,
+        "dailyLimit" = COALESCE(EXCLUDED."dailyLimit", email_accounts."dailyLimit", 50),
+        "authType" = COALESCE(EXCLUDED."authType", email_accounts."authType", 'smtp')
+      WHERE email_accounts."tenantId" = EXCLUDED."tenantId"`,
+      [
+        accId,
+        cleanEmail,
+        acc.password,
+        acc.senderName || null,
+        smtpHost,
+        smtpPort,
+        imapHost,
+        imapPort,
+        acc.status || 'active',
+        tenantId,
+        acc.dailyLimit || 50,
+        acc.authType || 'smtp',
+        new Date().toISOString(),
+      ]
+    );
+
+    // Start real-time IMAP IDLE listener if account is active
+    if ((acc.status || 'active') === 'active' && acc.password && acc.password !== '***keep***') {
+      startImapIdleForAccount({
+        id: accId,
+        tenantId,
+        email: cleanEmail,
+        password: acc.password,
+        smtpHost,
+        imapHost,
+        imapPort,
+        authType: acc.authType || 'smtp',
+      }).catch(() => {});
+    }
   }
   res.json({ success: true });
 });
 
-// ── DELETE /email/accounts/:accountId
-app.delete(['/email/accounts/:accountId', '/api/email/accounts/:accountId'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
+// ─── DELETE /email/accounts/:id ───
+app.delete(['/email/accounts/:id', '/api/email/accounts/:id'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  const result = await db.execute('DELETE FROM email_accounts WHERE id = $1 AND "tenantId" = $2', [req.params.accountId, tenantId]);
-  if (result.rowCount === 0) {
-    res.status(404).json({ error: 'Email account not found or access denied.' });
-    return;
-  }
-  res.json({ success: true, message: 'Email account deleted.' });
+  await db.execute('DELETE FROM email_accounts WHERE id = $1 AND "tenantId" = $2', [req.params.id, tenantId]);
+  res.json({ success: true });
 });
 
-// ── POST /email/accounts/:accountId/verify
+// ─── POST /email/accounts/:accountId/verify ───
 app.post(['/email/accounts/:accountId/verify', '/api/email/accounts/:accountId/verify'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
-  if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-    return;
-  }
-
-  const account = await db.queryOne<{ email: string; password: string; smtpHost: string; smtpPort: number }>(
-    'SELECT email, password, "smtpHost", "smtpPort" FROM email_accounts WHERE id = $1 AND "tenantId" = $2',
-    [req.params.accountId, tenantId]
-  );
+  const account = await db.queryOne<any>('SELECT * FROM email_accounts WHERE id = $1 AND "tenantId" = $2', [req.params.accountId, tenantId]);
   if (!account) {
-    res.status(404).json({ error: 'SMTP account not found.' });
+    res.status(404).json({ error: 'Account not found' });
     return;
   }
-
+  if (account.authType?.startsWith('oauth_')) {
+    res.json({ success: true, message: 'OAuth mailbox verified active.' });
+    return;
+  }
   const { default: nodemailer } = await import('nodemailer');
   const transporter = nodemailer.createTransport({
     host: account.smtpHost,
@@ -11736,21 +11848,17 @@ app.post(['/email/accounts/:accountId/verify', '/api/email/accounts/:accountId/v
     auth: { user: account.email, pass: account.password },
     tls: { rejectUnauthorized: SMTP_REJECT_UNAUTHORIZED }
   });
-
   try {
     await transporter.verify();
-    res.json({ success: true, message: 'SMTP connection and authentication succeeded.' });
+    res.json({ success: true, message: 'SMTP connection succeeded.' });
   } catch (err: any) {
-    const code = err?.code;
-    const safeCode = typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'SMTP_VERIFY_FAILED';
-    console.warn(`[SMTP Verify] Account ${account.email} verification failed (${safeCode}): ${err?.message}`);
-    res.status(400).json({ success: false, error: 'SMTP connection or authentication failed: ' + err?.message, code: safeCode });
+    res.status(400).json({ success: false, error: err.message });
   } finally {
     transporter.close();
   }
 });
 
-// ── GET /email/templates
+// ─── GET /email/templates ───
 app.get(['/email/templates', '/api/email/templates'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
@@ -11758,10 +11866,10 @@ app.get(['/email/templates', '/api/email/templates'], requireAuth, requirePermis
     return;
   }
   const rows = await db.queryAll('SELECT * FROM email_templates WHERE ("tenantId" = $1 OR "systemTemplate" = 1) ORDER BY stage ASC, id ASC', [tenantId]);
-  res.json(rows);
+  res.json(rows || []);
 });
 
-// ── POST /email/templates
+// ─── POST /email/templates ───
 app.post(['/email/templates', '/api/email/templates'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
@@ -11783,97 +11891,81 @@ app.post(['/email/templates', '/api/email/templates'], requireAuth, requirePermi
   res.json({ success: true });
 });
 
-// ── DELETE /email/templates/:templateId
+// ─── DELETE /email/templates/:templateId ───
 app.delete(['/email/templates/:templateId', '/api/email/templates/:templateId'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  const result = await db.execute('DELETE FROM email_templates WHERE id = $1 AND "tenantId" = $2', [req.params.templateId, tenantId]);
-  if (result.rowCount === 0) {
-    res.status(404).json({ error: 'Template not found or access denied.' });
-    return;
-  }
-  res.json({ success: true, message: 'Template removed successfully.' });
+  await db.execute('DELETE FROM email_templates WHERE id = $1 AND "tenantId" = $2', [req.params.templateId, tenantId]);
+  res.json({ success: true });
 });
 
-// ── GET /email/stats — High-level KPI and deliverability metrics
+// ─── GET /email/stats ─── (Live Telemetry)
 app.get(['/email/stats', '/api/email/stats'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+    res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  try {
-    const [leadsSummary, accountsSummary, runsSummary, dispatchSummary] = await Promise.all([
-      db.queryOne<{ total: string; pending: string; sent: string; completed: string; unsubscribed: string }>(`
-        SELECT 
-          COUNT(*)::text as total,
-          COUNT(CASE WHEN status = 'pending' THEN 1 END)::text as pending,
-          COUNT(CASE WHEN status = 'sent' THEN 1 END)::text as sent,
-          COUNT(CASE WHEN status = 'completed' THEN 1 END)::text as completed,
-          COUNT(CASE WHEN status = 'unsubscribed' THEN 1 END)::text as unsubscribed
-        FROM email_leads WHERE "tenantId" = $1
-      `, [tenantId]),
-      db.queryOne<{ total: string; active: string }>(`
-        SELECT 
-          COUNT(*)::text as total,
-          COUNT(CASE WHEN status = 'active' THEN 1 END)::text as active
-        FROM email_accounts WHERE "tenantId" = $1
-      `, [tenantId]),
-      db.queryOne<{ totalRuns: string; activeRuns: string }>(`
-        SELECT 
-          COUNT(*)::text as totalRuns,
-          COUNT(CASE WHEN status = 'running' THEN 1 END)::text as activeRuns
-        FROM email_campaign_runs WHERE "tenantId" = $1
-      `, [tenantId]),
-      db.queryOne<{ totalDispatched: string; opened: string; clicked: string; failed: string }>(`
-        SELECT 
-          COUNT(*)::text as totalDispatched,
-          COUNT(CASE WHEN "openedAt" IS NOT NULL THEN 1 END)::text as opened,
-          COUNT(CASE WHEN "clickedAt" IS NOT NULL THEN 1 END)::text as clicked,
-          COUNT(CASE WHEN status = 'failed' THEN 1 END)::text as failed
-        FROM email_dispatch_logs WHERE "tenantId" = $1
-      `, [tenantId])
-    ]);
 
-    const totalDispatched = parseInt(dispatchSummary?.totalDispatched || '0', 10);
-    const opened = parseInt(dispatchSummary?.opened || '0', 10);
-    const clicked = parseInt(dispatchSummary?.clicked || '0', 10);
+  const [leadCounts, accCounts, runCounts, dispatchStats] = await Promise.all([
+    db.queryOne<any>(
+      `SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
+        COUNT(*) FILTER (WHERE status = 'sent')::int AS sent,
+        COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
+        COUNT(*) FILTER (WHERE status = 'unsubscribed')::int AS unsubscribed
+       FROM email_leads WHERE "tenantId" = $1`,
+      [tenantId]
+    ),
+    db.queryOne<any>(
+      `SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE status = 'active')::int AS active
+       FROM email_accounts WHERE "tenantId" = $1`,
+      [tenantId]
+    ),
+    db.queryOne<any>(
+      `SELECT
+        COUNT(*)::int AS "totalRuns",
+        COUNT(*) FILTER (WHERE status = 'running')::int AS "activeRuns"
+       FROM email_campaign_runs WHERE "tenantId" = $1`,
+      [tenantId]
+    ),
+    db.queryOne<any>(
+      `SELECT
+        COUNT(*) FILTER (WHERE status = 'sent')::int AS "totalDispatched",
+        COUNT(*) FILTER (WHERE "openedAt" IS NOT NULL)::int AS opened,
+        COUNT(*) FILTER (WHERE "clickedAt" IS NOT NULL)::int AS clicked,
+        COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
+       FROM email_dispatch_logs WHERE "tenantId" = $1`,
+      [tenantId]
+    ),
+  ]);
 
-    res.json({
-      leads: {
-        total: parseInt(leadsSummary?.total || '0', 10),
-        pending: parseInt(leadsSummary?.pending || '0', 10),
-        sent: parseInt(leadsSummary?.sent || '0', 10),
-        completed: parseInt(leadsSummary?.completed || '0', 10),
-        unsubscribed: parseInt(leadsSummary?.unsubscribed || '0', 10)
-      },
-      accounts: {
-        total: parseInt(accountsSummary?.total || '0', 10),
-        active: parseInt(accountsSummary?.active || '0', 10)
-      },
-      campaigns: {
-        totalRuns: parseInt(runsSummary?.totalRuns || '0', 10),
-        activeRuns: parseInt(runsSummary?.activeRuns || '0', 10)
-      },
-      telemetry: {
-        totalDispatched,
-        opened,
-        clicked,
-        failed: parseInt(dispatchSummary?.failed || '0', 10),
-        openRate: totalDispatched > 0 ? Math.round((opened / totalDispatched) * 100) : 0,
-        clickRate: totalDispatched > 0 ? Math.round((clicked / totalDispatched) * 100) : 0
-      }
-    });
-  } catch (err: any) {
-    console.error('[GET /email/stats Error]', err);
-    res.status(500).json({ error: 'Failed to retrieve email statistics' });
-  }
+  const totalDispatched = Number(dispatchStats?.totalDispatched || 0);
+  const opened = Number(dispatchStats?.opened || 0);
+  const clicked = Number(dispatchStats?.clicked || 0);
+
+  res.json({
+    leads: leadCounts || { total: 0, pending: 0, sent: 0, completed: 0, unsubscribed: 0 },
+    accounts: accCounts || { total: 0, active: 0 },
+    campaigns: runCounts || { totalRuns: 0, activeRuns: 0 },
+    telemetry: {
+      totalDispatched,
+      opened,
+      clicked,
+      failed: Number(dispatchStats?.failed || 0),
+      openRate: totalDispatched > 0 ? Math.round((opened / totalDispatched) * 100) : 0,
+      clickRate: totalDispatched > 0 ? Math.round((clicked / totalDispatched) * 100) : 0,
+    },
+  });
 });
 
-// ── GET /email/logs — Recent dispatch history with telemetry
+// ─── GET /email/logs ───
 app.get(['/email/logs', '/api/email/logs'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
@@ -11882,306 +11974,889 @@ app.get(['/email/logs', '/api/email/logs'], requireAuth, requirePermission(['aut
   }
   const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10), 1), 500);
   const rows = await db.queryAll(`
-    SELECT id, "leadEmail", "accountEmail", stage, subject, status, "errorMessage", "sentAt", "openedAt", "clickedAt"
+    SELECT id, "leadEmail", "accountEmail", stage, subject, status, "errorMessage", "sentAt", "openedAt", "clickedAt", "messageId"
     FROM email_dispatch_logs
     WHERE "tenantId" = $1
     ORDER BY "sentAt" DESC
     LIMIT $2
   `, [tenantId, limit]);
-  res.json(rows);
+  res.json(rows || []);
 });
 
-// ── POST /email/start — Multi-Account Round-Robin Cold Campaign Runner with Link Tracking & Quota Guard
-app.post(['/email/start', '/api/email/start'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage', 'email:send']), async (req: express.Request, res: express.Response): Promise<void> => {
-  const tenantId = (req as any).user?.tenantId;
-  if (!tenantId) {
-    res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
-    return;
-  }
-  const job = getTenantEmailerJob(tenantId);
-  if (job.running) {
-    res.json({ success: true, message: 'Campaign already running for this tenant.' });
-    return;
-  }
-  const { limit = 300, accountIds, minDelaySecs = 5, maxDelaySecs = 12 } = req.body as {
-    limit?: number;
-    accountIds?: (string | number)[];
-    minDelaySecs?: number;
-    maxDelaySecs?: number;
-  };
+// ─── GET /email/oauth/:provider/connect ───
+app.get(
+  ['/email/oauth/:provider/connect', '/api/email/oauth/:provider/connect'],
+  async (req: express.Request, res: express.Response): Promise<void> => {
+    const provider = (req.params.provider || '').toLowerCase() as OAuthEmailProvider;
+    const rawToken =
+      (req.query.token as string) ||
+      (req.headers.authorization?.startsWith('Bearer ')
+        ? req.headers.authorization.slice(7)
+        : '');
 
-  job.running = true;
-  job.stop = false;
+    const refererOrigin = req.headers.referer
+      ? new URL(req.headers.referer).origin + new URL(req.headers.referer).pathname
+      : resolvePublicServerOrigin(req);
+    const returnUrl = (req.query.returnUrl as string) || refererOrigin;
 
-  const campaignRunId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  job.currentRunId = campaignRunId;
-  const nowIso = new Date().toISOString();
-
-  // Record initial run in database
-  await db.execute(`
-    INSERT INTO email_campaign_runs (id, "tenantId", name, status, "totalLeads", "sentCount", "failedCount", "selectedAccountIds", "limitCount", "startedAt", "createdAt")
-    VALUES ($1, $2, 'Multi-Account Cold Campaign', 'running', 0, 0, 0, $3, $4, $5, $6)
-  `, [campaignRunId, tenantId, JSON.stringify(accountIds || []), limit, nowIso, nowIso]);
-
-  res.json({ success: true, message: 'Campaign started in background.', runId: campaignRunId });
-
-  // Background Async Execution
-  (async () => {
-    try {
-      const { default: nodemailer } = await import('nodemailer');
-      const todayStr = new Date().toISOString().slice(0, 10);
-
-      // 1. Fetch eligible accounts (respecting user-selected accountIds)
-      let accountsQuery = `SELECT * FROM email_accounts WHERE "tenantId" = $1 AND status = 'active'`;
-      const accountsParams: any[] = [tenantId];
-      if (Array.isArray(accountIds) && accountIds.length > 0) {
-        const placeholders = accountIds.map((_, i) => `$${i + 2}`).join(',');
-        accountsQuery += ` AND id IN (${placeholders})`;
-        accountsParams.push(...accountIds.map(String));
+    let tenantId = 'tenant_default';
+    let userId = 'system';
+    if (rawToken) {
+      const authUser = await validateToken(rawToken);
+      if (!authUser || !authUser.tenantId) {
+        res.redirect(`${returnUrl}?oauth_error=${encodeURIComponent('Session expired. Please log in again.')}`);
+        return;
       }
-      let accounts = await db.queryAll<any>(accountsQuery, accountsParams);
+      tenantId = authUser.tenantId;
+      userId = authUser.id;
+    } else if (config.isProduction) {
+      res.redirect(`${returnUrl}?oauth_error=${encodeURIComponent('Missing authentication token for OAuth connect.')}`);
+      return;
+    }
 
-      if (!accounts.length) {
-        // Built-in Sandbox Mailbox fallback
-        accounts = [{
-          id: 'sandbox_default',
-          email: 'sandbox@octaldialer.local',
-          senderName: 'Built-in Sandbox Mailbox',
-          smtpHost: 'sandbox.internal',
-          smtpPort: 25,
-          status: 'active',
-          provider: 'sandbox',
-          dailyLimit: 1000,
-          sentToday: 0
-        }];
-        emailLog(tenantId, 'ℹ️ No external SMTP accounts configured. Using built-in Sandbox Mailbox for campaign execution.');
+    const serverOrigin = resolvePublicServerOrigin(req);
+    const callbackUri = `${serverOrigin}/email/oauth/${provider}/callback`;
+    const state = createSignedOAuthState({
+      tenantId,
+      userId,
+      provider,
+      returnUrl,
+      exp: Date.now() + 15 * 60 * 1000,
+    });
+
+    if (provider === 'google') {
+      if (!config.googleClientId || !config.googleClientSecret) {
+        res.redirect(
+          `${returnUrl}?oauth_error=${encodeURIComponent('Google OAuth Client ID & Secret are not configured in backend .env')}`
+        );
+        return;
       }
-
-      // Reset daily limits for any accounts from previous days
-      for (const acc of accounts) {
-        if (acc.lastResetDate !== todayStr) {
-          await db.execute('UPDATE email_accounts SET "sentToday" = 0, "lastResetDate" = $1 WHERE id = $2', [todayStr, acc.id]);
-          acc.sentToday = 0;
-          acc.lastResetDate = todayStr;
-        }
-      }
-
-      // 2. Fetch templates
-      let templates = await db.queryAll<any>('SELECT * FROM email_templates WHERE ("tenantId" = $1 OR "systemTemplate" = 1) ORDER BY stage ASC, id ASC', [tenantId]);
-      if (!templates.length) {
-        templates = [
-          { id: 'tpl_default_1', stage: 1, subject: 'Introduction from {{senderName}}', body: 'Hi {{name}},\n\nWanted to reach out and introduce our services to {{company}}.\n\nBest,\n{{senderName}}' },
-          { id: 'tpl_default_2', stage: 2, subject: 'Follow up from {{senderName}}', body: 'Hi {{name}},\n\nJust following up on my previous note.\n\nBest,\n{{senderName}}' },
-          { id: 'tpl_default_3', stage: 3, subject: 'Final check-in from {{senderName}}', body: 'Hi {{name}},\n\nOne last check-in to see if you have any questions.\n\nBest,\n{{senderName}}' }
-        ];
-        emailLog(tenantId, 'ℹ️ No templates found; using system default email templates.');
-      }
-
-      // 3. Fetch suppression list to guarantee compliance
-      const unsubscribes = await db.queryAll<{ email: string }>('SELECT email FROM email_unsubscribes WHERE "tenantId" = $1', [tenantId]);
-      const unsubscribedSet = new Set((unsubscribes || []).map(u => u.email.toLowerCase()));
-
-      // 4. Fetch leads
-      const leads = await db.queryAll<any>(`SELECT * FROM email_leads WHERE "tenantId" = $1 AND status IN ('pending', 'sent') ORDER BY "createdAt" ASC`, [tenantId]);
-      const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
-      const nowMs = Date.now();
-
-      let eligible = leads.filter((l: any) => {
-        if (unsubscribedSet.has(l.email.toLowerCase())) return false;
-        if (l.status === 'pending') return true;
-        if (l.status === 'sent' && l.stage < 3 && l.lastSentAt) {
-          return nowMs - new Date(l.lastSentAt).getTime() >= SEVEN_DAYS;
-        }
-        return false;
+      const params = new URLSearchParams({
+        client_id: config.googleClientId,
+        redirect_uri: callbackUri,
+        response_type: 'code',
+        access_type: 'offline',
+        prompt: 'consent',
+        scope: 'https://mail.google.com/ openid email profile',
+        state,
       });
+      res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+      return;
+    }
 
-      if (!eligible.length && accounts[0]?.id === 'sandbox_default') {
-        const testLeadId = `lead_sandbox_${Date.now()}`;
-        await db.execute(`
-          INSERT INTO email_leads (id, "tenantId", email, name, company, status, stage, "createdAt")
-          VALUES ($1, $2, 'test-sandbox@octaldialer.local', 'Test Sandbox Lead', 'Octal Dialer Test', 'pending', 0, $3)
-        `, [testLeadId, tenantId, nowIso]);
-        eligible = [{
-          id: testLeadId,
-          tenantId,
-          email: 'test-sandbox@octaldialer.local',
-          name: 'Test Sandbox Lead',
-          company: 'Octal Dialer Test',
-          status: 'pending',
-          stage: 0
-        }];
-        emailLog(tenantId, 'ℹ️ Seeded sandbox test lead for campaign execution.');
+    if (provider === 'microsoft') {
+      if (!config.microsoftClientId || !config.microsoftClientSecret) {
+        res.redirect(
+          `${returnUrl}?oauth_error=${encodeURIComponent('Microsoft OAuth Client ID & Secret are not configured in backend .env')}`
+        );
+        return;
       }
+      const params = new URLSearchParams({
+        client_id: config.microsoftClientId,
+        redirect_uri: callbackUri,
+        response_type: 'code',
+        response_mode: 'query',
+        prompt: 'consent',
+        scope:
+          'offline_access openid profile email https://outlook.office.com/SMTP.Send https://outlook.office.com/IMAP.AccessAsUser.All',
+        state,
+      });
+      res.redirect(`https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${params.toString()}`);
+      return;
+    }
 
-      await db.execute('UPDATE email_campaign_runs SET "totalLeads" = $1 WHERE id = $2', [eligible.length, campaignRunId]);
-      emailLog(tenantId, `=== Campaign [${campaignRunId}] Started: ${eligible.length} eligible leads, ${accounts.length} active senders, ${templates.length} templates ===`);
+    if (provider === 'yahoo') {
+      if (!config.yahooClientId || !config.yahooClientSecret) {
+        res.redirect(
+          `${returnUrl}?oauth_error=${encodeURIComponent('Yahoo OAuth Client ID & Secret are not configured in backend .env')}`
+        );
+        return;
+      }
+      const params = new URLSearchParams({
+        client_id: config.yahooClientId,
+        redirect_uri: callbackUri,
+        response_type: 'code',
+        scope: 'openid email profile',
+        state,
+      });
+      res.redirect(`https://api.login.yahoo.com/oauth2/request_auth?${params.toString()}`);
+      return;
+    }
 
-      // Determine public application base URL for click/open tracking & unsubscribe links
-      const baseUrl = (process.env.PUBLIC_APP_URL || process.env.BASE_URL || 'https://zestify7.online').replace(/\/$/, '');
+    res.redirect(`${returnUrl}?oauth_error=${encodeURIComponent(`Unsupported OAuth provider: ${provider}`)}`);
+  }
+);
 
-      // Cache nodemailer transports to reuse connections
-      const transporterCache = new Map<string, any>();
-      function getTransporter(acc: any) {
-        let t = transporterCache.get(acc.id);
-        if (!t) {
-          t = nodemailer.createTransport({
-            host: acc.smtpHost,
-            port: Number(acc.smtpPort) || 587,
-            secure: Number(acc.smtpPort) === 465,
-            auth: { user: acc.email, pass: acc.password },
-            tls: { rejectUnauthorized: SMTP_REJECT_UNAUTHORIZED }
+// ─── GET /email/oauth/:provider/callback ───
+app.get(
+  ['/email/oauth/:provider/callback', '/api/email/oauth/:provider/callback'],
+  async (req: express.Request, res: express.Response): Promise<void> => {
+    const provider = (req.params.provider || '').toLowerCase() as OAuthEmailProvider;
+    const code = req.query.code as string;
+    const stateStr = req.query.state as string;
+    const oauthError = req.query.error_description || req.query.error;
+
+    const state = verifySignedOAuthState(stateStr);
+    const fallbackReturn = resolvePublicServerOrigin(req);
+    const returnUrl = state?.returnUrl || fallbackReturn;
+
+    if (oauthError) {
+      res.redirect(`${returnUrl}?oauth_error=${encodeURIComponent(String(oauthError))}`);
+      return;
+    }
+
+    if (!state || !code || state.provider !== provider) {
+      res.redirect(`${returnUrl}?oauth_error=${encodeURIComponent('Invalid or expired OAuth state. Please try again.')}`);
+      return;
+    }
+
+    const serverOrigin = resolvePublicServerOrigin(req);
+    const callbackUri = `${serverOrigin}/email/oauth/${provider}/callback`;
+
+    try {
+      let email = '';
+      let senderName = '';
+      let accessToken = '';
+      let refreshToken = '';
+      let smtpHost = '';
+      let smtpPort = 465;
+      let imapHost = '';
+      let imapPort = 993;
+      let authType = '';
+
+      if (provider === 'google') {
+        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            code,
+            client_id: config.googleClientId,
+            client_secret: config.googleClientSecret,
+            redirect_uri: callbackUri,
+            grant_type: 'authorization_code',
+          }),
+        });
+        const tokenData = (await tokenRes.json()) as any;
+        if (!tokenRes.ok || !tokenData.access_token) {
+          throw new Error(tokenData.error_description || tokenData.error || 'Google token exchange failed');
+        }
+
+        accessToken = tokenData.access_token;
+        refreshToken = tokenData.refresh_token || '';
+
+        const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const profile = (await profileRes.json()) as any;
+        email = (profile.email || '').toLowerCase().trim();
+        senderName = profile.name || email.split('@')[0];
+        smtpHost = 'smtp.gmail.com';
+        smtpPort = 465;
+        imapHost = 'imap.gmail.com';
+        imapPort = 993;
+        authType = 'oauth_google';
+      } else if (provider === 'microsoft') {
+        const tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            code,
+            client_id: config.microsoftClientId,
+            client_secret: config.microsoftClientSecret,
+            redirect_uri: callbackUri,
+            grant_type: 'authorization_code',
+          }),
+        });
+        const tokenData = (await tokenRes.json()) as any;
+        if (!tokenRes.ok || !tokenData.access_token) {
+          throw new Error(tokenData.error_description || tokenData.error || 'Microsoft token exchange failed');
+        }
+
+        accessToken = tokenData.access_token;
+        refreshToken = tokenData.refresh_token || '';
+
+        if (tokenData.id_token) {
+          const payload = JSON.parse(
+            Buffer.from(tokenData.id_token.split('.')[1], 'base64url').toString('utf8')
+          );
+          email = (payload.preferred_username || payload.email || payload.upn || '').toLowerCase().trim();
+          senderName = payload.name || email.split('@')[0];
+        }
+        if (!email) {
+          const meRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+            headers: { Authorization: `Bearer ${accessToken}` },
           });
-          transporterCache.set(acc.id, t);
+          const me = (await meRes.json()) as any;
+          email = (me.mail || me.userPrincipalName || '').toLowerCase().trim();
+          senderName = me.displayName || email.split('@')[0];
         }
-        return t;
+
+        smtpHost = 'smtp.office365.com';
+        smtpPort = 587;
+        imapHost = 'outlook.office365.com';
+        imapPort = 993;
+        authType = 'oauth_microsoft';
+      } else if (provider === 'yahoo') {
+        const basicAuth = Buffer.from(`${config.yahooClientId}:${config.yahooClientSecret}`).toString('base64');
+        const tokenRes = await fetch('https://api.login.yahoo.com/oauth2/get_token', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Authorization: `Basic ${basicAuth}`,
+          },
+          body: new URLSearchParams({
+            code,
+            redirect_uri: callbackUri,
+            grant_type: 'authorization_code',
+          }),
+        });
+        const tokenData = (await tokenRes.json()) as any;
+        if (!tokenRes.ok || !tokenData.access_token) {
+          throw new Error(tokenData.error_description || tokenData.error || 'Yahoo token exchange failed');
+        }
+
+        accessToken = tokenData.access_token;
+        refreshToken = tokenData.refresh_token || '';
+
+        const userRes = await fetch('https://api.login.yahoo.com/openid/v1/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const userInfo = (await userRes.json()) as any;
+        email = (userInfo.email || '').toLowerCase().trim();
+        senderName = userInfo.name || email.split('@')[0];
+        smtpHost = 'smtp.mail.yahoo.com';
+        smtpPort = 465;
+        imapHost = 'imap.mail.yahoo.com';
+        imapPort = 993;
+        authType = 'oauth_yahoo';
       }
 
-      let sentCount = 0;
-      let failedCount = 0;
-      let accIndex = 0;
+      if (!email || !email.includes('@')) {
+        throw new Error('Could not resolve a valid email address from the OAuth provider.');
+      }
 
-      for (let leadIdx = 0; leadIdx < eligible.length && sentCount < limit; leadIdx++) {
-        if (job.stop) {
-          emailLog(tenantId, `⏸️ Campaign paused by user.`);
-          break;
+      const safeTenant = state.tenantId.replace(/[^a-zA-Z0-9]/g, '_');
+      const safeEmail = email.replace(/[^a-z0-9]/g, '_');
+      const accountId = `eml_acc_${safeTenant}_${safeEmail}`;
+      const nowIso = new Date().toISOString();
+
+      await db.execute(
+        `INSERT INTO email_accounts (
+          id, "tenantId", email, password, "senderName", "smtpHost", "smtpPort",
+          "imapHost", "imapPort", status, "authType", "accessToken", "refreshToken",
+          "dailyLimit", "sentToday", "createdAt"
+        ) VALUES ($1, $2, $3, '', $4, $5, $6, $7, $8, 'active', $9, $10, $11, 50, 0, $12)
+        ON CONFLICT (id) DO UPDATE SET
+          "senderName" = COALESCE(EXCLUDED."senderName", email_accounts."senderName"),
+          "smtpHost" = EXCLUDED."smtpHost",
+          "smtpPort" = EXCLUDED."smtpPort",
+          "imapHost" = EXCLUDED."imapHost",
+          "imapPort" = EXCLUDED."imapPort",
+          status = 'active',
+          "authType" = EXCLUDED."authType",
+          "accessToken" = EXCLUDED."accessToken",
+          "refreshToken" = CASE
+            WHEN EXCLUDED."refreshToken" <> '' THEN EXCLUDED."refreshToken"
+            ELSE email_accounts."refreshToken"
+          END
+        WHERE email_accounts."tenantId" = EXCLUDED."tenantId"`,
+        [
+          accountId,
+          state.tenantId,
+          email,
+          senderName,
+          smtpHost,
+          smtpPort,
+          imapHost,
+          imapPort,
+          authType,
+          accessToken,
+          refreshToken,
+          nowIso,
+        ]
+      );
+
+      startImapIdleForAccount({
+        id: accountId,
+        tenantId: state.tenantId,
+        email,
+        password: '',
+        smtpHost,
+        imapHost,
+        imapPort,
+        authType,
+        accessToken,
+      }).catch(() => {});
+
+      res.redirect(`${returnUrl}?email_connected=${encodeURIComponent(email)}`);
+    } catch (err: any) {
+      console.error(`[Email OAuth Callback Error (${provider})]:`, err.message);
+      res.redirect(`${returnUrl}?oauth_error=${encodeURIComponent(err.message || 'OAuth connection failed')}`);
+    }
+  }
+);
+
+// ─── POST /email/start ─── Hardened Multi-Account Cold Campaign Runner
+app.post(
+  ['/email/start', '/api/email/start'],
+  requireAuth,
+  requirePermission(['autoEmailer', 'autoEmailer:manage', 'email:send']),
+  async (req: express.Request, res: express.Response): Promise<void> => {
+    const tenantId = (req as any).user?.tenantId;
+    if (!tenantId) {
+      res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
+      return;
+    }
+
+    const job = getTenantEmailerJob(tenantId);
+    if (job.running) {
+      res.json({ success: true, message: 'Campaign already running for this tenant.' });
+      return;
+    }
+
+    const {
+      limit = 300,
+      accountIds,
+      minDelaySecs = 25,
+      maxDelaySecs = 55,
+    } = req.body as {
+      limit?: number;
+      accountIds?: (string | number)[];
+      minDelaySecs?: number;
+      maxDelaySecs?: number;
+    };
+
+    job.running = true;
+    job.stop = false;
+
+    const campaignRunId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    job.currentRunId = campaignRunId;
+    const nowIso = new Date().toISOString();
+
+    await db.execute(
+      `INSERT INTO email_campaign_runs (
+        id, "tenantId", name, status, "totalLeads", "sentCount", "failedCount",
+        "selectedAccountIds", "limitCount", "startedAt", "createdAt"
+      ) VALUES ($1, $2, 'Multi-Account Cold Campaign', 'running', 0, 0, 0, $3, $4, $5, $6)`,
+      [campaignRunId, tenantId, JSON.stringify(accountIds || []), limit, nowIso, nowIso]
+    );
+
+    res.json({ success: true, message: 'Campaign started in background.', runId: campaignRunId });
+
+    // Background Execution
+    (async () => {
+      const transporterCache = new Map<string, any>();
+      try {
+        const { default: nodemailer } = await import('nodemailer');
+        const todayStr = new Date().toISOString().slice(0, 10);
+
+        // 1. Fetch eligible accounts
+        let accountsQuery = `SELECT * FROM email_accounts WHERE "tenantId" = $1 AND status = 'active'`;
+        const accountsParams: any[] = [tenantId];
+        if (Array.isArray(accountIds) && accountIds.length > 0) {
+          const placeholders = accountIds.map((_, i) => `$${i + 2}`).join(',');
+          accountsQuery += ` AND id IN (${placeholders})`;
+          accountsParams.push(...accountIds.map(String));
+        }
+        let accounts = await db.queryAll<any>(accountsQuery, accountsParams);
+
+        if (!accounts.length) {
+          accounts = [
+            {
+              id: 'sandbox_default',
+              email: 'sandbox@octaldialer.local',
+              senderName: 'Built-in Sandbox Mailbox',
+              smtpHost: 'sandbox.internal',
+              smtpPort: 25,
+              status: 'active',
+              authType: 'sandbox',
+              dailyLimit: 1000,
+              sentToday: 0,
+            },
+          ];
+          emailLog(tenantId, 'ℹ️ No external SMTP accounts configured. Using Sandbox Mailbox.');
         }
 
-        const lead = eligible[leadIdx];
+        for (const acc of accounts) {
+          if (acc.lastResetDate !== todayStr) {
+            await db.execute(
+              'UPDATE email_accounts SET "sentToday" = 0, "lastResetDate" = $1 WHERE id = $2',
+              [todayStr, acc.id]
+            );
+            acc.sentToday = 0;
+            acc.lastResetDate = todayStr;
+          }
+          if (acc.id !== 'sandbox_default' && acc.authType !== 'sandbox') {
+            startImapIdleForAccount({ ...acc, tenantId }).catch(() => {});
+          }
+        }
 
-        // Round-Robin Account Selection with Daily Quota Protection
-        let attempts = 0;
-        let chosenAccount: any = null;
-        while (attempts < accounts.length) {
-          const candidate = accounts[accIndex % accounts.length];
-          accIndex++;
-          attempts++;
-          const limitForAcc = candidate.dailyLimit || 50;
-          if (candidate.status === 'active' && (candidate.sentToday || 0) < limitForAcc) {
-            chosenAccount = candidate;
+        // 2. Fetch templates
+        let templates = await db.queryAll<any>(
+          'SELECT * FROM email_templates WHERE ("tenantId" = $1 OR "systemTemplate" = 1) ORDER BY stage ASC, id ASC',
+          [tenantId]
+        );
+        if (!templates.length) {
+          templates = [
+            {
+              id: 'tpl_default_1',
+              stage: 1,
+              subject: '{Quick question|Introduction} from {{senderName}}',
+              body: '{Hi|Hello} {{name}},\n\nWanted to reach out and introduce our services to {{company}}.\n\nBest,\n{{senderName}}',
+            },
+            {
+              id: 'tpl_default_2',
+              stage: 2,
+              subject: 'Re: Introduction from {{senderName}}',
+              body: '{Hi|Hey} {{name}},\n\nJust following up on my previous note.\n\nBest,\n{{senderName}}',
+            },
+            {
+              id: 'tpl_default_3',
+              stage: 3,
+              subject: 'Re: Introduction from {{senderName}}',
+              body: 'Hi {{name}},\n\nOne last check-in to see if you have any questions.\n\nBest,\n{{senderName}}',
+            },
+          ];
+        }
+
+        // 3. Fetch candidate leads
+        const unsubscribes = await db.queryAll<{ email: string }>(
+          'SELECT email FROM email_unsubscribes WHERE "tenantId" = $1',
+          [tenantId]
+        );
+        const unsubscribedSet = new Set((unsubscribes || []).map((u) => u.email.toLowerCase()));
+
+        const leads = await db.queryAll<any>(
+          `SELECT * FROM email_leads WHERE "tenantId" = $1 AND status IN ('pending', 'sent') ORDER BY "createdAt" ASC`,
+          [tenantId]
+        );
+        const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+        const nowMs = Date.now();
+
+        let eligible = leads.filter((l: any) => {
+          if (unsubscribedSet.has(l.email.toLowerCase())) return false;
+          if (l.repliedAt) return false;
+          if (l.status === 'pending') return true;
+          if (l.status === 'sent' && Number(l.stage) <= 3 && l.lastSentAt) {
+            return nowMs - new Date(l.lastSentAt).getTime() >= SEVEN_DAYS;
+          }
+          return false;
+        });
+
+        if (!eligible.length && accounts[0]?.id === 'sandbox_default') {
+          const testLeadId = `lead_sandbox_${Date.now()}`;
+          await db.execute(
+            `INSERT INTO email_leads (id, "tenantId", email, name, company, status, stage, "createdAt")
+             VALUES ($1, $2, 'test-sandbox@octaldialer.local', 'Test Sandbox Lead', 'Octal Dialer Test', 'pending', 1, $3)`,
+            [testLeadId, tenantId, nowIso]
+          );
+          eligible = [
+            {
+              id: testLeadId,
+              tenantId,
+              email: 'test-sandbox@octaldialer.local',
+              name: 'Test Sandbox Lead',
+              company: 'Octal Dialer Test',
+              status: 'pending',
+              stage: 1,
+            },
+          ];
+        }
+
+        await db.execute('UPDATE email_campaign_runs SET "totalLeads" = $1 WHERE id = $2', [
+          eligible.length,
+          campaignRunId,
+        ]);
+
+        const baseUrl = (
+          process.env.PUBLIC_APP_URL ||
+          process.env.BASE_URL ||
+          'https://zestify7.online'
+        ).replace(/\/$/, '');
+
+        function getTransporter(acc: any) {
+          let t = transporterCache.get(acc.id);
+          if (!t) {
+            const isOAuth = acc.authType && acc.authType.startsWith('oauth_');
+            const authConfig: any = isOAuth
+              ? {
+                  type: 'OAuth2',
+                  user: acc.email,
+                  clientId:
+                    acc.authType === 'oauth_google'
+                      ? config.googleClientId
+                      : acc.authType === 'oauth_microsoft'
+                      ? config.microsoftClientId
+                      : config.yahooClientId,
+                  clientSecret:
+                    acc.authType === 'oauth_google'
+                      ? config.googleClientSecret
+                      : acc.authType === 'oauth_microsoft'
+                      ? config.microsoftClientSecret
+                      : config.yahooClientSecret,
+                  refreshToken: acc.refreshToken,
+                  accessToken: acc.accessToken,
+                }
+              : {
+                  user: acc.email,
+                  pass: acc.password,
+                };
+
+            t = nodemailer.createTransport({
+              pool: true,
+              maxConnections: 2,
+              maxMessages: 50,
+              host: acc.smtpHost,
+              port: Number(acc.smtpPort) || 587,
+              secure: Number(acc.smtpPort) === 465,
+              auth: authConfig,
+              tls: { rejectUnauthorized: SMTP_REJECT_UNAUTHORIZED },
+            });
+            transporterCache.set(acc.id, t);
+          }
+          return t;
+        }
+
+        let sentCount = 0;
+        let failedCount = 0;
+        let accIndex = 0;
+
+        for (let leadIdx = 0; leadIdx < eligible.length && sentCount < limit; leadIdx++) {
+          if (job.stop) {
+            emailLog(tenantId, `⏹️ Campaign paused by user.`);
             break;
           }
-        }
 
-        if (!chosenAccount) {
-          emailLog(tenantId, `⚠️ All active senders have reached their daily sending quota! Pausing for sender reputation safety.`);
-          break;
-        }
+          const candidateLead = eligible[leadIdx];
 
-        // Pick template matching lead stage
-        const matchingTemplates = templates.filter((t: any) => t.stage === lead.stage);
-        const tpl = matchingTemplates.length > 0 ? matchingTemplates[0] : templates[leadIdx % templates.length];
+          // Real-time pre-send check
+          const freshLead = await db.queryOne<any>(
+            `SELECT status, stage, "repliedAt", "unsubscribeToken", name, company, email
+             FROM email_leads WHERE id = $1 AND "tenantId" = $2`,
+            [candidateLead.id, tenantId]
+          );
+          const isUnsubscribedNow = await db.queryOne(
+            `SELECT id FROM email_unsubscribes WHERE "tenantId" = $1 AND LOWER(email) = LOWER($2)`,
+            [tenantId, candidateLead.email]
+          );
 
-        // Generate tokens
-        const trackingToken = `trk_${crypto.randomBytes(16).toString('hex')}`;
-        const unsubToken = lead.unsubscribeToken || `uns_${crypto.randomBytes(16).toString('hex')}`;
-        if (!lead.unsubscribeToken) {
-          await db.execute('UPDATE email_leads SET "unsubscribeToken" = $1 WHERE id = $2', [unsubToken, lead.id]);
-          lead.unsubscribeToken = unsubToken;
-        }
-
-        const dataTokens = {
-          name: lead.name || 'Client',
-          company: lead.company || '',
-          email: lead.email,
-          senderName: chosenAccount.senderName || 'Account Manager'
-        };
-
-        const subject = interpolateEmail(tpl.subject, dataTokens);
-        const bodyText = interpolateEmail(tpl.body, dataTokens);
-        const unsubUrl = `${baseUrl}/api/email/unsubscribe/${unsubToken}`;
-        const trackingPixel = `<img src="${baseUrl}/api/email/track/open/${trackingToken}" width="1" height="1" alt="" style="display:none;" />`;
-        const footerText = `\n\n---\nTo unsubscribe: ${unsubUrl}`;
-        const footerHtml = `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;font-size:12px;color:#888;">If you prefer not to receive these emails, <a href="${unsubUrl}" style="color:#666;">click here to unsubscribe</a>.</div>`;
-
-        const rawHtml = tpl.bodyHtml
-          ? interpolateEmail(tpl.bodyHtml, dataTokens) + footerHtml + trackingPixel
-          : `<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#222;">${bodyText.replace(/\n/g, '<br/>')}</div>` + footerHtml + trackingPixel;
-
-        // Rewrite all links in HTML to route through click tracking proxy
-        const trackedHtml = rewriteLinksForTracking(rawHtml, trackingToken, baseUrl);
-        const fullText = bodyText + footerText;
-
-        try {
-          emailLog(tenantId, `[Sender: ${chosenAccount.email}] Sending Stage ${lead.stage} to ${lead.email}`);
-          if (chosenAccount.id === 'sandbox_default' || chosenAccount.provider === 'sandbox' || !chosenAccount.password) {
-            emailLog(tenantId, `[Sandbox Safe Mode] Simulated dispatch to ${lead.email}`);
-          } else {
-            const transporter = getTransporter(chosenAccount);
-            await transporter.sendMail({
-              from: `"${chosenAccount.senderName || 'Sales'}" <${chosenAccount.email}>`,
-              to: lead.email,
-              subject,
-              text: fullText,
-              html: trackedHtml,
-              headers: {
-                'List-Unsubscribe': `<${unsubUrl}>`,
-                'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-                'X-Campaign-ID': campaignRunId
-              }
-            });
+          if (
+            !freshLead ||
+            freshLead.status === 'completed' ||
+            freshLead.status === 'unsubscribed' ||
+            freshLead.repliedAt ||
+            isUnsubscribedNow
+          ) {
+            emailLog(
+              tenantId,
+              `⏭️ Skipping ${candidateLead.email} (replied or unsubscribed during campaign run).`
+            );
+            continue;
           }
 
-          // Update mailbox daily sent counter
-          chosenAccount.sentToday = (chosenAccount.sentToday || 0) + 1;
-          if (chosenAccount.id !== 'sandbox_default') {
-            await db.execute('UPDATE email_accounts SET "sentToday" = $1, "lastResetDate" = $2 WHERE id = $3', [chosenAccount.sentToday, todayStr, chosenAccount.id]);
+          const currentStage = Math.max(1, Number(freshLead.stage) || 1);
+
+          let attempts = 0;
+          let chosenAccount: any = null;
+          while (attempts < accounts.length) {
+            const candidate = accounts[accIndex % accounts.length];
+            accIndex++;
+            attempts++;
+            const limitForAcc = candidate.dailyLimit || 50;
+            if (candidate.status === 'active' && (candidate.sentToday || 0) < limitForAcc) {
+              chosenAccount = candidate;
+              break;
+            }
           }
 
-          // Update lead stage & status
-          const newStage = Math.min(lead.stage + 1, 3);
-          const newStatus = newStage >= 3 ? 'completed' : 'sent';
-          const sentTimestamp = new Date().toISOString();
-          await db.execute('UPDATE email_leads SET status = $1, stage = $2, "lastSentAt" = $3 WHERE id = $4 AND "tenantId" = $5', [newStatus, newStage, sentTimestamp, lead.id, tenantId]);
+          if (!chosenAccount) {
+            emailLog(tenantId, `⚠️ All active senders reached daily quota! Stopping run.`);
+            break;
+          }
 
-          // Record audit dispatch log
-          const dispatchId = `dsp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-          await db.execute(`
-            INSERT INTO email_dispatch_logs (id, "tenantId", "campaignRunId", "leadId", "leadEmail", "accountId", "accountEmail", stage, subject, status, "sentAt", "trackingToken")
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'sent', $10, $11)
-          `, [dispatchId, tenantId, campaignRunId, lead.id, lead.email, chosenAccount.id, chosenAccount.email, lead.stage, subject, sentTimestamp, trackingToken]);
+          const matchingTemplates = templates.filter((t: any) => Number(t.stage) === currentStage);
+          const tpl =
+            matchingTemplates.length > 0
+              ? matchingTemplates[0]
+              : templates[leadIdx % templates.length];
 
-          sentCount++;
-          emailLog(tenantId, `✅ Delivered to ${lead.email} (Stage ${lead.stage}, sender: ${chosenAccount.email}) [${sentCount}/${Math.min(eligible.length, limit)}]`);
-          await db.execute('UPDATE email_campaign_runs SET "sentCount" = $1 WHERE id = $2', [sentCount, campaignRunId]);
+          const trackingToken = `trk_${crypto.randomBytes(16).toString('hex')}`;
+          const unsubToken =
+            freshLead.unsubscribeToken || `uns_${crypto.randomBytes(16).toString('hex')}`;
+          if (!freshLead.unsubscribeToken) {
+            await db.execute('UPDATE email_leads SET "unsubscribeToken" = $1 WHERE id = $2', [
+              unsubToken,
+              candidateLead.id,
+            ]);
+          }
 
-          // Humanized jitter delay
-          const delayRange = Math.max(1, (maxDelaySecs - minDelaySecs));
-          const delayMs = (minDelaySecs + Math.random() * delayRange) * 1000;
-          await new Promise(resolve => setTimeout(resolve, delayMs));
+          const dataTokens = {
+            name: freshLead.name || 'Client',
+            company: freshLead.company || 'your company',
+            email: freshLead.email,
+            senderName: chosenAccount.senderName || 'Account Manager',
+          };
 
-        } catch (sendErr: any) {
-          failedCount++;
-          const errMsg = sendErr?.message || 'SMTP send failure';
-          emailLog(tenantId, `❌ Failed to ${lead.email} via ${chosenAccount.email}: ${errMsg}`);
+          const outboundMessageId = generateDeterministicMessageId({
+            tenantId,
+            campaignRunId,
+            leadId: candidateLead.id,
+            stage: currentStage,
+            senderEmail: chosenAccount.email,
+          });
 
-          const dispatchId = `dsp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-          await db.execute(`
-            INSERT INTO email_dispatch_logs (id, "tenantId", "campaignRunId", "leadId", "leadEmail", "accountId", "accountEmail", stage, subject, status, "errorMessage", "sentAt")
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'failed', $10, $11)
-          `, [dispatchId, tenantId, campaignRunId, lead.id, lead.email, chosenAccount.id, chosenAccount.email, lead.stage, subject, errMsg, new Date().toISOString()]);
+          const previousDispatch = await db.queryOne<{ messageId: string; subject: string }>(
+            `SELECT "messageId", subject FROM email_dispatch_logs
+             WHERE "tenantId" = $1 AND "leadId" = $2 AND status = 'sent' AND "messageId" IS NOT NULL
+             ORDER BY "sentAt" DESC LIMIT 1`,
+            [tenantId, candidateLead.id]
+          );
 
-          await db.execute('UPDATE email_campaign_runs SET "failedCount" = $1 WHERE id = $2', [failedCount, campaignRunId]);
+          const rawSubject = interpolateEmailWithSpintax(tpl.subject, dataTokens);
+          const subject =
+            currentStage > 1 && previousDispatch?.subject && !rawSubject.toLowerCase().startsWith('re:')
+              ? `Re: ${previousDispatch.subject}`
+              : rawSubject;
 
-          if (errMsg.includes('Authentication') || errMsg.includes('Username and Password') || errMsg.includes('Invalid login')) {
-            await db.execute('UPDATE email_accounts SET status = \'disabled\' WHERE id = $1 AND "tenantId" = $2', [chosenAccount.id, tenantId]);
-            chosenAccount.status = 'disabled';
-            emailLog(tenantId, `⚠️ Automatically disabled account ${chosenAccount.email} due to authentication rejection.`);
+          const bodyText = interpolateEmailWithSpintax(tpl.body, dataTokens);
+          const unsubUrl = `${baseUrl}/api/email/unsubscribe/${unsubToken}`;
+          const trackingPixel = `<img src="${baseUrl}/api/email/track/open/${trackingToken}" width="1" height="1" alt="" style="display:none;" />`;
+          const footerText = `\n\n---\nTo unsubscribe: ${unsubUrl}`;
+          const footerHtml = `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;font-size:12px;color:#888;">If you prefer not to receive these emails, <a href="${unsubUrl}" style="color:#666;">click here to unsubscribe</a>.</div>`;
+
+          const rawHtml = tpl.bodyHtml
+            ? interpolateEmailWithSpintax(tpl.bodyHtml, dataTokens) + footerHtml + trackingPixel
+            : `<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#222;">${bodyText.replace(/\n/g, '<br/>')}</div>` +
+              footerHtml +
+              trackingPixel;
+
+          const trackedHtml = rewriteLinksForTracking(rawHtml, trackingToken, baseUrl);
+          const fullText = bodyText + footerText;
+
+          try {
+            const isSandbox =
+              chosenAccount.id === 'sandbox_default' ||
+              chosenAccount.authType === 'sandbox' ||
+              (!chosenAccount.password && !chosenAccount.accessToken && !chosenAccount.refreshToken);
+
+            if (isSandbox) {
+              emailLog(tenantId, `[Sandbox Safe Mode] Simulated Stage ${currentStage} to ${freshLead.email}`);
+            } else {
+              const transporter = getTransporter(chosenAccount);
+              await transporter.sendMail({
+                from: `"${chosenAccount.senderName || 'Sales'}" <${chosenAccount.email}>`,
+                to: freshLead.email,
+                subject,
+                text: fullText,
+                html: trackedHtml,
+                messageId: outboundMessageId,
+                ...(previousDispatch?.messageId
+                  ? {
+                      inReplyTo: previousDispatch.messageId,
+                      references: [previousDispatch.messageId],
+                    }
+                  : {}),
+                headers: {
+                  'List-Unsubscribe': `<${unsubUrl}>`,
+                  'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+                },
+              });
+            }
+
+            chosenAccount.sentToday = (chosenAccount.sentToday || 0) + 1;
+            if (chosenAccount.id !== 'sandbox_default') {
+              await db.execute(
+                'UPDATE email_accounts SET "sentToday" = $1, "lastResetDate" = $2 WHERE id = $3',
+                [chosenAccount.sentToday, todayStr, chosenAccount.id]
+              );
+            }
+
+            const isFinalStage = currentStage >= 3;
+            const nextStage = isFinalStage ? 3 : currentStage + 1;
+            const nextStatus = isFinalStage ? 'completed' : 'sent';
+            const sentTimestamp = new Date().toISOString();
+
+            await db.execute(
+              'UPDATE email_leads SET status = $1, stage = $2, "lastSentAt" = $3 WHERE id = $4 AND "tenantId" = $5',
+              [nextStatus, nextStage, sentTimestamp, candidateLead.id, tenantId]
+            );
+
+            const dispatchId = `dsp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+            await db.execute(
+              `INSERT INTO email_dispatch_logs (
+                id, "tenantId", "campaignRunId", "leadId", "leadEmail", "accountId",
+                "accountEmail", stage, subject, status, "sentAt", "trackingToken", "messageId"
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'sent', $10, $11, $12)`,
+              [
+                dispatchId,
+                tenantId,
+                campaignRunId,
+                candidateLead.id,
+                freshLead.email,
+                chosenAccount.id,
+                chosenAccount.email,
+                currentStage,
+                subject,
+                sentTimestamp,
+                trackingToken,
+                outboundMessageId,
+              ]
+            );
+
+            // Sync outbound email to Unibox
+            const rootThreadKey = previousDispatch?.messageId || outboundMessageId;
+            let uniboxThread = await db.queryOne<{ id: string }>(
+              `SELECT id FROM outreach_threads WHERE "tenantId" = $1 AND channel = 'email' AND "prospectAddress" = $2 LIMIT 1`,
+              [tenantId, freshLead.email]
+            );
+            const threadId = uniboxThread?.id || `thd_${crypto.randomBytes(8).toString('hex')}`;
+            if (!uniboxThread) {
+              await db.execute(
+                `INSERT INTO outreach_threads (
+                  id, "tenantId", "emailLeadId", channel, "accountId", "externalThreadId",
+                  "prospectAddress", "prospectName", "prospectCompany", subject, status,
+                  "lastMessageSnippet", "lastMessageAt", "createdAt", "updatedAt"
+                ) VALUES ($1, $2, $3, 'email', $4, $5, $6, $7, $8, $9, 'open', $10, $11, $11, $11)
+                ON CONFLICT ("tenantId", channel, "externalThreadId") DO NOTHING`,
+                [
+                  threadId,
+                  tenantId,
+                  candidateLead.id,
+                  chosenAccount.id,
+                  rootThreadKey,
+                  freshLead.email,
+                  freshLead.name || 'Client',
+                  freshLead.company || '',
+                  subject,
+                  bodyText.slice(0, 180),
+                  sentTimestamp,
+                ]
+              );
+            } else {
+              await db.execute(
+                `UPDATE outreach_threads SET "lastMessageSnippet" = $1, "lastMessageAt" = $2, "updatedAt" = $2 WHERE id = $3`,
+                [bodyText.slice(0, 180), sentTimestamp, threadId]
+              );
+            }
+
+            await db.execute(
+              `INSERT INTO outreach_messages (
+                id, "threadId", "tenantId", direction, channel, "senderAddress", "recipientAddress",
+                "externalMessageId", "inReplyTo", subject, "bodyRaw", "bodyClean", "createdAt"
+              ) VALUES ($1, $2, $3, 'outbound', 'email', $4, $5, $6, $7, $8, $9, $10, $11)
+              ON CONFLICT ("tenantId", channel, "externalMessageId") DO NOTHING`,
+              [
+                `msg_${crypto.randomBytes(8).toString('hex')}`,
+                threadId,
+                tenantId,
+                chosenAccount.email,
+                freshLead.email,
+                outboundMessageId,
+                previousDispatch?.messageId || null,
+                subject,
+                trackedHtml,
+                bodyText,
+                sentTimestamp,
+              ]
+            );
+
+            sentCount++;
+            emailLog(
+              tenantId,
+              `✅ Delivered Stage ${currentStage} to ${freshLead.email} via ${chosenAccount.email} [${sentCount}/${Math.min(eligible.length, limit)}]`
+            );
+            await db.execute('UPDATE email_campaign_runs SET "sentCount" = $1 WHERE id = $2', [
+              sentCount,
+              campaignRunId,
+            ]);
+
+            const delayRange = Math.max(1, maxDelaySecs - minDelaySecs);
+            const delayMs = (minDelaySecs + Math.random() * delayRange) * 1000;
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          } catch (sendErr: any) {
+            failedCount++;
+            const errMsg = sendErr?.message || 'SMTP send failure';
+            emailLog(tenantId, `❌ Failed to ${freshLead.email} via ${chosenAccount.email}: ${errMsg}`);
+
+            if (/550|5\.1\.1|does not exist|user unknown|invalid recipient/i.test(errMsg)) {
+              await db.execute(
+                `UPDATE email_leads SET status = 'unsubscribed' WHERE id = $1 AND "tenantId" = $2`,
+                [candidateLead.id, tenantId]
+              );
+              emailLog(tenantId, `🛑 Hard bounce detected for ${freshLead.email} — permanently suppressed.`);
+            }
+
+            const dispatchId = `dsp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+            await db.execute(
+              `INSERT INTO email_dispatch_logs (
+                id, "tenantId", "campaignRunId", "leadId", "leadEmail", "accountId",
+                "accountEmail", stage, subject, status, "errorMessage", "sentAt"
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'failed', $10, $11)`,
+              [
+                dispatchId,
+                tenantId,
+                campaignRunId,
+                candidateLead.id,
+                freshLead.email,
+                chosenAccount.id,
+                chosenAccount.email,
+                currentStage,
+                subject,
+                errMsg,
+                new Date().toISOString(),
+              ]
+            );
+
+            await db.execute('UPDATE email_campaign_runs SET "failedCount" = $1 WHERE id = $2', [
+              failedCount,
+              campaignRunId,
+            ]);
+
+            if (
+              errMsg.includes('Authentication') ||
+              errMsg.includes('Username and Password') ||
+              errMsg.includes('Invalid login')
+            ) {
+              await db.execute(
+                `UPDATE email_accounts SET status = 'disabled' WHERE id = $1 AND "tenantId" = $2`,
+                [chosenAccount.id, tenantId]
+              );
+              chosenAccount.status = 'disabled';
+              emailLog(
+                tenantId,
+                `⚠️ Disabled account ${chosenAccount.email} due to authentication rejection.`
+              );
+            }
           }
         }
+
+        await db.execute(
+          `UPDATE email_campaign_runs SET status = 'completed', "completedAt" = $1 WHERE id = $2`,
+          [new Date().toISOString(), campaignRunId]
+        );
+        emailLog(
+          tenantId,
+          `=== Campaign Completed: Dispatched ${sentCount} emails (${failedCount} failed) ===`
+        );
+      } catch (err: any) {
+        emailLog(tenantId, `❌ Fatal campaign runner error: ${err?.message}`);
+        await db.execute(
+          `UPDATE email_campaign_runs SET status = 'failed', "completedAt" = $1 WHERE id = $2`,
+          [new Date().toISOString(), campaignRunId]
+        );
+      } finally {
+        for (const t of transporterCache.values()) {
+          try {
+            t.close();
+          } catch {}
+        }
+        job.running = false;
       }
+    })();
+  }
+);
 
-      await db.execute('UPDATE email_campaign_runs SET status = \'completed\', "completedAt" = $1 WHERE id = $2', [new Date().toISOString(), campaignRunId]);
-      emailLog(tenantId, `=== Campaign Completed: Dispatched ${sentCount} emails (${failedCount} failed) ===`);
-    } catch (err: any) {
-      emailLog(tenantId, `❌ Fatal campaign runner error: ${err?.message}`);
-      await db.execute('UPDATE email_campaign_runs SET status = \'failed\', "completedAt" = $1 WHERE id = $2', [new Date().toISOString(), campaignRunId]);
-    } finally {
-      job.running = false;
-    }
-  })();
-});
-
-// ── POST /emailer/stop
+// ─── POST /emailer/stop ───
 app.post(['/emailer/stop', '/api/emailer/stop'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), (req: express.Request, res: express.Response): void => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
@@ -12193,7 +12868,7 @@ app.post(['/emailer/stop', '/api/emailer/stop'], requireAuth, requirePermission(
   res.json({ success: true, message: 'Stop signal dispatched to campaign runner.' });
 });
 
-// ── GET /emailer/status
+// ─── GET /emailer/status ───
 app.get(['/emailer/status', '/api/emailer/status'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:view', 'autoEmailer:manage']), (req: express.Request, res: express.Response): void => {
   const tenantId = (req as any).user?.tenantId;
   if (!tenantId) {
@@ -12207,7 +12882,7 @@ app.get(['/emailer/status', '/api/emailer/status'], requireAuth, requirePermissi
   });
 });
 
-// ─── HEALTH & READINESS PROBES ────────────────────────────────────────────────
+// â”€â”€â”€ HEALTH & READINESS PROBES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.get(['/health', '/api/health'], (_req: express.Request, res: express.Response): void => {
   res.status(200).json({
     status: 'ok',
@@ -12267,7 +12942,7 @@ if (fs.existsSync(frontendDistPath)) {
   });
 }
 
-// ─── TERMINAL API 404 HANDLER ────────────────────────────────────────────────
+// â”€â”€â”€ TERMINAL API 404 HANDLER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Any request reaching this point that was intended for an API or backend namespace
 // MUST receive a clean JSON 404 response, NEVER an Express default HTML page.
 app.use((req: express.Request, res: express.Response) => {
@@ -12279,7 +12954,7 @@ app.use((req: express.Request, res: express.Response) => {
   });
 });
 
-// ─── GLOBAL EXPRESS ERROR HANDLER ────────────────────────────────────────────
+// â”€â”€â”€ GLOBAL EXPRESS ERROR HANDLER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Catches unhandled exceptions, next(err), and middleware errors.
 // Guarantees all errors return Content-Type: application/json; charset=utf-8.
 app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -12320,6 +12995,18 @@ async function startServer() {
     } catch (err) {
       console.error('[Bootstrap Admin Error]:', err);
       throw err;
+    }
+    // Auto-start IMAP IDLE reply detection for all active tenant mailboxes on server boot
+    try {
+      const activeMailboxes = await db.queryAll<any>('SELECT * FROM email_accounts WHERE status = \'active\' AND "authType" != \'sandbox\'');
+      for (const acc of activeMailboxes) {
+        startImapIdleForAccount(acc).catch((err: any) =>
+          console.warn(`[Startup IMAP IDLE] Could not attach to ${acc.email}:`, err?.message || err)
+        );
+      }
+      console.log(`[Startup IMAP IDLE] Attached real-time reply listeners to ${activeMailboxes.length} mailbox(es).`);
+    } catch (imapBootErr: any) {
+      console.warn('[Startup IMAP IDLE Boot Warning]:', imapBootErr?.message || imapBootErr);
     }
 
     // 3. Initialize background services

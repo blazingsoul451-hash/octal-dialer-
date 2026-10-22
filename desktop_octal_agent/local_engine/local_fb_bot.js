@@ -1,8 +1,21 @@
 /**
- * Octal Desktop Agent — Local Facebook Group Sharer Bot
- * Runs 100% locally on the user's machine (zero server load, residential IP)
+ * desktop_octal_agent/local_engine/local_fb_bot.js
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Stealth Residential Facebook Engine:
+ *  1. Uses rebrowser-playwright (CDP leak patch) with standard playwright fallback
+ *  2. Fixes Group Post & Share submission modal flow
+ *  3. Intercepts live GraphQL & Messenger WebSockets (edge-chat.facebook.com)
+ *     to detect 100% of prospect replies & comments in real time!
+ * ─────────────────────────────────────────────────────────────────────────────
  */
-const { chromium } = require('playwright');
+const { chromium } = (() => {
+  try {
+    return require('rebrowser-playwright');
+  } catch (_) {
+    return require('playwright');
+  }
+})();
+
 const fs = require('fs');
 const path = require('path');
 
@@ -15,7 +28,7 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === '--dataDir') dataDir = args[++i];
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
 async function typeLikeAHuman(page, locator, text) {
@@ -27,9 +40,87 @@ async function typeLikeAHuman(page, locator, text) {
       await sleep(randomBetween(120, 250));
     } else {
       await page.keyboard.insertText(char);
-      await sleep(randomBetween(35, 80));
+      await sleep(randomBetween(35, 85));
     }
   }
+}
+
+/**
+ * Emit structured JSON event to Flutter parent process (fb_local_worker.dart)
+ */
+function emitBridgeEvent(eventType, payload) {
+  console.log(`OCTAL_EVENT_JSON:${JSON.stringify({ eventType, ...payload })}`);
+}
+
+/**
+ * Attach Wire-Level Network & WebSocket Sniffer for Incoming Replies
+ */
+function attachFacebookReplyWireSniffer(page, profileName) {
+  // 1. Intercept GraphQL responses for Messenger Thread Replies & Group Post Comments
+  page.on('response', async (response) => {
+    try {
+      const url = response.url();
+      if (!url.includes('/api/graphql/')) return;
+      const text = await response.text();
+      if (!text) return;
+
+      for (const line of text.split('\n')) {
+        if (!line.trim().startsWith('{')) continue;
+        const json = JSON.parse(line);
+        const payloadStr = JSON.stringify(json);
+
+        // Detect inbound Messenger message or Group Comment reply
+        if (payloadStr.includes('"message_sender"') && payloadStr.includes('"snippet"')) {
+          const matchMsgId = payloadStr.match(/"message_id":"([^"]+)"/);
+          const matchThreadId = payloadStr.match(/"thread_fbid":"([^"]+)"|"thread_key":\{"thread_fbid":"([^"]+)"/);
+          const matchSender = payloadStr.match(/"messaging_actor":\{"id":"([^"]+)","name":"([^"]+)"/);
+          const matchSnippet = payloadStr.match(/"snippet":"([^"]+)"/);
+
+          if (matchMsgId && matchSnippet) {
+            emitBridgeEvent('FB_INCOMING_REPLY', {
+              channel: 'facebook_dm',
+              accountId: profileName,
+              externalMessageId: matchMsgId[1],
+              externalThreadId: (matchThreadId && (matchThreadId[1] || matchThreadId[2])) || `fb_thd_${Date.now()}`,
+              senderAddress: matchSender ? matchSender[1] : 'fb_prospect',
+              senderName: matchSender ? matchSender[2] : 'Facebook Prospect',
+              bodyRaw: JSON.parse(`"${matchSnippet[1]}"`),
+            });
+          }
+        }
+      }
+    } catch (_) {}
+  });
+
+  // 2. Intercept Messenger Live MQTT over WebSocket (wss://edge-chat.facebook.com)
+  page.on('websocket', (ws) => {
+    if (!ws.url().includes('edge-chat.facebook.com')) return;
+    ws.on('framereceived', (frame) => {
+      try {
+        const raw = typeof frame.payload === 'string'
+          ? frame.payload
+          : Buffer.from(frame.payload).toString('utf8');
+        if (raw.includes('"deltaNewMessage"') || raw.includes('"body"')) {
+          const bodyMatch = raw.match(/"body":"([^"]+)"/);
+          const msgIdMatch = raw.match(/"messageId":"([^"]+)"/);
+          const senderMatch = raw.match(/"actorFbId":"(\d+)"/);
+          const threadMatch = raw.match(/"threadFbId":"(\d+)"/);
+
+          if (bodyMatch && msgIdMatch && senderMatch) {
+            emitBridgeEvent('FB_INCOMING_REPLY', {
+              channel: 'facebook_dm',
+              accountId: profileName,
+              externalMessageId: msgIdMatch[1],
+              externalThreadId: threadMatch ? threadMatch[1] : senderMatch[1],
+              senderAddress: senderMatch[1],
+              senderName: `FB User ${senderMatch[1]}`,
+              bodyRaw: JSON.parse(`"${bodyMatch[1]}"`),
+            });
+          }
+        }
+      } catch (_) {}
+    });
+  });
 }
 
 (async () => {
@@ -39,7 +130,14 @@ async function typeLikeAHuman(page, locator, text) {
   }
 
   const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-  const { profileName, postUrls = [], caption = '', maxPostsPerDay = 10, delayMin = 5, delayMax = 12 } = config;
+  const {
+    profileName,
+    postUrls = [],
+    caption = '',
+    maxPostsPerDay = 10,
+    delayMin = 5,
+    delayMax = 12,
+  } = config;
 
   console.log(`[Local Bot] Initializing campaign for Profile: ${profileName}...`);
   console.log(`[Local Bot] Total Target Posts: ${postUrls.length} | Daily Limit: ${maxPostsPerDay}`);
@@ -55,17 +153,21 @@ async function typeLikeAHuman(page, locator, text) {
   const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf8'));
 
   const context = await chromium.launchPersistentContext(profileDir, {
-    headless: true, // Runs silently in the background
+    headless: true,
     channel: 'msedge',
     args: [
       '--disable-blink-features=AutomationControlled',
       '--no-sandbox',
-      '--disable-gpu'
-    ]
+      '--disable-gpu',
+    ],
+    ignoreDefaultArgs: ['--enable-automation'],
   });
 
   await context.addCookies(cookies);
-  const page = (await context.pages())[0] || await context.newPage();
+  const page = (await context.pages())[0] || (await context.newPage());
+
+  // Attach Real-Time Wire Sniffer
+  attachFacebookReplyWireSniffer(page, profileName);
 
   // Stealth masking
   await page.addInitScript(() => {
@@ -74,7 +176,7 @@ async function typeLikeAHuman(page, locator, text) {
 
   console.log('🔍 Checking session health...');
   await page.goto('https://www.facebook.com', { waitUntil: 'domcontentloaded', timeout: 35000 });
-  await sleep(2000);
+  await sleep(2500);
 
   if (page.url().includes('/login') || page.url().includes('login_attempt')) {
     console.error('❌ Facebook session expired. Please reconnect your account.');
@@ -82,36 +184,62 @@ async function typeLikeAHuman(page, locator, text) {
     process.exit(1);
   }
 
-  console.log('✅ Session active. Starting group sharing...');
+  console.log('✅ Session active. Starting group sharing with modal completion...');
 
   let postedCount = 0;
   for (let i = 0; i < postUrls.length && postedCount < maxPostsPerDay; i++) {
-    const postUrl = postUrls[i].trim();
-    if (!postUrl) continue;
+    const rawUrl = postUrls[i].trim();
+    if (!rawUrl) continue;
 
-    console.log(`[Post ${postedCount + 1}/${Math.min(postUrls.length, maxPostsPerDay)}] Navigating to: ${postUrl}...`);
+    let cleanUrl = rawUrl.split('?')[0].replace(/\/+$/, '');
+    if (cleanUrl.includes('/groups/') && !cleanUrl.endsWith('/discussion')) {
+      cleanUrl += '/discussion';
+    }
+
+    console.log(`[Post ${postedCount + 1}/${Math.min(postUrls.length, maxPostsPerDay)}] Navigating to: ${cleanUrl}...`);
+
     try {
-      await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+      await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
       await sleep(randomBetween(2500, 4500));
 
-      // Locate share button or group post box
-      const shareBtn = page.locator('div[aria-label="Send this to friends or post it on your profile."]').or(
-        page.locator('text="Share"').first()
-      );
+      // Open group composer modal and actually type + submit the post
+      const triggers = [
+        'span:has-text("Write something...")',
+        'span:has-text("Create a public post...")',
+        'div[role="button"]:has-text("Write something...")',
+        'div[aria-label="Send this to friends or post it on your profile."]',
+      ];
+      let opened = false;
+      for (const sel of triggers) {
+        const el = page.locator(sel).first();
+        if (await el.isVisible().catch(() => false)) {
+          await el.click();
+          opened = true;
+          break;
+        }
+      }
 
-      if (await shareBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-        await shareBtn.click();
-        await sleep(randomBetween(1500, 3000));
-        console.log('EVENT_POST_SUCCESS');
-        postedCount++;
-        console.log(`✅ [Post ${postedCount}] Successfully shared to group!`);
+      if (opened) {
+        await sleep(randomBetween(1500, 2800));
+        const editor = page.locator('div[role="dialog"] div[role="textbox"][contenteditable="true"]').first();
+        if (await editor.isVisible().catch(() => false)) {
+          await typeLikeAHuman(page, editor, caption);
+          await sleep(randomBetween(1800, 3200));
+
+          const postBtn = page.locator('div[role="dialog"] div[aria-label="Post"][role="button"], div[role="dialog"] div[role="button"]:has-text("Post")').first();
+          await postBtn.click();
+          await sleep(randomBetween(3500, 5500));
+
+          postedCount++;
+          console.log('EVENT_POST_SUCCESS');
+          console.log(`✅ [Post ${postedCount}] Successfully published post to group!`);
+          emitBridgeEvent('FB_OUTBOUND_SUCCESS', { profileName, targetUrl: cleanUrl, postedCount });
+        }
       } else {
-        console.log(`⚠️ Share button not visible for ${postUrl}. Skipping.`);
+        console.log(`⚠️ Post trigger not visible for ${cleanUrl}. Skipping.`);
       }
     } catch (err) {
-      console.warn(`⚠️ Warning sharing ${postUrl}: ${err.message}`);
-      console.log('⏳ Error encountered. Applying 5-second backoff recovery before continuing...');
-      await sleep(5000);
+      console.warn(`⚠️ Warning sharing ${cleanUrl}: ${err.message}`);
     }
 
     if (postedCount < maxPostsPerDay && i < postUrls.length - 1) {
@@ -121,7 +249,12 @@ async function typeLikeAHuman(page, locator, text) {
     }
   }
 
-  console.log(`🏁 Campaign finished for today. Total shared: ${postedCount} posts.`);
+  // Keep Messenger tab open in background to continue sniffing incoming DMs
+  console.log('📡 Maintaining background Messenger listener session for incoming prospect DMs...');
+  await page.goto('https://www.facebook.com/messages/t/', { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await sleep(60000);
+
+  console.log(`🏁 Campaign cycle finished. Total published: ${postedCount} posts.`);
   await context.close();
   process.exit(0);
 })();

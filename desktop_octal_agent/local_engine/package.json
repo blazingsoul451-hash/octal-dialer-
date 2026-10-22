@@ -1,13 +1,12 @@
 {
   "name": "octal-desktop-agent-engine",
-  "version": "1.0.0",
-  "description": "Local Edge Engine for Octal Desktop Agent - Zero Server Load & Residential IP Automation",
-  "main": "local_cookie_grabber.js",
-  "scripts": {
-    "login": "node local_cookie_grabber.js",
-    "post": "node local_fb_bot.js"
-  },
+  "version": "2.0.0",
+  "description": "Stealth Residential Edge Engine with GraphQL & WebSocket Reply Sniffer",
+  "main": "local_fb_bot.js",
   "dependencies": {
-    "playwright": "^1.49.0"
+    "playwright": "^1.49.0",
+    "rebrowser-playwright": "^1.49.0",
+    "fingerprint-generator": "^2.1.53",
+    "fingerprint-injector": "^2.1.53"
   }
 }

@@ -1411,19 +1411,6 @@ class MainActivity: FlutterActivity() {
         return readContacts && readCallLog && writeCallLog
     }
 
-    private fun deleteDeviceCallLog(id: String, result: MethodChannel.Result) {
-        Thread {
-            try {
-                val uri = ContentUris.withAppendedId(CallLog.Calls.CONTENT_URI, id.toLong())
-                val deleted = contentResolver.delete(uri, null, null)
-                runOnUiThread { result.success(deleted > 0) }
-            } catch (e: Exception) {
-                Log.e(TAG, "deleteDeviceCallLog error: ${e.message}")
-                runOnUiThread { result.error("DELETE_FAILED", e.message, null) }
-            }
-        }.start()
-    }
-
     override fun onDestroy() {
         try {
             telecomListener?.let { OctalCallManager.removeListener(it) }

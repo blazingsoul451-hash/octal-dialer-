@@ -4,8 +4,9 @@ import {
   Bluetooth, PlaySquare, Sun, Moon, ShieldAlert, LayoutDashboard, Menu, Mail,
   Play, Layers, Settings, Users, FileText, Search,
   Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp,
-  Target, Building2, ChevronDown, UserPlus
+  Target, Building2, ChevronDown, UserPlus, Inbox
 } from 'lucide-react';
+import { OmnichannelUnibox } from './components/OmnichannelUnibox';
 import { useSocket } from './hooks/useSocket';
 import { DashboardOverview } from './components/DashboardOverview';
 import { ReportsPage } from './components/ReportsPage';
@@ -63,13 +64,14 @@ const SERVER_URL = WEB_API_BASE;
 
 export default function App() {
   const authInitializationStarted = useRef(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs' | 'team-lead' | 'super-admin'>(() => {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'unibox' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs' | 'team-lead' | 'super-admin'>(() => {
     if (typeof window !== 'undefined') {
       const p = window.location.pathname.toLowerCase();
       if (p.startsWith('/scraper') || p.startsWith('/google-scraper')) return 'scraper';
       if (p.startsWith('/fb-scraper')) return 'fb-scraper';
       if (p.startsWith('/emailer') || p.startsWith('/email')) return 'emailer-campaign';
       if (p.startsWith('/dialer')) return 'dialer';
+      if (p.startsWith('/unibox') || p.startsWith('/inbox')) return 'unibox';
       if (p.startsWith('/crm')) return 'crm';
       if (p.startsWith('/campaigns')) return 'campaigns';
       if (p.startsWith('/leads')) return 'leads';
@@ -1349,6 +1351,24 @@ export default function App() {
                 </button>
               )}
 
+              {/* Omnichannel Unibox */}
+              <button
+                onClick={() => setActiveTab('unibox')}
+                title="Omnichannel Unibox (Email & FB Replies)"
+                className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  activeTab === 'unibox'
+                    ? isLight
+                      ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
+                      : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500 shadow-sm'
+                    : isLight
+                      ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
+                      : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
+                }`}
+              >
+                <Inbox className={`w-4 h-4 shrink-0 ${activeTab === 'unibox' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
+                {isNavExpanded && <span className="truncate">Omnichannel Unibox</span>}
+              </button>
+
               {/* Campaigns Workspace (Gated by Campaigns permission or Platform Admin) */}
               {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.campaigns) && (
                 <button
@@ -1962,6 +1982,19 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'unibox' && (
+            <OmnichannelUnibox
+              isLight={isLight}
+              serverUrl={SERVER_URL}
+              authToken={effectiveAuthToken || ''}
+              onDialLead={(phone, leadId, leadName) => {
+                socketData.dialLead(phone, leadName, 30, leadId);
+                setActiveTab('dialer');
+              }}
+              socket={socketData.socket}
+            />
+          )}
+
           {activeTab === 'crm' && (
             (userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.crm) ? (
               <CRMWorkspacePage
@@ -2256,6 +2289,7 @@ export default function App() {
                 serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken || ''}
                 activeSubTab={activeTab}
+                onNavigateTab={(tab) => setActiveTab(tab as any)}
               />
             ) : (
               <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
@@ -2270,23 +2304,6 @@ export default function App() {
 
           {['scraper', 'scraper-import', 'scraper-settings'].includes(activeTab) && (
             <div className="space-y-4">
-              <div className={`p-4 rounded-xl border flex items-center justify-between ${isLight ? 'bg-amber-500/10 border-amber-300 text-amber-900' : 'bg-amber-500/10 border-amber-500/20 text-amber-400'}`}>
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-amber-500/20">
-                    <Search className="w-5 h-5 text-amber-500" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-bold font-sans">Lead Generation Product Transition</h4>
-                    <p className="text-xs text-slate-500 font-mono">Google Maps Scraper is transitioning to a standalone Lead Generation product. For direct lead onboarding, use CSV import in CRM Workspace.</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setActiveTab('crm')}
-                  className="px-3 py-1.5 rounded-lg bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 transition"
-                >
-                  Go to CRM
-                </button>
-              </div>
               <ScraperFilesPanel
                 isLight={isLight}
                 serverUrl={SERVER_URL}
@@ -2302,23 +2319,6 @@ export default function App() {
 
           {['fb-scraper', 'fb-scraper-files'].includes(activeTab) && (
             <div className="space-y-4">
-              <div className={`p-4 rounded-xl border flex items-center justify-between ${isLight ? 'bg-amber-500/10 border-amber-300 text-amber-900' : 'bg-amber-500/10 border-amber-500/20 text-amber-400'}`}>
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-amber-500/20">
-                    <Facebook className="w-5 h-5 text-amber-500" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-bold font-sans">Lead Generation Product Transition</h4>
-                    <p className="text-xs text-slate-500 font-mono">Facebook Scraper is transitioning to our standalone Lead Generation product. Facebook Auto Poster remains active in Zestify Core.</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setActiveTab('crm')}
-                  className="px-3 py-1.5 rounded-lg bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 transition"
-                >
-                  Go to CRM
-                </button>
-              </div>
               <FacebookScraper
                 isLight={isLight}
                 serverUrl={SERVER_URL}
@@ -2335,6 +2335,7 @@ export default function App() {
                 serverUrl={SERVER_URL}
                 authToken={effectiveAuthToken || ''}
                 activeSubTab={activeTab}
+                onNavigateTab={(tab) => setActiveTab(tab as any)}
               />
             ) : (
               <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>

@@ -280,7 +280,7 @@ export async function getNextPendingLead(campaignId: string, tenantId: string, a
     params.push(userId);
   }
 
-  querySql += ` ORDER BY "createdAt" ASC, id ASC LIMIT 1`;
+  querySql += ` ORDER BY priority DESC, "createdAt" ASC, id ASC LIMIT 1`;
 
   const row = await db.queryOne<Lead>(querySql, params);
   return row || null;

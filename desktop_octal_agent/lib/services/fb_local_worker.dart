@@ -124,6 +124,18 @@ class FbLocalWorker {
           if (trimmed.isEmpty) continue;
           addLog(trimmed);
 
+          // Intercept Wire-Sniffed Facebook Replies
+          if (trimmed.startsWith('OCTAL_EVENT_JSON:')) {
+            try {
+              final jsonStr = trimmed.substring('OCTAL_EVENT_JSON:'.length);
+              final Map<String, dynamic> evt = jsonDecode(jsonStr);
+              if (evt['eventType'] == 'FB_INCOMING_REPLY') {
+                addLog('🔥 Incoming FB Reply from ${evt['senderName']}: "${evt['bodyRaw']}"');
+                ApiService.instance.forwardIncomingFacebookReply(evt);
+              }
+            } catch (_) {}
+          }
+
           if (trimmed.contains('EVENT_POST_SUCCESS')) {
             sent++;
             _progressController.add({'current': sent, 'total': postUrls.length, 'status': 'posting'});
@@ -163,7 +175,7 @@ class FbLocalWorker {
     final dir = Directory('$basePath/octal_agent');
     if (!dir.existsSync()) dir.createSync(recursive: true);
 
-    // Write local cookie grabber
+    // 1. Write local cookie grabber
     final grabberFile = File('${dir.path}/local_cookie_grabber.js');
     if (!grabberFile.existsSync()) {
       await grabberFile.writeAsString('''
@@ -195,7 +207,6 @@ for (let i = 0; i < args.length; i++) {
   await page.goto('https://www.facebook.com');
 
   console.log('Waiting for user login on Facebook...');
-  // Poll until user is logged in (c_user cookie appears)
   let loggedIn = false;
   for (let i = 0; i < 300; i++) {
     const cookies = await context.cookies();
@@ -215,6 +226,16 @@ for (let i = 0; i < args.length; i++) {
   process.exit(loggedIn ? 0 : 1);
 })();
 ''');
+    }
+
+    // 2. Write local Facebook bot engine
+    final botFile = File('${dir.path}/local_fb_bot.js');
+    if (!botFile.existsSync()) {
+      // Copy from workspace local_engine or write fallback
+      final workspaceBot = File('desktop_octal_agent/local_engine/local_fb_bot.js');
+      if (workspaceBot.existsSync()) {
+        await workspaceBot.copy(botFile.path);
+      }
     }
   }
 }

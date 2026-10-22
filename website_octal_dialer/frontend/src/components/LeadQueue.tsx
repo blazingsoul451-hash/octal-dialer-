@@ -1100,7 +1100,19 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                     }`}
                   >
                     <div className="min-w-0 pr-2 flex-1">
-                      <p className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{lead.name}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{lead.name}</p>
+                        {lead.priority !== undefined && lead.priority >= 100 && (
+                          <span className="inline-flex items-center text-[9px] font-black px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 shrink-0">
+                            🔥 HOT
+                          </span>
+                        )}
+                      </div>
+                      {lead.lastReplySnippet && (
+                        <p className="text-[10px] text-amber-400/90 truncate italic font-sans max-w-[220px]">
+                          "{lead.lastReplySnippet}"
+                        </p>
+                      )}
                       <p className="text-[10px] font-mono mt-0.5 text-zinc-400">{lead.phone}</p>
                     </div>
 

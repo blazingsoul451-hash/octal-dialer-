@@ -14,6 +14,9 @@ export interface Lead {
   status: 'PENDING' | 'CALLING' | 'COMPLETED';
   outcome?: string;
   duration?: number;
+  priority?: number;
+  sourceChannel?: string;
+  lastReplySnippet?: string;
 }
 
 export interface CallLog {
