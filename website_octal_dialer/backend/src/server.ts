@@ -11765,9 +11765,9 @@ app.post(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermiss
     const cleanEmail = acc.email.toLowerCase().trim();
     const safeEmail = cleanEmail.replace(/[^a-z0-9]/g, '_');
     const accId = acc.id && acc.id.includes(safeTenant) ? acc.id : `eml_acc_${safeTenant}_${safeEmail}`;
-    const smtpHost = acc.smtpHost || 'smtp.office365.com';
+    const smtpHost = (acc.smtpHost || '').trim();
     const smtpPort = Number(acc.smtpPort) || 587;
-    const imapHost = acc.imapHost || smtpHost.replace(/^smtp\./i, 'imap.');
+    const imapHost = (acc.imapHost || '').trim() || (smtpHost ? smtpHost.replace(/^smtp\./i, 'imap.') : '');
     const imapPort = Number(acc.imapPort) || 993;
 
     await db.execute(
