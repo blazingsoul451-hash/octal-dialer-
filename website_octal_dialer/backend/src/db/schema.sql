@@ -1062,6 +1062,8 @@ CREATE TABLE IF NOT EXISTS "fb_task_queue" (
   "taskType" TEXT NOT NULL,
   "payload" TEXT NOT NULL,
   "status" TEXT NOT NULL DEFAULT 'pending',
+  "claimedByAgentId" TEXT,
+  "errorMessage" TEXT,
   "createdAt" TEXT NOT NULL,
   "updatedAt" TEXT NOT NULL
 );

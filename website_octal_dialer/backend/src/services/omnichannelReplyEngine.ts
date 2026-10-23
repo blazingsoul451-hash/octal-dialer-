@@ -196,14 +196,19 @@ export async function ingestInboundOmnichannelReply(params: {
     );
 
     // D. Upsert Omnichannel Thread in Unibox (Matches Root Thread ID, In-Reply-To Message, or Prospect Address)
+    const dialablePhone = extractedPhone || (emailLead?.phone ? normalizePhone(emailLead.phone) : null);
     const threadStatus =
-      intent === 'positive' || intent === 'phone_shared'
+      (intent === 'phone_shared' || (intent === 'positive' && dialablePhone))
         ? 'replied_hot'
+        : intent === 'positive'
+        ? 'positive'
+        : intent === 'question'
+        ? 'question'
         : intent === 'dnc'
         ? 'dnc'
         : intent === 'ooo'
         ? 'ooo'
-        : 'objection';
+        : 'open';
 
     let thread = await db.queryOne<{ id: string; leadId: string | null }>(
       `SELECT t.id, t."leadId"
@@ -298,7 +303,7 @@ export async function ingestInboundOmnichannelReply(params: {
     );
 
     // F. Cross-Channel Handoff: Auto-Promote Hot Leads or Extracted Phones to Android Dialer!
-    const dialablePhone = extractedPhone || (emailLead?.phone ? normalizePhone(emailLead.phone) : null);
+    // dialablePhone already calculated above
     let promotedLeadId = thread?.leadId || emailLead?.dialerLeadId || null;
 
     if ((intent === 'positive' || intent === 'phone_shared') && dialablePhone) {
@@ -643,17 +648,23 @@ export async function sendUniboxEmailReply(params: {
   }
 
   let account = await db.queryOne<any>(
-    `SELECT * FROM email_accounts WHERE id = $1 AND "tenantId" = $2`,
+    `SELECT * FROM email_accounts WHERE id = $1 AND "tenantId" = $2 AND status = 'active'`,
     [thread.accountId, params.tenantId]
   );
   if (!account) {
     account = await db.queryOne<any>(
-      `SELECT * FROM email_accounts WHERE "tenantId" = $1 AND ("smtpHost" IS NOT NULL OR "accessToken" IS NOT NULL) LIMIT 1`,
+      `SELECT * FROM email_accounts WHERE "tenantId" = $1 AND status = 'active' AND "authType" != 'sandbox' AND ("smtpHost" IS NOT NULL OR "accessToken" IS NOT NULL) ORDER BY "sentToday" ASC LIMIT 1`,
       [params.tenantId]
     );
   }
   if (!account) {
-    return { success: false, error: 'No active email account found to send reply' };
+    return { success: false, error: 'No active verified email account found to send reply' };
+  }
+
+  // Refresh OAuth token if expired before building transport
+  if (account.authType && account.authType.startsWith('oauth_')) {
+    const freshToken = await ensureFreshOAuthToken(account);
+    if (freshToken) account.accessToken = freshToken;
   }
 
   const latestInbound = await db.queryOne<any>(
@@ -718,7 +729,7 @@ export async function sendUniboxEmailReply(params: {
   });
 
   const mailOptions: any = {
-    from: `"${account.fromName || account.name || 'Sales Team'}" <${account.email}>`,
+    from: `"${account.senderName || account.fromName || account.name || 'Sales Team'}" <${account.email}>`,
     to: thread.prospectAddress,
     subject,
     text: params.body,

@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Inbox, Mail, MessageSquare, PhoneCall,
   Search, RefreshCw, Send, ShieldAlert,
-  Sparkles, Flame, PhoneForwarded, Copy, Check
+  Sparkles, Flame, PhoneForwarded, Copy, Check,
+  Star, Clock, Ban, Archive
 } from 'lucide-react';
 
 interface Thread {
@@ -17,7 +18,7 @@ interface Thread {
   prospectName: string;
   prospectCompany?: string;
   subject: string;
-  status: 'replied_hot' | 'positive' | 'question' | 'ooo' | 'dnc' | 'objection' | 'replied';
+  status: 'replied_hot' | 'positive' | 'question' | 'ooo' | 'dnc' | 'objection' | 'replied' | 'closed';
   sequenceLocked: number;
   unreadCount: number;
   lastMessageSnippet: string;
@@ -73,6 +74,33 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
   const [copiedPhone, setCopiedPhone] = useState(false);
   const [rawViewMsgId, setRawViewMsgId] = useState<string | null>(null);
   const [unreadTotal, setUnreadTotal] = useState(0);
+  const [updatingStatus, setUpdatingStatus] = useState(false);
+
+  const handleUpdateStatus = async (newStatus: string) => {
+    if (!selectedThread || updatingStatus) return;
+    setUpdatingStatus(true);
+    try {
+      const res = await fetch(`${serverUrl}/api/unibox/threads/${selectedThread.id}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (res.ok) {
+        setSelectedThread(prev => prev ? { ...prev, status: newStatus as any } : null);
+        setThreads(prev => prev.map(t => t.id === selectedThread.id ? { ...t, status: newStatus as any } : t));
+      } else {
+        const err = await res.json();
+        alert(`Failed to update status: ${err.error || 'Server error'}`);
+      }
+    } catch (err: any) {
+      alert(`Error updating thread status: ${err.message}`);
+    } finally {
+      setUpdatingStatus(false);
+    }
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -656,6 +684,52 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
               <div className="text-xs font-semibold uppercase tracking-wide text-slate-300">
                 {selectedThread.channel.replace('_', ' ')}
               </div>
+            </div>
+          </div>
+
+          {/* Lead Triage & Quick Actions */}
+          <div className={`p-3.5 rounded-xl border flex flex-col gap-2.5 ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-800/60 border-slate-700'}`}>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Triage Actions</span>
+              {updatingStatus && <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-500" />}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => handleUpdateStatus('positive')}
+                disabled={updatingStatus || selectedThread.status === 'positive'}
+                className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 transition cursor-pointer disabled:opacity-50"
+                title="Mark as Qualified / Interested"
+              >
+                <Star className="w-3.5 h-3.5 fill-emerald-400/30" />
+                <span>Qualified</span>
+              </button>
+              <button
+                onClick={() => handleUpdateStatus('replied')}
+                disabled={updatingStatus || selectedThread.status === 'replied'}
+                className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 transition cursor-pointer disabled:opacity-50"
+                title="Snooze for follow-up"
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>Snooze</span>
+              </button>
+              <button
+                onClick={() => handleUpdateStatus('dnc')}
+                disabled={updatingStatus || selectedThread.status === 'dnc'}
+                className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition cursor-pointer disabled:opacity-50"
+                title="Mark Do Not Contact"
+              >
+                <Ban className="w-3.5 h-3.5" />
+                <span>Mark DNC</span>
+              </button>
+              <button
+                onClick={() => handleUpdateStatus('closed')}
+                disabled={updatingStatus || selectedThread.status === 'closed'}
+                className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-bold bg-slate-500/10 hover:bg-slate-500/20 text-slate-400 border border-slate-500/30 transition cursor-pointer disabled:opacity-50"
+                title="Close and archive conversation"
+              >
+                <Archive className="w-3.5 h-3.5" />
+                <span>Close</span>
+              </button>
             </div>
           </div>
 

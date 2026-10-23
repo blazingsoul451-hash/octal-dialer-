@@ -34,7 +34,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _loadSavedServer() async {
     final saved = await AppConfig.init();
-    _serverController.text = saved.isNotEmpty ? saved : 'http://140.245.215.156';
+    _serverController.text = saved.isNotEmpty ? saved : 'https://zestify7.online';
   }
 
   @override
@@ -62,8 +62,8 @@ class _LoginScreenState extends State<LoginScreen> {
     final entered = _serverController.text.trim();
     final List<String> candidateUrls = [
       if (entered.isNotEmpty) entered,
-      'http://140.245.215.156',
-      'http://140.245.215.156.sslip.io',
+      'https://zestify7.online',
+      'https://dev.zestify7.online',
     ];
 
     dynamic loginData;

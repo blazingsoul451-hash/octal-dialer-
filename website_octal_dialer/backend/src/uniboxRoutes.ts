@@ -276,3 +276,76 @@ uniboxRouter.patch('/unibox/threads/:threadId/status', async (req: Request, res:
     res.status(500).json({ error: err.message });
   }
 });
+
+/**
+ * GET /api/fb-tasks/pending
+ * Polled by desktop_octal_agent to fetch outbound Facebook tasks (send_dm, post_group)
+ */
+uniboxRouter.get('/fb-tasks/pending', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const limit = Math.min(Number(req.query.limit) || 10, 50);
+
+    const tasks = await db.queryAll(
+      `SELECT * FROM fb_task_queue 
+       WHERE "tenantId" = $1 AND status = 'pending' 
+       ORDER BY "createdAt" ASC LIMIT $2`,
+      [tenantId, limit]
+    );
+
+    res.json({ success: true, tasks: tasks || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/fb-tasks/:taskId/claim
+ * Atomically marks task 'processing' by agentId to avoid duplicate worker execution
+ */
+uniboxRouter.post('/fb-tasks/:taskId/claim', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { taskId } = req.params;
+    const { agentId = 'desktop_worker' } = req.body;
+
+    const updated = await db.queryOne(
+      `UPDATE fb_task_queue 
+       SET status = 'processing', "claimedByAgentId" = $1, "updatedAt" = $2 
+       WHERE id = $3 AND "tenantId" = $4 AND status = 'pending'
+       RETURNING *`,
+      [agentId, new Date().toISOString(), taskId, tenantId]
+    );
+
+    if (!updated) {
+      return res.status(409).json({ error: 'Task already claimed or not found' });
+    }
+
+    res.json({ success: true, task: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/fb-tasks/:taskId/complete
+ * Marks task as completed (or failed) with optional output payload / error
+ */
+uniboxRouter.post('/fb-tasks/:taskId/complete', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { taskId } = req.params;
+    const { status = 'completed', error } = req.body;
+
+    await db.execute(
+      `UPDATE fb_task_queue 
+       SET status = $1, "errorMessage" = $2, "updatedAt" = $3 
+       WHERE id = $4 AND "tenantId" = $5`,
+      [status === 'failed' ? 'failed' : 'completed', error || null, new Date().toISOString(), taskId, tenantId]
+    );
+
+    res.json({ success: true, taskId, status });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});

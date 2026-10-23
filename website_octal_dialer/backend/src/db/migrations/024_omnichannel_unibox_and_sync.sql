@@ -100,7 +100,10 @@ CREATE TABLE IF NOT EXISTS fb_task_queue (
   payload TEXT NOT NULL,          -- JSON config
   status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'claimed' | 'completed' | 'failed' | 'cancelled_on_reply'
   "claimedByAgentId" TEXT,
+  "errorMessage" TEXT,
   "createdAt" TEXT NOT NULL,
   "updatedAt" TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fb_tasks_tenant_status ON fb_task_queue("tenantId", status, "createdAt" ASC);
+
+ALTER TABLE fb_task_queue ADD COLUMN IF NOT EXISTS "errorMessage" TEXT;

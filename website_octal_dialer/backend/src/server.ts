@@ -191,6 +191,7 @@ import {
 import { registerScraperRoutes } from './scraperRoutes';
 import { facebookPosterRouter } from './facebookPosterRoutes';
 import { uniboxRouter } from './uniboxRoutes';
+import { analyticsRouter } from './analyticsRoutes';
 import { setReplyEngineSocketIo, generateDeterministicMessageId, startImapIdleForAccount } from './services/omnichannelReplyEngine';
 import { config } from './config';
 import { getTenantScraperStatus, stopTenantScraperJob } from './googleMapsScraperService';
@@ -6998,6 +6999,7 @@ app.get(['/api/metrics/agents', '/metrics/agents'], requireAuth, async (req, res
 registerScraperRoutes(app, requireAuth, io);
 app.use('/api/facebook-poster', requireAuth, facebookPosterRouter);
 app.use('/api', requireAuth, uniboxRouter);
+app.use('/api', requireAuth, analyticsRouter);
 
 // â”€â”€â”€ LEAD GEN Z INTEGRATION BOUNDARY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/integrations/leadgen/import â€” Ingests leads from LEAD GEN Z

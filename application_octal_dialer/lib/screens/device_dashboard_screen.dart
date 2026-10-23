@@ -99,7 +99,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   }
 
   Future<void> _fetchRealCampaignAndLeads([String? targetCampId]) async {
-    final serverUrl = AppConfig.apiBaseUrl.isNotEmpty ? AppConfig.apiBaseUrl : 'http://140.245.215.156';
+    final serverUrl = AppConfig.apiBaseUrl.isNotEmpty ? AppConfig.apiBaseUrl : 'https://zestify7.online';
     final token = _bridge.authToken.isNotEmpty ? _bridge.authToken : (_bridge.sessionToken ?? '');
     if (token.isEmpty) return;
 
@@ -1319,7 +1319,7 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
               controller: controller,
               style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
               decoration: InputDecoration(
-                hintText: 'http://140.245.215.156',
+                hintText: 'https://zestify7.online',
                 hintStyle: const TextStyle(color: OctalColors.textMuted, fontSize: 12),
                 filled: true,
                 fillColor: OctalColors.bgDark,
@@ -1333,14 +1333,14 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
               runSpacing: 6,
               children: [
                 ActionChip(
-                  label: const Text('Production Cloud (140.245.215.156)', style: TextStyle(fontSize: 10, color: OctalColors.primaryGold)),
+                  label: const Text('Production Cloud (zestify7.online)', style: TextStyle(fontSize: 10, color: OctalColors.primaryGold)),
                   backgroundColor: OctalColors.bgDark,
-                  onPressed: () => controller.text = 'http://140.245.215.156',
+                  onPressed: () => controller.text = 'https://zestify7.online',
                 ),
                 ActionChip(
                   label: const Text('sslip.io Domain', style: TextStyle(fontSize: 10, color: OctalColors.textSecondary)),
                   backgroundColor: OctalColors.bgDark,
-                  onPressed: () => controller.text = 'http://140.245.215.156.sslip.io',
+                  onPressed: () => controller.text = 'https://dev.zestify7.online',
                 ),
               ],
             ),

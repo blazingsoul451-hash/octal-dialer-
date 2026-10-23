@@ -2321,20 +2321,6 @@ export default function App() {
             )
           )}
 
-          {['scraper', 'scraper-import', 'scraper-settings'].includes(activeTab) && (
-            <div className="space-y-4">
-              <ScraperFilesPanel
-                isLight={isLight}
-                serverUrl={SERVER_URL}
-                authToken={effectiveAuthToken || ''}
-                activeSubTab={activeTab}
-                onImportSuccess={() => {
-                  fetchCampaigns();
-                  showToast('Scraped leads imported to CRM successfully.', 'success');
-                }}
-              />
-            </div>
-          )}
 
           {['fb-scraper', 'fb-scraper-files'].includes(activeTab) && (
             <div className="space-y-4">
