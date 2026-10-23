@@ -237,7 +237,10 @@ CREATE TABLE IF NOT EXISTS "leads" (
   "contactId" TEXT,
   "requirement" TEXT,
   "country" TEXT,
-  "email" TEXT
+  "email" TEXT,
+  "priority" INTEGER NOT NULL DEFAULT 0,
+  "sourceChannel" TEXT DEFAULT 'csv',
+  "lastReplySnippet" TEXT
 );
 
 -- Table: call_attempts
@@ -271,7 +274,9 @@ CREATE TABLE IF NOT EXISTS "call_logs" (
   "outcome" TEXT NOT NULL DEFAULT '',
   "duration" DOUBLE PRECISION NOT NULL DEFAULT 0,
   "timestamp" TEXT NOT NULL,
-  "tenantId" TEXT
+  "tenantId" TEXT,
+  "userId" TEXT,
+  "userName" TEXT
 );
 
 -- Table: dispositions
@@ -381,6 +386,10 @@ CREATE TABLE IF NOT EXISTS "email_leads" (
   "tenantId" TEXT,
   "unsubscribeToken" TEXT,
   "unsubscribedAt" TEXT,
+  "phone" TEXT,
+  "dialerLeadId" TEXT,
+  "repliedAt" TEXT,
+  "lastIntent" TEXT,
   CONSTRAINT "uq_email_leads_tenant_email" UNIQUE ("tenantId", "email")
 );
 
@@ -400,7 +409,12 @@ CREATE TABLE IF NOT EXISTS "email_accounts" (
   "accessToken" TEXT,
   "dailyLimit" INTEGER NOT NULL DEFAULT 50,
   "sentToday" INTEGER NOT NULL DEFAULT 0,
-  "lastResetDate" TEXT
+  "lastResetDate" TEXT,
+  "imapHost" TEXT,
+  "imapPort" INTEGER DEFAULT 993,
+  "lastImapUid" BIGINT DEFAULT 0,
+  "imapStatus" TEXT DEFAULT 'disconnected',
+  "lastSyncedAt" TEXT
 );
 
 -- Table: email_templates
@@ -450,7 +464,8 @@ CREATE TABLE IF NOT EXISTS "email_dispatch_logs" (
   "sentAt" TEXT NOT NULL,
   "openedAt" TEXT,
   "clickedAt" TEXT,
-  "trackingToken" TEXT UNIQUE
+  "trackingToken" TEXT UNIQUE,
+  "messageId" TEXT
 );
 
 -- Table: email_unsubscribes
@@ -978,3 +993,75 @@ CREATE INDEX IF NOT EXISTS "idx_company_messages_tenant" ON "company_messages"("
 CREATE INDEX IF NOT EXISTS "idx_company_messages_tenant_time" ON "company_messages"("tenantId", "createdAt" ASC);
 CREATE INDEX IF NOT EXISTS "idx_company_messages_recipient" ON "company_messages"("recipientEmail");
 
+
+
+-- Table: outreach_threads
+CREATE TABLE IF NOT EXISTS "outreach_threads" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "leadId" TEXT,
+  "emailLeadId" TEXT,
+  "campaignId" TEXT,
+  "channel" TEXT NOT NULL,
+  "accountId" TEXT,
+  "externalThreadId" TEXT,
+  "prospectAddress" TEXT NOT NULL,
+  "prospectName" TEXT NOT NULL DEFAULT 'Prospect',
+  "prospectCompany" TEXT DEFAULT '',
+  "subject" TEXT,
+  "status" TEXT NOT NULL DEFAULT 'open',
+  "sequenceLocked" INTEGER NOT NULL DEFAULT 0,
+  "unreadCount" INTEGER NOT NULL DEFAULT 0,
+  "lastMessageSnippet" TEXT,
+  "lastMessageAt" TEXT NOT NULL,
+  "createdAt" TEXT NOT NULL,
+  "updatedAt" TEXT NOT NULL,
+  UNIQUE("tenantId", "channel", "externalThreadId")
+);
+
+-- Table: outreach_messages
+CREATE TABLE IF NOT EXISTS "outreach_messages" (
+  "id" TEXT PRIMARY KEY,
+  "threadId" TEXT NOT NULL,
+  "tenantId" TEXT NOT NULL,
+  "direction" TEXT NOT NULL,
+  "channel" TEXT NOT NULL,
+  "senderAddress" TEXT NOT NULL,
+  "recipientAddress" TEXT NOT NULL,
+  "externalMessageId" TEXT NOT NULL,
+  "inReplyTo" TEXT,
+  "referencesHeader" TEXT,
+  "subject" TEXT,
+  "bodyRaw" TEXT,
+  "bodyClean" TEXT,
+  "intent" TEXT,
+  "extractedPhone" TEXT,
+  "createdAt" TEXT NOT NULL,
+  UNIQUE("tenantId", "channel", "externalMessageId")
+);
+
+-- Table: fb_accounts
+CREATE TABLE IF NOT EXISTS "fb_accounts" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "profileId" TEXT NOT NULL,
+  "name" TEXT NOT NULL,
+  "status" TEXT NOT NULL DEFAULT 'valid',
+  "dailyLimit" INTEGER NOT NULL DEFAULT 25,
+  "sentToday" INTEGER NOT NULL DEFAULT 0,
+  "lastSyncCursor" TEXT,
+  "updatedAt" TEXT NOT NULL,
+  UNIQUE("tenantId", "profileId")
+);
+
+-- Table: fb_task_queue
+CREATE TABLE IF NOT EXISTS "fb_task_queue" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "profileId" TEXT NOT NULL,
+  "taskType" TEXT NOT NULL,
+  "payload" TEXT NOT NULL,
+  "status" TEXT NOT NULL DEFAULT 'pending',
+  "createdAt" TEXT NOT NULL,
+  "updatedAt" TEXT NOT NULL
+);

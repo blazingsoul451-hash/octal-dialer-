@@ -109,6 +109,7 @@ export class DbAdapter {
   }
 
   public async query<T extends QueryResultRow = any>(sql: string, params: any[] = []): Promise<{ rows: T[]; rowCount: number }> {
+    if (!this.initialized) await this.init();
     const { sql: pgSql, params: pgParams } = transformSql(sql, params);
     const result = await pgQuery<T>(pgSql, pgParams);
     return {
