@@ -17,6 +17,7 @@ export interface AppConfig {
   port: number;
   jwtSecret: string;
   webhookSecret: string;
+  secretsKey: string;
   sessionTtlHours: number;
   corsAllowedOrigins: string[];
   dbPath: string;
@@ -67,6 +68,18 @@ function loadConfig(): AppConfig {
     webhookSecret = 'octal_webhook_default_secret_change_me';
   } else if (isProduction && webhookSecret === 'octal_webhook_default_secret_change_me') {
     throw new Error('FATAL: Default BILLING_WEBHOOK_SECRET cannot be used in production.');
+  }
+
+  // Credential-vault key (AES-256-GCM at rest for mailbox + Facebook secrets)
+  let secretsKey = process.env.SECRETS_KEY || '';
+  if (!secretsKey) {
+    if (isProduction) {
+      throw new Error('FATAL: SECRETS_KEY environment variable is required in production.');
+    }
+    // Dev/test: derive deterministically from the JWT secret so local data stays readable.
+    secretsKey = `octal_dev_vault::${jwtSecret}`;
+  } else if (isProduction && secretsKey.length < 32) {
+    throw new Error('FATAL: SECRETS_KEY must be at least 32 characters in production.');
   }
 
   // CORS Allowed Origins
@@ -120,6 +133,7 @@ function loadConfig(): AppConfig {
     port,
     jwtSecret,
     webhookSecret,
+    secretsKey,
     sessionTtlHours,
     corsAllowedOrigins,
     dbPath,

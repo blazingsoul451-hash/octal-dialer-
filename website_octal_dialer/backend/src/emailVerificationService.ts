@@ -7,7 +7,7 @@
  */
 
 import crypto from 'crypto';
-import nodemailer from 'nodemailer';
+import nodemailer, { Transporter } from 'nodemailer';
 import { config } from './config';
 
 // ─── Curated List of Known Disposable / Temporary Email Domains ──────────────
@@ -162,9 +162,9 @@ export function verifyVerificationCode(candidateCode: string, storedHash: string
 
 // ─── Nodemailer SMTP Transporter Setup ────────────────────────────────────────
 
-let transporter: nodemailer.Transporter | null = null;
+let transporter: Transporter | null = null;
 
-function getTransporter(): nodemailer.Transporter {
+function getTransporter(): Transporter {
   if (!transporter) {
     if (config.smtpHost && config.smtpUser && config.smtpPassword) {
       // Production SMTP Transporter
