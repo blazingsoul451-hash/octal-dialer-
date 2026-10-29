@@ -3,6 +3,8 @@ import { spawn } from 'child_process';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
@@ -190,7 +192,14 @@ import {
 
 import { registerScraperRoutes } from './scraperRoutes';
 import { facebookPosterRouter } from './facebookPosterRoutes';
-import { uniboxRouter } from './uniboxRoutes';
+import { uniboxRouter, reapStaleFbTasks } from './uniboxRoutes';
+import { csvField } from './utils/spreadsheetSafety';
+import { encryptSecret, decryptEmailAccount, decryptEmailAccounts } from './services/secretVault';
+import {
+  makeSafeRedirectTarget,
+  signTrackedUrl as signTrackedUrlWithSecret,
+  isTrackedUrlSignatureValid as isTrackedUrlSignatureValidWithSecret
+} from './services/redirectGuard';
 import { analyticsRouter } from './analyticsRoutes';
 import { setReplyEngineSocketIo, generateDeterministicMessageId, startImapIdleForAccount } from './services/omnichannelReplyEngine';
 import { config } from './config';
@@ -312,6 +321,20 @@ export const isOriginAllowed = (origin: string | undefined): boolean => {
   return false;
 };
 
+/** Redirect guard bound to this deployment's CORS allowlist. */
+const safeRedirectTarget = makeSafeRedirectTarget(isOriginAllowed);
+
+/** Sign / verify email click-tracking destinations with the app secret. */
+const signTrackedUrl = (trackingToken: string, targetUrl: string): string =>
+  signTrackedUrlWithSecret(config.jwtSecret, trackingToken, targetUrl);
+
+const isTrackedUrlSignatureValid = (
+  trackingToken: string,
+  targetUrl: string,
+  signature: string | undefined | null
+): boolean => isTrackedUrlSignatureValidWithSecret(config.jwtSecret, trackingToken, targetUrl, signature);
+
+
 app.use(cors({
   origin: (origin, callback) => {
     if (isOriginAllowed(origin)) {
@@ -325,6 +348,103 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 }));
+
+// ─── Proxy awareness ─────────────────────────────────────────────────────────
+// MUST be set before the rate limiters: they key on req.ip, and behind nginx
+// (which proxy_passes to 127.0.0.1) every request would otherwise look like it
+// came from the proxy. That would collapse all clients into one rate-limit
+// bucket, so twenty failed logins platform-wide would lock out every customer.
+app.set('trust proxy', config.trustProxy);
+
+if (isProduction && config.trustProxy === false) {
+  console.warn(
+    '[Startup] TRUST_PROXY is not set but NODE_ENV=production. If this server sits behind ' +
+    'nginx or a load balancer, set TRUST_PROXY=1 so rate limiting and client IP logging ' +
+    'see the real caller instead of the proxy.'
+  );
+}
+
+// ─── Security headers ────────────────────────────────────────────────────────
+// The SPA is served from this origin and loads no third-party scripts, so a
+// strict CSP is safe. `crossOriginResourcePolicy` is relaxed because the APK
+// download and tracking pixel are fetched cross-origin by design.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      // Vite injects inline styles; scripts stay self-only.
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      connectSrc: ["'self'", 'https:', 'wss:'],
+      frameAncestors: ["'none'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"]
+    }
+  },
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  crossOriginEmbedderPolicy: false,
+  // Do not leak session tokens that ride in OAuth connect URLs via Referer.
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  hsts: isProduction ? { maxAge: 31536000, includeSubDomains: true, preload: true } : false
+}));
+
+// ─── Brute-force protection ──────────────────────────────────────────────────
+// Credential endpoints were previously unthrottled, so password spraying was
+// limited only by network speed. Counting is per-IP; successful logins do not
+// consume quota so a busy office is not locked out by its own traffic.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: 'Too many sign-in attempts. Please wait a few minutes and try again.' }
+});
+
+// Account creation / outbound-mail triggers are cheap for an attacker and
+// expensive for us, so they get their own tighter bucket.
+const signupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many attempts from this address. Please try again later.' }
+});
+
+// Broad backstop for the rest of the API.
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req: express.Request) =>
+    req.path.startsWith('/health') ||
+    req.path.startsWith('/api/health') ||
+    req.path.startsWith('/ready') ||
+    req.path.startsWith('/api/ready'),
+  message: { error: 'Rate limit exceeded. Slow down and retry shortly.' }
+});
+
+app.use([
+  '/auth/login', '/api/auth/login',
+  '/admin/login', '/api/admin/login',
+  '/api/mobile/login',
+  '/auth/google/verify', '/api/auth/google/verify',
+  '/auth/google/exchange', '/api/auth/google/exchange'
+], authLimiter);
+
+app.use([
+  '/auth/register', '/api/auth/register',
+  '/auth/signup-tenant', '/api/auth/signup-tenant',
+  '/auth/contact-admin', '/api/auth/contact-admin',
+  '/auth/verify', '/api/auth/verify'
+], signupLimiter);
+
+app.use('/api', apiLimiter);
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -9100,17 +9220,11 @@ app.post('/api/admin/system/unlock-all-leads', requireAuth, requireAdmin, async 
 // REST: App Version & OTA Update Check with SHA-256 integrity verification
 app.get('/api/app-version', async (req, res) => {
   const localIP = getLocalIP();
-  const apkPath = path.join(
-    __dirname,
-    '../../mobile/build/app/outputs/flutter-apk/app-debug.apk'
-  );
-
-  let sha256Hash = '';
-  if (fs.existsSync(apkPath)) {
+  // Hash the same binary /download/apk serves, not a hard-coded build path —
+  // the mobile client refuses to install when the two disagree.
+  const sha256Hash = computeServedApkHash();
+  if (sha256Hash) {
     try {
-      const fileBuffer = fs.readFileSync(apkPath);
-      sha256Hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-
       // Record version & hash in ota_versions table
       await db.execute(`
         INSERT INTO ota_versions (id, version, "buildNumber", "apkHash", signature, "releaseNotes", "isActive")
@@ -9120,7 +9234,7 @@ app.get('/api/app-version', async (req, res) => {
           "uploadedAt" = now()
       `, ['ota_v1.4.0', sha256Hash]);
     } catch (err) {
-      console.error('[OTA] Error computing hash:', err);
+      console.error('[OTA] Error recording version hash:', err);
     }
   }
 
@@ -9144,8 +9258,14 @@ app.get('/join', (req, res) => {
   res.send(html);
 });
 
-// REST: Serve Mobile APK file download â€” dynamically resolves freshest build
-const serveApkHandler = (_req: express.Request, res: express.Response): void => {
+/**
+ * Resolve the freshest APK that /download/apk will actually hand out.
+ *
+ * The OTA checksum MUST be computed from this same file: publishing a hash for
+ * a different build would make every verified install fail (or, worse, pass a
+ * stale binary).
+ */
+function resolveServedApk(): { path: string; size: number; mtime: number } | null {
   const candidatePaths = [
     '/var/www/octal-frontend/OctalDialer.apk',
     path.resolve(__dirname, '../data/OctalDialer.apk'),
@@ -9154,23 +9274,43 @@ const serveApkHandler = (_req: express.Request, res: express.Response): void => 
     path.resolve(__dirname, '../../frontend/public/OctalDialer.apk')
   ];
 
-  const existingCandidates = candidatePaths
-    .filter(p => {
-      try { return fs.existsSync(p); } catch { return false; }
-    })
-    .map(p => {
+  return candidatePaths
+    .map((p) => {
       try {
         const stat = fs.statSync(p);
         return { path: p, mtime: stat.mtimeMs, size: stat.size };
-      } catch (_) {
+      } catch {
         return null;
       }
     })
     .filter((item): item is { path: string; mtime: number; size: number } => item !== null && item.size > 1000000)
-    .sort((a, b) => b.mtime - a.mtime);
+    .sort((a, b) => b.mtime - a.mtime)[0] || null;
+}
 
-  if (existingCandidates.length > 0) {
-    const freshest = existingCandidates[0];
+let apkHashCache: { path: string; mtime: number; hash: string } | null = null;
+
+/** SHA-256 of the served APK, cached until the file changes. */
+function computeServedApkHash(): string {
+  const apk = resolveServedApk();
+  if (!apk) return '';
+  if (apkHashCache && apkHashCache.path === apk.path && apkHashCache.mtime === apk.mtime) {
+    return apkHashCache.hash;
+  }
+  try {
+    const hash = crypto.createHash('sha256').update(fs.readFileSync(apk.path)).digest('hex');
+    apkHashCache = { path: apk.path, mtime: apk.mtime, hash };
+    return hash;
+  } catch (err) {
+    console.error('[OTA] Error computing APK hash:', err);
+    return '';
+  }
+}
+
+// REST: Serve Mobile APK file download â€” dynamically resolves freshest build
+const serveApkHandler = (_req: express.Request, res: express.Response): void => {
+  const freshest = resolveServedApk();
+
+  if (freshest) {
 
     res.setHeader('Content-Type', 'application/vnd.android.package-archive');
     res.setHeader('Content-Disposition', 'attachment; filename="OctalDialer.apk"');
@@ -9501,12 +9641,12 @@ app.get(['/api/logs/export', '/logs/export'], requireAuth, requireCompanyOwnerOr
 
     const header = ['Time', 'Lead Name', 'Phone', 'Campaign', 'Outcome', 'Duration (s)'];
     const rows = logs.map(l => [
-      new Date(l.timestamp).toLocaleString(),
-      `"${(l.leadName || '').replace(/"/g, '""')}"`,
-      `"${l.leadPhone}"`,
-      `"${(l.campaignName || '').replace(/"/g, '""')}"`,
-      l.outcome,
-      l.duration
+      csvField(new Date(l.timestamp).toLocaleString()),
+      csvField(l.leadName),
+      csvField(l.leadPhone),
+      csvField(l.campaignName),
+      csvField(l.outcome),
+      csvField(l.duration)
     ]);
 
     const csv = [header.join(','), ...rows.map(r => r.join(','))].join('\n');
@@ -9576,14 +9716,14 @@ app.get(['/api/leads/export', '/leads/export'], requireAuth, requireCompanyOwner
 
     const header = ['ID', 'Name', 'Phone', 'Status', 'Campaign', 'Outcome', 'Duration (s)', 'Created At'];
     const rows = leads.map(l => [
-      `"${(l.id || '').replace(/"/g, '""')}"`,
-      `"${(l.name || '').replace(/"/g, '""')}"`,
-      `"${(l.phone || '').replace(/"/g, '""')}"`,
-      l.status || '',
-      `"${(l.campaignName || '').replace(/"/g, '""')}"`,
-      l.outcome || '',
-      l.duration || 0,
-      l.createdAt || ''
+      csvField(l.id),
+      csvField(l.name),
+      csvField(l.phone),
+      csvField(l.status),
+      csvField(l.campaignName),
+      csvField(l.outcome),
+      csvField(l.duration || 0),
+      csvField(l.createdAt)
     ]);
 
     const csv = [header.join(','), ...rows.map(r => r.join(','))].join('\n');
@@ -10352,6 +10492,8 @@ io.on('connection', (socket) => {
       socket.emit('app:update_available', {
         latestVersion: SERVER_APP_VERSION,
         apkUrl: `${getPublicBaseUrl({ handshake: socket.handshake })}/download/apk`,
+        // The handset verifies this before handing the file to the installer.
+        sha256Hash: computeServedApkHash(),
         forceUpdate: false,
         releaseNotes: 'v1.2.5 Performance Update: Zero-delay keypad dialing, precomputed instant T9 search, fast-path call dispatch gate, and 60fps contacts scrolling virtualization.'
       });
@@ -11439,7 +11581,8 @@ function rewriteLinksForTracking(html: string, trackingToken: string, baseUrl: s
     if (originalUrl.includes('/api/email/unsubscribe') || originalUrl.includes('/email/unsubscribe')) {
       return match;
     }
-    const trackingUrl = `${baseUrl}/api/email/track/click/${trackingToken}?url=${encodeURIComponent(originalUrl)}`;
+    const sig = signTrackedUrl(trackingToken, originalUrl);
+    const trackingUrl = `${baseUrl}/api/email/track/click/${trackingToken}?url=${encodeURIComponent(originalUrl)}&sig=${sig}`;
     return `<a${prefix}href="${trackingUrl}"${suffix}>`;
   });
 }
@@ -11549,6 +11692,7 @@ app.get(['/api/email/track/open/:token', '/email/track/open/:token'], async (req
 app.get(['/api/email/track/click/:token', '/email/track/click/:token'], async (req: express.Request, res: express.Response): Promise<void> => {
   const { token } = req.params;
   const targetUrl = req.query.url as string;
+  const signature = (req.query.sig as string) || '';
   try {
     const row = await db.queryOne<{
       id: string;
@@ -11574,10 +11718,20 @@ app.get(['/api/email/track/click/:token', '/email/track/click/:token'], async (r
     }
   } catch (_) {}
 
-  if (targetUrl && /^https?:\/\//i.test(targetUrl)) {
+  // Only redirect to a destination we signed. An unsigned or tampered `url`
+  // would let anyone turn this endpoint into an open redirect on our domain.
+  const fallbackTarget = resolvePublicServerOrigin(req);
+  if (
+    targetUrl &&
+    /^https?:\/\//i.test(targetUrl) &&
+    isTrackedUrlSignatureValid(token, targetUrl, signature)
+  ) {
     res.redirect(targetUrl);
   } else {
-    res.redirect('https://zestify7.online');
+    if (targetUrl) {
+      console.warn(`[Email Tracking] Rejected unsigned click redirect to: ${targetUrl}`);
+    }
+    res.redirect(fallbackTarget);
   }
 });
 
@@ -11767,6 +11921,9 @@ app.post(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermiss
     const accId = acc.id && acc.id.includes(safeTenant) ? acc.id : `eml_acc_${safeTenant}_${safeEmail}`;
     const smtpHost = (acc.smtpHost || '').trim();
     const smtpPort = Number(acc.smtpPort) || 587;
+    // Seal the mailbox password at rest. The '***keep***' sentinel must stay
+    // plaintext so the ON CONFLICT clause can still recognise it.
+    const storedPassword = acc.password === '***keep***' ? acc.password : encryptSecret(acc.password);
     const imapHost = (acc.imapHost || '').trim() || (smtpHost ? smtpHost.replace(/^smtp\./i, 'imap.') : '');
     const imapPort = Number(acc.imapPort) || 993;
 
@@ -11789,7 +11946,7 @@ app.post(['/email/accounts', '/api/email/accounts'], requireAuth, requirePermiss
       [
         accId,
         cleanEmail,
-        acc.password,
+        storedPassword,
         acc.senderName || null,
         smtpHost,
         smtpPort,
@@ -11834,7 +11991,9 @@ app.delete(['/email/accounts/:id', '/api/email/accounts/:id'], requireAuth, requ
 // ─── POST /email/accounts/:accountId/verify ───
 app.post(['/email/accounts/:accountId/verify', '/api/email/accounts/:accountId/verify'], requireAuth, requirePermission(['autoEmailer', 'autoEmailer:manage']), async (req: express.Request, res: express.Response): Promise<void> => {
   const tenantId = (req as any).user?.tenantId;
-  const account = await db.queryOne<any>('SELECT * FROM email_accounts WHERE id = $1 AND "tenantId" = $2', [req.params.accountId, tenantId]);
+  const account = decryptEmailAccount(
+    await db.queryOne<any>('SELECT * FROM email_accounts WHERE id = $1 AND "tenantId" = $2', [req.params.accountId, tenantId])
+  );
   if (!account) {
     res.status(404).json({ error: 'Account not found' });
     return;
@@ -12000,7 +12159,11 @@ app.get(
     const refererOrigin = req.headers.referer
       ? new URL(req.headers.referer).origin + new URL(req.headers.referer).pathname
       : resolvePublicServerOrigin(req);
-    const returnUrl = (req.query.returnUrl as string) || refererOrigin;
+    // Never redirect to an arbitrary caller-supplied origin.
+    const returnUrl = safeRedirectTarget(
+      (req.query.returnUrl as string) || refererOrigin,
+      resolvePublicServerOrigin(req)
+    );
 
     let tenantId = 'tenant_default';
     let userId = 'system';
@@ -12101,7 +12264,7 @@ app.get(
 
     const state = verifySignedOAuthState(stateStr);
     const fallbackReturn = resolvePublicServerOrigin(req);
-    const returnUrl = state?.returnUrl || fallbackReturn;
+    const returnUrl = safeRedirectTarget(state?.returnUrl || fallbackReturn, fallbackReturn);
 
     if (oauthError) {
       res.redirect(`${returnUrl}?oauth_error=${encodeURIComponent(String(oauthError))}`);
@@ -12273,8 +12436,8 @@ app.get(
           imapHost,
           imapPort,
           authType,
-          accessToken,
-          refreshToken,
+          encryptSecret(accessToken),
+          encryptSecret(refreshToken),
           nowIso,
         ]
       );
@@ -12361,7 +12524,7 @@ app.post(
           accountsQuery += ` AND id IN (${placeholders})`;
           accountsParams.push(...accountIds.map(String));
         }
-        let accounts = await db.queryAll<any>(accountsQuery, accountsParams);
+        let accounts = decryptEmailAccounts(await db.queryAll<any>(accountsQuery, accountsParams));
 
         if (!accounts.length) {
           accounts = [
@@ -12429,12 +12592,32 @@ app.post(
         );
         const unsubscribedSet = new Set((unsubscribes || []).map((u) => u.email.toLowerCase()));
 
-        const leads = await db.queryAll<any>(
-          `SELECT * FROM email_leads WHERE "tenantId" = $1 AND status IN ('pending', 'sent') ORDER BY "createdAt" ASC`,
-          [tenantId]
-        );
         const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
         const nowMs = Date.now();
+        const followUpCutoff = new Date(nowMs - SEVEN_DAYS).toISOString();
+
+        // Eligibility is evaluated in SQL so a large tenant does not pull its
+        // entire lead table into memory. The JS filter below stays as a
+        // belt-and-braces guard and keeps the sandbox path working.
+        const candidateCap = Math.min(Math.max(Number(limit) || 300, 1) * 2, 5000);
+        const leads = await db.queryAll<any>(
+          `SELECT l.* FROM email_leads l
+            WHERE l."tenantId" = $1
+              AND l.status IN ('pending', 'sent')
+              AND l."repliedAt" IS NULL
+              AND l."unsubscribedAt" IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM email_unsubscribes u
+                 WHERE u."tenantId" = l."tenantId" AND LOWER(u.email) = LOWER(l.email)
+              )
+              AND (
+                l.status = 'pending'
+                OR (l.status = 'sent' AND l.stage <= 3 AND l."lastSentAt" IS NOT NULL AND l."lastSentAt" <= $2)
+              )
+            ORDER BY l."createdAt" ASC
+            LIMIT $3`,
+          [tenantId, followUpCutoff, candidateCap]
+        );
 
         let eligible = leads.filter((l: any) => {
           if (unsubscribedSet.has(l.email.toLowerCase())) return false;
@@ -12666,12 +12849,22 @@ app.post(
               });
             }
 
-            chosenAccount.sentToday = (chosenAccount.sentToday || 0) + 1;
             if (chosenAccount.id !== 'sandbox_default') {
-              await db.execute(
-                'UPDATE email_accounts SET "sentToday" = $1, "lastResetDate" = $2 WHERE id = $3',
-                [chosenAccount.sentToday, todayStr, chosenAccount.id]
+              // Increment server-side so two concurrent runs cannot overwrite each
+              // other's tally and blow past the mailbox's daily ceiling. The value
+              // we read back is authoritative for the rest of this loop.
+              const bumped = await db.queryOne<{ sentToday: number }>(
+                `UPDATE email_accounts
+                    SET "sentToday" = CASE WHEN "lastResetDate" = $1 THEN "sentToday" + 1 ELSE 1 END,
+                        "lastResetDate" = $1
+                  WHERE id = $2
+                  RETURNING "sentToday"`,
+                [todayStr, chosenAccount.id]
               );
+              chosenAccount.sentToday = Number(bumped?.sentToday ?? (chosenAccount.sentToday || 0) + 1);
+              chosenAccount.lastResetDate = todayStr;
+            } else {
+              chosenAccount.sentToday = (chosenAccount.sentToday || 0) + 1;
             }
 
             const isFinalStage = currentStage >= 3;
@@ -13001,7 +13194,7 @@ async function startServer() {
     }
     // Auto-start IMAP IDLE reply detection for all active tenant mailboxes on server boot
     try {
-      const activeMailboxes = await db.queryAll<any>('SELECT * FROM email_accounts WHERE status = \'active\' AND "authType" != \'sandbox\'');
+      const activeMailboxes = decryptEmailAccounts(await db.queryAll<any>('SELECT * FROM email_accounts WHERE status = \'active\' AND "authType" != \'sandbox\''));
       for (const acc of activeMailboxes) {
         startImapIdleForAccount(acc).catch((err: any) =>
           console.warn(`[Startup IMAP IDLE] Could not attach to ${acc.email}:`, err?.message || err)
@@ -13011,6 +13204,14 @@ async function startServer() {
     } catch (imapBootErr: any) {
       console.warn('[Startup IMAP IDLE Boot Warning]:', imapBootErr?.message || imapBootErr);
     }
+
+    // Recover Facebook tasks abandoned by crashed desktop agents. The pending
+    // poll sweeps too, but this guarantees recovery even with no agent online.
+    reapStaleFbTasks().catch(() => {});
+    const fbTaskReaper = setInterval(() => {
+      reapStaleFbTasks().catch(() => {});
+    }, 5 * 60 * 1000);
+    fbTaskReaper.unref?.();
 
     // 3. Initialize background services
     tunnelManager.attachSocketIO(io);

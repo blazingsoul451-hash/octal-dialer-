@@ -3,6 +3,10 @@ import ExcelJS from 'exceljs';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+// Shared with the API server's CSV exports; defined in its own side-effect-free
+// module so importing it never registers this worker's IPC listener.
+import { sanitizeSpreadsheetValue } from './utils/spreadsheetSafety';
+export { sanitizeSpreadsheetValue };
 import {
   ScraperJobOptions,
   ScrapedLead,
@@ -37,20 +41,6 @@ function log(msg: string) {
     executionId: currentExecutionId,
     message: formatted
   });
-}
-
-export function sanitizeSpreadsheetValue(val: any): any {
-  if (typeof val !== 'string') return val;
-  const trimmed = val.trim();
-  // Protect against CSV/Excel formula injection (=, +, -, @, \t, \r)
-  if (/^[=+\-@\t\r]/.test(val) || /^[=+\-@\t\r]/.test(trimmed)) {
-    // Preserve valid E.164 phone numbers like +1234567890
-    if (/^\+\d[\d\s\-()]{6,20}$/.test(trimmed)) {
-      return trimmed;
-    }
-    return `'${val}`;
-  }
-  return val;
 }
 
 export async function writeLeadsToExcel(leadsOrSource: ScrapedLead[] | string, targetPath: string): Promise<void> {

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Square, Database, Download, RefreshCw, Facebook, MapPin, Link } from 'lucide-react';
+import { safeExternalHref } from '../utils/safeUrl';
 
 interface FacebookScraperProps {
   isLight?: boolean;
@@ -439,7 +440,7 @@ export const FacebookScraper: React.FC<FacebookScraperProps> = ({
                       </td>
                       <td className="py-2.5 px-3.5 text-center">
                         <a
-                          href={lead.url}
+                          href={safeExternalHref(lead.url)}
                           target="_blank"
                           rel="noreferrer"
                           className={`inline-flex p-1.5 rounded-lg transition-all cursor-pointer ${

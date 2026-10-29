@@ -368,7 +368,9 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
 
       const candidateUrls = isLocal
         ? Array.from(new Set(['', serverUrl, 'http://127.0.0.1:5000', `http://${window.location.hostname}:5000`].filter(Boolean)))
-        : Array.from(new Set(['', serverUrl, 'http://140.245.215.156', `http://${window.location.hostname}`].filter(Boolean)));
+        // Never fall back to cleartext in a deployed build: credentials would be
+        // sent in the clear (and blocked as mixed content on an HTTPS page).
+        : Array.from(new Set(['', serverUrl, window.location.origin].filter(Boolean)));
 
       let res: Response | null = null;
       for (const baseUrl of candidateUrls) {
