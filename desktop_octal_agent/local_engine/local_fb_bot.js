@@ -22,11 +22,16 @@ const path = require('path');
 const args = process.argv.slice(2);
 let configFile = '';
 let dataDir = path.resolve(__dirname, 'data');
+let mode = 'campaign'; // 'campaign' = post then exit, 'listen' = stay resident
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--config') configFile = args[++i];
   else if (args[i] === '--dataDir') dataDir = args[++i];
+  else if (args[i] === '--mode') mode = (args[++i] || 'campaign').toLowerCase();
+  else if (args[i] === '--listen') mode = 'listen';
 }
+
+const isListenMode = mode === 'listen';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
@@ -252,9 +257,55 @@ function attachFacebookReplyWireSniffer(page, profileName) {
   // Keep Messenger tab open in background to continue sniffing incoming DMs
   console.log('📡 Maintaining background Messenger listener session for incoming prospect DMs...');
   await page.goto('https://www.facebook.com/messages/t/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-  await sleep(60000);
 
+  if (!isListenMode) {
+    // One-shot campaign run: give late websocket frames a moment, then exit.
+    await sleep(60000);
+    console.log(`🏁 Campaign cycle finished. Total published: ${postedCount} posts.`);
+    await context.close();
+    process.exit(0);
+  }
+
+  // ── Daemon mode ──────────────────────────────────────────────────────────
+  // Stay resident so the Chromium instance keeps intercepting Messenger
+  // websockets for as long as the desktop agent is running. Inbound DMs are
+  // pushed to /api/webhooks/facebook/incoming-reply by the bridge events that
+  // the sniffer already emits.
   console.log(`🏁 Campaign cycle finished. Total published: ${postedCount} posts.`);
-  await context.close();
-  process.exit(0);
+  console.log('🟢 DAEMON MODE: Messenger listener is now resident. Send SIGTERM/SIGINT to stop.');
+
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`🛑 Received ${signal}. Closing Messenger listener...`);
+    try {
+      await context.close();
+    } catch (_) { /* already gone */ }
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => { shutdown('SIGTERM'); });
+  process.on('SIGINT', () => { shutdown('SIGINT'); });
+
+  // Heartbeat + liveness check: if the browser context dies (crash, manual
+  // close, session expiry) exit non-zero so the agent can relaunch us.
+  while (!shuttingDown) {
+    await sleep(30000);
+    if (shuttingDown) break;
+
+    if (!context.pages().length) {
+      console.error('⚠️ Messenger browser context closed unexpectedly. Exiting for relaunch.');
+      process.exit(1);
+    }
+
+    try {
+      // Touch the page so Facebook does not idle the socket out.
+      await page.evaluate(() => void 0);
+      console.log(`💓 [${new Date().toISOString()}] Listener alive — sniffing Messenger traffic.`);
+    } catch (err) {
+      console.error(`⚠️ Listener page unresponsive: ${err.message}. Exiting for relaunch.`);
+      process.exit(1);
+    }
+  }
 })();

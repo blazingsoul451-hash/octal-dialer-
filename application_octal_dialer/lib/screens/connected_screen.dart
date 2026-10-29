@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:crypto/crypto.dart';
 import '../services/phone_bridge_service.dart';
 import '../config/app_config.dart';
 import 'calling_screen.dart';
@@ -234,8 +235,9 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       final String latestVersion = data['latestVersion'] ?? '1.0.1';
       final String apkUrl = data['apkUrl'] ?? '';
       final String releaseNotes = data['releaseNotes'] ?? '';
+      final String expectedHash = (data['sha256Hash'] ?? data['apkHash'] ?? '').toString();
       _addLog('[OTA Engine] NEW UPDATE DETECTED: v$latestVersion!');
-      _showUpdateDialog(latestVersion, apkUrl, releaseNotes);
+      _showUpdateDialog(latestVersion, apkUrl, releaseNotes, expectedHash);
     });
 
     _socket!.on('app:up_to_date', (data) {
@@ -340,7 +342,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     _socket?.emit('app:version_check', {'currentVersion': '1.2.0'});
   }
 
-  void _showUpdateDialog(String version, String apkUrl, String notes) {
+  void _showUpdateDialog(String version, String apkUrl, String notes, String expectedSha256) {
     if (!mounted) return;
     showDialog(
       context: context,
@@ -349,6 +351,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
         version: version,
         apkUrl: apkUrl,
         notes: notes,
+        expectedSha256: expectedSha256,
       ),
     );
   }
@@ -487,17 +490,25 @@ class _OtaUpdateDialog extends StatefulWidget {
   final String version;
   final String apkUrl;
   final String notes;
-  const _OtaUpdateDialog({required this.version, required this.apkUrl, required this.notes});
+  final String expectedSha256;
+  const _OtaUpdateDialog({
+    required this.version,
+    required this.apkUrl,
+    required this.notes,
+    this.expectedSha256 = '',
+  });
 
   @override
   State<_OtaUpdateDialog> createState() => _OtaUpdateDialogState();
 }
 
 class _OtaUpdateDialogState extends State<_OtaUpdateDialog> {
+  static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
+
   double _progress = 0;
   int _receivedBytes = 0;
   int _totalBytes = 0;
-  String _status = 'idle'; // idle | downloading | done | error
+  String _status = 'idle'; // idle | downloading | verifying | done | error
   String _errorMsg = '';
 
   Future<void> _downloadAndInstall() async {
@@ -506,7 +517,11 @@ class _OtaUpdateDialogState extends State<_OtaUpdateDialog> {
     IOSink? sink;
     try {
       final dir = await getTemporaryDirectory();
-      final apkPath = '${dir.path}/OctalDialer_update.apk';
+      // Must live under cache/apk/ — that is the path exposed by the
+      // FileProvider in res/xml/file_paths.xml.
+      final apkDir = Directory('${dir.path}/apk');
+      if (!await apkDir.exists()) await apkDir.create(recursive: true);
+      final apkPath = '${apkDir.path}/OctalDialer_update.apk';
       final file = File(apkPath);
 
       int existingLength = 0;
@@ -555,11 +570,53 @@ class _OtaUpdateDialogState extends State<_OtaUpdateDialog> {
       sink = null;
 
       if (mounted) {
-        setState(() { _status = 'done'; _progress = 1.0; });
+        setState(() { _status = 'verifying'; _progress = 1.0; });
+      }
+
+      // ── Integrity gate ───────────────────────────────────────────────────
+      // Never hand an unverified binary to the package installer. The hash is
+      // streamed off disk so a resumed download is covered too, and a mismatch
+      // deletes the file rather than leaving a poisoned APK in the cache.
+      final String expected = widget.expectedSha256.trim().toLowerCase();
+      if (expected.isEmpty) {
+        try { await file.delete(); } catch (_) {}
+        if (mounted) {
+          setState(() {
+            _status = 'error';
+            _errorMsg = 'Update rejected: the server did not publish a SHA-256 checksum for this build.';
+          });
+        }
+        return;
+      }
+
+      final Digest digest = await sha256.bind(file.openRead()).first;
+      final String actual = digest.toString().toLowerCase();
+
+      if (actual != expected) {
+        try { await file.delete(); } catch (_) {}
+        if (mounted) {
+          setState(() {
+            _status = 'error';
+            _errorMsg = 'Checksum mismatch — download discarded. '
+                'Expected ${_shortHash(expected)}…, got ${_shortHash(actual)}….';
+          });
+        }
+        return;
       }
 
       if (mounted) {
-        setState(() { _errorMsg = 'APK signature verification not yet implemented. Manual installation required.'; });
+        setState(() { _status = 'done'; _errorMsg = ''; });
+      }
+
+      try {
+        await _nativeChannel.invokeMethod('installApk', {'apkPath': apkPath});
+      } on PlatformException catch (e) {
+        if (mounted) {
+          setState(() {
+            _status = 'error';
+            _errorMsg = e.message ?? 'Could not launch the installer.';
+          });
+        }
       }
     } catch (e) {
       if (sink != null) {
@@ -575,6 +632,11 @@ class _OtaUpdateDialogState extends State<_OtaUpdateDialog> {
       client?.close();
     }
   }
+
+  /// First few characters of a hash, clamped so a short or malformed
+  /// server value cannot throw RangeError while building an error message.
+  String _shortHash(String value) =>
+      value.length <= 12 ? value : value.substring(0, 12);
 
   String _formatMb(int bytes) {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
@@ -640,12 +702,29 @@ class _OtaUpdateDialogState extends State<_OtaUpdateDialog> {
               style: const TextStyle(fontSize: 11, color: Color(0xFFFFB800), fontFamily: 'monospace'),
             ),
           ],
+          if (_status == 'verifying')
+            const Row(
+              children: [
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFFFB800)),
+                ),
+                SizedBox(width: 8),
+                Text('Verifying SHA-256 checksum...', style: TextStyle(fontSize: 11, color: Color(0xFFFFB800))),
+              ],
+            ),
           if (_status == 'done')
             const Row(
               children: [
-                Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
+                Icon(Icons.verified_user, color: Color(0xFF10B981), size: 16),
                 SizedBox(width: 6),
-                Text('Download complete! Opening installer...', style: TextStyle(fontSize: 11, color: Color(0xFF10B981))),
+                Expanded(
+                  child: Text(
+                    'Checksum verified. Opening installer...',
+                    style: TextStyle(fontSize: 11, color: Color(0xFF10B981)),
+                  ),
+                ),
               ],
             ),
           if (_status == 'error') ...[
@@ -653,7 +732,7 @@ class _OtaUpdateDialogState extends State<_OtaUpdateDialog> {
               children: [
                 Icon(Icons.error_outline, color: Colors.redAccent, size: 16),
                 SizedBox(width: 6),
-                Text('Download failed', style: TextStyle(fontSize: 11, color: Colors.redAccent)),
+                Text('Update blocked', style: TextStyle(fontSize: 11, color: Colors.redAccent)),
               ],
             ),
             const SizedBox(height: 4),

@@ -70,10 +70,12 @@ class _LoginScreenState extends State<LoginScreen> {
     String successfulUrl = '';
 
     for (final rawUrl in candidateUrls) {
-      String url = rawUrl.replaceAll(RegExp(r'/+$'), '');
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        url = 'http://$url';
-      }
+      // Route every candidate through the shared sanitizer: it defaults bare
+      // hostnames to https:// and rejects cleartext origins in release builds,
+      // so a typed host can never silently downgrade login to plain HTTP.
+      final String? sanitizedUrl = AppConfig.sanitizeUrl(rawUrl);
+      if (sanitizedUrl == null) continue;
+      final String url = sanitizedUrl;
 
       try {
         final loginUri = Uri.parse('$url/api/auth/login');

@@ -26,6 +26,8 @@ import android.view.WindowManager
 import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import java.io.File
 import com.octal.dialer.octal_dialer.telecom.OctalCallManager
 import com.octal.dialer.octal_dialer.telecom.OctalPhoneAccountManager
 import io.flutter.embedding.android.FlutterActivity
@@ -95,6 +97,14 @@ class MainActivity: FlutterActivity() {
         
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
+                "installApk" -> {
+                    val apkPath = call.argument<String>("apkPath")
+                    if (apkPath.isNullOrBlank()) {
+                        result.error("INVALID_PATH", "apkPath is required", null)
+                    } else {
+                        installApk(apkPath, result)
+                    }
+                }
                 "getDeviceInfo" -> {
                     val info = mapOf(
                         "model" to Build.MODEL,
@@ -591,6 +601,47 @@ class MainActivity: FlutterActivity() {
         }
 
         return Triple(descriptors, effectiveSim, needsUserSelection)
+    }
+
+    /**
+     * Hand a verified APK to the Android package installer.
+     *
+     * The caller must compare the file's SHA-256 against the server-published
+     * hash BEFORE invoking this; this method only brokers the install intent.
+     * The file is shared through the app's FileProvider so the installer can
+     * read it without exposing a file:// URI.
+     */
+    private fun installApk(apkPath: String, result: MethodChannel.Result) {
+        try {
+            val apkFile = File(apkPath)
+            if (!apkFile.exists()) {
+                result.error("FILE_MISSING", "APK not found at $apkPath", null)
+                return
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                // Send the user to the "install unknown apps" screen for this app.
+                val settingsIntent = Intent(
+                    android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName")
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(settingsIntent)
+                result.error("PERMISSION_REQUIRED", "Allow installs from this app, then tap Install again.", null)
+                return
+            }
+
+            val apkUri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apkFile)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            Log.e("OctalOTA", "installApk failed", e)
+            result.error("INSTALL_FAILED", e.message, null)
+        }
     }
 
     private fun getSimInfo(result: MethodChannel.Result) {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../theme/octal_theme.dart';
 import '../services/fb_local_worker.dart';
@@ -12,6 +14,21 @@ class MainDesktopScreen extends StatefulWidget {
 
 class _MainDesktopScreenState extends State<MainDesktopScreen> {
   int _selectedTabIndex = 0;
+
+  // Agent Settings tab state
+  final TextEditingController _urlController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  bool _obscurePassword = true;
+  bool _savingSettings = false;
+  String _connectionState = 'disconnected'; // disconnected | connecting | connected | error
+  String _connectionDetail = 'Not configured yet.';
+
+  Timer? _taskPollTimer;
+  bool _pollInFlight = false;
+  Timer? _heartbeatTimer;
+  int _tasksCompleted = 0;
+
   final TextEditingController _profileController = TextEditingController(text: 'My_FB_Account_1');
   final TextEditingController _captionController = TextEditingController(text: 'Check out our latest real estate deals: https://dev.zestify7.online');
   final TextEditingController _postsController = TextEditingController(text: 'https://facebook.com/groups/realtors_hub/posts/1\nhttps://facebook.com/groups/investors/posts/2');
@@ -25,12 +42,7 @@ class _MainDesktopScreenState extends State<MainDesktopScreen> {
   @override
   void initState() {
     super.initState();
-    // Authenticate Desktop Worker with Cloud Workspace on boot
-    ApiService.instance.login('owner@octal.local', 'OwnerPassword1234!').then((res) {
-      if (res['success'] == true) {
-        FbLocalWorker.instance.addLog('✅ Authenticated with Cloud Unibox ()');
-      }
-    });
+    _bootstrapAgent();
     FbLocalWorker.instance.logStream.listen((log) {
       if (mounted) {
         setState(() {
@@ -212,9 +224,449 @@ class _MainDesktopScreenState extends State<MainDesktopScreen> {
         return _buildEmailTab();
       case 3:
         return _buildLogsTab();
+      case 4:
+        return _buildSettingsTab();
       default:
         return _buildDashboardTab();
     }
+  }
+
+  /// Load persisted workspace settings and, if credentials exist, sign in and
+  /// start the Facebook task loop. Nothing is hard-coded: a fresh install lands
+  /// on the Agent Settings tab until the operator configures it.
+  Future<void> _bootstrapAgent() async {
+    await ApiService.instance.loadSettings();
+    final api = ApiService.instance;
+
+    _urlController.text = api.baseUrl;
+    _emailController.text = api.savedEmail;
+    _passwordController.text = api.savedPassword;
+
+    if (!api.isConfigured) {
+      if (mounted) {
+        setState(() {
+          _selectedTabIndex = 4;
+          _connectionState = 'disconnected';
+          _connectionDetail = 'Add your workspace URL, email and password to connect.';
+        });
+      }
+      FbLocalWorker.instance.addLog('⚙️ No workspace configured — open Agent Settings to sign in.');
+      return;
+    }
+
+    await _connectToWorkspace();
+  }
+
+  /// Sign in with the stored credentials and (re)start the background loops.
+  Future<void> _connectToWorkspace() async {
+    final api = ApiService.instance;
+    if (mounted) {
+      setState(() {
+        _connectionState = 'connecting';
+        _connectionDetail = 'Signing in to ${api.baseUrl}...';
+      });
+    }
+
+    final res = await api.loginWithSavedCredentials();
+    if (res['success'] == true) {
+      FbLocalWorker.instance.addLog('✅ Authenticated with Cloud Unibox as ${api.username ?? api.savedEmail}');
+      if (mounted) {
+        setState(() {
+          _connectionState = 'connected';
+          _connectionDetail = 'Connected as ${api.username ?? api.savedEmail} · tenant ${api.tenantId}';
+        });
+      }
+      _startBackgroundLoops();
+    } else {
+      final err = res['error']?.toString() ?? 'Authentication failed';
+      FbLocalWorker.instance.addLog('❌ Workspace sign-in failed: $err');
+      if (mounted) {
+        setState(() {
+          _connectionState = 'error';
+          _connectionDetail = err;
+        });
+      }
+    }
+  }
+
+  /// Poll the cloud Facebook task queue and keep the workspace heartbeat alive.
+  void _startBackgroundLoops() {
+    _taskPollTimer?.cancel();
+    _heartbeatTimer?.cancel();
+
+    _taskPollTimer = Timer.periodic(const Duration(seconds: 20), (_) => _pollFbTasks());
+    _heartbeatTimer = Timer.periodic(const Duration(minutes: 2), (_) {
+      ApiService.instance.sendHeartbeat();
+    });
+
+    ApiService.instance.sendHeartbeat();
+    _pollFbTasks();
+  }
+
+  /// Claim pending outbound Facebook work and run it through the local engine.
+  ///
+  /// A campaign can run for many minutes while the 20-second poll keeps firing,
+  /// so this guards against re-entry. Without it a second tick would claim
+  /// another task, hand it to a worker that is already busy, and report it
+  /// completed without ever running it.
+  Future<void> _pollFbTasks() async {
+    final api = ApiService.instance;
+    if (!api.isAuthenticated || _pollInFlight) return;
+
+    _pollInFlight = true;
+    try {
+      await _drainFbTaskQueue(api);
+    } finally {
+      _pollInFlight = false;
+    }
+  }
+
+  Future<void> _drainFbTaskQueue(ApiService api) async {
+    final tasks = await api.fetchPendingFbTasks();
+    for (final task in tasks) {
+      final taskId = task['id']?.toString();
+      if (taskId == null || taskId.isEmpty) continue;
+
+      // Another agent may grab it first — claim is atomic server-side.
+      final claimed = await api.claimFbTask(taskId);
+      if (!claimed) continue;
+
+      FbLocalWorker.instance.addLog('📥 Claimed task $taskId (${task["taskType"]})');
+      try {
+        await FbLocalWorker.instance.runQueuedTask(task);
+        await api.completeFbTask(taskId, success: true);
+        if (mounted) setState(() => _tasksCompleted++);
+        FbLocalWorker.instance.addLog('✅ Completed task $taskId');
+      } catch (e) {
+        await api.completeFbTask(taskId, success: false, error: e.toString());
+        FbLocalWorker.instance.addLog('❌ Task $taskId failed: $e');
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _taskPollTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    _urlController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _profileController.dispose();
+    _captionController.dispose();
+    _postsController.dispose();
+    super.dispose();
+  }
+
+
+  // ─── AGENT SETTINGS ────────────────────────────────────────────────────────
+
+  Color get _statusColor {
+    switch (_connectionState) {
+      case 'connected':
+        return const Color(0xFF10B981);
+      case 'connecting':
+        return OctalColors.primaryGold;
+      case 'error':
+        return Colors.redAccent;
+      default:
+        return OctalColors.textMuted;
+    }
+  }
+
+  String get _statusLabel {
+    switch (_connectionState) {
+      case 'connected':
+        return 'CONNECTED';
+      case 'connecting':
+        return 'CONNECTING...';
+      case 'error':
+        return 'SIGN-IN FAILED';
+      default:
+        return 'NOT CONNECTED';
+    }
+  }
+
+  void _toast(String message, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: error ? Colors.redAccent : const Color(0xFF10B981),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _saveAndConnect() async {
+    setState(() => _savingSettings = true);
+    try {
+      await ApiService.instance.saveSettings(
+        url: _urlController.text,
+        email: _emailController.text,
+        password: _passwordController.text,
+      );
+      await _connectToWorkspace();
+      if (ApiService.instance.isAuthenticated) {
+        _toast('Workspace connected and settings saved.');
+      } else {
+        _toast(_connectionDetail, error: true);
+      }
+    } on ArgumentError catch (e) {
+      setState(() {
+        _connectionState = 'error';
+        _connectionDetail = e.message.toString();
+      });
+      _toast(e.message.toString(), error: true);
+    } finally {
+      if (mounted) setState(() => _savingSettings = false);
+    }
+  }
+
+  Future<void> _testConnection() async {
+    final clean = ApiService.sanitizeUrl(_urlController.text);
+    if (clean == null) {
+      _toast('Enter a valid workspace URL first.', error: true);
+      return;
+    }
+    final previous = ApiService.instance.baseUrl;
+    ApiService.instance.baseUrl = clean;
+    final ok = await ApiService.instance.verifyConnection();
+    if (!ok) ApiService.instance.baseUrl = previous;
+    _toast(ok ? 'Server reachable at $clean' : 'Could not reach $clean', error: !ok);
+  }
+
+  Future<void> _signOut() async {
+    _taskPollTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    await ApiService.instance.clearSettings();
+    _passwordController.clear();
+    setState(() {
+      _connectionState = 'disconnected';
+      _connectionDetail = 'Signed out. Credentials removed from this machine.';
+    });
+    _toast('Signed out and credentials cleared.');
+  }
+
+  Widget _buildSettingsTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Agent Settings',
+              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          const Text(
+            'Point this machine at your Octal Dialer workspace. Credentials are stored locally and used to claim Facebook tasks.',
+            style: TextStyle(color: OctalColors.textSecondary, fontSize: 13),
+          ),
+          const SizedBox(height: 20),
+
+          // Live status strip
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              color: OctalColors.surfaceCard,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _statusColor),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.circle, size: 10, color: _statusColor),
+                const SizedBox(width: 10),
+                Text(_statusLabel,
+                    style: TextStyle(color: _statusColor, fontSize: 12, fontWeight: FontWeight.bold)),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(_connectionDetail,
+                      style: const TextStyle(color: OctalColors.textSecondary, fontSize: 12)),
+                ),
+                if (_connectionState == 'connected')
+                  Text('$_tasksCompleted task(s) done',
+                      style: const TextStyle(color: OctalColors.textMuted, fontSize: 11)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // Workspace form
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: OctalColors.surfaceCard,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: OctalColors.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Workspace Connection',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+
+                _settingsLabel('Workspace URL'),
+                _settingsField(
+                  controller: _urlController,
+                  hint: 'https://zestify7.online',
+                  icon: Icons.cloud_outlined,
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  children: ApiService.presetUrls
+                      .map((url) => ActionChip(
+                            label: Text(url, style: const TextStyle(fontSize: 11)),
+                            backgroundColor: OctalColors.surfaceElevated,
+                            side: const BorderSide(color: OctalColors.border),
+                            labelStyle: const TextStyle(color: OctalColors.primaryGold),
+                            onPressed: () => setState(() => _urlController.text = url),
+                          ))
+                      .toList(),
+                ),
+                const SizedBox(height: 18),
+
+                _settingsLabel('Email / Username'),
+                _settingsField(
+                  controller: _emailController,
+                  hint: 'you@company.com',
+                  icon: Icons.person_outline,
+                ),
+                const SizedBox(height: 18),
+
+                _settingsLabel('Password'),
+                _settingsField(
+                  controller: _passwordController,
+                  hint: 'Workspace password',
+                  icon: Icons.lock_outline,
+                  obscure: _obscurePassword,
+                  suffix: IconButton(
+                    icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility,
+                        size: 18, color: OctalColors.textMuted),
+                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  ),
+                ),
+                const SizedBox(height: 22),
+
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: _savingSettings ? null : _saveAndConnect,
+                      icon: _savingSettings
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
+                          : const Icon(Icons.save_outlined, size: 18),
+                      label: Text(_savingSettings ? 'Connecting...' : 'Save & Connect'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: OctalColors.primaryGold,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _savingSettings ? null : _testConnection,
+                      icon: const Icon(Icons.wifi_tethering, size: 18),
+                      label: const Text('Test Connection'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: OctalColors.primaryGold,
+                        side: const BorderSide(color: OctalColors.borderGold),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _savingSettings ? null : _pollFbTasks,
+                      icon: const Icon(Icons.sync, size: 18),
+                      label: const Text('Sync Tasks Now'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: OctalColors.textSecondary,
+                        side: const BorderSide(color: OctalColors.border),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: _savingSettings ? null : _signOut,
+                      icon: const Icon(Icons.logout, size: 18),
+                      label: const Text('Sign Out'),
+                      style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: OctalColors.surfaceSubtle,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: OctalColors.border),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.info_outline, color: OctalColors.primaryGold, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Agent ID: ${ApiService.instance.agentId}\n'
+                    'This agent polls the cloud queue every 20 seconds and sends a heartbeat every 2 minutes. '
+                    'Tasks are claimed atomically, so running several machines on one workspace is safe.',
+                    style: const TextStyle(color: OctalColors.textSecondary, fontSize: 12, height: 1.5),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _settingsLabel(String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Text(text.toUpperCase(),
+            style: const TextStyle(
+                color: OctalColors.textMuted,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.6)),
+      );
+
+  Widget _settingsField({
+    required TextEditingController controller,
+    required String hint,
+    required IconData icon,
+    bool obscure = false,
+    Widget? suffix,
+  }) {
+    return TextField(
+      controller: controller,
+      obscureText: obscure,
+      style: const TextStyle(color: Colors.white, fontSize: 13),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: OctalColors.textMuted, fontSize: 13),
+        prefixIcon: Icon(icon, size: 18, color: OctalColors.textMuted),
+        suffixIcon: suffix,
+        filled: true,
+        fillColor: OctalColors.surfaceElevated,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: OctalColors.border),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: OctalColors.primaryGold),
+        ),
+      ),
+    );
   }
 
   Widget _buildDashboardTab() {
@@ -323,13 +775,18 @@ class _MainDesktopScreenState extends State<MainDesktopScreen> {
               ),
               const SizedBox(width: 16),
               ElevatedButton.icon(
-                onPressed: () {
+                onPressed: () async {
                   final urls = _postsController.text.split('\n').where((u) => u.trim().isNotEmpty).toList();
-                  FbLocalWorker.instance.runCampaign(
-                    profileName: _profileController.text.trim(),
-                    postUrls: urls,
-                    caption: _captionController.text.trim(),
-                  );
+                  try {
+                    await FbLocalWorker.instance.runCampaign(
+                      profileName: _profileController.text.trim(),
+                      postUrls: urls,
+                      caption: _captionController.text.trim(),
+                    );
+                  } catch (e) {
+                    // runCampaign refuses to start while one is already active.
+                    _toast(e is StateError ? e.message : 'Campaign failed to start: $e', error: true);
+                  }
                 },
                 icon: const Icon(Icons.play_arrow),
                 label: const Text('Start Local Campaign (Edge Execution)'),

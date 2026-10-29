@@ -76,6 +76,77 @@ class FbLocalWorker {
   }
 
   /// Run local Facebook group sharing campaign using local PC resources
+  /// Coerce a JSON value (num, numeric string, or null) into an int.
+  static int _asInt(dynamic value, int fallback) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value.trim()) ?? fallback;
+    return fallback;
+  }
+
+  /// Execute one task claimed from the cloud `fb_task_queue`.
+  ///
+  /// The payload is the JSON string stored on the queue row. Unknown task
+  /// types throw so the caller reports the task failed rather than silently
+  /// marking it complete.
+  Future<void> runQueuedTask(Map<String, dynamic> task) async {
+    final String taskType = (task['taskType'] ?? '').toString();
+
+    Map<String, dynamic> payload = <String, dynamic>{};
+    final raw = task['payload'];
+    if (raw is Map) {
+      payload = Map<String, dynamic>.from(raw);
+    } else if (raw is String && raw.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) payload = Map<String, dynamic>.from(decoded);
+      } catch (e) {
+        throw Exception('Malformed task payload: $e');
+      }
+    }
+
+    final String profileName =
+        (payload['profileId'] ?? payload['profileName'] ?? task['profileId'] ?? '').toString();
+    if (profileName.isEmpty) {
+      throw Exception('Task is missing a target Facebook profile.');
+    }
+
+    switch (taskType) {
+      case 'post_group':
+      case 'share':
+        final urls = payload['postUrls'];
+        await runCampaign(
+          profileName: profileName,
+          postUrls: urls is List ? urls.map((u) => u.toString()).toList() : <String>[],
+          caption: (payload['caption'] ?? '').toString(),
+          maxPostsPerDay: _asInt(payload['maxPostsPerDay'], 10),
+          delayMinutesMin: _asInt(payload['delayMin'], 5),
+          delayMinutesMax: _asInt(payload['delayMax'], 12),
+        );
+        break;
+
+      case 'send_dm':
+        final recipient = (payload['recipient'] ?? payload['threadUrl'] ?? '').toString();
+        final message = (payload['message'] ?? payload['body'] ?? '').toString();
+        if (recipient.isEmpty || message.isEmpty) {
+          throw Exception('send_dm task requires both a recipient and a message.');
+        }
+        addLog('✉️ Sending Messenger DM to $recipient via $profileName');
+        await runCampaign(
+          profileName: profileName,
+          postUrls: <String>[recipient],
+          caption: message,
+          maxPostsPerDay: 1,
+          delayMinutesMin: 0,
+          delayMinutesMax: 1,
+        );
+        break;
+
+      default:
+        throw Exception('Unsupported task type: $taskType');
+    }
+  }
+
   Future<void> runCampaign({
     required String profileName,
     required List<String> postUrls,
@@ -84,7 +155,9 @@ class FbLocalWorker {
     int delayMinutesMin = 5,
     int delayMinutesMax = 12,
   }) async {
-    if (status == FbWorkerStatus.running) return;
+    if (status == FbWorkerStatus.running) {
+      throw StateError('A Facebook campaign is already running on this agent.');
+    }
     status = FbWorkerStatus.running;
     addLog('🚀 Starting Local Facebook Campaign for $profileName...');
     addLog('Target: ${postUrls.length} posts | Daily Cap: $maxPostsPerDay | Delays: $delayMinutesMin-$delayMinutesMax mins');
@@ -507,7 +580,6 @@ function attachFacebookReplyWireSniffer(page, profileName) {
 })();
 ''');
       }
-    }
     }
   }
 }
