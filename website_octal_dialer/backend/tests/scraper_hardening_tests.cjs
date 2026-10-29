@@ -88,6 +88,8 @@ function load(file, imports = {}, extraGlobals = {}) {
       if (Object.hasOwn(imports, id)) return imports[id];
       if (id === './databaseManager') return realDatabaseManager;
       if (id === './ssrfProtection') return ssrfProtection;
+      // Side-effect-free helper shared with the API server's CSV exports.
+      if (id === './utils/spreadsheetSafety') return require('../src/utils/spreadsheetSafety.ts');
       if (['crypto', 'os', 'fs', 'path', 'node:fs', 'node:path', 'child_process', 'exceljs', 'url', 'net', 'http', 'https', 'dns', 'zlib', 'tls', 'events', 'readline', 'node:readline'].includes(id)) {
         return require(id);
       }
