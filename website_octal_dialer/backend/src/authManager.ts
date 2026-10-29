@@ -140,31 +140,30 @@ export function hashPassword(password: string, salt?: string): { hash: string; s
   return { hash: `${s}:${hash}`, salt: s };
 }
 
-function verifyPassword(password: string, stored: string, identifier?: string): boolean {
+/**
+ * Verify a password against its stored scrypt hash.
+ *
+ * The stored hash is the ONLY accepted proof of identity. An earlier revision
+ * carried an `identifier` fallback that accepted two fixed passwords for the
+ * built-in superadmin usernames, which meant anyone who could read this file
+ * held permanent platform-admin access. That bypass is removed; the parameter
+ * is retained so existing call sites keep compiling.
+ */
+function verifyPassword(password: string, stored: string, _identifier?: string): boolean {
+  if (!password || !stored || !stored.includes(':')) return false;
+
   try {
-    if (stored && stored.includes(':')) {
-      const [salt, hash] = stored.split(':');
-      const { hash: candidate } = hashPassword(password, salt);
-      const candidateHash = candidate.split(':')[1];
-      if (crypto.timingSafeEqual(
-        Buffer.from(hash, 'hex'),
-        Buffer.from(candidateHash, 'hex')
-      )) {
-        return true;
-      }
-    }
+    const [salt, hash] = stored.split(':');
+    const { hash: candidate } = hashPassword(password, salt);
+    const candidateHash = candidate.split(':')[1];
+
+    const a = Buffer.from(hash, 'hex');
+    const b = Buffer.from(candidateHash, 'hex');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
   } catch {
-    // continue to identifier fallback
+    return false;
   }
-  if (identifier) {
-    const clean = identifier.toLowerCase().trim();
-    if (['admin', 'admin@octaldialer.internal', 'master_mohsin7', 'master_mohsin7@octaldialer.internal'].includes(clean)) {
-      if (password === 'AdminPassword123!' || password === 'AdminPassword1234!') {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 // ─── CAPTCHA Verification (Cloudflare Turnstile) ─────────────────────────────
@@ -179,7 +178,13 @@ export async function verifyCaptcha(token?: string, remoteIp?: string): Promise<
     return { success: false, error: 'CAPTCHA token is required.' };
   }
 
-  if (token.startsWith('1x00000000000000000000AA') || token === 'test_pass') {
+  // Cloudflare's always-pass test token and our own fixture value are for
+  // local development only. Honouring them in production lets any caller skip
+  // the challenge entirely.
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    (token.startsWith('1x00000000000000000000AA') || token === 'test_pass')
+  ) {
     return { success: true };
   }
 
@@ -907,22 +912,42 @@ export async function ensureDefaultAdmin(): Promise<void> {
     await db.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS "is_platform_role" BOOLEAN DEFAULT FALSE');
   } catch {}
 
-  const { hash: adminPasswordHash } = hashPassword('AdminPassword123!');
+  // Bootstrap credentials come from the environment. In production a missing
+  // value yields a random one-time password printed once at creation â€” never a
+  // predictable literal, and never re-applied on later boots.
+  const resolveBootstrapPassword = (envKey: string, devDefault: string): { password: string; generated: boolean } => {
+    const fromEnv = process.env[envKey];
+    if (fromEnv && fromEnv.length >= 12) return { password: fromEnv, generated: false };
+    if (process.env.NODE_ENV === 'production') {
+      return { password: crypto.randomBytes(18).toString('base64url'), generated: true };
+    }
+    return { password: devDefault, generated: false };
+  };
+
+  const adminBootstrap = resolveBootstrapPassword('BOOTSTRAP_ADMIN_PASSWORD', 'AdminPassword123!');
+  const { hash: adminPasswordHash } = hashPassword(adminBootstrap.password);
 
   // Upsert admin / admin@octaldialer.internal
   try {
     const existingAdmin = await db.queryOne<any>("SELECT id FROM users WHERE LOWER(username) = 'admin' OR LOWER(email) = 'admin@octaldialer.internal'");
-    if (existingAdmin) {
+    if (existingAdmin) {      // Never rewrite the password of an account that already exists â€” doing so
+      // silently reverted every admin password change on restart.
       await db.execute(`
-        UPDATE users 
-        SET username = 'admin', email = 'admin@octaldialer.internal', "passwordHash" = $1, role = 'superadmin', "is_platform_role" = TRUE, "tenantId" = NULL, status = 'Active', "updatedAt" = $2
-        WHERE id = $3
-      `, [adminPasswordHash, now, existingAdmin.id]);
+        UPDATE users
+        SET username = 'admin', email = 'admin@octaldialer.internal', role = 'superadmin', "is_platform_role" = TRUE, "tenantId" = NULL, status = 'Active', "updatedAt" = $1
+        WHERE id = $2
+      `, [now, existingAdmin.id]);
     } else {
       await db.execute(`
         INSERT INTO users (id, username, email, "passwordHash", role, "is_platform_role", "tenantId", "authProvider", "emailVerified", status, "createdAt", "updatedAt")
         VALUES ($1, 'admin', 'admin@octaldialer.internal', $2, 'superadmin', TRUE, NULL, 'local', 1, 'Active', $3, $3)
       `, ['user_admin_' + crypto.randomUUID(), adminPasswordHash, now]);
+    }
+    if (!existingAdmin && adminBootstrap.generated) {
+      console.warn(
+        `[Auth Bootstrap] Created superadmin 'admin' with a generated password: ${adminBootstrap.password}`
+      );
+      console.warn('[Auth Bootstrap] Store it now and change it on first sign-in. Set BOOTSTRAP_ADMIN_PASSWORD to control this.');
     }
     console.log('[Auth Bootstrap] Synchronized platform superadmin (admin / admin@octaldialer.internal).');
   } catch (err) {
@@ -932,12 +957,11 @@ export async function ensureDefaultAdmin(): Promise<void> {
   // Upsert master_mohsin7
   try {
     const existingMohsin = await db.queryOne<any>("SELECT id FROM users WHERE LOWER(username) = 'master_mohsin7' OR LOWER(email) = 'master_mohsin7@octaldialer.internal'");
-    if (existingMohsin) {
-      await db.execute(`
-        UPDATE users 
-        SET username = 'master_mohsin7', email = 'master_mohsin7@octaldialer.internal', "passwordHash" = $1, role = 'superadmin', "is_platform_role" = TRUE, "tenantId" = NULL, status = 'Active', "updatedAt" = $2
-        WHERE id = $3
-      `, [adminPasswordHash, now, existingMohsin.id]);
+    if (existingMohsin) {      await db.execute(`
+        UPDATE users
+        SET username = 'master_mohsin7', email = 'master_mohsin7@octaldialer.internal', role = 'superadmin', "is_platform_role" = TRUE, "tenantId" = NULL, status = 'Active', "updatedAt" = $1
+        WHERE id = $2
+      `, [now, existingMohsin.id]);
     } else {
       await db.execute(`
         INSERT INTO users (id, username, email, "passwordHash", role, "is_platform_role", "tenantId", "authProvider", "emailVerified", status, "createdAt", "updatedAt")
@@ -952,15 +976,15 @@ export async function ensureDefaultAdmin(): Promise<void> {
   // 4. Provision and sync owner@octal.local on tenant_default with full permissions
   let ownerId: string | null = null;
   try {
-    const { hash: ownerPasswordHash } = hashPassword('OwnerPassword1234!');
+    const ownerBootstrap = resolveBootstrapPassword('BOOTSTRAP_OWNER_PASSWORD', 'OwnerPassword1234!');
+    const { hash: ownerPasswordHash } = hashPassword(ownerBootstrap.password);
     const existingOwner = await db.queryOne<any>("SELECT id FROM users WHERE LOWER(username) = 'owner' OR LOWER(email) = 'owner@octal.local'");
     if (existingOwner) {
-      ownerId = existingOwner.id;
-      await db.execute(`
-        UPDATE users 
-        SET username = 'owner', email = 'owner@octal.local', "passwordHash" = $1, role = 'admin', "tenantId" = 'tenant_default', status = 'Active', "updatedAt" = $2
-        WHERE id = $3
-      `, [ownerPasswordHash, now, existingOwner.id]);
+      ownerId = existingOwner.id;      await db.execute(`
+        UPDATE users
+        SET username = 'owner', email = 'owner@octal.local', role = 'admin', "tenantId" = 'tenant_default', status = 'Active', "updatedAt" = $1
+        WHERE id = $2
+      `, [now, existingOwner.id]);
     } else {
       ownerId = 'user_owner_' + crypto.randomUUID();
       await db.execute(`
@@ -968,7 +992,14 @@ export async function ensureDefaultAdmin(): Promise<void> {
         VALUES ($1, 'owner', 'owner@octal.local', $2, 'admin', 'tenant_default', 'local', 1, 'Active', $3, $3)
       `, [ownerId, ownerPasswordHash, now]);
     }
-    console.log('[Auth Bootstrap] Synchronized company owner (owner@octal.local / OwnerPassword1234!).');
+    if (!existingOwner && ownerBootstrap.generated) {
+      console.warn(
+        `[Auth Bootstrap] Created owner 'owner@octal.local' with a generated password: ${ownerBootstrap.password}`
+      );
+      console.warn('[Auth Bootstrap] Store it now and change it on first sign-in. Set BOOTSTRAP_OWNER_PASSWORD to control this.');
+    }
+    // Never print the credential itself on subsequent boots.
+    console.log('[Auth Bootstrap] Synchronized company owner (owner@octal.local).');
   } catch (err) {
     console.warn('[ensureDefaultAdmin] Notice provisioning owner account:', err);
   }
