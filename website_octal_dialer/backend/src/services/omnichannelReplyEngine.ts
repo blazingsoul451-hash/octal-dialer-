@@ -14,6 +14,7 @@ import { simpleParser } from 'mailparser';
 const rawEmailReplyParser = require('email-reply-parser');
 const EmailReplyParser = rawEmailReplyParser.default || rawEmailReplyParser;
 import { db, normalizePhone, recordLeadActivity } from '../databaseManager';
+import { encryptSecret, decryptEmailAccount } from './secretVault';
 
 // Map of active persistent IMAP IDLE connections keyed by `${tenantId}:${accountId}`
 const activeImapWorkers = new Map<string, ImapFlow>();
@@ -431,7 +432,11 @@ async function ensureFreshOAuthToken(account: {
     if (res.ok && data.access_token) {
       await db.execute(
         `UPDATE email_accounts SET "accessToken" = $1, "refreshToken" = COALESCE($2, "refreshToken") WHERE id = $3`,
-        [data.access_token, data.refresh_token || null, account.id]
+        [
+          encryptSecret(data.access_token),
+          data.refresh_token ? encryptSecret(data.refresh_token) : null,
+          account.id,
+        ]
       );
       account.accessToken = data.access_token;
       if (data.refresh_token) {
@@ -448,6 +453,118 @@ async function ensureFreshOAuthToken(account: {
 /**
  * 4. IMAP IDLE Real-Time Inbox Watcher per Mailbox (24/7 Perpetual Auto-Reconnect Watchdog)
  */
+/**
+ * Ingest one fetched IMAP message. Deterministic Octal header match first,
+ * exact Message-ID lookup against email_dispatch_logs second, then hand off to
+ * the unified omnichannel ingest (which performs the atomic stop-on-reply).
+ *
+ * Shared by the live IDLE listener and the restart catch-up so both paths
+ * behave identically.
+ */
+async function processSingleImapMessage(
+  account: { id: string; tenantId: string; email: string },
+  msg: any
+): Promise<void> {
+  if (!msg?.source) return;
+
+  const parsed: any = await (simpleParser as any)(msg.source);
+  const fromAddress = parsed.from?.value?.[0]?.address || '';
+  const fromName = parsed.from?.value?.[0]?.name || fromAddress;
+  if (!fromAddress || fromAddress.toLowerCase() === account.email.toLowerCase()) return;
+
+  const inReplyTo = parsed.inReplyTo || '';
+  const refs = Array.isArray(parsed.references)
+    ? parsed.references.join(' ')
+    : parsed.references || '';
+
+  // Step 1: Deterministic header decoding (<octal.{base64}@domain>)
+  let matchedLeadId: string | undefined;
+  const decoded = decodeDeterministicHeader(inReplyTo) || decodeDeterministicHeader(refs);
+  if (decoded && decoded.tenantId === account.tenantId) {
+    matchedLeadId = decoded.leadId;
+  } else if (inReplyTo) {
+    // Step 2: Check email_dispatch_logs by exact Message-ID match
+    const dispatchMatch = await db.queryOne<{ leadId: string }>(
+      `SELECT "leadId" FROM email_dispatch_logs WHERE "tenantId" = $1 AND "messageId" = $2 LIMIT 1`,
+      [account.tenantId, inReplyTo]
+    );
+    if (dispatchMatch) matchedLeadId = dispatchMatch.leadId;
+  }
+
+  await ingestInboundOmnichannelReply({
+    tenantId: account.tenantId,
+    channel: 'email',
+    accountId: account.id,
+    externalMessageId: parsed.messageId || `imap_${account.id}_${msg.uid}`,
+    externalThreadId: inReplyTo || parsed.messageId || `thd_${fromAddress}`,
+    senderAddress: fromAddress,
+    senderName: fromName,
+    recipientAddress: account.email,
+    subject: parsed.subject || '',
+    bodyRaw: parsed.text || parsed.html || '',
+    inReplyTo,
+    referencesHeader: refs,
+    matchedEmailLeadId: matchedLeadId,
+  });
+}
+
+/** Advance the stored high-water UID so a restart knows where to resume. */
+async function persistLastImapUid(account: { id: string }, uid: number): Promise<void> {
+  if (!uid || !Number.isFinite(uid)) return;
+  await db
+    .execute(
+      `UPDATE email_accounts SET "lastImapUid" = GREATEST(COALESCE("lastImapUid", 0), $1) WHERE id = $2`,
+      [Math.floor(uid), account.id]
+    )
+    .catch(() => {});
+}
+
+/**
+ * Replay every message with a UID above the last one we ingested. This is what
+ * makes stop-on-reply and hot-lead promotion durable across restarts, deploys
+ * and dropped connections. Re-ingestion is safe: outreach_messages carries a
+ * UNIQUE(tenantId, channel, externalMessageId) guard.
+ */
+async function catchUpMissedImapMessages(
+  account: { id: string; tenantId: string; email: string },
+  client: ImapFlow
+): Promise<void> {
+  try {
+    const row = await db.queryOne<{ lastImapUid: string | number | null }>(
+      `SELECT "lastImapUid" FROM email_accounts WHERE id = $1`,
+      [account.id]
+    );
+    const lastUid = Number(row?.lastImapUid || 0);
+
+    // First ever connect: anchor on the mailbox head rather than replaying the
+    // entire inbox history into the Unibox.
+    if (!lastUid) {
+      const head = typeof client.mailbox === 'object' ? Number((client.mailbox as any).uidNext || 0) : 0;
+      if (head > 1) await persistLastImapUid(account, head - 1);
+      return;
+    }
+
+    let highestUid = lastUid;
+    let recovered = 0;
+    for await (const msg of client.fetch(
+      { uid: `${lastUid + 1}:*` },
+      { uid: true, envelope: true, source: true, headers: ['message-id', 'in-reply-to', 'references'] }
+    )) {
+      if (Number(msg.uid) <= lastUid) continue;
+      await processSingleImapMessage(account, msg);
+      recovered++;
+      if (Number(msg.uid) > highestUid) highestUid = Number(msg.uid);
+    }
+
+    if (highestUid > lastUid) await persistLastImapUid(account, highestUid);
+    if (recovered > 0) {
+      console.log(`[IMAP Catch-up] Recovered ${recovered} missed reply(ies) for ${account.email}.`);
+    }
+  } catch (err: any) {
+    console.warn(`[IMAP Catch-up] Failed for ${account.email}: ${err.message}`);
+  }
+}
+
 export async function startImapIdleForAccount(account: {
   id: string;
   tenantId: string;
@@ -539,57 +656,26 @@ export async function startImapIdleForAccount(account: {
             ? `${Math.max(1, data.prev + 1)}:*`
             : `${Math.max(1, existsCount)}:*`;
 
+          let highestUid = 0;
           for await (const msg of client.fetch(fetchRange, {
             uid: true,
             envelope: true,
             source: true,
             headers: ['message-id', 'in-reply-to', 'references'],
           })) {
-            if (!msg.source) continue;
-            const parsed: any = await (simpleParser as any)(msg.source);
-            const fromAddress = parsed.from?.value?.[0]?.address || '';
-            const fromName = parsed.from?.value?.[0]?.name || fromAddress;
-            if (!fromAddress || fromAddress.toLowerCase() === account.email.toLowerCase()) continue;
-
-            const inReplyTo = parsed.inReplyTo || '';
-            const refs = Array.isArray(parsed.references)
-              ? parsed.references.join(' ')
-              : parsed.references || '';
-
-            // Step 1: Deterministic header decoding (<octal.{base64}@domain>)
-            let matchedLeadId: string | undefined;
-            const decoded = decodeDeterministicHeader(inReplyTo) || decodeDeterministicHeader(refs);
-            if (decoded && decoded.tenantId === account.tenantId) {
-              matchedLeadId = decoded.leadId;
-            } else if (inReplyTo) {
-              // Step 2: Check email_dispatch_logs by exact Message-ID match
-              const dispatchMatch = await db.queryOne<{ leadId: string }>(
-                `SELECT "leadId" FROM email_dispatch_logs WHERE "tenantId" = $1 AND "messageId" = $2 LIMIT 1`,
-                [account.tenantId, inReplyTo]
-              );
-              if (dispatchMatch) matchedLeadId = dispatchMatch.leadId;
-            }
-
-            await ingestInboundOmnichannelReply({
-              tenantId: account.tenantId,
-              channel: 'email',
-              accountId: account.id,
-              externalMessageId: parsed.messageId || `imap_${account.id}_${msg.uid}`,
-              externalThreadId: inReplyTo || parsed.messageId || `thd_${fromAddress}`,
-              senderAddress: fromAddress,
-              senderName: fromName,
-              recipientAddress: account.email,
-              subject: parsed.subject || '',
-              bodyRaw: parsed.text || parsed.html || '',
-              inReplyTo,
-              referencesHeader: refs,
-              matchedEmailLeadId: matchedLeadId,
-            });
+            await processSingleImapMessage(account, msg);
+            if (Number(msg.uid) > highestUid) highestUid = Number(msg.uid);
           }
+          if (highestUid > 0) await persistLastImapUid(account, highestUid);
         } catch (fetchErr: any) {
           console.warn(`[IMAP IDLE Fetch Error for ${account.email}]:`, fetchErr.message);
         }
       });
+
+      // Catch-up BEFORE idling: ingest anything that landed while this watcher
+      // was offline. Without it, a reply arriving during a restart is lost and
+      // the lead's sequence keeps firing as though they never answered.
+      await catchUpMissedImapMessages(account, client);
 
       // Hold persistent IMAP IDLE loop (re-idles cleanly across 29-min RFC timeout)
       while (client.usable) {
@@ -647,14 +733,18 @@ export async function sendUniboxEmailReply(params: {
     return { success: false, error: 'Thread not found' };
   }
 
-  let account = await db.queryOne<any>(
-    `SELECT * FROM email_accounts WHERE id = $1 AND "tenantId" = $2 AND status = 'active'`,
-    [thread.accountId, params.tenantId]
+  let account = decryptEmailAccount(
+    await db.queryOne<any>(
+      `SELECT * FROM email_accounts WHERE id = $1 AND "tenantId" = $2 AND status = 'active'`,
+      [thread.accountId, params.tenantId]
+    )
   );
   if (!account) {
-    account = await db.queryOne<any>(
-      `SELECT * FROM email_accounts WHERE "tenantId" = $1 AND status = 'active' AND "authType" != 'sandbox' AND ("smtpHost" IS NOT NULL OR "accessToken" IS NOT NULL) ORDER BY "sentToday" ASC LIMIT 1`,
-      [params.tenantId]
+    account = decryptEmailAccount(
+      await db.queryOne<any>(
+        `SELECT * FROM email_accounts WHERE "tenantId" = $1 AND status = 'active' AND "authType" != 'sandbox' AND ("smtpHost" IS NOT NULL OR "accessToken" IS NOT NULL) ORDER BY "sentToday" ASC LIMIT 1`,
+        [params.tenantId]
+      )
     );
   }
   if (!account) {
