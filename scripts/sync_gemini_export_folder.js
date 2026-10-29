@@ -164,17 +164,22 @@ const scraperBundle = bundleFiles(scraperFiles, '07_LEAD_GEN_Z_SCRAPERS');
 // 08. Omnichannel Outreach & Unibox
 const outreachFiles = [
   path.join(projectRoot, 'website_octal_dialer/backend/src/services/omnichannelReplyEngine.ts'),
+  path.join(projectRoot, 'website_octal_dialer/backend/src/services/secretVault.ts'),
+  path.join(projectRoot, 'website_octal_dialer/backend/src/services/redirectGuard.ts'),
+  path.join(projectRoot, 'website_octal_dialer/backend/src/utils/spreadsheetSafety.ts'),
   path.join(projectRoot, 'website_octal_dialer/backend/src/uniboxRoutes.ts'),
+  path.join(projectRoot, 'website_octal_dialer/backend/src/facebookPosterRoutes.ts'),
   path.join(projectRoot, 'website_octal_dialer/frontend/src/components/OmnichannelUnibox.tsx'),
   path.join(projectRoot, 'website_octal_dialer/frontend/src/components/AutoEmailer.tsx'),
   path.join(projectRoot, 'website_octal_dialer/frontend/src/components/FacebookAutoPoster.tsx'),
   path.join(projectRoot, 'desktop_octal_agent/local_engine/local_fb_bot.js'),
   path.join(projectRoot, 'desktop_octal_agent/lib/services/fb_local_worker.dart'),
   path.join(projectRoot, 'website_octal_dialer/backend/src/db/migrations/024_omnichannel_unibox_and_sync.sql'),
+  path.join(projectRoot, 'website_octal_dialer/backend/src/db/migrations/025_fb_persistence_and_integrity.sql'),
 ].filter(f => fs.existsSync(f));
 const outreachBundle = bundleFiles(outreachFiles, '08_OMNICHANNEL_OUTREACH_AND_UNIBOX');
 
-// 09. Dev Configs, Scripts and Deployment
+// 09. Dev Configs, Scripts, Tests and Deployment
 const devConfigCandidateFiles = [
   path.join(projectRoot, 'package.json'),
   path.join(projectRoot, 'scripts/start_all.js'),
@@ -183,6 +188,7 @@ const devConfigCandidateFiles = [
   path.join(projectRoot, 'website_octal_dialer/backend/package.json'),
   path.join(projectRoot, 'website_octal_dialer/backend/tsconfig.json'),
   path.join(projectRoot, 'website_octal_dialer/backend/test_call_flow_and_outcomes.js'),
+  ...getFiles(path.join(projectRoot, 'website_octal_dialer/backend/tests')),
   path.join(projectRoot, 'website_octal_dialer/frontend/package.json'),
   path.join(projectRoot, 'website_octal_dialer/frontend/vite.config.ts'),
   path.join(projectRoot, 'website_octal_dialer/frontend/tsconfig.json'),
