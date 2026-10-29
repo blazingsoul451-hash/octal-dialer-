@@ -278,6 +278,52 @@ uniboxRouter.patch('/unibox/threads/:threadId/status', async (req: Request, res:
 });
 
 /**
+ * Requeue Facebook tasks whose claiming agent died mid-flight.
+ *
+ * A desktop agent that crashes (or loses power) between `claim` and `complete`
+ * leaves its row stuck in 'processing' forever. This sweeper returns anything
+ * held past the lease window to 'pending' so another agent can pick it up, and
+ * gives up on a task after MAX_FB_TASK_ATTEMPTS so a poison task cannot loop.
+ */
+const FB_TASK_LEASE_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_FB_TASK_ATTEMPTS = 3;
+
+export async function reapStaleFbTasks(): Promise<{ requeued: number; failed: number }> {
+  const cutoff = new Date(Date.now() - FB_TASK_LEASE_MS).toISOString();
+
+  const failed = await db.execute(
+    `UPDATE fb_task_queue
+        SET status = 'failed',
+            "errorMessage" = 'Abandoned by worker after ' || "attempts" || ' attempt(s)',
+            "updatedAt" = $1
+      WHERE status = 'processing'
+        AND "claimedAt" IS NOT NULL
+        AND "claimedAt" < $2
+        AND "attempts" >= $3`,
+    [new Date().toISOString(), cutoff, MAX_FB_TASK_ATTEMPTS]
+  );
+
+  const requeued = await db.execute(
+    `UPDATE fb_task_queue
+        SET status = 'pending',
+            "claimedByAgentId" = NULL,
+            "claimedAt" = NULL,
+            "updatedAt" = $1
+      WHERE status = 'processing'
+        AND "claimedAt" IS NOT NULL
+        AND "claimedAt" < $2
+        AND "attempts" < $3`,
+    [new Date().toISOString(), cutoff, MAX_FB_TASK_ATTEMPTS]
+  );
+
+  const result = { requeued: requeued.rowCount || 0, failed: failed.rowCount || 0 };
+  if (result.requeued || result.failed) {
+    console.log(`[FB Tasks] Reaper requeued ${result.requeued}, failed ${result.failed} stale task(s).`);
+  }
+  return result;
+}
+
+/**
  * GET /api/fb-tasks/pending
  * Polled by desktop_octal_agent to fetch outbound Facebook tasks (send_dm, post_group)
  */
@@ -285,6 +331,9 @@ uniboxRouter.get('/fb-tasks/pending', async (req: Request, res: Response) => {
   try {
     const tenantId = getTenantId(req);
     const limit = Math.min(Number(req.query.limit) || 10, 50);
+
+    // Recover anything abandoned by a dead agent before serving this poll.
+    await reapStaleFbTasks().catch(() => {});
 
     const tasks = await db.queryAll(
       `SELECT * FROM fb_task_queue 
@@ -311,7 +360,11 @@ uniboxRouter.post('/fb-tasks/:taskId/claim', async (req: Request, res: Response)
 
     const updated = await db.queryOne(
       `UPDATE fb_task_queue 
-       SET status = 'processing', "claimedByAgentId" = $1, "updatedAt" = $2 
+       SET status = 'processing',
+           "claimedByAgentId" = $1,
+           "claimedAt" = $2,
+           "attempts" = "attempts" + 1,
+           "updatedAt" = $2 
        WHERE id = $3 AND "tenantId" = $4 AND status = 'pending'
        RETURNING *`,
       [agentId, new Date().toISOString(), taskId, tenantId]
@@ -339,7 +392,7 @@ uniboxRouter.post('/fb-tasks/:taskId/complete', async (req: Request, res: Respon
 
     await db.execute(
       `UPDATE fb_task_queue 
-       SET status = $1, "errorMessage" = $2, "updatedAt" = $3 
+       SET status = $1, "errorMessage" = $2, "updatedAt" = $3, "claimedAt" = NULL 
        WHERE id = $4 AND "tenantId" = $5`,
       [status === 'failed' ? 'failed' : 'completed', error || null, new Date().toISOString(), taskId, tenantId]
     );

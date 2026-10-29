@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Square, RefreshCw, Plus, Trash2, Key, Save, Radio, Settings, Users, Share2, Inbox } from 'lucide-react';
+import { safeExternalHref } from '../utils/safeUrl';
 
 interface FacebookAutoPosterProps {
   isLight?: boolean;
@@ -14,6 +15,10 @@ interface Account {
   name: string;
   status: 'valid' | 'expired' | 'checking' | 'error' | 'unknown';
   note: string;
+  dailyLimit?: number;
+  sentToday?: number;
+  hasSession?: boolean;
+  lastRunAt?: string | null;
 }
 
 interface ActivityLog {
@@ -25,6 +30,7 @@ interface ActivityLog {
 }
 
 interface Group {
+  id?: string;
   name: string;
   url: string;
   status: string;
@@ -65,7 +71,24 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
 
+  // Manual group entry + per-account controls
+  const [newGroupUrl, setNewGroupUrl] = useState('');
+  const [newGroupName, setNewGroupName] = useState('');
+  const [limitDrafts, setLimitDrafts] = useState<Record<string, string>>({});
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  /** Shared request helper: attaches auth, parses JSON, throws on error. */
+  const apiCall = async (path: string, init: RequestInit = {}) => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const res = await fetch(`${serverUrl}/api/facebook-poster${path}`, { ...init, headers });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    return data;
+  };
 
   // Fetch profiles
   const fetchAccounts = async () => {
@@ -132,7 +155,17 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
       const res = await fetch(`${serverUrl}/api/facebook-poster/activity-log`, { headers });
       if (res.ok) {
         const data = await res.json();
-        setActivityLogs(data);
+        // Rows now come from the database, so normalise the newer column names
+        // onto the shape this table renders.
+        setActivityLogs(
+          (Array.isArray(data) ? data : []).map((row: any) => ({
+            time: row.createdAt || row.time || '',
+            type: row.type || 'post',
+            account: row.profileId || row.account || '-',
+            detail: row.detail || row.target || '',
+            status: row.status || 'success'
+          }))
+        );
       }
     } catch (_) {}
   };
@@ -233,6 +266,131 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
         const data = await res.json();
         throw new Error(data.error || 'Failed to delete account');
       }
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  /** Re-check a stored cookie jar without launching a full campaign. */
+  const handleVerifySession = async (pId: string) => {
+    setError(null);
+    setSuccess(null);
+    setRowBusy(pId);
+    try {
+      const data = await apiCall(`/accounts/${encodeURIComponent(pId)}/verify`, { method: 'POST' });
+      if (data.status === 'valid') {
+        setSuccess(`${pId}: ${data.detail}`);
+      } else {
+        setError(`${pId}: ${data.detail}`);
+      }
+      fetchAccounts();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  /** Clear today's send tally so a throttled profile can post again. */
+  const handleResetCounter = async (pId: string) => {
+    setError(null);
+    setSuccess(null);
+    setRowBusy(pId);
+    try {
+      await apiCall(`/accounts/${encodeURIComponent(pId)}/reset-counter`, { method: 'POST' });
+      setSuccess(`Daily counter reset for ${pId}.`);
+      fetchAccounts();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  /** Persist a new per-account daily posting ceiling. */
+  const handleUpdateLimit = async (pId: string) => {
+    const raw = limitDrafts[pId];
+    const parsed = parseInt(raw ?? '', 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      setError('Daily limit must be a positive number.');
+      return;
+    }
+    setError(null);
+    setSuccess(null);
+    setRowBusy(pId);
+    try {
+      await apiCall(`/accounts/${encodeURIComponent(pId)}/limit`, {
+        method: 'POST',
+        body: JSON.stringify({ dailyLimit: parsed })
+      });
+      setSuccess(`Daily limit for ${pId} set to ${parsed}.`);
+      setLimitDrafts(prev => {
+        const next = { ...prev };
+        delete next[pId];
+        return next;
+      });
+      fetchAccounts();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  /** Add a group target by hand instead of waiting for the joiner to find it. */
+  const handleAddGroup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const url = newGroupUrl.trim();
+    if (!url) return;
+    setError(null);
+    setSuccess(null);
+    setActionLoading(true);
+    try {
+      await apiCall('/groups', {
+        method: 'POST',
+        body: JSON.stringify({ url, name: newGroupName.trim() || 'Facebook Group', status: 'pending' })
+      });
+      setSuccess('Group target added.');
+      setNewGroupUrl('');
+      setNewGroupName('');
+      fetchGroups();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteGroup = async (group: Group) => {
+    if (!group.id) return;
+    setError(null);
+    try {
+      await apiCall(`/groups/${encodeURIComponent(group.id)}`, { method: 'DELETE' });
+      fetchGroups();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleClearGroups = async () => {
+    if (!window.confirm(`Remove all ${groups.length} group target(s)? This cannot be undone.`)) return;
+    setError(null);
+    try {
+      const data = await apiCall('/groups/clear', { method: 'POST' });
+      setSuccess(`Removed ${data.removed ?? 0} group target(s).`);
+      fetchGroups();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleClearActivity = async () => {
+    if (!window.confirm('Clear the activity history for this workspace?')) return;
+    setError(null);
+    try {
+      const data = await apiCall('/activity/clear', { method: 'POST' });
+      setSuccess(`Cleared ${data.removed ?? 0} activity entries.`);
+      fetchActivityLogs();
     } catch (err: any) {
       setError(err.message);
     }
@@ -437,14 +595,15 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
                     <th className="py-3 px-3.5">Folder</th>
                     <th className="py-3 px-3.5">Description</th>
                     <th className="py-3 px-3.5">Status</th>
+                    <th className="py-3 px-3.5">Today / Limit</th>
                     <th className="py-3 px-3.5">Notes</th>
-                    <th className="py-3 px-3.5 text-center">Delete</th>
+                    <th className="py-3 px-3.5 text-center">Actions</th>
                   </tr>
                 </thead>
                 <tbody className={`divide-y ${isLight ? 'divide-slate-200' : 'divide-[#18181b]'}`}>
                   {accounts.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="py-8 text-center text-zinc-500 text-xs font-mono">
+                      <td colSpan={6} className="py-8 text-center text-zinc-500 text-xs font-mono">
                         No active Facebook cookie sessions found. Import session JSON to start.
                       </td>
                     </tr>
@@ -463,14 +622,74 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
                             {acc.status}
                           </span>
                         </td>
+                        <td className="py-2.5 px-3.5">
+                          {(() => {
+                            const sent = acc.sentToday ?? 0;
+                            const limit = acc.dailyLimit ?? 25;
+                            const pct = Math.min(100, Math.round((sent / Math.max(1, limit)) * 100));
+                            const atCap = sent >= limit;
+                            return (
+                              <div className="flex items-center gap-2 min-w-[150px]">
+                                <div className="flex-1">
+                                  <div className={`text-[10px] font-bold ${atCap ? 'text-red-400' : 'text-zinc-300'}`}>
+                                    {sent} / {limit}
+                                  </div>
+                                  <div className="h-1 mt-1 rounded-full bg-[#27272a] overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full ${atCap ? 'bg-red-500' : 'bg-amber-500'}`}
+                                      style={{ width: `${pct}%` }}
+                                    />
+                                  </div>
+                                </div>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  title="Set daily posting limit"
+                                  value={limitDrafts[acc.profileId] ?? String(limit)}
+                                  onChange={(e) =>
+                                    setLimitDrafts(prev => ({ ...prev, [acc.profileId]: e.target.value }))
+                                  }
+                                  className={`w-14 py-1 px-1.5 rounded-lg border text-[10px] text-center focus:outline-none focus:border-amber-500 ${inputBg}`}
+                                />
+                                <button
+                                  onClick={() => handleUpdateLimit(acc.profileId)}
+                                  disabled={rowBusy === acc.profileId || limitDrafts[acc.profileId] === undefined}
+                                  title="Save daily limit"
+                                  className="p-1 rounded-lg text-zinc-400 hover:text-amber-400 hover:bg-amber-500/10 disabled:opacity-30 transition-all cursor-pointer"
+                                >
+                                  <Save className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })()}
+                        </td>
                         <td className="py-2.5 px-3.5 text-xs text-zinc-400 max-w-[150px] truncate">{acc.note || '-'}</td>
-                        <td className="py-2.5 px-3.5 text-center">
-                          <button
-                            onClick={() => handleDeleteAccount(acc.profileId)}
-                            className="p-1.5 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                        <td className="py-2.5 px-3.5">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              onClick={() => handleVerifySession(acc.profileId)}
+                              disabled={rowBusy === acc.profileId}
+                              title="Re-check this session's cookies"
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-30 transition-all cursor-pointer"
+                            >
+                              <Key className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleResetCounter(acc.profileId)}
+                              disabled={rowBusy === acc.profileId}
+                              title="Reset today's send counter"
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-amber-400 hover:bg-amber-500/10 disabled:opacity-30 transition-all cursor-pointer"
+                            >
+                              <RefreshCw className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteAccount(acc.profileId)}
+                              title="Delete this profile"
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -714,10 +933,48 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
             <div className={`p-6 rounded-2xl border ${cardBg} shadow-2xl`}>
               <div className="flex items-center justify-between mb-4">
                 <h3 className={`font-bold ${isLight ? 'text-slate-800' : 'text-white'}`}>Extracted Group Targets ({groups.length})</h3>
-                <button onClick={fetchGroups} className="p-2 rounded-xl border border-[#27272a] hover:bg-[#18181b] text-zinc-400 hover:text-white cursor-pointer">
-                  <RefreshCw className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleClearGroups}
+                    disabled={groups.length === 0}
+                    title="Remove every group target"
+                    className="flex items-center gap-1.5 py-2 px-3 rounded-xl border border-[#27272a] hover:border-red-500/40 hover:bg-red-500/10 text-zinc-400 hover:text-red-400 disabled:opacity-30 text-[10px] font-bold uppercase tracking-wider cursor-pointer transition-all"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear All</span>
+                  </button>
+                  <button onClick={fetchGroups} title="Refresh group list" className="p-2 rounded-xl border border-[#27272a] hover:bg-[#18181b] text-zinc-400 hover:text-white cursor-pointer">
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
+
+              {/* Manual group entry — add a target without waiting for the joiner */}
+              <form onSubmit={handleAddGroup} className="flex flex-col sm:flex-row gap-2 mb-4">
+                <input
+                  type="url"
+                  required
+                  placeholder="https://facebook.com/groups/your-target-group"
+                  value={newGroupUrl}
+                  onChange={(e) => setNewGroupUrl(e.target.value)}
+                  className={`flex-1 py-2.5 px-3.5 rounded-xl border text-xs focus:outline-none focus:border-amber-500 ${inputBg}`}
+                />
+                <input
+                  type="text"
+                  placeholder="Label (optional)"
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  className={`sm:w-44 py-2.5 px-3.5 rounded-xl border text-xs focus:outline-none focus:border-amber-500 ${inputBg}`}
+                />
+                <button
+                  type="submit"
+                  disabled={actionLoading || !newGroupUrl.trim()}
+                  className="flex items-center justify-center gap-2 py-2.5 px-4 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black font-bold rounded-xl transition-all cursor-pointer font-mono text-[10px] uppercase tracking-wider"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Group</span>
+                </button>
+              </form>
 
               <div className="overflow-y-auto max-h-96 rounded-xl border border-[#18181b]">
                 <table className="w-full text-xs font-mono text-left">
@@ -726,21 +983,22 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
                       <th className="py-3 px-3.5">Group Name</th>
                       <th className="py-3 px-3.5">Facebook Link</th>
                       <th className="py-3 px-3.5 text-center">Status</th>
+                      <th className="py-3 px-3.5 text-center">Remove</th>
                     </tr>
                   </thead>
                   <tbody className={`divide-y ${isLight ? 'divide-slate-200' : 'divide-[#18181b]'}`}>
                     {groups.length === 0 ? (
                       <tr>
-                        <td colSpan={3} className="py-8 text-center text-zinc-500 text-xs font-mono">
-                          No group profiles recorded yet. Run joiner bot to harvest groups.
+                        <td colSpan={4} className="py-8 text-center text-zinc-500 text-xs font-mono">
+                          No group targets yet. Add one above, or run the joiner bot to harvest them.
                         </td>
                       </tr>
                     ) : (
                       groups.map((gp, i) => (
-                        <tr key={i} className="hover:bg-[#121215]/60 transition">
+                        <tr key={gp.id || gp.url || i} className="hover:bg-[#121215]/60 transition">
                           <td className={`py-2.5 px-3.5 font-bold truncate max-w-[200px] ${isLight ? 'text-slate-800' : 'text-white'}`}>{gp.name}</td>
                           <td className="py-2.5 px-3.5 text-blue-400 font-mono text-xs truncate max-w-[200px]">
-                            <a href={gp.url} target="_blank" rel="noreferrer" className="hover:underline">{gp.url}</a>
+                            <a href={safeExternalHref(gp.url)} target="_blank" rel="noopener noreferrer" className="hover:underline">{gp.url}</a>
                           </td>
                           <td className="py-2.5 px-3.5 text-center">
                             <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-bold uppercase ${
@@ -749,6 +1007,16 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
                             }`}>
                               {gp.status}
                             </span>
+                          </td>
+                          <td className="py-2.5 px-3.5 text-center">
+                            <button
+                              onClick={() => handleDeleteGroup(gp)}
+                              disabled={!gp.id}
+                              title={gp.id ? 'Remove this group target' : 'Refresh to enable removal'}
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-30 transition-all cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </td>
                         </tr>
                       ))
@@ -769,9 +1037,20 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
               <h3 className={`font-bold ${isLight ? 'text-slate-800' : 'text-white'}`}>Activity Logs & Execution Feed</h3>
               <p className="text-xs text-zinc-400">Historical feed of Facebook auto activities</p>
             </div>
-            <button onClick={fetchActivityLogs} className="p-2 rounded-xl border border-[#27272a] hover:bg-[#18181b] text-zinc-400 hover:text-white cursor-pointer">
-              <RefreshCw className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleClearActivity}
+                disabled={activityLogs.length === 0}
+                title="Clear activity history"
+                className="flex items-center gap-1.5 py-2 px-3 rounded-xl border border-[#27272a] hover:border-red-500/40 hover:bg-red-500/10 text-zinc-400 hover:text-red-400 disabled:opacity-30 text-[10px] font-bold uppercase tracking-wider cursor-pointer transition-all"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear Log</span>
+              </button>
+              <button onClick={fetchActivityLogs} title="Refresh activity feed" className="p-2 rounded-xl border border-[#27272a] hover:bg-[#18181b] text-zinc-400 hover:text-white cursor-pointer">
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-[#18181b]">

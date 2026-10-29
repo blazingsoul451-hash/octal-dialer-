@@ -584,7 +584,7 @@ CREATE TABLE IF NOT EXISTS "teams" (
   "description" TEXT DEFAULT '',
   "leaderId" TEXT,
   "tenantId" TEXT NOT NULL,
-  "status" TEXT NOT NULL DEFAULT 'Active',
+  "status" TEXT NOT NULL DEFAULT 'active',
   "createdAt" TEXT NOT NULL,
   "updatedAt" TEXT NOT NULL
 );
@@ -667,43 +667,6 @@ CREATE TABLE IF NOT EXISTS "call_dispatch_journal" (
 CREATE INDEX IF NOT EXISTS "idx_call_journal_tenant_call" ON "call_dispatch_journal"("tenantId", "callId");
 CREATE INDEX IF NOT EXISTS "idx_call_journal_tenant_cmd" ON "call_dispatch_journal"("tenantId", "commandId");
 CREATE INDEX IF NOT EXISTS "idx_call_journal_replay_exp" ON "call_dispatch_journal"("replayExpiresAt");
-
--- Table: teams
-CREATE TABLE IF NOT EXISTS "teams" (
-  "id" TEXT PRIMARY KEY,
-  "name" TEXT NOT NULL,
-  "description" TEXT DEFAULT '',
-  "leaderId" TEXT,
-  "tenantId" TEXT NOT NULL,
-  "status" TEXT NOT NULL DEFAULT 'active',
-  "createdAt" TEXT NOT NULL,
-  "updatedAt" TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS "idx_teams_tenant" ON "teams"("tenantId");
-CREATE INDEX IF NOT EXISTS "idx_teams_leader" ON "teams"("leaderId");
-
--- Table: team_members
-CREATE TABLE IF NOT EXISTS "team_members" (
-  "id" TEXT PRIMARY KEY,
-  "teamId" TEXT NOT NULL,
-  "userId" TEXT NOT NULL,
-  "tenantId" TEXT NOT NULL,
-  "roleInTeam" TEXT NOT NULL DEFAULT 'member',
-  "joinedAt" TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS "idx_team_members_tenant_user" ON "team_members"("tenantId", "userId");
-CREATE INDEX IF NOT EXISTS "idx_team_members_tenant_team" ON "team_members"("tenantId", "teamId");
-
--- Table: campaign_teams
-CREATE TABLE IF NOT EXISTS "campaign_teams" (
-  "id" TEXT PRIMARY KEY,
-  "campaignId" TEXT NOT NULL,
-  "teamId" TEXT NOT NULL,
-  "tenantId" TEXT NOT NULL,
-  "assignedAt" TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS "idx_campaign_teams_tenant_team" ON "campaign_teams"("tenantId", "teamId");
-CREATE INDEX IF NOT EXISTS "idx_campaign_teams_tenant_camp" ON "campaign_teams"("tenantId", "campaignId");
 
 -- Table: team_settings
 CREATE TABLE IF NOT EXISTS "team_settings" (
@@ -1050,6 +1013,11 @@ CREATE TABLE IF NOT EXISTS "fb_accounts" (
   "dailyLimit" INTEGER NOT NULL DEFAULT 25,
   "sentToday" INTEGER NOT NULL DEFAULT 0,
   "lastSyncCursor" TEXT,
+  "cookiesEnc" TEXT,
+  "note" TEXT DEFAULT '',
+  "lastRunAt" TEXT,
+  "lastResetDate" TEXT,
+  "createdAt" TEXT,
   "updatedAt" TEXT NOT NULL,
   UNIQUE("tenantId", "profileId")
 );
@@ -1063,7 +1031,52 @@ CREATE TABLE IF NOT EXISTS "fb_task_queue" (
   "payload" TEXT NOT NULL,
   "status" TEXT NOT NULL DEFAULT 'pending',
   "claimedByAgentId" TEXT,
+  "claimedAt" TEXT,
+  "attempts" INTEGER NOT NULL DEFAULT 0,
   "errorMessage" TEXT,
   "createdAt" TEXT NOT NULL,
   "updatedAt" TEXT NOT NULL
 );
+
+-- Table: fb_campaign_config (Facebook Auto-Poster content + join settings per tenant)
+CREATE TABLE IF NOT EXISTS "fb_campaign_config" (
+  "tenantId" TEXT PRIMARY KEY,
+  "caption" TEXT NOT NULL DEFAULT '',
+  "postUrls" TEXT NOT NULL DEFAULT '[]',
+  "keywords" TEXT NOT NULL DEFAULT '[]',
+  "joinsPerSession" INTEGER NOT NULL DEFAULT 5,
+  "maxPostsPerDay" INTEGER NOT NULL DEFAULT 10,
+  "delayMinMinutes" INTEGER NOT NULL DEFAULT 3,
+  "delayMaxMinutes" INTEGER NOT NULL DEFAULT 9,
+  "updatedAt" TEXT NOT NULL DEFAULT ''
+);
+
+-- Table: fb_groups (discovered / joined Facebook group targets)
+CREATE TABLE IF NOT EXISTS "fb_groups" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "name" TEXT NOT NULL DEFAULT 'Facebook Group',
+  "url" TEXT NOT NULL,
+  "status" TEXT NOT NULL DEFAULT 'pending',
+  "profileId" TEXT,
+  "joinedAt" TEXT,
+  "createdAt" TEXT NOT NULL DEFAULT '',
+  UNIQUE("tenantId", "url")
+);
+
+-- Table: fb_activity_log (durable post/join history surfaced in Reports)
+CREATE TABLE IF NOT EXISTS "fb_activity_log" (
+  "id" TEXT PRIMARY KEY,
+  "tenantId" TEXT NOT NULL,
+  "profileId" TEXT,
+  "type" TEXT NOT NULL DEFAULT 'post',
+  "target" TEXT,
+  "detail" TEXT,
+  "status" TEXT NOT NULL DEFAULT 'success',
+  "createdAt" TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS "idx_fb_accounts_tenant" ON "fb_accounts"("tenantId", "status");
+CREATE INDEX IF NOT EXISTS "idx_fb_groups_tenant_status" ON "fb_groups"("tenantId", "status");
+CREATE INDEX IF NOT EXISTS "idx_fb_activity_tenant_created" ON "fb_activity_log"("tenantId", "createdAt" DESC);
+CREATE INDEX IF NOT EXISTS "idx_fb_tasks_claimed" ON "fb_task_queue"("status", "claimedAt");
