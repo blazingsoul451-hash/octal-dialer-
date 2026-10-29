@@ -766,7 +766,7 @@ export async function resetAllLeadStatusesInCampaign(campaignId: string, tenantI
   if (!campaignId || !tenantId) return 0;
   const result = await db.execute(`
     UPDATE leads 
-    SET status = 'PENDING', outcome = NULL, duration = 0, "lockedBy" = NULL, "lockedAt" = NULL, "dispositionNotes" = NULL
+    SET status = 'PENDING', outcome = NULL, duration = 0, "lockedBy" = NULL, "lockedAt" = NULL
     WHERE "campaignId" = $1 AND "tenantId" = $2
   `, [campaignId, tenantId]);
   return result.rowCount;
@@ -1166,7 +1166,8 @@ export async function registerOrUpdateDevice(data: {
     }
   }
   if (!deviceId) {
-    deviceId = 'dev_' + (data.deviceUid ? data.deviceUid.replace(/[^a-zA-Z0-9_-]/g, '_') : Math.random().toString(36).substring(2, 11));
+    const cleanTenantPrefix = data.tenantId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    deviceId = 'dev_' + (data.deviceUid ? `${cleanTenantPrefix}_${data.deviceUid.replace(/[^a-zA-Z0-9_-]/g, '_')}` : Math.random().toString(36).substring(2, 11));
   }
 
   const existingDevice = await db.queryOne<DeviceRecord>(`SELECT * FROM devices WHERE id = $1`, [deviceId]);
@@ -1191,7 +1192,7 @@ export async function registerOrUpdateDevice(data: {
           "isRevoked" = 0,
           "lastSeenAt" = $10,
           "updatedAt" = $10
-      WHERE id = $11
+      WHERE id = $11 AND "tenantId" = $3
     `, [
       data.name || 'Android Device',
       data.userId,
@@ -1206,17 +1207,17 @@ export async function registerOrUpdateDevice(data: {
       deviceId
     ]);
   } else {
-    await db.execute(`
+    const upsertRes = await db.execute(`
       INSERT INTO devices (id, name, "btAddress", "osType", "ipAddress", status, "userId", "tenantId", platform, "appVersion", "deviceUid", "isRevoked", "lastSeenAt", "createdAt", "updatedAt")
       VALUES ($1, $2, $3, $4, $5, 'ONLINE', $6, $7, $8, $9, $10, 0, $11, $11, $11)
       ON CONFLICT ("id") DO UPDATE SET
         name = EXCLUDED.name,
         "userId" = EXCLUDED."userId",
-        "tenantId" = EXCLUDED."tenantId",
         status = 'ONLINE',
         "isRevoked" = 0,
         "lastSeenAt" = EXCLUDED."lastSeenAt",
         "updatedAt" = EXCLUDED."updatedAt"
+      WHERE devices."tenantId" = EXCLUDED."tenantId"
     `, [
       deviceId,
       data.name || 'Android Device',
@@ -1230,9 +1231,12 @@ export async function registerOrUpdateDevice(data: {
       data.deviceUid || null,
       now
     ]);
+    if (upsertRes.rowCount === 0) {
+      throw new Error(`Device belongs to another tenant.`);
+    }
   }
 
-  const result = await db.queryOne<DeviceRecord>(`SELECT * FROM devices WHERE id = $1`, [deviceId]);
+  const result = await db.queryOne<DeviceRecord>(`SELECT * FROM devices WHERE id = $1 AND "tenantId" = $2`, [deviceId, data.tenantId]);
   return result!;
 }
 
@@ -1376,9 +1380,9 @@ export async function createTeam(data: {
   ]);
 
   if (data.leaderId) {
-    const existing = await db.queryOne(`SELECT id FROM team_members WHERE "teamId" = $1 AND "userId" = $2`, [id, data.leaderId]);
+    const existing = await db.queryOne(`SELECT id FROM team_members WHERE "teamId" = $1 AND "userId" = $2 AND "tenantId" = $3`, [id, data.leaderId, data.tenantId]);
     if (existing) {
-      await db.execute(`UPDATE team_members SET "roleInTeam" = 'leader' WHERE id = $1`, [(existing as any).id]);
+      await db.execute(`UPDATE team_members SET "roleInTeam" = 'leader' WHERE id = $1 AND "tenantId" = $2`, [(existing as any).id, data.tenantId]);
     } else {
       const leadMemId = 'tm_' + Math.random().toString(36).substring(2, 11);
       await db.execute(`
@@ -1436,9 +1440,9 @@ export async function updateTeam(
   const result = await db.execute(query, params);
 
   if (data.leaderId) {
-    const existing = await db.queryOne(`SELECT id FROM team_members WHERE "teamId" = $1 AND "userId" = $2`, [id, data.leaderId]);
+    const existing = await db.queryOne(`SELECT id FROM team_members WHERE "teamId" = $1 AND "userId" = $2 AND "tenantId" = $3`, [id, data.leaderId, tenantId]);
     if (existing) {
-      await db.execute(`UPDATE team_members SET "roleInTeam" = 'leader' WHERE id = $1`, [(existing as any).id]);
+      await db.execute(`UPDATE team_members SET "roleInTeam" = 'leader' WHERE id = $1 AND "tenantId" = $2`, [(existing as any).id, tenantId]);
     } else {
       const leadMemId = 'tm_' + Math.random().toString(36).substring(2, 11);
       await db.execute(`
@@ -1556,8 +1560,8 @@ export async function getUserScopedCampaignIds(userId: string, tenantId: string)
   const rows = await db.queryAll<{ campaignId: string }>(`
     SELECT DISTINCT ct."campaignId"
     FROM campaign_teams ct
-    JOIN team_members tm ON tm."teamId" = ct."teamId"
-    WHERE tm."userId" = $1 AND tm."tenantId" = $2
+    JOIN team_members tm ON tm."teamId" = ct."teamId" AND tm."tenantId" = ct."tenantId"
+    WHERE tm."userId" = $1 AND tm."tenantId" = $2 AND ct."tenantId" = $2
   `, [userId, tenantId]);
   return rows.map(r => r.campaignId);
 }
@@ -1567,8 +1571,8 @@ export async function getTeamsLedByUser(userId: string, tenantId: string): Promi
     SELECT DISTINCT t.id, t.name, t.description, t."leaderId", t."tenantId", t.status, t."createdAt", t."updatedAt",
            u."displayName" as "leaderName"
     FROM teams t
-    LEFT JOIN users u ON u.id = t."leaderId"
-    LEFT JOIN team_members tm ON tm."teamId" = t.id AND tm."userId" = $2 AND tm."roleInTeam" = 'leader'
+    LEFT JOIN users u ON u.id = t."leaderId" AND u."tenantId" = t."tenantId"
+    LEFT JOIN team_members tm ON tm."teamId" = t.id AND tm."tenantId" = t."tenantId" AND tm."userId" = $2 AND tm."roleInTeam" = 'leader'
     WHERE t."tenantId" = $1 AND (
       t."leaderId" = $2 OR tm.id IS NOT NULL
     )
@@ -2615,42 +2619,44 @@ export function normalizeModuleKey(rawKey: string): string {
 export async function getTenantModuleEntitlements(tenantId: string): Promise<Record<string, boolean>> {
   const result: Record<string, boolean> = {};
 
-  // All canonical business modules default to TRUE (included in all company plans unless explicitly turned off)
-  CANONICAL_MODULES.forEach(m => {
-    result[m.id] = true;
+  ALL_CANONICAL_MODULES.forEach(m => {
+    result[m.id] = false;
     if (m.aliases) {
-      m.aliases.forEach(a => { result[a] = true; });
+      m.aliases.forEach(a => { result[a] = false; });
     }
   });
-
-  // Legacy scrapers default to FALSE (independent add-ons), EXCEPT for tenant_default
-  const isDefaultTenant = tenantId === 'tenant_default' || !tenantId;
-  LEGACY_SCRAPER_MODULES.forEach(m => {
-    result[m.id] = isDefaultTenant;
-    if (m.aliases) {
-      m.aliases.forEach(a => { result[a] = isDefaultTenant; });
-    }
-  });
-  if (isDefaultTenant) {
-    result['scraper'] = true;
-    result['fb-scraper'] = true;
-    result['googleScraper'] = true;
-    result['facebookScraper'] = true;
-  }
 
   if (!tenantId) return result;
 
   try {
-    const rows = await db.queryAll<{ moduleId: string; enabled: number }>(`
-      SELECT "moduleId", enabled FROM tenant_module_entitlements WHERE "tenantId" = $1
-    `, [tenantId]);
+    const tenantExists = tenantId === 'tenant_default' || Boolean(await db.queryOne('SELECT id FROM tenants WHERE id = $1', [tenantId]));
+    if (!tenantExists) {
+      return result;
+    }
 
-    const existingCanonicalKeys = new Set<string>();
+    const isDefaultTenant = tenantId === 'tenant_default';
+
+    CANONICAL_MODULES.forEach(m => {
+      result[m.id] = true;
+      if (m.aliases) {
+        m.aliases.forEach(a => { result[a] = true; });
+      }
+    });
+
+    LEGACY_SCRAPER_MODULES.forEach(m => {
+      result[m.id] = isDefaultTenant;
+      if (m.aliases) {
+        m.aliases.forEach(a => { result[a] = isDefaultTenant; });
+      }
+    });
+
+    const rows = await db.queryAll<{ moduleId: string; enabled: number }>(
+      'SELECT "moduleId", enabled FROM tenant_module_entitlements WHERE "tenantId" = $1',
+      [tenantId]
+    );
 
     for (const r of rows) {
       const canonical = normalizeModuleKey(r.moduleId);
-      existingCanonicalKeys.add(canonical);
-      // Explicit 1 = enabled, explicit 0 = disabled by Master Admin
       const isEnabled = Number(r.enabled) === 1;
       result[canonical] = isEnabled;
       const modDef = ALL_CANONICAL_MODULES.find(m => m.id === canonical);
@@ -2658,26 +2664,14 @@ export async function getTenantModuleEntitlements(tenantId: string): Promise<Rec
         modDef.aliases.forEach(a => { result[a] = isEnabled; });
       }
     }
-
-    // Auto-seed missing canonical modules into tenant_module_entitlements table
-    // so PostgreSQL records are permanently created and explicitly stored with enabled = 1
-    const missingCanonical = CANONICAL_MODULES.filter(m => !existingCanonicalKeys.has(m.id));
-    if (missingCanonical.length > 0) {
-      const now = new Date().toISOString();
-      for (const missing of missingCanonical) {
-        try {
-          await db.execute(`
-            INSERT INTO tenant_module_entitlements (id, "tenantId", "moduleId", enabled, "updatedBy", "updatedAt")
-            VALUES ($1, $2, $3, 1, 'system_auto_seed', $4)
-            ON CONFLICT ("tenantId", "moduleId") DO NOTHING
-          `, ['tme_' + crypto.randomUUID(), tenantId, missing.id, now]);
-        } catch {
-          // ignore concurrent collision
-        }
-      }
-    }
   } catch (err) {
-    console.error(`[getTenantModuleEntitlements] Error querying entitlements for ${tenantId}:`, err);
+    console.error(`[getTenantModuleEntitlements] Error querying entitlements for ${tenantId} (failing closed):`, err);
+    ALL_CANONICAL_MODULES.forEach(m => {
+      result[m.id] = false;
+      if (m.aliases) {
+        m.aliases.forEach(a => { result[a] = false; });
+      }
+    });
   }
 
   return result;

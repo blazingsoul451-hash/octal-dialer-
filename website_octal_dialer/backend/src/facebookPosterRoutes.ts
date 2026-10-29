@@ -25,6 +25,7 @@ import path from 'path';
 import fs from 'fs';
 import dbAdapter from './db/dbAdapter';
 import { encryptSecret, decryptSecret } from './services/secretVault';
+import { killProcessTree } from './googleMapsScraperService';
 
 export const facebookPosterRouter = Router();
 
@@ -1012,9 +1013,15 @@ function spawnPosterJob(tenantId: string, mode: string, account: string, profile
 function terminatePosterJob(tenantId: string): boolean {
   const job = activeJobs.get(tenantId);
   if (!job) return false;
+  const pid = job.process.pid;
+  const profileDir = resolveProfileDir(tenantId, job.account);
   try {
     job.process.kill('SIGTERM');
   } catch { /* already gone */ }
+  if (pid) {
+    killProcessTree(pid).catch(() => {});
+  }
+  scrubDecryptedCookies(profileDir);
   activeJobs.delete(tenantId);
   return true;
 }

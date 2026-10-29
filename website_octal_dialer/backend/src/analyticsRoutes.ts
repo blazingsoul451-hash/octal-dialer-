@@ -13,13 +13,9 @@
 
 import { Router, Request, Response } from 'express';
 import { dbAdapter as db } from './db/dbAdapter';
+import { getTenantId } from './authManager';
 
 export const analyticsRouter = Router();
-
-function getTenantId(req: Request): string {
-  const user = (req as any).user;
-  return user?.tenantId || (user?.role === 'platform_admin' ? 'tenant_default' : 'tenant_default');
-}
 
 function resolveDateRange(preset?: string, customStart?: string, customEnd?: string): { startIso: string; endIso: string } {
   const now = new Date();

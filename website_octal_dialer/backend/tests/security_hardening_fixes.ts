@@ -361,3 +361,4 @@ test('the Messenger sniffer supports a resident daemon mode', () => {
 });
 
 console.log(`\n${passed} security hardening regression tests passed.`);
+process.exit(0);

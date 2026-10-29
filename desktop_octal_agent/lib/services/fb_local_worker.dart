@@ -44,6 +44,7 @@ class FbLocalWorker {
         '--profile', profileName,
         '--dataDir', '${appDir.path}/octal_agent/data'
       ]);
+      _activeProcess = proc;
 
       proc.stdout.transform(utf8.decoder).listen((data) {
         for (final line in data.split('\n')) {
@@ -61,7 +62,14 @@ class FbLocalWorker {
         if (data.trim().isNotEmpty) addLog('[Auth Error] ${data.trim()}');
       });
 
-      final exitCode = await proc.exitCode;
+      final exitCode = await proc.exitCode.timeout(
+        const Duration(minutes: 6),
+        onTimeout: () {
+          proc.kill();
+          return -1;
+        },
+      );
+      if (_activeProcess == proc) _activeProcess = null;
       if (exitCode == 0 && status == FbWorkerStatus.loggedIn) {
         addLog('✅ Facebook connected successfully! Active cookies saved locally.');
         return true;
@@ -69,6 +77,8 @@ class FbLocalWorker {
       status = FbWorkerStatus.idle;
       return false;
     } catch (e) {
+      _activeProcess?.kill();
+      _activeProcess = null;
       addLog('❌ Failed to launch browser: $e');
       status = FbWorkerStatus.error;
       return false;
@@ -113,6 +123,7 @@ class FbLocalWorker {
 
     switch (taskType) {
       case 'post_group':
+      case 'group_share':
       case 'share':
         final urls = payload['postUrls'];
         await runCampaign(
@@ -126,8 +137,17 @@ class FbLocalWorker {
         break;
 
       case 'send_dm':
-        final recipient = (payload['recipient'] ?? payload['threadUrl'] ?? '').toString();
-        final message = (payload['message'] ?? payload['body'] ?? '').toString();
+        final rawRecipient = (payload['recipient'] ??
+                payload['threadUrl'] ??
+                payload['recipientAddress'] ??
+                payload['externalThreadId'] ??
+                '')
+            .toString()
+            .trim();
+        final recipient = rawRecipient.startsWith('http')
+            ? rawRecipient
+            : (rawRecipient.isNotEmpty ? 'https://www.facebook.com/messages/t/$rawRecipient' : '');
+        final message = (payload['message'] ?? payload['body'] ?? '').toString().trim();
         if (recipient.isEmpty || message.isEmpty) {
           throw Exception('send_dm task requires both a recipient and a message.');
         }
@@ -227,9 +247,12 @@ class FbLocalWorker {
       });
 
       await _activeProcess!.exitCode;
+      _activeProcess = null;
       status = FbWorkerStatus.idle;
       addLog('🏁 Local campaign run finished.');
     } catch (e) {
+      _activeProcess?.kill();
+      _activeProcess = null;
       status = FbWorkerStatus.error;
       addLog('❌ Campaign execution failed: $e');
     }

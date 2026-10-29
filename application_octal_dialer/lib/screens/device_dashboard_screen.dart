@@ -32,11 +32,11 @@ class _DeviceDashboardScreenState extends State<DeviceDashboardScreen> with Widg
   List<LeadItem> _localQueue = [];
   List<Map<String, dynamic>> _campaignsList = [];
   String? _selectedCampaignId;
-  String _activeCampaignName = 'Pakistan Tax Consultants COMBINED FINAL';
-  int _totalLeads = 5168;
+  String _activeCampaignName = 'Loading Campaign...';
+  int _totalLeads = 0;
   int _completedLeads = 0;
   int _answeredLeads = 0;
-  int _remainingLeads = 5168;
+  int _remainingLeads = 0;
 
   static const MethodChannel _nativeChannel = MethodChannel('com.octal.dialer/call');
   bool _callPermissionGranted = true;

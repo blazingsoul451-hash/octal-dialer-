@@ -7118,8 +7118,18 @@ app.get(['/api/metrics/agents', '/metrics/agents'], requireAuth, async (req, res
 
 registerScraperRoutes(app, requireAuth, io);
 app.use('/api/facebook-poster', requireAuth, facebookPosterRouter);
-app.use('/api', requireAuth, uniboxRouter);
-app.use('/api', requireAuth, analyticsRouter);
+app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (req.path.startsWith('/unibox') || req.path.startsWith('/fb-tasks') || req.path.startsWith('/webhooks/facebook')) {
+    return requireAuth(req, res, next);
+  }
+  next();
+}, uniboxRouter);
+app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (req.path.startsWith('/reports/analytics-hub')) {
+    return requireAuth(req, res, next);
+  }
+  next();
+}, analyticsRouter);
 
 // â”€â”€â”€ LEAD GEN Z INTEGRATION BOUNDARY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/integrations/leadgen/import â€” Ingests leads from LEAD GEN Z
@@ -7411,7 +7421,7 @@ const handleCreateUser = async (req: express.Request, res: express.Response) => 
 
     requestedMods = [...new Set(requestedMods.map(normalizeModuleKey))];
     if (requestedMods.some(id => !ALL_CANONICAL_MODULES.some(m => m.id === id))) {
-      res.status(400).json({ error: 'Unknown module assignment.' });
+      res.status(403).json({ error: 'Forbidden: Unknown or unentitled module assignment.' });
       return;
     }
     if (requestedMods.length > 0) {

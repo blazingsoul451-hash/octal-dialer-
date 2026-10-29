@@ -55,10 +55,12 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
   const [campaignStatus, setCampaignStatus] = useState<'idle' | 'running'>('idle');
+  const [campaignActionInFlight, setCampaignActionInFlight] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Check URL query parameters for OAuth returns
   useEffect(() => {
@@ -118,9 +120,19 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
   const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` };
 
   function showToast(msg: string, ok = true) {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ msg, ok });
-    setTimeout(() => setToast(null), 4500);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 4500);
   }
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   // Detect account provider from host / email
   function getAccountProvider(acc: { smtpHost?: string; email?: string; authType?: string }): ProviderType {
@@ -445,6 +457,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
   const targetCampaignAccounts = getTargetCampaignAccounts();
 
   async function startCampaign() {
+    if (campaignActionInFlight || campaignStatus === 'running') return;
     if (!accounts.filter(a => a.status === 'active').length) {
       showToast('No active email accounts found! Connect your email account above first.', false);
       return;
@@ -459,6 +472,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
       return;
     }
 
+    setCampaignActionInFlight(true);
     try {
       const res = await fetch(`${serverUrl}/email/start`, {
         method: 'POST',
@@ -473,16 +487,22 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
       showToast(`🚀 Campaign started with ${targetCampaignAccounts.length} sender(s)! Running in background...`);
     } catch {
       showToast('Failed to start campaign', false);
+    } finally {
+      setCampaignActionInFlight(false);
     }
   }
 
   async function stopCampaign() {
+    if (campaignActionInFlight) return;
+    setCampaignActionInFlight(true);
     try {
       await fetch(`${serverUrl}/emailer/stop`, { method: 'POST', headers });
       setCampaignStatus('idle');
       showToast('Campaign paused.');
     } catch {
       showToast('Failed to stop campaign', false);
+    } finally {
+      setCampaignActionInFlight(false);
     }
   }
 

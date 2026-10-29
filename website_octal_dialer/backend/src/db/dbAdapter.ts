@@ -35,15 +35,9 @@ export function transformSql(sql: string, params: any[] = []): { sql: string; pa
   let finalParams: any[] = [];
 
   // Check if parameters passed as a single named-property object
-  if (params.length === 1 && params[0] !== null && typeof params[0] === 'object' && !Array.isArray(params[0])) {
+  if (params.length === 1 && params[0] !== null && typeof params[0] === 'object' && !Array.isArray(params[0]) && !(params[0] instanceof Date) && !Buffer.isBuffer(params[0])) {
     const obj = params[0];
-    let idx = 1;
-    finalSql = finalSql.replace(/@([a-zA-Z0-9_]+)/g, (_, name) => {
-      finalParams.push(obj[name]);
-      return `$${idx++}`;
-    });
-  } else {
-    finalParams = params.flat();
+    const paramIndexByName = new Map<string, number>();
     let idx = 1;
     let inStr = false;
     let quoteChar = '';
@@ -55,8 +49,53 @@ export function transformSql(sql: string, params: any[] = []): { sql: string; pa
         quoteChar = c;
         out += c;
       } else if (inStr && c === quoteChar) {
-        inStr = false;
+        if (c === "'" && finalSql[i + 1] === "'") {
+          out += "''";
+          i++;
+        } else {
+          inStr = false;
+          out += c;
+        }
+      } else if (!inStr && c === '@') {
+        const match = finalSql.slice(i + 1).match(/^[a-zA-Z0-9_]+/);
+        if (match) {
+          const name = match[0];
+          let paramIdx = paramIndexByName.get(name);
+          if (!paramIdx) {
+            paramIdx = idx++;
+            paramIndexByName.set(name, paramIdx);
+            finalParams.push(obj[name]);
+          }
+          out += `$${paramIdx}`;
+          i += name.length;
+        } else {
+          out += c;
+        }
+      } else {
         out += c;
+      }
+    }
+    finalSql = out;
+  } else {
+    finalParams = params.length === 1 && Array.isArray(params[0]) && !finalSql.includes('$1') ? params[0] : [...params];
+    let idx = 1;
+    let inStr = false;
+    let quoteChar = '';
+    let out = '';
+    for (let i = 0; i < finalSql.length; i++) {
+      const c = finalSql[i];
+      if (!inStr && (c === "'" || c === '"')) {
+        inStr = true;
+        quoteChar = c;
+        out += c;
+      } else if (inStr && c === quoteChar) {
+        if (c === "'" && finalSql[i + 1] === "'") {
+          out += "''";
+          i++;
+        } else {
+          inStr = false;
+          out += c;
+        }
       } else if (!inStr && c === '?') {
         out += `$${idx++}`;
       } else {

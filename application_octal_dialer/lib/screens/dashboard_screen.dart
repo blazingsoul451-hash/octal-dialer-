@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/phone_bridge_service.dart';
 import 'standalone_dialer_screen.dart';
 
 class CampaignInfo {
@@ -75,6 +77,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _fetchCampaigns();
   }
 
+  Future<Map<String, String>> _buildAuthHeaders() async {
+    final prefs = await SharedPreferences.getInstance();
+    final bridge = PhoneBridgeService.instance;
+    final token = bridge.authToken.isNotEmpty
+        ? bridge.authToken
+        : (prefs.getString('auth_token') ?? '');
+    return {
+      'Content-Type': 'application/json',
+      if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
+
   Future<void> _fetchCampaigns() async {
     if (!mounted) return;
     setState(() {
@@ -83,8 +97,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     try {
+      final headers = await _buildAuthHeaders();
       final uri = Uri.parse('${widget.serverUrl}/api/campaigns/mobile');
-      final res = await http.get(uri).timeout(const Duration(seconds: 8));
+      final res = await http.get(uri, headers: headers).timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
         final List<dynamic> data = json.decode(res.body);
         if (mounted) {
@@ -121,8 +136,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     try {
+      final headers = await _buildAuthHeaders();
       final uri = Uri.parse('${widget.serverUrl}/api/campaigns/$campaignId/leads');
-      final res = await http.get(uri).timeout(const Duration(seconds: 8));
+      final res = await http.get(uri, headers: headers).timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
         final List<dynamic> data = json.decode(res.body);
         final List<LeadItem> loadedLeads = data.map((item) {

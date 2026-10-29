@@ -449,6 +449,7 @@ async function main(): Promise<void> {
 main()
   .then(() => {
     console.log(`\n${passed} web hardening regression tests passed.`);
+    process.exit(0);
   })
   .catch((err) => {
     console.error(err);

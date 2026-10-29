@@ -21,6 +21,7 @@ import { config } from '../config';
 const PREFIX = 'v1';
 const ALGORITHM = 'aes-256-gcm';
 const IV_BYTES = 12;
+const AUTH_TAG_BYTES = 16;
 const KEY_BYTES = 32;
 
 let cachedKey: Buffer | null = null;
@@ -42,11 +43,11 @@ export function isEncrypted(value: unknown): boolean {
  * optional columns stay NULL/'' instead of holding an encrypted empty string.
  */
 export function encryptSecret(plain: string | null | undefined): string {
-  if (plain === null || plain === undefined || plain === '') return plain ?? '';
+  if (plain === null || plain === undefined || plain === '' || plain === '***keep***') return plain ?? '';
   if (isEncrypted(plain)) return plain; // already sealed — never double-wrap
 
   const iv = crypto.randomBytes(IV_BYTES);
-  const cipher = crypto.createCipheriv(ALGORITHM, getKey(), iv);
+  const cipher = crypto.createCipheriv(ALGORITHM, getKey(), iv, { authTagLength: AUTH_TAG_BYTES });
   const ciphertext = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
 
@@ -70,9 +71,19 @@ export function decryptSecret(stored: string | null | undefined): string {
 
   try {
     const [, ivB64, tagB64, dataB64] = parts;
-    const decipher = crypto.createDecipheriv(ALGORITHM, getKey(), Buffer.from(ivB64, 'base64'));
-    decipher.setAuthTag(Buffer.from(tagB64, 'base64'));
-    return Buffer.concat([decipher.update(Buffer.from(dataB64, 'base64')), decipher.final()]).toString('utf8');
+    if (!ivB64 || !tagB64 || dataB64 === undefined) {
+      return '';
+    }
+    const ivBuf = Buffer.from(ivB64, 'base64');
+    const tagBuf = Buffer.from(tagB64, 'base64');
+    const dataBuf = Buffer.from(dataB64, 'base64');
+    if (ivBuf.length !== IV_BYTES || tagBuf.length !== AUTH_TAG_BYTES) {
+      console.warn('[SecretVault] Invalid IV or AuthTag length in envelope; treating as empty.');
+      return '';
+    }
+    const decipher = crypto.createDecipheriv(ALGORITHM, getKey(), ivBuf, { authTagLength: AUTH_TAG_BYTES });
+    decipher.setAuthTag(tagBuf);
+    return Buffer.concat([decipher.update(dataBuf), decipher.final()]).toString('utf8');
   } catch (err: any) {
     console.warn(`[SecretVault] Failed to decrypt secret: ${err.message}. Treating as empty.`);
     return '';

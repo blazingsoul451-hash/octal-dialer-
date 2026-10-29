@@ -934,13 +934,13 @@ export async function ensureDefaultAdmin(): Promise<void> {
       // silently reverted every admin password change on restart.
       await db.execute(`
         UPDATE users
-        SET username = 'admin', email = 'admin@octaldialer.internal', role = 'superadmin', "is_platform_role" = TRUE, "tenantId" = NULL, status = 'Active', "updatedAt" = $1
+        SET username = 'admin', email = 'admin@octaldialer.internal', role = 'platform_admin', "is_platform_role" = TRUE, "tenantId" = NULL, status = 'Active', "updatedAt" = $1
         WHERE id = $2
       `, [now, existingAdmin.id]);
     } else {
       await db.execute(`
         INSERT INTO users (id, username, email, "passwordHash", role, "is_platform_role", "tenantId", "authProvider", "emailVerified", status, "createdAt", "updatedAt")
-        VALUES ($1, 'admin', 'admin@octaldialer.internal', $2, 'superadmin', TRUE, NULL, 'local', 1, 'Active', $3, $3)
+        VALUES ($1, 'admin', 'admin@octaldialer.internal', $2, 'platform_admin', TRUE, NULL, 'local', 1, 'Active', $3, $3)
       `, ['user_admin_' + crypto.randomUUID(), adminPasswordHash, now]);
     }
     if (!existingAdmin && adminBootstrap.generated) {
@@ -949,7 +949,7 @@ export async function ensureDefaultAdmin(): Promise<void> {
       );
       console.warn('[Auth Bootstrap] Store it now and change it on first sign-in. Set BOOTSTRAP_ADMIN_PASSWORD to control this.');
     }
-    console.log('[Auth Bootstrap] Synchronized platform superadmin (admin / admin@octaldialer.internal).');
+    console.log('[Auth Bootstrap] Synchronized platform admin (admin / admin@octaldialer.internal).');
   } catch (err) {
     console.warn('[ensureDefaultAdmin] Notice upserting admin@octaldialer.internal:', err);
   }
@@ -1039,8 +1039,8 @@ export async function ensureDefaultAdmin(): Promise<void> {
     const existingMailbox = await db.queryOne<{ id: string }>('SELECT id FROM email_accounts WHERE "tenantId" = $1 LIMIT 1', ['tenant_default']);
     if (!existingMailbox) {
       await db.execute(`
-        INSERT INTO email_accounts (id, "tenantId", email, "senderName", "smtpHost", "smtpPort", status, "dailyLimit", "sentToday", "lastResetDate", "authType", "createdAt")
-        VALUES ($1, 'tenant_default', 'sandbox@octaldialer.local', 'Built-in Sandbox Mailbox', 'sandbox.internal', 25, 'active', 1000, 0, $2, 'sandbox', $3)
+        INSERT INTO email_accounts (id, "tenantId", email, password, "senderName", "smtpHost", "smtpPort", status, "dailyLimit", "sentToday", "lastResetDate", "authType", "createdAt")
+        VALUES ($1, 'tenant_default', 'sandbox@octaldialer.local', '', 'Built-in Sandbox Mailbox', 'sandbox.internal', 25, 'active', 1000, 0, $2, 'sandbox', $3)
       `, ['sandbox_default', now.slice(0, 10), now]);
       console.log('[ensureDefaultAdmin] Seeded sandbox_default mailbox for tenant_default.');
     }
@@ -1183,7 +1183,7 @@ export async function authenticateLogin(identifier: string, password: string): P
     sub: user.id,
     username: user.username,
     role: user.role,
-    tenantId: dbTenantId || (isPlatformRole(user.role) ? 'tenant_default' : null)
+    tenantId: isPlatformRole(user.role) ? null : (dbTenantId || null)
   };
 
   const token = jwt.sign(payload, getJWTSecret(), { expiresIn: JWT_EXPIRES_IN });
@@ -1360,7 +1360,7 @@ export async function validateToken(token: string): Promise<AuthUser | null> {
         username: dbUser.username,
         displayName: dbUser.displayName || dbUser.displayname || dbUser.username,
         role: effectiveRole,
-        tenantId: dbTenantId || decoded.tenantId || (isPlatformRole(effectiveRole) ? 'tenant_default' : null),
+        tenantId: isPlatformRole(effectiveRole) ? null : (dbTenantId || decoded.tenantId || null),
         email: dbUser.email,
         roleId: dbUser.roleId || dbUser.roleid || null,
         onboardingStatus: dbUser.onboardingStatus || dbUser.onboardingstatus || 'NONE',

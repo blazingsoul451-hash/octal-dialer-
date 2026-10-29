@@ -56,6 +56,17 @@ async function run() {
   }
 
   try {
+    // Ensure test actors are provisioned if this is a fresh test database
+    const uCheck = await pool.query("SELECT id FROM users WHERE username = 'software_owner'");
+    if (uCheck.rows.length === 0) {
+      const { execFileSync } = require('child_process');
+      const path = require('path');
+      execFileSync(process.execPath, [path.join(__dirname, '../scripts/setup_4_roles.js')], {
+        env: process.env,
+        stdio: 'pipe'
+      });
+    }
+
     // Authenticate test actors
     const rAdmin = await apiRequest('POST', '/api/admin/login', { username: 'software_owner', password: 'SoftwareOwnerPass123!' });
     assert.strictEqual(rAdmin.status, 200, 'Software Owner authentication should return 200');
@@ -232,4 +243,4 @@ async function run() {
   }
 }
 
-run();
+run().then(() => { process.exit(0); }).catch(err => { fail("Final security audit suite encountered an error", err); process.exit(1); });

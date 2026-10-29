@@ -233,9 +233,9 @@ export async function ingestInboundOmnichannelReply(params: {
       ]
     );
 
-    const threadId = thread?.id || `thd_${crypto.randomBytes(8).toString('hex')}`;
+    let threadId = thread?.id || `thd_${crypto.randomBytes(8).toString('hex')}`;
     if (!thread) {
-      await db.execute(
+      const upsertedThread = await db.queryOne<{ id: string; leadId: string | null }>(
         `INSERT INTO outreach_threads (
           id, "tenantId", "leadId", "emailLeadId", channel, "accountId", "externalThreadId",
           "prospectAddress", "prospectName", "prospectCompany", subject, status,
@@ -247,7 +247,8 @@ export async function ingestInboundOmnichannelReply(params: {
           "unreadCount" = outreach_threads."unreadCount" + 1,
           "lastMessageSnippet" = EXCLUDED."lastMessageSnippet",
           "lastMessageAt" = EXCLUDED."lastMessageAt",
-          "updatedAt" = EXCLUDED."updatedAt"`,
+          "updatedAt" = EXCLUDED."updatedAt"
+        RETURNING id, "leadId"`,
         [
           threadId,
           params.tenantId,
@@ -265,19 +266,23 @@ export async function ingestInboundOmnichannelReply(params: {
           now,
         ]
       );
+      if (upsertedThread?.id) {
+        threadId = upsertedThread.id;
+        thread = upsertedThread;
+      }
     } else {
       await db.execute(
         `UPDATE outreach_threads 
          SET status = $1, "sequenceLocked" = 1, "unreadCount" = "unreadCount" + 1,
              "lastMessageSnippet" = $2, "lastMessageAt" = $3, "updatedAt" = $3
-         WHERE id = $4`,
-        [threadStatus, cleanText.slice(0, 180), now, threadId]
+         WHERE id = $4 AND "tenantId" = $5`,
+        [threadStatus, cleanText.slice(0, 180), now, threadId, params.tenantId]
       );
     }
 
     // E. Insert Inbound Message Record
     const msgId = `msg_${crypto.randomBytes(8).toString('hex')}`;
-    await db.execute(
+    const insertMsgRes = await db.execute(
       `INSERT INTO outreach_messages (
         id, "threadId", "tenantId", direction, channel, "senderAddress", "recipientAddress",
         "externalMessageId", "inReplyTo", "referencesHeader", subject, "bodyRaw", "bodyClean",
@@ -302,9 +307,11 @@ export async function ingestInboundOmnichannelReply(params: {
         now,
       ]
     );
+    if (insertMsgRes.rowCount === 0) {
+      return { processed: false };
+    }
 
     // F. Cross-Channel Handoff: Auto-Promote Hot Leads or Extracted Phones to Android Dialer!
-    // dialablePhone already calculated above
     let promotedLeadId = thread?.leadId || emailLead?.dialerLeadId || null;
 
     if ((intent === 'positive' || intent === 'phone_shared') && dialablePhone) {
@@ -345,7 +352,16 @@ export async function ingestInboundOmnichannelReply(params: {
           `UPDATE campaigns SET "leadCount" = "leadCount" + 1 WHERE id = $1 AND "tenantId" = $2`,
           [hotCamp.id, params.tenantId]
         );
-        await db.execute(`UPDATE outreach_threads SET "leadId" = $1 WHERE id = $2`, [promotedLeadId, threadId]);
+        await db.execute(
+          `UPDATE outreach_threads SET "leadId" = $1 WHERE id = $2 AND "tenantId" = $3`,
+          [promotedLeadId, threadId, params.tenantId]
+        );
+        if (emailLead?.id) {
+          await db.execute(
+            `UPDATE email_leads SET "dialerLeadId" = $1 WHERE id = $2 AND "tenantId" = $3`,
+            [promotedLeadId, emailLead.id, params.tenantId]
+          );
+        }
       } else {
         // Boost existing lead priority to 100 so Android dialer calls them next
         await db.execute(
@@ -388,6 +404,8 @@ export async function ingestInboundOmnichannelReply(params: {
   });
 }
 
+const inFlightOAuthRefreshes = new Map<string, Promise<string | undefined>>();
+
 async function ensureFreshOAuthToken(account: {
   id: string;
   tenantId: string;
@@ -399,55 +417,74 @@ async function ensureFreshOAuthToken(account: {
     return account.accessToken;
   }
 
-  try {
-    let tokenUrl = '';
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: account.refreshToken,
-    });
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    };
-
-    if (account.authType === 'oauth_google') {
-      tokenUrl = 'https://oauth2.googleapis.com/token';
-      body.append('client_id', process.env.GOOGLE_CLIENT_ID || '');
-      body.append('client_secret', process.env.GOOGLE_CLIENT_SECRET || '');
-    } else if (account.authType === 'oauth_microsoft') {
-      tokenUrl = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
-      body.append('client_id', process.env.MICROSOFT_CLIENT_ID || process.env.AZURE_CLIENT_ID || '');
-      body.append('client_secret', process.env.MICROSOFT_CLIENT_SECRET || process.env.AZURE_CLIENT_SECRET || '');
-    } else if (account.authType === 'oauth_yahoo') {
-      tokenUrl = 'https://api.login.yahoo.com/oauth2/get_token';
-      const basic = Buffer.from(
-        `${process.env.YAHOO_CLIENT_ID || ''}:${process.env.YAHOO_CLIENT_SECRET || ''}`
-      ).toString('base64');
-      headers['Authorization'] = `Basic ${basic}`;
-    }
-
-    if (!tokenUrl) return account.accessToken;
-
-    const res = await fetch(tokenUrl, { method: 'POST', headers, body });
-    const data = (await res.json()) as any;
-    if (res.ok && data.access_token) {
-      await db.execute(
-        `UPDATE email_accounts SET "accessToken" = $1, "refreshToken" = COALESCE($2, "refreshToken") WHERE id = $3`,
-        [
-          encryptSecret(data.access_token),
-          data.refresh_token ? encryptSecret(data.refresh_token) : null,
-          account.id,
-        ]
-      );
-      account.accessToken = data.access_token;
-      if (data.refresh_token) {
-        account.refreshToken = data.refresh_token;
-      }
-      return data.access_token;
-    }
-  } catch (err: any) {
-    console.warn(`[OAuth Refresh Warning] Could not refresh token for ${account.id}:`, err.message);
+  const refreshKey = `${account.tenantId}:${account.id}`;
+  const existingRefresh = inFlightOAuthRefreshes.get(refreshKey);
+  if (existingRefresh) {
+    return existingRefresh;
   }
-  return account.accessToken;
+
+  const refreshPromise = (async (): Promise<string | undefined> => {
+    try {
+      let tokenUrl = '';
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: account.refreshToken!,
+      });
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      };
+
+      if (account.authType === 'oauth_google') {
+        tokenUrl = 'https://oauth2.googleapis.com/token';
+        body.append('client_id', process.env.GOOGLE_CLIENT_ID || '');
+        body.append('client_secret', process.env.GOOGLE_CLIENT_SECRET || '');
+      } else if (account.authType === 'oauth_microsoft') {
+        tokenUrl = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+        body.append('client_id', process.env.MICROSOFT_CLIENT_ID || process.env.AZURE_CLIENT_ID || '');
+        body.append('client_secret', process.env.MICROSOFT_CLIENT_SECRET || process.env.AZURE_CLIENT_SECRET || '');
+      } else if (account.authType === 'oauth_yahoo') {
+        tokenUrl = 'https://api.login.yahoo.com/oauth2/get_token';
+        const basic = Buffer.from(
+          `${process.env.YAHOO_CLIENT_ID || ''}:${process.env.YAHOO_CLIENT_SECRET || ''}`
+        ).toString('base64');
+        headers['Authorization'] = `Basic ${basic}`;
+      }
+
+      if (!tokenUrl) return account.accessToken;
+
+      const res = await fetch(tokenUrl, { method: 'POST', headers, body });
+      const data = (await res.json()) as any;
+      if (res.ok && data.access_token) {
+        await db.execute(
+          `UPDATE email_accounts SET "accessToken" = $1, "refreshToken" = COALESCE($2, "refreshToken") WHERE id = $3 AND "tenantId" = $4`,
+          [
+            encryptSecret(data.access_token),
+            data.refresh_token ? encryptSecret(data.refresh_token) : null,
+            account.id,
+            account.tenantId,
+          ]
+        );
+        account.accessToken = data.access_token;
+        if (data.refresh_token) {
+          account.refreshToken = data.refresh_token;
+        }
+        return data.access_token;
+      } else if (res.status === 400 || res.status === 401) {
+        await db.execute(
+          `UPDATE email_accounts SET "imapStatus" = 'auth_revoked' WHERE id = $1 AND "tenantId" = $2`,
+          [account.id, account.tenantId]
+        ).catch(() => {});
+      }
+    } catch (err: any) {
+      console.warn(`[OAuth Refresh Warning] Could not refresh token for ${account.id}:`, err.message);
+    } finally {
+      inFlightOAuthRefreshes.delete(refreshKey);
+    }
+    return account.accessToken;
+  })();
+
+  inFlightOAuthRefreshes.set(refreshKey, refreshPromise);
+  return refreshPromise;
 }
 
 /**
@@ -588,8 +625,16 @@ export async function startImapIdleForAccount(account: {
     imapReconnectTimers.delete(key);
   }
 
+  let reconnectScheduled = false;
   const scheduleReconnect = (delayMs = 15000) => {
+    if (reconnectScheduled) return;
+    reconnectScheduled = true;
+    const currentClient = activeImapWorkers.get(key);
     activeImapWorkers.delete(key);
+    if (currentClient) {
+      currentClient.removeAllListeners();
+      try { currentClient.close(); } catch {}
+    }
     if (imapReconnectTimers.has(key)) {
       clearTimeout(imapReconnectTimers.get(key)!);
     }
@@ -642,34 +687,22 @@ export async function startImapIdleForAccount(account: {
   try {
     await client.connect();
     await db.execute(
-      `UPDATE email_accounts SET "imapStatus" = 'connected', "lastSyncedAt" = $1 WHERE id = $2`,
-      [new Date().toISOString(), account.id]
+      `UPDATE email_accounts SET "imapStatus" = 'connected', "lastSyncedAt" = $1 WHERE id = $2 AND "tenantId" = $3`,
+      [new Date().toISOString(), account.id, account.tenantId]
     );
 
     const lock = await client.getMailboxLock('INBOX');
+    let fetchQueue: Promise<void> = Promise.resolve();
     try {
-      client.on('exists', async (data?: any) => {
-        try {
-          if (!client.mailbox) return;
-          const existsCount = typeof client.mailbox === 'object' ? client.mailbox.exists : 1;
-          const fetchRange = (data && data.prev && data.count)
-            ? `${Math.max(1, data.prev + 1)}:*`
-            : `${Math.max(1, existsCount)}:*`;
-
-          let highestUid = 0;
-          for await (const msg of client.fetch(fetchRange, {
-            uid: true,
-            envelope: true,
-            source: true,
-            headers: ['message-id', 'in-reply-to', 'references'],
-          })) {
-            await processSingleImapMessage(account, msg);
-            if (Number(msg.uid) > highestUid) highestUid = Number(msg.uid);
-          }
-          if (highestUid > 0) await persistLastImapUid(account, highestUid);
-        } catch (fetchErr: any) {
-          console.warn(`[IMAP IDLE Fetch Error for ${account.email}]:`, fetchErr.message);
-        }
+      client.on('exists', () => {
+        fetchQueue = fetchQueue
+          .then(async () => {
+            if (!client.usable || !client.mailbox) return;
+            await catchUpMissedImapMessages(account, client);
+          })
+          .catch((fetchErr: any) => {
+            console.warn(`[IMAP IDLE Fetch Error for ${account.email}]:`, fetchErr.message);
+          });
       });
 
       // Catch-up BEFORE idling: ingest anything that landed while this watcher
@@ -686,14 +719,15 @@ export async function startImapIdleForAccount(account: {
           break;
         }
       }
+      await fetchQueue;
     } finally {
       lock.release();
     }
   } catch (err: any) {
     scheduleReconnect(20000);
     await db.execute(
-      `UPDATE email_accounts SET "imapStatus" = 'error' WHERE id = $1`,
-      [account.id]
+      `UPDATE email_accounts SET "imapStatus" = 'error' WHERE id = $1 AND "tenantId" = $2`,
+      [account.id, account.tenantId]
     ).catch(() => {});
   }
 }
@@ -965,7 +999,7 @@ export async function triggerDialerCallForThread(params: {
         now,
       ]
     );
-    await db.execute(`UPDATE outreach_threads SET "leadId" = $1 WHERE id = $2`, [leadId, params.threadId]);
+    await db.execute(`UPDATE outreach_threads SET "leadId" = $1 WHERE id = $2 AND "tenantId" = $3`, [leadId, params.threadId, params.tenantId]);
   } else {
     await db.execute(
       `UPDATE leads SET priority = 100, status = 'PENDING' WHERE id = $1 AND "tenantId" = $2`,

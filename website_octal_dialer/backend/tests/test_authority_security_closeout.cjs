@@ -182,8 +182,8 @@ async function runCloseoutSuite() {
   `, [nowIso]);
 
   await db.execute(`
-    INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "roleId", "authProvider", "emailVerified", "createdAt", "updatedAt")
-    VALUES ($1, $2, $3, 'hash', 'user', NULL, 'stale_role_999', 'local', 1, $4, $4)
+    INSERT INTO users (id, username, email, "passwordHash", role, "tenantId", "roleId", "authProvider", "emailVerified", "onboardingStatus", "createdAt", "updatedAt")
+    VALUES ($1, $2, $3, 'hash', 'user', NULL, 'stale_role_999', 'local', 1, 'PENDING', $4, $4)
   `, [newUserId, newUsername, `${newUsername}@test.com`, nowIso]);
 
   const newUserToken = issueAuthToken({ id: newUserId, username: newUsername, role: 'user', tenantId: null });
@@ -331,7 +331,7 @@ async function runCloseoutSuite() {
   console.log('======================================================================\n');
 }
 
-runCloseoutSuite().catch(err => {
+runCloseoutSuite().then(() => { process.exit(0); }).catch(err => {
   console.error('\n❌ TEST SUITE FAILURE:', err);
   process.exit(1);
 });

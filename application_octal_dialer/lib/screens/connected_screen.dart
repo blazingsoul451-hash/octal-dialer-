@@ -69,6 +69,7 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     WidgetsBinding.instance.removeObserver(this);
     _connectionTimeoutTimer?.cancel();
     _pingTimer?.cancel();
+    _detachSocketListeners();
     super.dispose();
   }
 
@@ -186,8 +187,124 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
     _checkOtaUpdate();
   }
 
+  void _onPairedHandler(dynamic data) {
+    _connectionTimeoutTimer?.cancel();
+    if (mounted) {
+      setState(() {
+        _isConnected = true;
+      });
+    }
+    _addLog('[Bridge] Octal Bridge Channel Active! Ready for calls.');
+    _startHeartbeat();
+    _checkOtaUpdate();
+    _syncSimInfo();
+  }
+
+  void _onPongHandler(dynamic _) {}
+
+  void _onPingHandler(dynamic data) {
+    final timestamp = data != null ? data['timestamp'] : null;
+    _socket?.emit('phone:pong', {
+      'sessionId': widget.sessionId,
+      'timestamp': timestamp,
+    });
+  }
+
+  void _onUpdateAvailableHandler(dynamic data) {
+    final String latestVersion = data['latestVersion'] ?? '1.0.1';
+    final String apkUrl = data['apkUrl'] ?? '';
+    final String releaseNotes = data['releaseNotes'] ?? '';
+    final String expectedHash = (data['sha256Hash'] ?? data['apkHash'] ?? '').toString();
+    _addLog('[OTA Engine] NEW UPDATE DETECTED: v$latestVersion!');
+    _showUpdateDialog(latestVersion, apkUrl, releaseNotes, expectedHash);
+  }
+
+  void _onUpToDateHandler(dynamic data) {
+    _addLog('[OTA Engine] App is on latest release (v${data['version']}).');
+  }
+
+  void _onKickedHandler(dynamic data) {
+    _addLog('[Bridge] Revoked by host: ${data['reason'] ?? 'None'}');
+    _autoReturnToScanner(message: 'Device revoked by laptop.');
+  }
+
+  void _onUnpairedHandler(dynamic _) {
+    _addLog('[Bridge] Unpaired by laptop dashboard.');
+    _autoReturnToScanner(message: 'Unpaired by laptop. Scan QR to reconnect.');
+  }
+
+  void _onSessionEndedHandler(dynamic _) {
+    _addLog('[Bridge] Session ended by laptop.');
+    _autoReturnToScanner(message: 'Session ended. Scan QR to reconnect.');
+  }
+
+  void _onPhoneDialHandler(dynamic data) {
+    final String phone = data['phone'] ?? '';
+    final String name = data['name'] ?? 'Unknown Lead';
+    final String leadId = data['leadId'] ?? '';
+    final String? commandId = data['commandId'];
+    final String? callId = data['callId'];
+    final int timeout = data['timeout'] ?? 30;
+    final int? simSlot = data['simSlot'] is int
+        ? data['simSlot'] as int
+        : (data['simSlot'] != null ? int.tryParse(data['simSlot'].toString()) : null);
+
+    _addLog('[Bridge] LAPTOP REQUEST CALL -> $name ($phone)');
+
+    if (_isInCall) {
+      _addLog('[Bridge] Busy: currently in active call — rejecting dial command');
+      _socket?.emit('phone:dial-ack', {
+        'commandId': commandId,
+        'callId': callId,
+        'accepted': false,
+        'reason': 'BUSY_IN_CALL',
+      });
+      return;
+    }
+
+    if (mounted) {
+      _isInCall = true;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => CallingScreen(
+            phone: phone,
+            name: name,
+            leadId: leadId,
+            commandId: commandId,
+            callId: callId,
+            simSlot: simSlot,
+            timeout: timeout,
+            socket: _socket!,
+            sessionId: widget.sessionId,
+            onCallEnded: () {
+              _isInCall = false;
+            },
+          ),
+        ),
+      ).then((_) {
+        _isInCall = false;
+      });
+    }
+  }
+
+  void _detachSocketListeners() {
+    if (_socket == null) return;
+    _socket!.off('bridge:paired', _onPairedHandler);
+    _socket!.off('phone:paired', _onPairedHandler);
+    _socket!.off('phone:pong', _onPongHandler);
+    _socket!.off('phone:ping', _onPingHandler);
+    _socket!.off('app:update_available', _onUpdateAvailableHandler);
+    _socket!.off('app:up_to_date', _onUpToDateHandler);
+    _socket!.off('phone:kicked', _onKickedHandler);
+    _socket!.off('bridge:unpaired', _onUnpairedHandler);
+    _socket!.off('session:ended', _onSessionEndedHandler);
+    _socket!.off('phone:dial', _onPhoneDialHandler);
+  }
+
   void _attachSocketListeners() {
     if (_socket == null) return;
+    _detachSocketListeners();
 
     _socket!.onDisconnect((_) {
       if (mounted) {
@@ -203,112 +320,16 @@ class _ConnectedScreenState extends State<ConnectedScreen> with WidgetsBindingOb
       _addLog('[Socket] Connect error: $err');
     });
 
-    void onPairedHandler(dynamic data) {
-      _connectionTimeoutTimer?.cancel();
-      if (mounted) {
-        setState(() {
-          _isConnected = true;
-        });
-      }
-      _addLog('[Bridge] Octal Bridge Channel Active! Ready for calls.');
-      _startHeartbeat();
-      _checkOtaUpdate();
-      _syncSimInfo();
-    }
-
-    _socket!.on('bridge:paired', onPairedHandler);
-    _socket!.on('phone:paired', onPairedHandler);
-
-    _socket!.on('phone:pong', (_) {
-      // Heartbeat acknowledged by laptop server
-    });
-
-    _socket!.on('phone:ping', (data) {
-      final timestamp = data != null ? data['timestamp'] : null;
-      _socket!.emit('phone:pong', {
-        'sessionId': widget.sessionId,
-        'timestamp': timestamp,
-      });
-    });
-
-    _socket!.on('app:update_available', (data) {
-      final String latestVersion = data['latestVersion'] ?? '1.0.1';
-      final String apkUrl = data['apkUrl'] ?? '';
-      final String releaseNotes = data['releaseNotes'] ?? '';
-      final String expectedHash = (data['sha256Hash'] ?? data['apkHash'] ?? '').toString();
-      _addLog('[OTA Engine] NEW UPDATE DETECTED: v$latestVersion!');
-      _showUpdateDialog(latestVersion, apkUrl, releaseNotes, expectedHash);
-    });
-
-    _socket!.on('app:up_to_date', (data) {
-      _addLog('[OTA Engine] App is on latest release (v${data['version']}).');
-    });
-
-    _socket!.on('phone:kicked', (data) {
-      _addLog('[Bridge] Revoked by host: ${data['reason'] ?? 'None'}');
-      _autoReturnToScanner(message: 'Device revoked by laptop.');
-    });
-
-    _socket!.on('bridge:unpaired', (_) {
-      _addLog('[Bridge] Unpaired by laptop dashboard.');
-      _autoReturnToScanner(message: 'Unpaired by laptop. Scan QR to reconnect.');
-    });
-
-    _socket!.on('session:ended', (_) {
-      _addLog('[Bridge] Session ended by laptop.');
-      _autoReturnToScanner(message: 'Session ended. Scan QR to reconnect.');
-    });
-
-    _socket!.on('phone:dial', (data) {
-      final String phone = data['phone'] ?? '';
-      final String name = data['name'] ?? 'Unknown Lead';
-      final String leadId = data['leadId'] ?? '';
-      final String? commandId = data['commandId'];
-      final String? callId = data['callId'];
-      final int timeout = data['timeout'] ?? 30;
-      final int? simSlot = data['simSlot'] is int
-          ? data['simSlot'] as int
-          : (data['simSlot'] != null ? int.tryParse(data['simSlot'].toString()) : null);
-
-      _addLog('[Bridge] LAPTOP REQUEST CALL -> $name ($phone)');
-
-      // Guard: If already in a call, reject explicitly with dial-ack so backend/laptop doesn't hang!
-      if (_isInCall) {
-        _addLog('[Bridge] Busy: currently in active call — rejecting dial command');
-        _socket?.emit('phone:dial-ack', {
-          'commandId': commandId,
-          'callId': callId,
-          'accepted': false,
-          'reason': 'BUSY_IN_CALL',
-        });
-        return;
-      }
-
-      if (mounted) {
-        _isInCall = true;
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => CallingScreen(
-              phone: phone,
-              name: name,
-              leadId: leadId,
-              commandId: commandId,
-              callId: callId,
-              simSlot: simSlot,
-              timeout: timeout,
-              socket: _socket!,
-              sessionId: widget.sessionId,
-              onCallEnded: () {
-                _isInCall = false;
-              },
-            ),
-          ),
-        ).then((_) {
-          _isInCall = false;
-        });
-      }
-    });
+    _socket!.on('bridge:paired', _onPairedHandler);
+    _socket!.on('phone:paired', _onPairedHandler);
+    _socket!.on('phone:pong', _onPongHandler);
+    _socket!.on('phone:ping', _onPingHandler);
+    _socket!.on('app:update_available', _onUpdateAvailableHandler);
+    _socket!.on('app:up_to_date', _onUpToDateHandler);
+    _socket!.on('phone:kicked', _onKickedHandler);
+    _socket!.on('bridge:unpaired', _onUnpairedHandler);
+    _socket!.on('session:ended', _onSessionEndedHandler);
+    _socket!.on('phone:dial', _onPhoneDialHandler);
   }
 
   Future<void> _syncSimInfo() async {

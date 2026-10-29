@@ -12,6 +12,7 @@ export default defineConfig({
       '/auth': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/api': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/email': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
+      '/emailer': { target: 'http://127.0.0.1:5000', changeOrigin: true, secure: false },
       '/admin': {
         target: 'http://127.0.0.1:5000',
         changeOrigin: true,

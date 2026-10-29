@@ -25,14 +25,20 @@ class CallLogItem {
   });
 
   factory CallLogItem.fromJson(Map<String, dynamic> json) {
+    final rawDuration = json['duration'];
+    final int parsedDuration = rawDuration is int
+        ? rawDuration
+        : (rawDuration is num
+            ? rawDuration.round()
+            : (double.tryParse(rawDuration?.toString() ?? '0')?.round() ?? 0));
     return CallLogItem(
-      id: json['id'] ?? '',
-      phone: json['phone'] ?? '',
-      name: json['leadName'] ?? json['name'] ?? 'Contact',
-      reason: json['reason'] ?? 'UNKNOWN',
-      duration: json['duration'] is int ? json['duration'] : int.tryParse(json['duration']?.toString() ?? '0') ?? 0,
-      createdAt: json['createdAt'] ?? '',
-      disposition: json['disposition'],
+      id: (json['id'] ?? '').toString(),
+      phone: (json['leadPhone'] ?? json['phone'] ?? '').toString(),
+      name: (json['leadName'] ?? json['name'] ?? 'Contact').toString(),
+      reason: (json['outcome'] ?? json['reason'] ?? 'UNKNOWN').toString().toUpperCase(),
+      duration: parsedDuration,
+      createdAt: (json['timestamp'] ?? json['createdAt'] ?? '').toString(),
+      disposition: json['disposition']?.toString(),
     );
   }
 }

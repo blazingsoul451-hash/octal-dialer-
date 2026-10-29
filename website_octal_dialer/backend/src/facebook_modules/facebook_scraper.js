@@ -135,6 +135,19 @@ async function getPhonesAndEmails(page, profileUrl, type) {
   }
 
   let browser, context;
+  let isShuttingDown = false;
+  const closeAndExit = async (code) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    if (context) {
+      try { await context.close(); } catch (_) {}
+      context = null;
+    }
+    process.exit(code);
+  };
+  process.on('SIGINT', () => { closeAndExit(1); });
+  process.on('SIGTERM', () => { closeAndExit(1); });
+
   try {
     const launchOptions = {
       headless: true,
@@ -266,12 +279,14 @@ async function getPhonesAndEmails(page, profileUrl, type) {
     }
 
     console.log('🎉 Facebook scrape campaign completed successfully.');
-    await context.close();
-    process.exit(0);
+    await closeAndExit(0);
 
   } catch (err) {
     console.error(`❌ Process Error: ${err.message}`);
-    if (context) await context.close();
-    process.exit(1);
+    await closeAndExit(1);
+  } finally {
+    if (context) {
+      try { await context.close(); } catch (_) {}
+    }
   }
 })();

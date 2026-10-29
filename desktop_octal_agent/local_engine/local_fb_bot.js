@@ -157,155 +157,161 @@ function attachFacebookReplyWireSniffer(page, profileName) {
 
   const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf8'));
 
-  const context = await chromium.launchPersistentContext(profileDir, {
-    headless: true,
-    channel: 'msedge',
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--no-sandbox',
-      '--disable-gpu',
-    ],
-    ignoreDefaultArgs: ['--enable-automation'],
-  });
-
-  await context.addCookies(cookies);
-  const page = (await context.pages())[0] || (await context.newPage());
-
-  // Attach Real-Time Wire Sniffer
-  attachFacebookReplyWireSniffer(page, profileName);
-
-  // Stealth masking
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  });
-
-  console.log('🔍 Checking session health...');
-  await page.goto('https://www.facebook.com', { waitUntil: 'domcontentloaded', timeout: 35000 });
-  await sleep(2500);
-
-  if (page.url().includes('/login') || page.url().includes('login_attempt')) {
-    console.error('❌ Facebook session expired. Please reconnect your account.');
-    await context.close();
-    process.exit(1);
-  }
-
-  console.log('✅ Session active. Starting group sharing with modal completion...');
-
-  let postedCount = 0;
-  for (let i = 0; i < postUrls.length && postedCount < maxPostsPerDay; i++) {
-    const rawUrl = postUrls[i].trim();
-    if (!rawUrl) continue;
-
-    let cleanUrl = rawUrl.split('?')[0].replace(/\/+$/, '');
-    if (cleanUrl.includes('/groups/') && !cleanUrl.endsWith('/discussion')) {
-      cleanUrl += '/discussion';
-    }
-
-    console.log(`[Post ${postedCount + 1}/${Math.min(postUrls.length, maxPostsPerDay)}] Navigating to: ${cleanUrl}...`);
-
-    try {
-      await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
-      await sleep(randomBetween(2500, 4500));
-
-      // Open group composer modal and actually type + submit the post
-      const triggers = [
-        'span:has-text("Write something...")',
-        'span:has-text("Create a public post...")',
-        'div[role="button"]:has-text("Write something...")',
-        'div[aria-label="Send this to friends or post it on your profile."]',
-      ];
-      let opened = false;
-      for (const sel of triggers) {
-        const el = page.locator(sel).first();
-        if (await el.isVisible().catch(() => false)) {
-          await el.click();
-          opened = true;
-          break;
-        }
-      }
-
-      if (opened) {
-        await sleep(randomBetween(1500, 2800));
-        const editor = page.locator('div[role="dialog"] div[role="textbox"][contenteditable="true"]').first();
-        if (await editor.isVisible().catch(() => false)) {
-          await typeLikeAHuman(page, editor, caption);
-          await sleep(randomBetween(1800, 3200));
-
-          const postBtn = page.locator('div[role="dialog"] div[aria-label="Post"][role="button"], div[role="dialog"] div[role="button"]:has-text("Post")').first();
-          await postBtn.click();
-          await sleep(randomBetween(3500, 5500));
-
-          postedCount++;
-          console.log('EVENT_POST_SUCCESS');
-          console.log(`✅ [Post ${postedCount}] Successfully published post to group!`);
-          emitBridgeEvent('FB_OUTBOUND_SUCCESS', { profileName, targetUrl: cleanUrl, postedCount });
-        }
-      } else {
-        console.log(`⚠️ Post trigger not visible for ${cleanUrl}. Skipping.`);
-      }
-    } catch (err) {
-      console.warn(`⚠️ Warning sharing ${cleanUrl}: ${err.message}`);
-    }
-
-    if (postedCount < maxPostsPerDay && i < postUrls.length - 1) {
-      const waitMinutes = randomBetween(delayMin, delayMax);
-      console.log(`⏳ Natural human delay: sleeping for ${waitMinutes} minutes before next action...`);
-      await sleep(waitMinutes * 60 * 1000);
-    }
-  }
-
-  // Keep Messenger tab open in background to continue sniffing incoming DMs
-  console.log('📡 Maintaining background Messenger listener session for incoming prospect DMs...');
-  await page.goto('https://www.facebook.com/messages/t/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-
-  if (!isListenMode) {
-    // One-shot campaign run: give late websocket frames a moment, then exit.
-    await sleep(60000);
-    console.log(`🏁 Campaign cycle finished. Total published: ${postedCount} posts.`);
-    await context.close();
-    process.exit(0);
-  }
-
-  // ── Daemon mode ──────────────────────────────────────────────────────────
-  // Stay resident so the Chromium instance keeps intercepting Messenger
-  // websockets for as long as the desktop agent is running. Inbound DMs are
-  // pushed to /api/webhooks/facebook/incoming-reply by the bridge events that
-  // the sniffer already emits.
-  console.log(`🏁 Campaign cycle finished. Total published: ${postedCount} posts.`);
-  console.log('🟢 DAEMON MODE: Messenger listener is now resident. Send SIGTERM/SIGINT to stop.');
-
+  let context = null;
   let shuttingDown = false;
-  const shutdown = async (signal) => {
+  const shutdown = async (signal, exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`🛑 Received ${signal}. Closing Messenger listener...`);
-    try {
-      await context.close();
-    } catch (_) { /* already gone */ }
-    process.exit(0);
+    if (signal) {
+      console.log(`🛑 Received ${signal}. Closing browser context...`);
+    }
+    if (context) {
+      try {
+        await context.close();
+      } catch (_) {}
+      context = null;
+    }
+    process.exit(exitCode);
   };
 
-  process.on('SIGTERM', () => { shutdown('SIGTERM'); });
-  process.on('SIGINT', () => { shutdown('SIGINT'); });
+  process.on('SIGTERM', () => { shutdown('SIGTERM', 0); });
+  process.on('SIGINT', () => { shutdown('SIGINT', 0); });
 
-  // Heartbeat + liveness check: if the browser context dies (crash, manual
-  // close, session expiry) exit non-zero so the agent can relaunch us.
-  while (!shuttingDown) {
-    await sleep(30000);
-    if (shuttingDown) break;
+  try {
+    context = await chromium.launchPersistentContext(profileDir, {
+      headless: true,
+      channel: 'msedge',
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--no-sandbox',
+        '--disable-gpu',
+      ],
+      ignoreDefaultArgs: ['--enable-automation'],
+    });
 
-    if (!context.pages().length) {
-      console.error('⚠️ Messenger browser context closed unexpectedly. Exiting for relaunch.');
-      process.exit(1);
+    await context.addCookies(cookies);
+    const page = (await context.pages())[0] || (await context.newPage());
+
+    // Attach Real-Time Wire Sniffer
+    attachFacebookReplyWireSniffer(page, profileName);
+
+    // Stealth masking
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+
+    console.log('🔍 Checking session health...');
+    await page.goto('https://www.facebook.com', { waitUntil: 'domcontentloaded', timeout: 35000 });
+    await sleep(2500);
+
+    if (page.url().includes('/login') || page.url().includes('login_attempt')) {
+      console.error('❌ Facebook session expired. Please reconnect your account.');
+      await shutdown(null, 1);
+      return;
     }
 
-    try {
-      // Touch the page so Facebook does not idle the socket out.
-      await page.evaluate(() => void 0);
-      console.log(`💓 [${new Date().toISOString()}] Listener alive — sniffing Messenger traffic.`);
-    } catch (err) {
-      console.error(`⚠️ Listener page unresponsive: ${err.message}. Exiting for relaunch.`);
-      process.exit(1);
+    console.log('✅ Session active. Starting group sharing with modal completion...');
+
+    let postedCount = 0;
+    for (let i = 0; i < postUrls.length && postedCount < maxPostsPerDay && !shuttingDown; i++) {
+      const rawUrl = postUrls[i].trim();
+      if (!rawUrl) continue;
+
+      let cleanUrl = rawUrl.split('?')[0].replace(/\/+$/, '');
+      if (cleanUrl.includes('/groups/') && !cleanUrl.endsWith('/discussion')) {
+        cleanUrl += '/discussion';
+      }
+
+      console.log(`[Post ${postedCount + 1}/${Math.min(postUrls.length, maxPostsPerDay)}] Navigating to: ${cleanUrl}...`);
+
+      try {
+        await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+        await sleep(randomBetween(2500, 4500));
+
+        const triggers = [
+          'span:has-text("Write something...")',
+          'span:has-text("Create a public post...")',
+          'div[role="button"]:has-text("Write something...")',
+          'div[aria-label="Send this to friends or post it on your profile."]',
+        ];
+        let opened = false;
+        for (const sel of triggers) {
+          const el = page.locator(sel).first();
+          if (await el.isVisible().catch(() => false)) {
+            await el.click();
+            opened = true;
+            break;
+          }
+        }
+
+        if (opened) {
+          await sleep(randomBetween(1500, 2800));
+          const editor = page.locator('div[role="dialog"] div[role="textbox"][contenteditable="true"]').first();
+          if (await editor.isVisible().catch(() => false)) {
+            await typeLikeAHuman(page, editor, caption);
+            await sleep(randomBetween(1800, 3200));
+
+            const postBtn = page.locator('div[role="dialog"] div[aria-label="Post"][role="button"], div[role="dialog"] div[role="button"]:has-text("Post")').first();
+            await postBtn.click();
+            await sleep(randomBetween(3500, 5500));
+
+            postedCount++;
+            console.log('EVENT_POST_SUCCESS');
+            console.log(`✅ [Post ${postedCount}] Successfully published post to group!`);
+            emitBridgeEvent('FB_OUTBOUND_SUCCESS', { profileName, targetUrl: cleanUrl, postedCount });
+          }
+        } else {
+          console.log(`⚠️ Post trigger not visible for ${cleanUrl}. Skipping.`);
+        }
+      } catch (err) {
+        console.warn(`⚠️ Warning sharing ${cleanUrl}: ${err.message}`);
+      }
+
+      if (postedCount < maxPostsPerDay && i < postUrls.length - 1 && !shuttingDown) {
+        const waitMinutes = randomBetween(delayMin, delayMax);
+        console.log(`⏳ Natural human delay: sleeping for ${waitMinutes} minutes before next action...`);
+        await sleep(waitMinutes * 60 * 1000);
+      }
+    }
+
+    console.log('📡 Maintaining background Messenger listener session for incoming prospect DMs...');
+    await page.goto('https://www.facebook.com/messages/t/', { waitUntil: 'domcontentloaded' }).catch(() => {});
+
+    if (!isListenMode) {
+      await sleep(60000);
+      console.log(`🏁 Campaign cycle finished. Total published: ${postedCount} posts.`);
+      await shutdown(null, 0);
+      return;
+    }
+
+    console.log(`🏁 Campaign cycle finished. Total published: ${postedCount} posts.`);
+    console.log('🟢 DAEMON MODE: Messenger listener is now resident. Send SIGTERM/SIGINT to stop.');
+
+    while (!shuttingDown) {
+      await sleep(30000);
+      if (shuttingDown) break;
+
+      if (!context.pages().length) {
+        console.error('⚠️ Messenger browser context closed unexpectedly. Exiting for relaunch.');
+        await shutdown(null, 1);
+        return;
+      }
+
+      try {
+        await page.evaluate(() => void 0);
+        console.log(`💓 [${new Date().toISOString()}] Listener alive — sniffing Messenger traffic.`);
+      } catch (err) {
+        console.error(`⚠️ Listener page unresponsive: ${err.message}. Exiting for relaunch.`);
+        await shutdown(null, 1);
+        return;
+      }
+    }
+  } catch (err) {
+    console.error(`❌ Fatal error in local_fb_bot: ${err.message}`);
+    await shutdown(null, 1);
+  } finally {
+    if (context) {
+      try { await context.close(); } catch (_) {}
     }
   }
 })();

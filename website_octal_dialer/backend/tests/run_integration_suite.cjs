@@ -71,11 +71,33 @@ function runSuite(file, env) {
     });
 
     let out = '';
+    let finished = false;
+
+    const timer = setTimeout(() => {
+      if (!finished) {
+        finished = true;
+        try { child.kill('SIGKILL'); } catch (_) {}
+        resolve({ file, code: -2, out: out + '\n[ERROR: Suite timed out after 60s]' });
+      }
+    }, 60000);
+
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (out += d));
     // A suite that cannot spawn must not take the runner down.
-    child.on('error', (err) => resolve({ file, code: -1, out: `spawn failed: ${err.message}` }));
-    child.on('close', (code) => resolve({ file, code, out }));
+    child.on('error', (err) => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        resolve({ file, code: -1, out: `spawn failed: ${err.message}` });
+      }
+    });
+    child.on('close', (code) => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        resolve({ file, code, out });
+      }
+    });
   });
 }
 
@@ -125,13 +147,22 @@ async function main() {
       TRUST_PROXY: '0',
       // server.ts intentionally skips listen() under NODE_ENV=test unless
       // this is set, so the suites would never find an API without it.
-      TEST_LISTEN: 'true'
+      TEST_LISTEN: 'true',
+      // The suites sign in with these literals. They used to succeed only via
+      // the hardcoded-password backdoor (removed in 50fba44); seed them
+      // explicitly into this disposable database instead.
+      BOOTSTRAP_ADMIN_PASSWORD: 'AdminPassword1234!',
+      BOOTSTRAP_OWNER_PASSWORD: 'OwnerPassword1234!'
     };
 
     console.log('2. Booting the backend (migrations run on startup)...');
+    const distServer = path.join(__dirname, '../dist/server.js');
+    const spawnArgs = fs.existsSync(distServer)
+      ? [distServer]
+      : [path.join(__dirname, '../node_modules/tsx/dist/cli.mjs'), path.join(__dirname, '../src/server.ts')];
     serverProc = spawn(
       process.execPath,
-      [path.join(__dirname, '../node_modules/tsx/dist/cli.mjs'), path.join(__dirname, '../src/server.ts')],
+      spawnArgs,
       { cwd: path.join(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe'] }
     );
     serverProc.stdout.on('data', (d) => (serverLog += d));
@@ -175,6 +206,7 @@ async function main() {
     if (serverProc) { try { serverProc.kill(); } catch (_) {} }
     try { await pgServer.stop(); } catch (_) {}
     try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (_) {}
+    process.exit(process.exitCode || 0);
   }
 }
 

@@ -27,6 +27,7 @@ class _MainDesktopScreenState extends State<MainDesktopScreen> {
   Timer? _taskPollTimer;
   bool _pollInFlight = false;
   Timer? _heartbeatTimer;
+  StreamSubscription<String>? _logSubscription;
   int _tasksCompleted = 0;
 
   final TextEditingController _profileController = TextEditingController(text: 'My_FB_Account_1');
@@ -43,7 +44,7 @@ class _MainDesktopScreenState extends State<MainDesktopScreen> {
   void initState() {
     super.initState();
     _bootstrapAgent();
-    FbLocalWorker.instance.logStream.listen((log) {
+    _logSubscription = FbLocalWorker.instance.logStream.listen((log) {
       if (mounted) {
         setState(() {
           _localLogs.add(log);
@@ -348,6 +349,7 @@ class _MainDesktopScreenState extends State<MainDesktopScreen> {
   void dispose() {
     _taskPollTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _logSubscription?.cancel();
     _urlController.dispose();
     _emailController.dispose();
     _passwordController.dispose();

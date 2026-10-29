@@ -208,22 +208,27 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
   }
 
   void _startRingingTimer() {
+    if (_phase == CallPhase.connected || _callEnded) return;
+    _ringingTimer?.cancel();
     _ringingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) {
-        setState(() {
-          _secondsLeft--;
-          if (_secondsLeft <= 0) {
-            timer.cancel();
-            _cancelRequested = true;
-            _nativeChannel.invokeMethod('endCall').catchError((_) {});
-            Future.delayed(const Duration(milliseconds: 2000), () {
-              if (mounted && !_callEnded) {
-                _endCall(reason: 'NO_ANSWER', duration: 0, answered: false);
-              }
-            });
-          }
-        });
+      if (!mounted || _callEnded || _phase == CallPhase.connected) {
+        timer.cancel();
+        return;
       }
+      setState(() {
+        _secondsLeft--;
+        if (_secondsLeft <= 0) {
+          timer.cancel();
+          _cancelRequested = true;
+          TelecomService.instance.disconnect(callId: widget.callId).catchError((_) => false);
+          _nativeChannel.invokeMethod('endCall').catchError((_) {});
+          Future.delayed(const Duration(milliseconds: 2000), () {
+            if (mounted && !_callEnded) {
+              _endCall(reason: 'NO_ANSWER', duration: 0, answered: false);
+            }
+          });
+        }
+      });
     });
   }
 
@@ -260,12 +265,14 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
         return;
       }
 
-      _startRingingTimer();
-      widget.socket.emit('call:state-changed', {
-        'callId': widget.callId,
-        'commandId': widget.commandId,
-        'state': 'DIALING',
-      });
+      if (_phase != CallPhase.connected && !_hasEmittedPickedUp) {
+        _startRingingTimer();
+        widget.socket.emit('call:state-changed', {
+          'callId': widget.callId,
+          'commandId': widget.commandId,
+          'state': 'DIALING',
+        });
+      }
     } catch (e) {
       debugPrint('Direct GSM call failed: $e');
       _endCall(reason: 'CALL_FAILED');
@@ -351,7 +358,9 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
     final initial = widget.name.isNotEmpty ? widget.name[0].toUpperCase() : 'A';
     final isConnected = _phase == CallPhase.connected;
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
       backgroundColor: OctalColors.bgDark,
       body: SafeArea(
         child: Padding(
@@ -364,8 +373,18 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white, size: 28),
-                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.call_end_outlined, color: Colors.redAccent, size: 24),
+                    tooltip: 'End Call',
+                    onPressed: () {
+                      _cancelRequested = true;
+                      TelecomService.instance.disconnect(callId: widget.callId).catchError((_) => false);
+                      _nativeChannel.invokeMethod('endCall').catchError((_) {});
+                      Future.delayed(const Duration(milliseconds: 1500), () {
+                        if (mounted && !_callEnded) {
+                          _endCall(reason: 'CANCELLED', duration: _talkSeconds, answered: _hasEmittedPickedUp);
+                        }
+                      });
+                    },
                   ),
                   Text(
                     isConnected ? 'Active Call' : 'Connecting Call',
@@ -546,6 +565,7 @@ class _CallingScreenState extends State<CallingScreen> with SingleTickerProvider
           ),
         ),
       ),
+    ),
     );
   }
 

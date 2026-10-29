@@ -177,9 +177,15 @@ uniboxRouter.post('/unibox/threads/:threadId/reply', async (req: Request, res: R
           tenantId,
           thread.accountId || 'default',
           JSON.stringify({
+            profileId: thread.accountId || 'default',
             externalThreadId: thread.externalThreadId,
             recipientAddress: thread.prospectAddress,
+            recipient: thread.prospectAddress,
+            threadUrl: thread.externalThreadId
+              ? `https://www.facebook.com/messages/t/${thread.externalThreadId}`
+              : thread.prospectAddress,
             body: String(body).trim(),
+            message: String(body).trim(),
           }),
           now,
         ]
@@ -204,8 +210,8 @@ uniboxRouter.post('/unibox/threads/:threadId/reply', async (req: Request, res: R
       );
 
       await db.execute(
-        `UPDATE outreach_threads SET status = 'replied', "lastMessageSnippet" = $1, "lastMessageAt" = $2, "updatedAt" = $2 WHERE id = $3`,
-        [String(body).trim().slice(0, 180), now, threadId]
+        `UPDATE outreach_threads SET status = 'replied', "lastMessageSnippet" = $1, "lastMessageAt" = $2, "updatedAt" = $2 WHERE id = $3 AND "tenantId" = $4`,
+        [String(body).trim().slice(0, 180), now, threadId, tenantId]
       );
 
       return res.json({ success: true, messageId: msgId, queuedTaskId: taskId });
@@ -294,7 +300,7 @@ export async function reapStaleFbTasks(): Promise<{ requeued: number; failed: nu
   const failed = await db.execute(
     `UPDATE fb_task_queue
         SET status = 'failed',
-            "errorMessage" = 'Abandoned by worker after ' || "attempts" || ' attempt(s)',
+            "errorMessage" = 'Abandoned by worker after ' || CAST("attempts" AS TEXT) || ' attempt(s)',
             "updatedAt" = $1
       WHERE status = 'processing'
         AND "claimedAt" IS NOT NULL

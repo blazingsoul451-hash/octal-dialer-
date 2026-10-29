@@ -20,12 +20,12 @@ async function main() {
   const tenantCheck = await pool.query('SELECT * FROM tenants WHERE id = $1', [tenantId]);
   if (tenantCheck.rows.length === 0) {
     await pool.query(`
-      INSERT INTO tenants (id, name, slug, status, "createdAt", "updatedAt", "customerType", "maxTeamVisibility", leadpoolmode, maxagents, tier)
-      VALUES ($1, 'Acme Global Corp', 'acme-global', 'active', $2, $2, 'COMPANY', 'TEAM_COLLABORATE', 'shared', 50, 'enterprise')
+      INSERT INTO tenants (id, name, slug, status, "createdAt", "updatedAt", "customerType", "maxTeamVisibility", "leadPoolMode", "maxAgents", tier)
+      VALUES ($1, 'Octal Primary Workspace', 'octal-primary', 'active', $2, $2, 'COMPANY', 'TEAM_COLLABORATE', 'shared', 50, 'enterprise')
     `, [tenantId, now]);
   } else {
     await pool.query(`
-      UPDATE tenants SET name = 'Acme Global Corp', status = 'active', maxagents = 50, "updatedAt" = $2 WHERE id = $1
+      UPDATE tenants SET status = 'active', "maxAgents" = 50, "updatedAt" = $2 WHERE id = $1
     `, [tenantId, now]);
   }
 

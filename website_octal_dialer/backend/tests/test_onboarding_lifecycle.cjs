@@ -337,7 +337,7 @@ async function run() {
   console.log('\n=== ALL LIFECYCLE & ONBOARDING AUDITS PASSED WITH ZERO ERRORS ===');
 }
 
-run().catch(err => {
+run().then(() => { process.exit(0); }).catch(err => {
   console.error('\n❌ AUDIT FAILED:', err);
   process.exit(1);
 });

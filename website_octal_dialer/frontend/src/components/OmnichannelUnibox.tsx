@@ -129,17 +129,21 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
       });
       if (res.ok) {
         const data = await res.json();
-        setThreads(data.threads || []);
-        if (data.threads?.length > 0 && !selectedThread) {
-          setSelectedThread(data.threads[0]);
-        }
+        const loadedThreads: Thread[] = data.threads || [];
+        setThreads(loadedThreads);
+        setSelectedThread((prev) => {
+          if (loadedThreads.length === 0) return null;
+          if (!prev) return loadedThreads[0];
+          const updatedMatch = loadedThreads.find((t) => t.id === prev.id);
+          return updatedMatch || loadedThreads[0];
+        });
       }
     } catch (err) {
       console.error('Failed to fetch threads:', err);
     } finally {
       setLoadingThreads(false);
     }
-  }, [serverUrl, authToken, channelFilter, statusFilter, searchQuery, selectedThread]);
+  }, [serverUrl, authToken, channelFilter, statusFilter, searchQuery]);
 
   const fetchMessages = useCallback(async (threadId: string) => {
     setLoadingMessages(true);

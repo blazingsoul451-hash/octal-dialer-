@@ -758,7 +758,6 @@ export default function App() {
 
   const showToast = (message: string, type: 'success' | 'info' = 'success') => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
   };
 
   // Real-time sync when Omnichannel Unibox promotes a hot lead into the Dialer Queue
