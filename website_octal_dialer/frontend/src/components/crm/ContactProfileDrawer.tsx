@@ -138,7 +138,7 @@ export const ContactProfileDrawer: React.FC<ContactProfileDrawerProps> = ({
 
   return (
     <div className="crm-geist-scope fixed inset-0 z-50 overflow-hidden flex justify-end bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="w-full max-w-2xl bg-[#0d0d12] border-l border-[#1f1f23] text-zinc-200 flex flex-col h-full shadow-2xl">
+      <div className="w-full max-w-full sm:max-w-2xl bg-[#0d0d12] border-l border-[#1f1f23] text-zinc-200 flex flex-col h-full shadow-2xl">
         {/* Header Bar */}
         <div className="p-5 border-b border-[#1f1f23] flex items-center justify-between bg-[#13131a]">
           <div className="flex items-center gap-3">

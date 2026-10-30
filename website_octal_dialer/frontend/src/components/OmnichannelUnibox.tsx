@@ -3,7 +3,7 @@ import {
   Inbox, Mail, MessageSquare, PhoneCall,
   Search, RefreshCw, Send, ShieldAlert,
   Sparkles, Flame, PhoneForwarded, Copy, Check,
-  Star, Clock, Ban, Archive
+  Star, Clock, Ban, Archive, ArrowLeft, Info
 } from 'lucide-react';
 
 interface Thread {
@@ -75,6 +75,7 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
   const [rawViewMsgId, setRawViewMsgId] = useState<string | null>(null);
   const [unreadTotal, setUnreadTotal] = useState(0);
   const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [showMobileIntel, setShowMobileIntel] = useState(false);
 
   const handleUpdateStatus = async (newStatus: string) => {
     if (!selectedThread || updatingStatus) return;
@@ -285,7 +286,9 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* PANE 1: THREAD LIST (LEFT)                                          */}
       {/* ─────────────────────────────────────────────────────────────────── */}
-      <div className={`w-80 sm:w-96 flex flex-col border-r shrink-0 ${isLight ? 'bg-white border-slate-200' : 'bg-slate-900/70 border-slate-800'}`}>
+      <div className={`w-full md:w-80 lg:w-96 flex flex-col border-r shrink-0 ${
+        selectedThread ? 'hidden md:flex' : 'flex'
+      } ${isLight ? 'bg-white border-slate-200' : 'bg-slate-900/70 border-slate-800'}`}>
         
         {/* Header & Search */}
         <div className="p-3 border-b border-slate-200 dark:border-slate-800 space-y-2.5">
@@ -467,12 +470,24 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* PANE 2: CONVERSATION THREAD & REPLY COMPOSER (CENTER)               */}
       {/* ─────────────────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className={`flex-1 flex-col min-w-0 ${
+        selectedThread ? 'flex' : 'hidden md:flex'
+      }`}>
         {selectedThread ? (
           <>
             {/* Thread Header */}
-            <div className={`p-4 border-b flex items-center justify-between shrink-0 ${isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'}`}>
-              <div className="min-w-0">
+            <div className={`p-3 sm:p-4 border-b flex items-center justify-between gap-2 shrink-0 ${isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'}`}>
+              <div className="flex items-center gap-2 min-w-0">
+                {/* Mobile Back Button */}
+                <button
+                  onClick={() => setSelectedThread(null)}
+                  className="md:hidden flex items-center gap-1 p-1.5 rounded-lg border text-xs font-bold transition shrink-0 border-slate-700 bg-slate-800 text-slate-200 hover:text-white cursor-pointer"
+                  title="Back to conversations list"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span className="hidden sm:inline">Threads</span>
+                </button>
+                <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="font-bold text-sm sm:text-base truncate">
                     {selectedThread.prospectName || selectedThread.prospectAddress}
@@ -496,8 +511,16 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
                 </div>
               </div>
 
-              {/* Handset Dial Button */}
-              <div className="flex items-center gap-2 shrink-0">
+              </div>
+              {/* Right actions: Toggle Intel & Handset Dial Button */}
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                <button
+                  onClick={() => setShowMobileIntel(!showMobileIntel)}
+                  className="xl:hidden flex items-center gap-1 p-2 rounded-lg border text-xs font-bold transition shrink-0 border-slate-700 bg-slate-800 text-slate-200 hover:text-white cursor-pointer"
+                  title="Toggle Prospect Intel"
+                >
+                  <Info className="w-4 h-4 text-amber-500" />
+                </button>
                 <button
                   onClick={handleTriggerCall}
                   disabled={callingLead}
@@ -647,7 +670,11 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
       {/* PANE 3: LEAD CONTEXT & QUICK INTEL (RIGHT)                          */}
       {/* ─────────────────────────────────────────────────────────────────── */}
       {selectedThread && (
-        <div className={`w-72 lg:w-80 border-l p-4 flex flex-col gap-4 overflow-y-auto shrink-0 ${isLight ? 'bg-white border-slate-200' : 'bg-slate-900/60 border-slate-800'}`}>
+        <div className={`border-l p-4 flex flex-col gap-4 overflow-y-auto shrink-0 ${
+          showMobileIntel
+            ? 'fixed inset-y-16 right-0 z-40 w-80 max-w-[90vw] shadow-2xl xl:static xl:inset-auto xl:w-72 xl:max-w-none'
+            : 'hidden xl:flex w-72 lg:w-80'
+        } ${isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-slate-800 text-white'}`}>
           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
             Prospect Intelligence
           </h4>

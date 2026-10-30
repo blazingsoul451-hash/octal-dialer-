@@ -69,9 +69,9 @@ export const AdminInterface: React.FC<AdminInterfaceProps> = ({
   };
 
   return (
-    <div className={`flex h-screen select-none ${isLight ? 'bg-slate-50' : 'bg-black'}`}>
+    <div className={`flex flex-col md:flex-row min-h-screen select-none ${isLight ? 'bg-slate-50' : 'bg-black'}`}>
       {/* Sidebar */}
-      <div className={`w-64 ${isLight ? 'bg-slate-100 border-r border-slate-200' : 'bg-[#09090b] border-r border-[#18181b]'} flex flex-col`}>
+      <div className={`w-full md:w-64 shrink-0 ${isLight ? 'bg-slate-100 border-r border-slate-200' : 'bg-[#09090b] border-r border-[#18181b]'} flex flex-col`}>
         {/* Header */}
         <div className={`p-4 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
           <div className="flex items-center gap-2.5 mb-1.5">
@@ -84,7 +84,7 @@ export const AdminInterface: React.FC<AdminInterfaceProps> = ({
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto p-3 space-y-1 font-mono text-xs">
+        <nav className="flex-1 overflow-x-auto md:overflow-y-auto p-2 sm:p-3 flex md:flex-col gap-1.5 md:space-y-1 font-mono text-xs no-scrollbar">
           {sidebarItems.map(item => {
             const Icon = item.icon;
             const isActive = activeSection === item.id;
@@ -92,7 +92,7 @@ export const AdminInterface: React.FC<AdminInterfaceProps> = ({
               <button
                 key={item.id}
                 onClick={() => setActiveSection(item.id)}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition-all cursor-pointer ${
+                className={`w-auto md:w-full whitespace-nowrap flex items-center gap-2 md:gap-3 px-3 sm:px-3.5 py-2 sm:py-2.5 rounded-xl transition-all cursor-pointer ${
                   isActive
                     ? 'bg-amber-500 text-black font-bold shadow-sm'
                     : isLight

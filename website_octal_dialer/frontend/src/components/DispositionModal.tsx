@@ -295,7 +295,7 @@ export const DispositionModal: React.FC<DispositionModalProps> = ({
       }}
       className="fixed inset-0 z-50 flex items-center justify-center p-3 text-left backdrop-blur-md bg-black/80 select-none overflow-y-auto"
     >
-      <div className={`border p-5 rounded-2xl max-w-lg w-full space-y-4 shadow-2xl transition-colors my-auto ${
+      <div className={`border p-4 sm:p-5 rounded-2xl max-w-lg w-full max-h-[92vh] overflow-y-auto space-y-4 shadow-2xl transition-colors my-auto ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#0b0b0e] border-[#222226] text-white'
       }`}>
         {saveError && <p role="alert" className="text-xs text-red-500 font-bold bg-red-500/10 p-2 rounded-lg">{saveError}</p>}

@@ -488,7 +488,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
               {[
                 { label: '1. Outreach Sent', value: analyticsData?.funnel.outreachSent ?? 0, rate: '100%', color: 'from-blue-600 to-indigo-600' },
                 { label: '2. Opened', value: analyticsData?.funnel.opened ?? 0, rate: `${analyticsData?.funnel.openRate ?? '0.0'}%`, color: 'from-indigo-600 to-violet-600' },
@@ -763,7 +763,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
               <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3">
                 Call Dispositions Distribution
               </h4>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 text-center">
                 <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
                   <div className="text-lg font-black font-mono text-emerald-400">{analyticsData.outcomeBreakdown.ANSWERED ?? 0}</div>
                   <div className="text-[10px] text-zinc-400 font-bold uppercase mt-0.5">Answered</div>

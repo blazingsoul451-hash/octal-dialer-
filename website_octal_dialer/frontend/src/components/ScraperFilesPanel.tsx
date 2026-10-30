@@ -430,7 +430,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
 
               {/* Progress Counters Bar */}
               {(scraperStatus !== 'idle' || counters.extracted > 0) && (
-                <div className="grid grid-cols-4 gap-2 p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl text-center font-mono text-[10px]">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl text-center font-mono text-[10px]">
                   <div>
                     <span className="text-slate-500 block">Discovered</span>
                     <span className="font-bold text-white text-xs">{counters.discovered}</span>

@@ -836,7 +836,7 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
                   <span className="text-zinc-600">// Log output is empty. Run bot to stream details...</span>
                 ) : (
                   botLogs.map((log, index) => (
-                    <div key={index} className="whitespace-pre-wrap">{log}</div>
+                    <div key={index} className="whitespace-pre-wrap break-words">{log}</div>
                   ))
                 )}
                 <div ref={logEndRef} />
@@ -976,7 +976,7 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
                 </button>
               </form>
 
-              <div className="overflow-y-auto max-h-96 rounded-xl border border-[#18181b]">
+              <div className="overflow-x-auto overflow-y-auto max-h-96 rounded-xl border border-[#18181b]">
                 <table className="w-full text-xs font-mono text-left">
                   <thead className={`${isLight ? 'bg-slate-50 text-slate-700' : 'bg-[#121215] text-zinc-400'} text-[10px] font-bold uppercase border-b border-[#18181b]`}>
                     <tr>

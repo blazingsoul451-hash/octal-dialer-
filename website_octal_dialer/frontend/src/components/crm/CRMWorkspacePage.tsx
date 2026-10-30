@@ -536,7 +536,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
           </div>
 
           {/* Global Search Bar */}
-          <div className="flex-1 max-w-md w-full relative" ref={searchContainerRef}>
+          <div className="flex-1 max-w-full sm:max-w-md w-full relative" ref={searchContainerRef}>
             <div className="relative">
               <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
@@ -612,7 +612,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
         </div>
 
         {/* ── Sub-Navigation Tabs ── */}
-        <div className={`flex flex-wrap items-center gap-2 pt-6 border-t mt-6 select-none ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
+        <div className={`flex items-center gap-2 pt-6 border-t mt-6 select-none overflow-x-auto no-scrollbar flex-nowrap sm:flex-wrap pb-1.5 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
           {[
             { id: 'overview', label: 'CRM Overview', icon: Activity, count: null },
             { id: 'companies', label: 'Companies', icon: Building2, count: companies.length },
@@ -882,7 +882,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
               />
             </div>
 
-            <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
               <select
                 value={companyStatusFilter}
                 onChange={(e) => setCompanyStatusFilter(e.target.value)}

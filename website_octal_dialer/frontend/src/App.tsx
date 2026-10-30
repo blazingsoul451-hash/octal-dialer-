@@ -4,7 +4,7 @@ import {
   Bluetooth, PlaySquare, Sun, Moon, ShieldAlert, LayoutDashboard, Menu, Mail,
   Play, Layers, Settings, Users, FileText, Search,
   Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp,
-  Target, Building2, ChevronDown, UserPlus, Inbox
+  Target, Building2, ChevronDown, UserPlus, Inbox, X
 } from 'lucide-react';
 import { OmnichannelUnibox } from './components/OmnichannelUnibox';
 import { useSocket } from './hooks/useSocket';
@@ -322,6 +322,7 @@ export default function App() {
   const [isNavHovered, setIsNavHovered] = useState(false);
   const isNavExpanded = isNavPinned || isNavHovered;
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const isExpandedNav = isNavExpanded || isMobileMenuOpen;
 
   const toggleNavPinned = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1024,15 +1025,15 @@ export default function App() {
           ? 'bg-[#f8fafc] text-slate-900'
           : 'bg-black text-white'
       }`}>
-        <div className={`mr-4 ml-4 md:ml-0.5 my-2 px-5 h-14 rounded-2xl border flex items-center justify-between gap-4 transition-all duration-300 ${
+        <div className={`mr-2 ml-2 sm:mr-4 sm:ml-4 md:ml-0.5 my-2 px-3 sm:px-5 h-14 rounded-2xl border flex items-center justify-between gap-2 sm:gap-4 transition-all duration-300 ${
           isLight
             ? 'bg-white border-slate-200 shadow-md shadow-slate-200/50 text-slate-900'
             : 'bg-[#09090b] border-[#18181b] shadow-xl text-white'
         }`}>
 
           {/* Left: Brand Identity & Menu Toggle */}
-          <div className="flex items-center gap-4 select-none">
-            <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setActiveTab('dashboard')}>
+          <div className="flex items-center gap-2 sm:gap-4 select-none min-w-0">
+            <div className="flex items-center gap-2 sm:gap-3 cursor-pointer group min-w-0" onClick={() => setActiveTab('dashboard')}>
 
               {/* Desktop Menu Icon Button */}
               <button
@@ -1061,7 +1062,7 @@ export default function App() {
               </button>
 
               {/* Octal Dialer Premium Gradient Logo Typography */}
-              <div className="flex items-center gap-1.5 font-display tracking-tight text-xl font-black select-none">
+              <div className="flex items-center gap-1 sm:gap-1.5 font-display tracking-tight text-base sm:text-xl font-black select-none truncate">
                 <span className={isLight ? 'text-slate-900' : 'text-white'}>
                   OCTAL
                 </span>
@@ -1126,7 +1127,7 @@ export default function App() {
                 title="Company & Workspace Operations"
               >
                 <Building2 className="w-3.5 h-3.5 text-amber-500" />
-                <span className="font-semibold tracking-wide truncate max-w-[130px]">
+                <span className="font-semibold tracking-wide truncate max-w-[70px] sm:max-w-[130px]">
                   {companyName || 'Workspace'}
                 </span>
                 <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${companyMenuOpen ? 'rotate-180 text-amber-400' : ''}`} />
@@ -1135,7 +1136,7 @@ export default function App() {
               {/* Dropdown Menu on Hover / Click */}
               {companyMenuOpen && (
                 <div
-                  className={`absolute left-0 sm:right-auto top-full mt-2 w-64 rounded-2xl border p-2 shadow-2xl z-50 backdrop-blur-md animate-fadeIn ${
+                  className={`absolute right-0 sm:right-auto sm:left-0 top-full mt-2 w-64 max-w-[calc(100vw-24px)] rounded-2xl border p-2 shadow-2xl z-50 backdrop-blur-md animate-fadeIn ${
                     isLight
                       ? 'bg-white/95 border-slate-200 text-slate-800 shadow-slate-300/50'
                       : 'bg-[#0B0E14]/95 border-slate-800 text-slate-200 shadow-black/80'
@@ -1317,17 +1318,34 @@ export default function App() {
           onMouseEnter={() => setIsNavHovered(true)}
           onMouseLeave={() => setIsNavHovered(false)}
           className={`fixed top-0 bottom-0 z-50 transition-all duration-300 ease-in-out border-r shadow-2xl flex flex-col justify-between select-none ${
-            isNavExpanded
-              ? 'w-56 p-3 left-0'
-              : 'w-16 p-2.5 items-center -left-16 md:left-0'
-          } ${
-            isMobileMenuOpen ? 'left-0 w-56 p-3' : ''
+            isMobileMenuOpen
+              ? 'left-0 w-64 max-w-[85vw] p-3 sm:p-4'
+              : '-left-72 md:left-0 ' + (isExpandedNav ? 'md:w-56 md:p-3' : 'md:w-16 md:p-2.5 md:items-center')
           } ${
             isLight ? 'bg-white border-slate-200 text-slate-900 shadow-slate-300/50' : 'bg-[#09090b] border-[#18181b] text-white shadow-2xl'
           }`}
         >
           {/* Main Top Actions & Navigation */}
           <div className="w-full flex-1 min-h-0 flex flex-col pt-1">
+            {/* Mobile Close Header */}
+            <div className="flex md:hidden items-center justify-between pb-3 mb-2 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center font-bold text-amber-500 text-xs">
+                  OD
+                </div>
+                <div className="flex items-center gap-1 font-display tracking-tight text-sm font-black">
+                  <span className={isLight ? 'text-slate-900' : 'text-white'}>OCTAL</span>
+                  <span className="bg-gradient-to-r from-amber-500 to-amber-600 bg-clip-text text-transparent">DIALER</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                title="Close Navigation"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
             {/* Core Fixed Workspaces */}
             <div className="space-y-1.5 w-full shrink-0 pb-2 border-b border-slate-200 dark:border-slate-800/80">
@@ -1335,7 +1353,7 @@ export default function App() {
               <button
                 onClick={() => setActiveTab('dashboard')}
                 title="Dashboard"
-                className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                className={`w-full flex items-center ${isExpandedNav ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                   activeTab === 'dashboard'
                     ? isLight
                       ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -1346,7 +1364,7 @@ export default function App() {
                 }`}
               >
                 <LayoutDashboard className={`w-4 h-4 shrink-0 ${activeTab === 'dashboard' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
-                {isNavExpanded && <span className="truncate">Dashboard</span>}
+                {isExpandedNav && <span className="truncate">Dashboard</span>}
               </button>
 
               {/* CRM Workspace (Gated by CRM permission or Platform Admin) */}
@@ -1354,7 +1372,7 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('crm')}
                   title="CRM & Customer Intelligence"
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isExpandedNav ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'crm' || activeTab === 'follow-ups'
                       ? isLight
                         ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -1365,7 +1383,7 @@ export default function App() {
                   }`}
                 >
                   <Users className={`w-4 h-4 shrink-0 ${activeTab === 'crm' || activeTab === 'follow-ups' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
-                  {isNavExpanded && <span className="truncate">CRM Workspace</span>}
+                  {isExpandedNav && <span className="truncate">CRM Workspace</span>}
                 </button>
               )}
 
@@ -1373,7 +1391,7 @@ export default function App() {
               <button
                 onClick={() => setActiveTab('unibox')}
                 title="Omnichannel Unibox (Email & FB Replies)"
-                className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                className={`w-full flex items-center ${isExpandedNav ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                   activeTab === 'unibox'
                     ? isLight
                       ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -1384,7 +1402,7 @@ export default function App() {
                 }`}
               >
                 <Inbox className={`w-4 h-4 shrink-0 ${activeTab === 'unibox' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
-                {isNavExpanded && <span className="truncate">Omnichannel Unibox</span>}
+                {isExpandedNav && <span className="truncate">Omnichannel Unibox</span>}
               </button>
 
               {/* Campaigns Workspace (Gated by Campaigns permission or Platform Admin) */}
@@ -1392,7 +1410,7 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('campaigns')}
                   title="Campaigns Workspace"
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isExpandedNav ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'campaigns'
                       ? isLight
                         ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -1403,7 +1421,7 @@ export default function App() {
                   }`}
                 >
                   <Layers className={`w-4 h-4 shrink-0 ${activeTab === 'campaigns' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
-                  {isNavExpanded && <span className="truncate">Campaigns</span>}
+                  {isExpandedNav && <span className="truncate">Campaigns</span>}
                 </button>
               )}
 
@@ -1411,7 +1429,7 @@ export default function App() {
               {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.leads) && (
                 <button
                   onClick={() => setActiveTab('leads')}
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isExpandedNav ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'leads'
                       ? isLight
                         ? 'bg-blue-500/15 text-blue-950 font-bold border-l-3 border-blue-500 shadow-sm'
@@ -1422,7 +1440,7 @@ export default function App() {
                   }`}
                 >
                   <Database className={`w-4 h-4 shrink-0 ${activeTab === 'leads' ? (isLight ? 'text-blue-700' : 'text-blue-400') : 'text-slate-400'}`} />
-                  {isNavExpanded && <span className="truncate">Leads Database</span>}
+                  {isExpandedNav && <span className="truncate">Leads Database</span>}
                 </button>
               )}
 
@@ -1431,7 +1449,7 @@ export default function App() {
               {userRole === 'platform_admin' && (
                 <button
                   onClick={() => setActiveTab('billing')}
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isExpandedNav ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'billing'
                       ? isLight
                         ? 'bg-emerald-500/15 text-emerald-950 font-bold border-l-3 border-emerald-500 shadow-sm'
@@ -1442,7 +1460,7 @@ export default function App() {
                   }`}
                 >
                   <CreditCard className={`w-4 h-4 shrink-0 ${activeTab === 'billing' ? (isLight ? 'text-emerald-700' : 'text-emerald-400') : 'text-slate-400'}`} />
-                  {isNavExpanded && <span className="truncate">Billing & Plans</span>}
+                  {isExpandedNav && <span className="truncate">Billing & Plans</span>}
                 </button>
               )}
 
@@ -1451,7 +1469,7 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('team-lead')}
                   title="Team Workspace"
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isExpandedNav ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'team-lead'
                       ? isLight
                         ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -1462,7 +1480,7 @@ export default function App() {
                   }`}
                 >
                   <Target className={`w-4 h-4 shrink-0 ${activeTab === 'team-lead' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
-                  {isNavExpanded && <span className="truncate">Team Workspace</span>}
+                  {isExpandedNav && <span className="truncate">Team Workspace</span>}
                 </button>
               )}
 
@@ -1471,7 +1489,7 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('super-admin')}
                   title="Platform Console"
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isExpandedNav ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'super-admin'
                       ? isLight
                         ? 'bg-indigo-500/15 text-indigo-950 font-bold border-l-3 border-indigo-500 shadow-sm'
@@ -1482,7 +1500,7 @@ export default function App() {
                   }`}
                 >
                   <Building2 className={`w-4 h-4 shrink-0 ${activeTab === 'super-admin' ? (isLight ? 'text-indigo-700' : 'text-indigo-400') : 'text-slate-400'}`} />
-                  {isNavExpanded && <span className="truncate">Platform Console</span>}
+                  {isExpandedNav && <span className="truncate">Platform Console</span>}
                 </button>
               )}
 
@@ -1491,7 +1509,7 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('reports')}
                   title="Reports & Analytics"
-                  className={`w-full flex items-center ${isNavExpanded ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
+                  className={`w-full flex items-center ${isExpandedNav ? 'gap-2 pl-2.5 pr-2 py-1.5 justify-start text-xs font-semibold' : 'justify-center py-2'} rounded-lg transition-all duration-300 cursor-pointer ${
                     activeTab === 'reports'
                       ? isLight
                         ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500 shadow-sm'
@@ -1502,13 +1520,13 @@ export default function App() {
                   }`}
                 >
                   <TrendingUp className={`w-4 h-4 shrink-0 ${activeTab === 'reports' ? (isLight ? 'text-amber-700' : 'text-amber-400') : 'text-slate-400'}`} />
-                  {isNavExpanded && <span className="truncate">Reports & Analytics</span>}
+                  {isExpandedNav && <span className="truncate">Reports & Analytics</span>}
                 </button>
               )}
             </div>
 
             {/* Accordion Categorized Navigation (Sliding with hidden slider) */}
-            {isNavExpanded ? (
+            {isExpandedNav ? (
               <div className="space-y-3 text-left overflow-y-auto flex-1 min-h-0 pr-1 pt-2 no-scrollbar">
 
                 {/* OCTAL Dialer Group */}
@@ -1955,7 +1973,7 @@ export default function App() {
 
           {/* Bottom Sidebar Card: User Profile & Hardware Status */}
           <div className={`pt-2.5 border-t w-full ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
-            {isNavExpanded ? (
+            {isExpandedNav ? (
               <div className={`p-2 rounded-xl flex items-center justify-between text-left border ${
                 isLight ? 'bg-slate-50 border-slate-200 shadow-sm' : 'bg-slate-950/60 border-slate-800'
               }`}>
@@ -1984,7 +2002,7 @@ export default function App() {
         </nav>
 
         {/* Tab Content Panel Container */}
-        <main className={`flex-1 min-w-0 transition-all duration-300 p-3 sm:p-5 lg:p-6 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
+        <main className={`flex-1 min-w-0 w-full overflow-x-hidden transition-all duration-300 p-2.5 sm:p-5 lg:p-6 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
           {activeTab === 'dashboard' && (
             <DashboardOverview
               isLight={isLight}

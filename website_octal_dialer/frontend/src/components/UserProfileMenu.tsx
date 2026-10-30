@@ -494,7 +494,7 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
         {showPill && (
           <div
             onClick={() => setDropdownOpen(prev => !prev)}
-            className={`flex items-center px-3.5 py-1.5 rounded-full border text-xs font-bold cursor-pointer transition-all ${
+            className={`hidden sm:flex items-center px-3.5 py-1.5 rounded-full border text-xs font-bold cursor-pointer transition-all ${
               dropdownOpen
                 ? 'ring-2 ring-amber-500/50 border-amber-500'
                 : userRole === 'platform_admin'
@@ -538,7 +538,7 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
       {/* ── 1. PROFILE DROPDOWN (Pic 1) ── */}
       {dropdownOpen && (
         <div
-          className={`absolute right-0 mt-2 w-72 rounded-2xl shadow-2xl border overflow-hidden z-50 transition-all animate-fadeIn ${
+          className={`absolute right-0 mt-2 w-72 max-w-[calc(100vw-24px)] rounded-2xl shadow-2xl border overflow-hidden z-50 transition-all animate-fadeIn ${
             isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-[#09090b] border-[#18181b] text-zinc-200'
           }`}
         >

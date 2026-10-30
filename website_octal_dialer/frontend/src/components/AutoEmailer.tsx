@@ -1448,7 +1448,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
             </h3>
             <div
               ref={logRef}
-              className={`h-56 overflow-y-auto rounded-xl p-3 font-mono text-[11px] leading-relaxed space-y-1 ${
+              className={`h-56 overflow-y-auto rounded-xl p-3 font-mono text-[11px] leading-relaxed space-y-1 break-words whitespace-pre-wrap overflow-x-hidden ${
                 isLight ? 'bg-slate-100 text-slate-700 border border-slate-200' : 'bg-black text-emerald-300 border border-slate-800'
               }`}
             >

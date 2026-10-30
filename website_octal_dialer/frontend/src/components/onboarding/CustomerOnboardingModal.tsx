@@ -216,7 +216,7 @@ export const CustomerOnboardingModal: React.FC<CustomerOnboardingModalProps> = (
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/95 backdrop-blur-xl select-none overflow-y-auto font-sans">
-      <div className="w-full max-w-3xl bg-slate-900/95 border-2 border-slate-700/90 rounded-3xl shadow-[0_25px_80px_rgba(0,0,0,0.9)] overflow-hidden my-auto transition-all">
+      <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-slate-900/95 border-2 border-slate-700/90 rounded-3xl shadow-[0_25px_80px_rgba(0,0,0,0.9)] my-auto transition-all">
         
         {/* Dominant Top Header */}
         <div className="bg-slate-950 px-8 py-5 border-b-2 border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">

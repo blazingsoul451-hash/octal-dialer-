@@ -1853,7 +1853,8 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
               ) : null}
 
               <div className="border border-slate-800 rounded-xl overflow-hidden bg-[#10141D]">
-                <table className="w-full text-left text-[11px]">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-[11px]">
                   <thead className="bg-slate-900/80 border-b border-slate-800 text-[10px] font-mono text-slate-400 uppercase">
                     <tr>
                       <th className="px-3 py-2">Module</th>
@@ -1907,6 +1908,7 @@ export const UsersAndRolesView: React.FC<UsersAndRolesViewProps> = ({
                     })}
                   </tbody>
                 </table>
+                </div>
               </div>
             </div>
 

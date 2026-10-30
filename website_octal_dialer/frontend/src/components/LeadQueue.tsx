@@ -1020,7 +1020,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
 
         {/* LEFT COLUMN: Queue Lead List */}
-        <div className={`lg:col-span-5 border rounded-2xl p-5 shadow-2xl flex flex-col h-[600px] transition-colors ${
+        <div className={`lg:col-span-5 border rounded-2xl p-4 sm:p-5 shadow-2xl flex flex-col h-[420px] lg:h-[600px] transition-colors ${
           isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className={`flex justify-between items-center pb-3 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
@@ -1257,7 +1257,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
           )}
 
           {/* Main Caller Card */}
-          <div className={`border rounded-2xl p-6 shadow-2xl flex flex-col justify-between h-[360px] relative overflow-hidden transition-colors ${
+          <div className={`border rounded-2xl p-4 sm:p-6 shadow-2xl flex flex-col justify-between min-h-[360px] h-auto relative overflow-hidden transition-colors ${
             isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
           }`}>
 
@@ -1333,7 +1333,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               <button
                 onClick={handlePrev}
                 disabled={callState !== 'IDLE' || currentIndex === 0}
-                className={`px-4 py-3 border disabled:opacity-30 text-xs font-mono font-bold rounded-xl transition cursor-pointer ${
+                className={`px-4 py-3 min-h-[44px] border disabled:opacity-30 text-xs font-mono font-bold rounded-xl transition cursor-pointer ${
                   isLight ? 'bg-slate-100 border-slate-300 text-slate-800' : 'bg-[#18181b] border-[#27272a] text-zinc-300 hover:text-white'
                 }`}
               >
@@ -1344,7 +1344,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
                 <button
                   onClick={handleDial}
                   disabled={!activeLead || !phoneConnected}
-                  className={`flex-1 py-3 font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-sm ${
+                  className={`flex-1 py-3 min-h-[44px] font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-sm ${
                     !activeLead || !phoneConnected
                       ? 'bg-[#18181b] border border-[#27272a] text-zinc-600 cursor-not-allowed'
                       : 'bg-amber-500 hover:bg-amber-400 text-black cursor-pointer'
@@ -1356,7 +1356,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               ) : (
                 <button
                   onClick={handleHangup}
-                  className="flex-1 py-3 bg-red-600 hover:bg-red-500 text-white font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+                  className="flex-1 py-3 min-h-[44px] bg-red-600 hover:bg-red-500 text-white font-black text-xs font-mono uppercase tracking-widest rounded-xl transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
                 >
                   <Square className="w-4 h-4 fill-white" />
                   <span>HANG UP CALL</span>
@@ -1366,7 +1366,7 @@ export const LeadQueue: React.FC<LeadQueueProps> = ({
               <button
                 onClick={handleNext}
                 disabled={callState !== 'IDLE' || currentIndex >= leads.length - 1}
-                className={`px-4 py-3 border disabled:opacity-30 text-xs font-mono font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 ${
+                className={`px-4 py-3 min-h-[44px] border disabled:opacity-30 text-xs font-mono font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 ${
                   isLight ? 'bg-slate-100 border-slate-300 text-slate-800' : 'bg-[#18181b] border-[#27272a] text-zinc-300 hover:text-white'
                 }`}
               >

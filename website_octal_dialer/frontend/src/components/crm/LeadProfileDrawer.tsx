@@ -199,7 +199,7 @@ export const LeadProfileDrawer: React.FC<LeadProfileDrawerProps> = ({
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       className="crm-geist-scope fixed inset-0 z-50 overflow-hidden bg-black/80 backdrop-blur-md flex justify-end transition-opacity select-none"
     >
-      <div className={`w-full max-w-xl h-full shadow-2xl flex flex-col border-l transition-transform transform duration-300 ${
+      <div className={`w-full max-w-full sm:max-w-xl h-full shadow-2xl flex flex-col border-l transition-transform transform duration-300 ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         {/* Drawer Header */}
