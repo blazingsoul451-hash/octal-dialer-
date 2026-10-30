@@ -428,6 +428,27 @@ export default function App() {
     }
   };
 
+  const clearAuthStorage = () => {
+    try {
+      sessionStorage.removeItem('octal_impersonate_token');
+      sessionStorage.removeItem('octal_impersonate_tenant');
+      sessionStorage.removeItem('octal_platform_auth_token');
+      sessionStorage.removeItem('octal_platform_auth_user');
+      localStorage.removeItem('octal_platform_auth_token');
+      localStorage.removeItem('octal_platform_auth_user');
+      localStorage.removeItem('octal_customer_auth_token');
+      localStorage.removeItem('octal_customer_auth_user');
+      localStorage.removeItem('octal_auth_token');
+      localStorage.removeItem('octal_auth_user');
+      localStorage.removeItem('octal_session_id');
+    } catch {}
+    setImpersonateToken(null);
+    setImpersonateTenant(null);
+    setAuthToken(null);
+    setAuthUser(null);
+    setAuthIdentity(null);
+  };
+
   const handleLogout = async () => {
     if (isImpersonating) {
       sessionStorage.removeItem('octal_impersonate_token');
@@ -437,24 +458,9 @@ export default function App() {
       window.location.href = window.location.origin;
       return;
     }
-    if (authToken) {
-      await fetch(`${WEB_API_BASE}/auth/logout`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${authToken}` }
-      }).catch(() => {});
-    }
-    sessionStorage.removeItem('octal_platform_auth_token');
-    sessionStorage.removeItem('octal_platform_auth_user');
-    localStorage.removeItem('octal_platform_auth_token');
-    localStorage.removeItem('octal_platform_auth_user');
-    localStorage.removeItem('octal_customer_auth_token');
-    localStorage.removeItem('octal_customer_auth_user');
-    localStorage.removeItem('octal_auth_token');
-    localStorage.removeItem('octal_auth_user');
-    localStorage.removeItem('octal_session_id');
-    setAuthToken(null);
-    setAuthUser(null);
-    setAuthIdentity(null);
+    const tokenToInvalidate = authToken || effectiveAuthToken;
+    clearAuthStorage();
+    setAuthChecked(true);
     setCustomerType('COMPANY');
     setUserPermissions({} as any);
     setCampaigns([]);
@@ -462,6 +468,12 @@ export default function App() {
     setActiveTab('dashboard');
     if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
       window.history.pushState({}, '', '/');
+    }
+    if (tokenToInvalidate) {
+      await fetch(`${WEB_API_BASE}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tokenToInvalidate}` }
+      }).catch(() => {});
     }
   };
 
@@ -610,42 +622,49 @@ export default function App() {
               needsOnboarding: data.needsOnboarding ?? (!data.tenantId && !data.pendingInvitation),
               pendingInvitation: data.pendingInvitation
             }));
-          }
-          if (preferredName) {
-            setAuthUser(preferredName);
-            if (!sessionStorage.getItem('octal_impersonate_token')) {
-              localStorage.setItem('octal_auth_user', preferredName);
+            if (preferredName) {
+              setAuthUser(preferredName);
+              if (!sessionStorage.getItem('octal_impersonate_token')) {
+                localStorage.setItem('octal_auth_user', preferredName);
+              }
             }
-          }
-        } else if (res.status === 401 || res.status === 403) {
-          // Token strictly rejected by server
-          if (sessionStorage.getItem('octal_impersonate_token')) {
-            sessionStorage.removeItem('octal_impersonate_token');
-            sessionStorage.removeItem('octal_impersonate_tenant');
-            setImpersonateToken(null);
           } else {
-            sessionStorage.removeItem('octal_platform_auth_token');
-            sessionStorage.removeItem('octal_platform_auth_user');
-            localStorage.removeItem('octal_platform_auth_token');
-            localStorage.removeItem('octal_platform_auth_user');
-            localStorage.removeItem('octal_customer_auth_token');
-            localStorage.removeItem('octal_customer_auth_user');
-            localStorage.removeItem('octal_auth_token');
-            localStorage.removeItem('octal_auth_user');
-            setAuthToken(null);
-            setAuthUser(null);
-            setAuthIdentity(null);
+            console.warn('Notice: token verified but structural role is invalid/unrecognized. Clearing stale tokens.');
+            clearAuthStorage();
           }
+        } else {
+          // Any non-200 status (401, 403, 404, 500, etc.)
+          console.warn(`Notice: token verification returned status ${res.status}. Purging stale tokens.`);
+          clearAuthStorage();
         }
       } catch (err) {
         clearTimeout(timeoutId);
-        console.warn('Notice: token verification network check skipped:', err);
+        console.warn('Notice: token verification network check skipped or timed out:', err);
+        clearAuthStorage();
       } finally {
         setAuthChecked(true);
       }
     };
     verifyToken();
   }, []);
+
+  // ─── 4-second safety fallback: prevent infinite loading spinner lock ───
+  useEffect(() => {
+    if (authChecked) return;
+    const safetyTimer = setTimeout(() => {
+      console.warn('Safety timeout: auth check took longer than 4 seconds. Purging session and forcing LoginScreen.');
+      clearAuthStorage();
+      setAuthChecked(true);
+    }, 4000);
+    return () => clearTimeout(safetyTimer);
+  }, [authChecked]);
+
+  // Clean fallback when auth check completes but no valid userRole exists
+  useEffect(() => {
+    if (authChecked && !userRole && (effectiveAuthToken || authToken)) {
+      clearAuthStorage();
+    }
+  }, [authChecked, userRole, effectiveAuthToken, authToken]);
 
   // Fetch user role and permissions using canonical WEB_API_BASE
   useEffect(() => {
@@ -804,19 +823,38 @@ export default function App() {
     }
   }, [isLight]);
 
-  // ─── Gate: show login screen if not authenticated ─────────────────────────────
-  if (!effectiveAuthToken) {
+  // ─── Gate: show login screen if not authenticated or if auth checked with no valid userRole ───
+  if (!effectiveAuthToken || (authChecked && !userRole)) {
+    try {
+      sessionStorage.removeItem('octal_impersonate_token');
+      sessionStorage.removeItem('octal_impersonate_tenant');
+      sessionStorage.removeItem('octal_platform_auth_token');
+      sessionStorage.removeItem('octal_platform_auth_user');
+      localStorage.removeItem('octal_platform_auth_token');
+      localStorage.removeItem('octal_platform_auth_user');
+      localStorage.removeItem('octal_customer_auth_token');
+      localStorage.removeItem('octal_customer_auth_user');
+      localStorage.removeItem('octal_auth_token');
+      localStorage.removeItem('octal_auth_user');
+      localStorage.removeItem('octal_session_id');
+    } catch {}
     return <LoginScreen serverUrl={WEB_API_BASE} onLogin={handleLogin} />;
   }
 
   // ─── Gate: show spinner while checking stored token or resolving initial identity ───
   if (!authChecked || !userRole) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center space-y-3 select-none">
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center space-y-3 select-none px-4 text-center">
         <div className="w-9 h-9 rounded-full border-2 border-amber-500/20 border-t-amber-500 animate-spin" />
         <div className="text-slate-400 font-mono text-xs tracking-wider uppercase animate-pulse">
           Loading workspace...
         </div>
+        <button
+          onClick={handleLogout}
+          className="mt-4 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 text-xs hover:bg-amber-500/30"
+        >
+          Return to Sign In
+        </button>
       </div>
     );
   }
