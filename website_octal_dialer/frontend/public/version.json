@@ -1,0 +1,15 @@
+{
+  "version": "1.4.0",
+  "buildNumber": 4,
+  "fileName": "OctalDialer.apk",
+  "fileSizeBytes": 33458856,
+  "fileSizeMb": "31.9 MB",
+  "sha256": "7378fa91edc9370e178c7684a99c8b8dffbb5312d2a7702445ccf93ab24818ce",
+  "sha256Hash": "7378fa91edc9370e178c7684a99c8b8dffbb5312d2a7702445ccf93ab24818ce",
+  "downloadUrl": "https://zestify7.online/download/apk",
+  "apkUrl": "https://zestify7.online/download/apk",
+  "signature": "OCTAL_KEY_SIG_V1",
+  "forceUpdate": false,
+  "releaseNotes": "Production Foundation build with PostgreSQL, Auth, Safety Gate, Command IDs, DNC, and Heartbeat.",
+  "publishedAt": "2026-10-30T09:47:37.908Z"
+}

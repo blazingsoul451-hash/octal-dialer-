@@ -42,31 +42,71 @@ console.log(`📦 Found APK: ${sourceApk} (${sizeMb} MB)`);
 console.log('🔒 Calculating SHA256 Checksum...');
 const buffer = fs.readFileSync(sourceApk);
 const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-console.log(`   SHA256: ${sha256.substring(0, 16)}...`);
+console.log(`   SHA256: ${sha256}`);
 
-// 2. Deploy to Production VPS
+// 2. Prepare Version Metadata
+const versionMetadata = {
+  version: '1.4.0',
+  buildNumber: 4,
+  fileName: 'OctalDialer.apk',
+  fileSizeBytes: stat.size,
+  fileSizeMb: `${sizeMb} MB`,
+  sha256: sha256,
+  sha256Hash: sha256,
+  downloadUrl: 'https://zestify7.online/download/apk',
+  apkUrl: 'https://zestify7.online/download/apk',
+  signature: 'OCTAL_KEY_SIG_V1',
+  forceUpdate: false,
+  releaseNotes: 'Production Foundation build with PostgreSQL, Auth, Safety Gate, Command IDs, DNC, and Heartbeat.',
+  publishedAt: new Date().toISOString()
+};
+
+// 3. Copy to Local Backend OTA & Frontend Public Directories
+console.log('📂 Staging APK and version.json to local OTA directories...');
+const localDataDir = path.resolve(__dirname, '../data');
+if (!fs.existsSync(localDataDir)) fs.mkdirSync(localDataDir, { recursive: true });
+const localApkTarget = path.join(localDataDir, 'OctalDialer.apk');
+fs.copyFileSync(sourceApk, localApkTarget);
+const localVersionJson = path.join(localDataDir, 'version.json');
+fs.writeFileSync(localVersionJson, JSON.stringify(versionMetadata, null, 2), 'utf-8');
+console.log(`   Copied locally to ${localApkTarget}`);
+console.log(`   Wrote version info to ${localVersionJson}`);
+
+const frontendPublicDir = path.resolve(__dirname, '../../frontend/public');
+if (fs.existsSync(frontendPublicDir)) {
+  fs.copyFileSync(sourceApk, path.join(frontendPublicDir, 'OctalDialer.apk'));
+  fs.writeFileSync(path.join(frontendPublicDir, 'version.json'), JSON.stringify(versionMetadata, null, 2), 'utf-8');
+  console.log(`   Also synced to frontend/public`);
+}
+
+// 4. Deploy to Production VPS
 const sshKey = 'C:\\Users\\ice\\Desktop\\hyderabad ssh key\\hyderabad_ssh_key.pem';
 const vpsUser = 'ubuntu';
 const vpsHost = '140.245.215.156';
 
-console.log(`📡 Uploading APK to production server (${vpsHost})...`);
+console.log(`📡 Uploading APK and version.json to production server (${vpsHost})...`);
 try {
   execSync(
     `scp -i "${sshKey}" -o StrictHostKeyChecking=no "${sourceApk}" ${vpsUser}@${vpsHost}:/tmp/OctalDialer.apk`,
     { stdio: 'inherit' }
   );
-
-  console.log('⚡ Moving to Nginx web root on production...');
   execSync(
-    `ssh -i "${sshKey}" -o StrictHostKeyChecking=no ${vpsUser}@${vpsHost} "sudo cp /tmp/OctalDialer.apk /var/www/octal-frontend/OctalDialer.apk && sudo chown www-data:www-data /var/www/octal-frontend/OctalDialer.apk && cp /tmp/OctalDialer.apk /home/ubuntu/octal-backend/data/OctalDialer.apk && rm -f /tmp/OctalDialer.apk"`,
+    `scp -i "${sshKey}" -o StrictHostKeyChecking=no "${localVersionJson}" ${vpsUser}@${vpsHost}:/tmp/version.json`,
+    { stdio: 'inherit' }
+  );
+
+  console.log('⚡ Moving to Nginx web root and backend data on production...');
+  execSync(
+    `ssh -i "${sshKey}" -o StrictHostKeyChecking=no ${vpsUser}@${vpsHost} "sudo cp /tmp/OctalDialer.apk /var/www/octal-frontend/OctalDialer.apk && sudo cp /tmp/version.json /var/www/octal-frontend/version.json && sudo chown www-data:www-data /var/www/octal-frontend/OctalDialer.apk /var/www/octal-frontend/version.json && cp /tmp/OctalDialer.apk /home/ubuntu/octal-backend/data/OctalDialer.apk && cp /tmp/version.json /home/ubuntu/octal-backend/data/version.json && rm -f /tmp/OctalDialer.apk /tmp/version.json"`,
     { stdio: 'inherit' }
   );
 
   console.log('\n======================================================');
   console.log('✅ APK PUBLISHED SUCCESSFULLY TO PRODUCTION!');
   console.log(`   Download Link : https://zestify7.online/download/apk`);
-  console.log(`   File Size     : ${sizeMb} MB`);
-  console.log(`   Checksum      : ${sha256}`);
+  console.log(`   File Size     : ${sizeMb} MB (${stat.size} bytes)`);
+  console.log(`   SHA256        : ${sha256}`);
+  console.log('   version.json  :\n' + JSON.stringify(versionMetadata, null, 2));
   console.log('======================================================\n');
 } catch (deployErr) {
   console.error('❌ Failed to upload to production server:', deployErr.message);
