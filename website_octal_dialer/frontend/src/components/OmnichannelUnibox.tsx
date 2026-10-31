@@ -104,6 +104,7 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
   };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -180,7 +181,12 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
   }, [selectedThread?.id, fetchMessages]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTo({
+        top: messagesContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
   }, [messages]);
 
   // Real-time Socket.IO Listeners
@@ -534,7 +540,7 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
             </div>
 
             {/* Messages Scroll Area */}
-            <div className="flex-1 p-4 overflow-y-auto space-y-4">
+            <div ref={messagesContainerRef} className="flex-1 p-4 overflow-y-auto space-y-4">
               {loadingMessages ? (
                 <div className="p-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
                   <RefreshCw className="w-4 h-4 animate-spin text-amber-500" />

@@ -486,7 +486,31 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
       {success && <div className="p-3.5 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs font-mono font-bold">{success}</div>}
       {error && <div className="p-3.5 rounded-2xl bg-red-500/10 text-red-400 border border-red-500/30 text-xs font-mono font-bold">{error}</div>}
 
-            <div className="flex items-center justify-between p-4 rounded-2xl border border-slate-800 bg-slate-900/60 mb-2">
+            {onNavigateTab && (
+        <div className="flex md:hidden items-center gap-1.5 overflow-x-auto pb-1.5 no-scrollbar border-b border-slate-700/40 mb-3">
+          {[
+            { id: 'fb-poster-accounts', label: 'FB Accounts' },
+            { id: 'fb-poster-campaigns', label: 'Campaigns' },
+            { id: 'fb-poster-scheduler', label: 'Auto Poster' },
+            { id: 'fb-poster-joiner', label: 'Group Joiner' },
+            { id: 'fb-poster-logs', label: 'Activity Logs' },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => onNavigateTab(tab.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+                activeSubTab === tab.id
+                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                  : 'text-slate-400 hover:text-slate-200 bg-slate-800/40 hover:bg-slate-800'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between p-4 rounded-2xl border border-slate-800 bg-slate-900/60 mb-2">
         <div className="flex items-center gap-2.5">
           <Share2 className="w-5 h-5 text-amber-500" />
           <div>

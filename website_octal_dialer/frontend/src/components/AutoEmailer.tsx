@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Mail, Plus, Trash2, Play, Square, RefreshCw, Upload,
   FileText, CheckCircle, AlertCircle,
@@ -591,6 +591,29 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
         </div>
       )}
 
+      {onNavigateTab && (
+        <div className="flex md:hidden items-center gap-1.5 overflow-x-auto pb-1.5 no-scrollbar border-b border-slate-700/40 mb-3">
+          {[
+            { id: 'emailer-gmail', label: 'Accounts' },
+            { id: 'emailer-campaign', label: 'Campaigns' },
+            { id: 'emailer-templates', label: 'Templates' },
+            { id: 'emailer-leads', label: 'Leads' },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => onNavigateTab(tab.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+                activeSubTab === tab.id
+                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                  : 'text-slate-400 hover:text-slate-200 bg-slate-800/40 hover:bg-slate-800'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Top Banner */}
       <div className={`border rounded-2xl p-6 shadow-2xl transition-colors ${
         isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
@@ -643,7 +666,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
               <label className={`block text-xs font-bold mb-2.5 uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
                 1. Choose Your Email Provider
               </label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 {[
                   { id: 'google', label: 'Google / Gmail', tag: '1-Click Connect', color: 'border-red-500/40 hover:border-red-500 bg-red-500/5', activeColor: 'bg-red-500/20 border-red-500 text-red-400 ring-2 ring-red-500/30' },
                   { id: 'business', label: 'Business / Company', tag: 'cPanel, Zoho, Custom', color: 'border-amber-500/40 hover:border-amber-500 bg-amber-500/5', activeColor: 'bg-amber-500/20 border-amber-500 text-amber-300 ring-2 ring-amber-500/30' },
