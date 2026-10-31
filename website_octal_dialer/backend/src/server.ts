@@ -1675,18 +1675,23 @@ app.post('/api/user/revoke-devices', requireAuth, async (req, res) => {
 // â”€â”€â”€ Safety Controller REST Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // GET /api/suppression-list â€” list all DNC numbers
-app.get('/api/suppression-list', requireAuth, async (req, res) => {
+app.get(['/api/suppression-list', '/api/dnc'], requireAuth, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId;
   if (!tenantId) {
     res.status(401).json({ error: 'Unauthorized: missing tenant identity' });
     return;
   }
-  res.json(await getSuppressionList(tenantId));
+  const list = await getSuppressionList(tenantId);
+  if (req.path === '/api/dnc') {
+    res.json({ dncList: list, suppressionList: list });
+  } else {
+    res.json(list);
+  }
 });
 
-// POST /api/suppression-list â€” add a number to DNC
-app.post('/api/suppression-list', requireAuth, async (req, res) => {
+// POST /api/suppression-list or /api/dnc — add a number to DNC
+app.post(['/api/suppression-list', '/api/dnc'], requireAuth, async (req, res) => {
   const { phone, reason } = req.body as { phone: string; reason?: string };
   if (!phone || !phone.trim()) {
     res.status(400).json({ error: 'Phone number is required.' });
@@ -1706,8 +1711,8 @@ app.post('/api/suppression-list', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/suppression-list/import â€” bulk add DNC numbers
-app.post('/api/suppression-list/import', requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
+// POST /api/suppression-list/import or /api/dnc/import — bulk add DNC numbers
+app.post(['/api/suppression-list/import', '/api/dnc/import'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const { entries, reason } = req.body as { entries: { phone: string; reason?: string }[]; reason?: string };
   if (!Array.isArray(entries) || entries.length === 0) {
     res.status(400).json({ error: 'Array of entries with phone property is required.' });
@@ -1728,8 +1733,8 @@ app.post('/api/suppression-list/import', requireAuth, requireCompanyOwnerOrPlatf
   res.json({ success: true, addedCount: result.added, skippedCount: result.skipped });
 });
 
-// DELETE /api/suppression-list/:id â€” remove from DNC
-app.delete('/api/suppression-list/:id', requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
+// DELETE /api/suppression-list/:id or /api/dnc/:id — remove from DNC
+app.delete(['/api/suppression-list/:id', '/api/dnc/:id'], requireAuth, requireCompanyOwnerOrPlatformAdmin, async (req, res) => {
   const user = (req as any).user;
   const tenantId = user?.tenantId;
   if (!tenantId) {

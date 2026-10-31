@@ -33,12 +33,12 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
   const fetchDncList = async () => {
     setError(null);
     try {
-      const res = await fetch(`${serverUrl}/api/dnc`, {
+      const res = await fetch(`${serverUrl}/api/suppression-list`, {
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
       if (res.ok) {
         const json = await res.json();
-        setEntries(json.dncList || []);
+        setEntries(Array.isArray(json) ? json : (json.dncList || json.suppressionList || []));
       }
     } catch {
       setError('Failed to fetch DNC list');

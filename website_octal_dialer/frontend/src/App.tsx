@@ -1110,7 +1110,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="hidden md:flex items-center gap-2 pl-4 border-l border-slate-300 dark:border-slate-700/40 text-xs font-mono">
+            <div className="hidden lg:flex items-center gap-2 pl-4 border-l border-slate-300 dark:border-slate-700/40 text-xs font-mono">
               <span className="text-slate-500 font-bold uppercase text-[10px] tracking-wider">WORKSPACE</span>
               <span className="text-slate-400">/</span>
               <span className="text-amber-600 dark:text-amber-400 font-black capitalize">
