@@ -287,7 +287,7 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
   };
 
   return (
-    <div className={`flex h-[calc(100vh-64px)] w-full overflow-hidden ${isLight ? 'bg-slate-50 text-slate-900' : 'bg-slate-950 text-slate-100'}`}>
+    <div className={`flex h-[calc(100dvh-78px)] sm:h-[calc(100dvh-104px)] w-full overflow-hidden ${isLight ? 'bg-slate-50 text-slate-900' : 'bg-slate-950 text-slate-100'}`}>
       
       {/* ─────────────────────────────────────────────────────────────────── */}
       {/* PANE 1: THREAD LIST (LEFT)                                          */}

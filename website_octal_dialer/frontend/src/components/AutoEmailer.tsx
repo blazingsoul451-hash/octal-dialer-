@@ -521,7 +521,7 @@ export function AutoEmailer({ isLight, serverUrl, authToken, activeSubTab = 'ema
     return getAccountProvider(a) === accountFilter;
   });
 
-  const card = `p-6 border rounded-2xl shadow-2xl transition-all ${isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'}`;
+  const card = `p-4 sm:p-6 border rounded-2xl shadow-2xl transition-all ${isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'}`;
   const inputCls = `w-full px-4 py-3 rounded-xl border text-sm font-sans outline-none transition ${isLight ? 'bg-white border-slate-200 text-slate-900 focus:border-amber-500' : 'bg-[#121215] border-[#27272a] text-white focus:border-amber-500'}`;
   const btnPrimary = 'px-6 py-3 bg-amber-500 hover:bg-amber-400 text-black font-black text-sm rounded-xl transition cursor-pointer shadow-sm flex items-center justify-center gap-2';
   const btnSecondary = `px-4 py-2.5 border rounded-xl text-xs font-bold transition cursor-pointer ${isLight ? 'border-slate-200 text-slate-700 hover:bg-slate-100' : 'border-[#27272a] text-zinc-300 hover:bg-[#18181b]'}`;

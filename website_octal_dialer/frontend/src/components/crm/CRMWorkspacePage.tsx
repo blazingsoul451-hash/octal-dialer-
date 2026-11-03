@@ -512,7 +512,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   return (
     <div className="crm-geist-scope space-y-6 pb-20 text-left animate-fade-in select-none">
       {/* ── Top Header with Global Search & Metrics Selector ── */}
-      <div className={`p-6 border rounded-2xl shadow-xl backdrop-blur-md relative overflow-hidden ${
+      <div className={`p-4 sm:p-6 border rounded-2xl shadow-xl backdrop-blur-md relative overflow-hidden ${
         isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">

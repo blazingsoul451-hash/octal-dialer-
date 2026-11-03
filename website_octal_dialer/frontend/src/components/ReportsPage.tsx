@@ -270,7 +270,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
     <div className="space-y-6 text-left select-none transition-colors duration-200">
       
       {/* ── 1. Top Header & Unified Control Bar ── */}
-      <div className={`border rounded-2xl p-6 shadow-2xl transition-colors ${
+      <div className={`border rounded-2xl p-4 sm:p-6 shadow-2xl transition-colors ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">

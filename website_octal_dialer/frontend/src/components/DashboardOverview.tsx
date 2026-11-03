@@ -292,7 +292,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         <div className="lg:col-span-7 space-y-6">
           
           {/* Outcome Breakdown Card */}
-          <div className={`p-6 border rounded-2xl shadow-2xl space-y-5 ${
+          <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl space-y-5 ${
             isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
           }`}>
             {/* Header */}
@@ -460,7 +460,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           </div>
 
           {/* Active Campaigns List */}
-          <div className={`p-6 border rounded-2xl shadow-2xl space-y-4 ${
+          <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl space-y-4 ${
             isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
           }`}>
             <div className={`flex justify-between items-center pb-3 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
@@ -536,7 +536,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         <div className="lg:col-span-5 space-y-6">
           
           {/* Quick Operations Card */}
-          <div className={`p-6 border rounded-2xl shadow-2xl space-y-4 ${
+          <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl space-y-4 ${
             isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
           }`}>
             <h3 className="text-xs font-mono font-black text-amber-600 dark:text-amber-500 uppercase tracking-wider flex items-center gap-2">
@@ -588,7 +588,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           </div>
 
           {/* Recent Call Stream */}
-          <div className={`p-6 border rounded-2xl shadow-2xl space-y-4 ${
+          <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl space-y-4 ${
             isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
           }`}>
             <div className={`flex justify-between items-center pb-3 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>

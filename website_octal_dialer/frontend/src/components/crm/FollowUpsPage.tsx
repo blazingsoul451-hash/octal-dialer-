@@ -122,7 +122,7 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
   return (
     <div className="space-y-6 select-none text-left">
       {/* ── Page Header Card ── */}
-      <div className={`p-6 border rounded-2xl shadow-2xl transition-colors ${
+      <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl transition-colors ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">

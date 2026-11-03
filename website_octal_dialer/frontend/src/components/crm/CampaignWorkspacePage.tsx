@@ -97,7 +97,7 @@ export const CampaignWorkspacePage: React.FC<CampaignWorkspacePageProps> = ({
   return (
     <div className="space-y-6 text-left select-none">
       {/* ── Header Card ── */}
-      <div className={`p-6 border rounded-2xl shadow-2xl transition-colors ${
+      <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl transition-colors ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -240,7 +240,7 @@ export const CampaignWorkspacePage: React.FC<CampaignWorkspacePageProps> = ({
       </div>
 
       {/* ── Campaign Leads Table ── */}
-      <div className={`p-6 border rounded-2xl shadow-2xl space-y-4 ${
+      <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl space-y-4 ${
         isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
         <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>

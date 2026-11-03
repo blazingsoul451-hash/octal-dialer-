@@ -208,7 +208,7 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   };
 
   return (
-    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left select-none transition-colors ${
+    <div className={`border rounded-2xl p-4 sm:p-6 shadow-2xl space-y-6 text-left select-none transition-colors ${
       isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
     }`}>
       {/* Header */}

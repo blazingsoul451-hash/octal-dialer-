@@ -659,7 +659,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
     : '/login-bg.mp4';
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-3 sm:p-6 py-6 sm:py-8 relative overflow-x-hidden overflow-y-auto bg-[#05070f] select-none font-sans">
+    <div className="min-h-screen flex items-center justify-center p-3 sm:p-6 py-6 sm:py-8 relative overflow-x-clip overflow-y-auto bg-[#05070f] select-none font-sans">
       {/* ── Background Video (Dynamic by Screen Mode: Login, Sign Up, Forgot Password) ── */}
       <video
         key={currentVideoSrc}
