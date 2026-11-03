@@ -77,7 +77,7 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
   const [limitDrafts, setLimitDrafts] = useState<Record<string, string>>({});
   const [rowBusy, setRowBusy] = useState<string | null>(null);
 
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const logContainerRef = useRef<HTMLDivElement>(null);
 
   /** Shared request helper: attaches auth, parses JSON, throws on error. */
   const apiCall = async (path: string, init: RequestInit = {}) => {
@@ -209,8 +209,8 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
   }, [botStatus]);
 
   useEffect(() => {
-    if (logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (logContainerRef.current) {
+      logContainerRef.current?.scrollTo({ top: logContainerRef.current.scrollHeight, behavior: "smooth" });
     }
   }, [botLogs]);
 
@@ -863,7 +863,7 @@ export const FacebookAutoPoster: React.FC<FacebookAutoPosterProps> = ({
                     <div key={index} className="whitespace-pre-wrap break-words">{log}</div>
                   ))
                 )}
-                <div ref={logEndRef} />
+                
               </div>
             </div>
           </div>

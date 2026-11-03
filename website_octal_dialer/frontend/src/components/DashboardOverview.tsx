@@ -130,7 +130,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
     <div className="space-y-6 text-left select-none relative overflow-visible">
       
       {/* Octal Dialer User Greeting Header */}
-      <div className={`sticky top-[68px] z-30 flex flex-col space-y-2 pb-2 pt-2 backdrop-blur-md transition-all ${
+      <div className={`sticky top-[72px] z-30 flex flex-col space-y-2 pb-2 pt-2 backdrop-blur-md transition-all ${
         isLight ? 'bg-slate-100/90 text-slate-900' : 'bg-black/90 text-white'
       }`}>
         <h1 className="text-2xl tracking-tight">

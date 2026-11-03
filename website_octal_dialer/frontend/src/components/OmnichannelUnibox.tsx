@@ -397,6 +397,7 @@ export const OmnichannelUnibox: React.FC<OmnichannelUniboxProps> = ({
               return (
                 <div
                   key={thread.id}
+                  data-testid="thread-card"
                   onClick={() => setSelectedThread(thread)}
                   className={`p-3 cursor-pointer transition relative flex flex-col gap-1.5 ${
                     isSelected

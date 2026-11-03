@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "🔒 [Octal Gate] Running pre-push verification checks..."
+
+# 1. Block compromised credential literals
+if grep -rniE "AdminPassword123!|OwnerPassword1234!" website_octal_dialer/backend/src website_octal_dialer/frontend/src 2>/dev/null; then
+  echo "❌ BLOCKED: Compromised credential literal detected in source code."
+  exit 1
+fi
+
+# 2. Block non-ASCII characters in SQL migrations
+if [ -d "website_octal_dialer/backend/src/db/migrations" ]; then
+  if LC_ALL=C grep -rn '[^ -~]' website_octal_dialer/backend/src/db/migrations/ 2>/dev/null; then
+    echo "❌ BLOCKED: Non-ASCII character found in backend migrations."
+    exit 1
+  fi
+fi
+
+# 3. Block window scroll drift regressions (scrollIntoView) across frontend
+if grep -rn "scrollIntoView(" website_octal_dialer/frontend/src 2>/dev/null; then
+  echo "❌ BLOCKED: scrollIntoView() detected in frontend source. Use containerRef.current.scrollTo() instead."
+  exit 1
+fi
+
+# 4. Frontend & Backend Typechecks
+echo "⏳ Checking Backend TypeScript..."
+npm --prefix website_octal_dialer/backend exec tsc -- -p website_octal_dialer/backend/tsconfig.json --noEmit
+
+echo "⏳ Checking Frontend TypeScript..."
+npm --prefix website_octal_dialer/frontend exec tsc -- -p website_octal_dialer/frontend/tsconfig.json --noEmit
+
+echo "✅ [Octal Gate] Pre-push checks clean."

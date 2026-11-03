@@ -924,7 +924,7 @@ export async function ensureDefaultAdmin(): Promise<void> {
     return { password: devDefault, generated: false };
   };
 
-  const adminBootstrap = resolveBootstrapPassword('BOOTSTRAP_ADMIN_PASSWORD', 'AdminPassword123!');
+  const adminBootstrap = resolveBootstrapPassword('BOOTSTRAP_ADMIN_PASSWORD', process.env.BOOTSTRAP_ADMIN_PASSWORD || crypto.randomBytes(16).toString('hex'));
   const { hash: adminPasswordHash } = hashPassword(adminBootstrap.password);
 
   // Upsert admin / admin@octaldialer.internal
@@ -976,7 +976,7 @@ export async function ensureDefaultAdmin(): Promise<void> {
   // 4. Provision and sync owner@octal.local on tenant_default with full permissions
   let ownerId: string | null = null;
   try {
-    const ownerBootstrap = resolveBootstrapPassword('BOOTSTRAP_OWNER_PASSWORD', 'OwnerPassword1234!');
+    const ownerBootstrap = resolveBootstrapPassword('BOOTSTRAP_OWNER_PASSWORD', process.env.BOOTSTRAP_OWNER_PASSWORD || crypto.randomBytes(16).toString('hex'));
     const { hash: ownerPasswordHash } = hashPassword(ownerBootstrap.password);
     const existingOwner = await db.queryOne<any>("SELECT id FROM users WHERE LOWER(username) = 'owner' OR LOWER(email) = 'owner@octal.local'");
     if (existingOwner) {

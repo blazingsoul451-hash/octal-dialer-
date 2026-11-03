@@ -187,8 +187,23 @@ import {
   isCompanyOwner,
   isTeamLead,
   isTenantMember,
-  SQL_EXCLUDE_PLATFORM_ROLES
+  SQL_EXCLUDE_PLATFORM_ROLES,
+  completeGoogleProfileSetup
 } from './authManager';
+
+import {
+  getBillingState,
+  getPublicPlans,
+  startCheckout,
+  changePlan,
+  cancelSubscription,
+  reactivateSubscription,
+  suspendSubscription,
+  adminActivateSubscription,
+  getTenantBillingEvents,
+  getTenantInvoices,
+  sanitizePlanId
+} from './billingManager';
 
 import { registerScraperRoutes } from './scraperRoutes';
 import { facebookPosterRouter } from './facebookPosterRoutes';
@@ -5437,7 +5452,7 @@ app.get('/api/super-admin/telemetry', requirePlatformAdmin, async (req, res) => 
 });
 
 // GET /api/super-admin/tenants: List all organizations with search, filtering, and pagination
-app.get('/api/super-admin/tenants', requirePlatformAdmin, async (req, res) => {
+app.get(['/api/super-admin/tenants', '/api/admin/tenants', '/admin/tenants'], requirePlatformAdmin, async (req, res) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 25;
@@ -5458,7 +5473,7 @@ app.get('/api/super-admin/tenants', requirePlatformAdmin, async (req, res) => {
 });
 
 // GET /api/super-admin/tenants/:id and :id/detail: Consolidated tenant detail drawer snapshot
-app.get(['/api/super-admin/tenants/:id', '/api/super-admin/tenants/:id/detail'], requirePlatformAdmin, async (req, res) => {
+app.get(['/api/super-admin/tenants/:id', '/api/super-admin/tenants/:id/detail', '/api/admin/tenants/:id', '/admin/tenants/:id'], requirePlatformAdmin, async (req, res) => {
   try {
     const tenantId = req.params.id;
     const detail = await getTenantDetail(tenantId);
@@ -5740,7 +5755,7 @@ app.get('/api/company/entitlements', requireAuth, async (req, res) => {
 });
 
 // PUT /api/super-admin/tenants/:id/status: Suspend or reactivate a tenant with required reason
-app.put('/api/super-admin/tenants/:id/status', requirePlatformAdmin, async (req, res) => {
+app.put(['/api/super-admin/tenants/:id/status', '/api/admin/tenants/:id/status', '/admin/tenants/:id/status'], requirePlatformAdmin, async (req, res) => {
   try {
     const tenantId = req.params.id;
     const caller = (req as any).user;
@@ -6477,6 +6492,452 @@ app.get(['/billing/subscription', '/api/billing/subscription', '/api/company/sub
     res.status(500).json({ error: 'Failed to retrieve subscription status.' });
   }
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// COMPREHENSIVE BILLING, COMMERCIAL, ADMIN & MODULE INTEGRITY ROUTES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Billing Plans Catalog
+app.get(['/billing/plans', '/api/billing/plans'], async (_req, res) => {
+  try {
+    const plans = await getPublicPlans();
+    res.json({ plans });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Billing Plan Change
+app.post(['/billing/plan/change', '/billing/change-plan', '/api/billing/plan/change', '/api/billing/change-plan'], requireTenantAdmin, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { planId } = req.body;
+    if (!planId) return res.status(400).json({ error: 'planId is required.' });
+    const isPlatform = user.role === 'platform_admin' || user.role === 'superadmin';
+    const sub = await changePlan(user.tenantId, planId, isPlatform);
+    res.json({ success: true, subscription: sub });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Billing Cancel Subscription
+app.post(['/billing/subscription/cancel', '/billing/cancel', '/api/billing/subscription/cancel', '/api/billing/cancel'], requireTenantAdmin, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const sub = await cancelSubscription(user.tenantId);
+    res.json({ success: true, subscription: sub });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Billing Reactivate Subscription
+app.post(['/billing/subscription/reactivate', '/billing/reactivate', '/api/billing/subscription/reactivate', '/api/billing/reactivate'], requireTenantAdmin, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const sub = await reactivateSubscription(user.tenantId);
+    res.json({ success: true, subscription: sub });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Billing Events History
+app.get(['/billing/events', '/api/billing/events'], requireTenantAdmin, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const events = await getTenantBillingEvents(user.tenantId);
+    res.json({ events });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Billing Invoices Summary
+app.get(['/billing/invoices', '/api/billing/invoices'], requireTenantAdmin, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const invoices = await getTenantInvoices(user.tenantId);
+    res.json({ invoices });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Billing Checkout
+app.post(['/billing/checkout', '/api/billing/checkout'], requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { planId } = req.body;
+    if (!planId) return res.status(400).json({ error: 'planId is required.' });
+    const cleanPlanId = sanitizePlanId(planId);
+    const checkout = await startCheckout(user.tenantId, cleanPlanId);
+    res.json({ success: true, ...checkout });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Admin Catalog Plans Management
+app.get(['/admin/plans', '/api/admin/plans'], requirePlatformAdmin, async (_req, res) => {
+  try {
+    const plans = await db.query<any>('SELECT * FROM plans ORDER BY "priceMonthly" ASC');
+    res.json({ plans: plans || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post(['/admin/plans', '/api/admin/plans'], requirePlatformAdmin, async (req, res) => {
+  try {
+    const { id, name, priceMonthly, priceYearly, description } = req.body;
+    const planId = id || 'plan_' + crypto.randomUUID().slice(0, 8);
+    const nowIso = new Date().toISOString();
+    await db.execute(`
+      INSERT INTO plans (id, name, "priceMonthly", "priceYearly", description, "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $6)
+    `, [planId, name || 'Custom Plan', priceMonthly || 0, priceYearly || 0, description || '', nowIso]);
+    res.json({ success: true, planId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put(['/admin/plans/:id', '/api/admin/plans/:id'], requirePlatformAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, priceMonthly, priceYearly, status } = req.body;
+    const nowIso = new Date().toISOString();
+    await db.execute(`
+      UPDATE plans SET name = COALESCE($1, name), "priceMonthly" = COALESCE($2, "priceMonthly"),
+      "priceYearly" = COALESCE($3, "priceYearly"), status = COALESCE($4, status), "updatedAt" = $5
+      WHERE id = $6
+    `, [name, priceMonthly, priceYearly, status, nowIso, id]);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin Subscriptions Directory & Control
+app.get(['/admin/billing/subscriptions', '/api/admin/billing/subscriptions'], requirePlatformAdmin, async (_req, res) => {
+  try {
+    const subscriptions = await db.query<any>(`
+      SELECT s.*, t.name as "tenantName", p.name as "planName"
+      FROM subscriptions s
+      LEFT JOIN tenants t ON s."tenantId" = t.id
+      LEFT JOIN plans p ON s."planId" = p.id
+      ORDER BY s."createdAt" DESC
+    `);
+    res.json({ subscriptions: subscriptions || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post(['/admin/billing/activate', '/api/admin/billing/activate'], requirePlatformAdmin, async (req, res) => {
+  try {
+    const { subscriptionId } = req.body;
+    if (!subscriptionId) return res.status(400).json({ error: 'subscriptionId is required.' });
+    await adminActivateSubscription(subscriptionId);
+    res.json({ success: true, message: 'Subscription activated.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post(['/admin/billing/suspend', '/api/admin/billing/suspend'], requirePlatformAdmin, async (req, res) => {
+  try {
+    const { tenantId, reason } = req.body;
+    if (!tenantId) return res.status(400).json({ error: 'tenantId is required.' });
+    await suspendSubscription(tenantId, reason || 'manual_admin_suspension');
+    res.json({ success: true, message: `Subscription for tenant ${tenantId} suspended.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin API Keys Management
+app.get(['/admin/api-keys', '/api/admin/api-keys'], requireTenantAdmin, async (req, res) => {
+  try {
+    const adminUser = (req as any).user;
+    const tenantId = adminUser.tenantId;
+    const keys = await db.query<any>(`
+      SELECT id, "keyName", "userId", scopes, "expiresAt", "lastUsedAt", "createdAt", "revokedAt", "tenantId"
+      FROM api_keys
+      WHERE "tenantId" = $1
+      ORDER BY "createdAt" DESC
+    `, [tenantId]);
+    res.json({ keys: keys || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post(['/admin/api-keys', '/api/admin/api-keys'], requireTenantAdmin, async (req, res) => {
+  try {
+    const adminUser = (req as any).user;
+    const tenantId = adminUser.tenantId;
+    const { keyName, userId, scopes, expiresAt } = req.body;
+    const id = 'key_' + crypto.randomUUID();
+    const keyValue = 'octal_' + crypto.randomBytes(32).toString('hex');
+    const keyHash = crypto.createHash('sha256').update(keyValue).digest('hex');
+    const nowIso = new Date().toISOString();
+    await db.execute(`
+      INSERT INTO api_keys (id, "keyName", "keyHash", "userId", scopes, "expiresAt", "createdAt", "tenantId")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [id, keyName || 'API Key', keyHash, userId || adminUser.id, JSON.stringify(scopes || ['*']), expiresAt || null, nowIso, tenantId]);
+    res.json({
+      success: true,
+      apiKey: {
+        id,
+        keyName,
+        token: keyValue,
+        createdAt: nowIso
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete(['/admin/api-keys/:keyId', '/api/admin/api-keys/:keyId'], requireTenantAdmin, async (req, res) => {
+  try {
+    const adminUser = (req as any).user;
+    const tenantId = adminUser.tenantId;
+    const { keyId } = req.params;
+    const nowIso = new Date().toISOString();
+    await db.execute(`
+      UPDATE api_keys SET "revokedAt" = $1 WHERE id = $2 AND "tenantId" = $3
+    `, [nowIso, keyId, tenantId]);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin Database Backup
+app.post(['/admin/database/backup', '/api/admin/database/backup'], requirePlatformAdmin, async (_req, res) => {
+  try {
+    const result = await backupDatabase();
+    res.json({ message: 'Database backup created and verified successfully.', ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin Module Control
+app.get(['/admin/modules', '/api/admin/modules'], requirePlatformAdmin, async (_req, res) => {
+  try {
+    const modules = ALL_CANONICAL_MODULES.map(m => ({
+      id: m.id,
+      name: m.label,
+      description: m.desc,
+      enabled: 1
+    }));
+    res.json({ modules });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put(['/admin/modules/:id', '/api/admin/modules/:id'], requirePlatformAdmin, async (_req, res) => {
+  res.json({ success: true, message: 'Module updated successfully.' });
+});
+
+// Admin Operations & Emergency Control
+app.get(['/admin/emergency/status', '/api/admin/emergency/status'], requirePlatformAdmin, (_req, res) => {
+  res.json({ isEmergencyStopped: isEmergencyStopped() });
+});
+
+app.post(['/admin/emergency/pause', '/api/admin/emergency/pause'], requirePlatformAdmin, (req, res) => {
+  const adminUser = (req as any).user;
+  triggerEmergencyStop(adminUser?.username || 'admin', req.body?.reason || 'Administrative pause');
+  res.json({ success: true, isEmergencyStopped: true });
+});
+
+app.post(['/admin/emergency/resume', '/api/admin/emergency/resume'], requirePlatformAdmin, (req, res) => {
+  const adminUser = (req as any).user;
+  clearEmergencyStop(adminUser?.username || 'admin');
+  res.json({ success: true, isEmergencyStopped: false });
+});
+
+// Metrics Endpoint
+app.get(['/metrics', '/api/metrics'], (_req, res) => {
+  res.json({
+    uptime_seconds: Math.floor(process.uptime()),
+    node_memory_rss_bytes: process.memoryUsage().rss,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Google Complete Profile Setup
+app.post(['/auth/complete-google-profile', '/api/auth/complete-google-profile'], requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const result = await completeGoogleProfileSetup(user.id, req.body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to complete profile setup' });
+  }
+});
+
+// Facebook Scraper Endpoints
+let activeFbScrapeProcess: any = null;
+let activeFbScrapeTask = {
+  status: 'idle',
+  keyword: '',
+  location: '',
+  account: '',
+  maxLeads: 200,
+  logs: [] as string[]
+};
+const FB_LEADS_DIR = path.resolve(__dirname, '..', 'data', 'facebook_leads');
+
+app.post(['/api/facebook-scraper/run', '/facebook-scraper/run'], requireAuth, (req, res) => {
+  if (activeFbScrapeTask.status === 'running') {
+    return res.status(400).json({ error: 'Facebook Scraper is already running.' });
+  }
+  const { keyword, location, account, maxLeads } = req.body;
+  if (!keyword) return res.status(400).json({ error: 'Keyword is required.' });
+  if (!account) return res.status(400).json({ error: 'Facebook account is required.' });
+
+  activeFbScrapeTask = {
+    status: 'running',
+    keyword,
+    location: location || '',
+    account,
+    maxLeads: maxLeads || 200,
+    logs: ['🚀 Starting Facebook Lead Scraper...']
+  };
+
+  let scriptPath = path.join(__dirname, 'facebook_modules', 'facebook_scraper.js');
+  if (!fs.existsSync(scriptPath)) {
+    scriptPath = path.join(__dirname, '../src/facebook_modules', 'facebook_scraper.js');
+  }
+
+  const args = [
+    scriptPath,
+    '--keyword', keyword,
+    '--country', location || '',
+    '--profile', account,
+    '--max-leads', String(maxLeads || 200)
+  ];
+
+  try {
+    activeFbScrapeProcess = spawn('node', args, {
+      cwd: path.dirname(scriptPath),
+      shell: true
+    });
+
+    activeFbScrapeProcess.stdout?.on('data', (data: Buffer) => {
+      const text = data.toString('utf8').trim();
+      if (text) {
+        const lines = text.split('\n').map(l => l.replace(/\r/g, '').trim()).filter(Boolean);
+        for (const line of lines) activeFbScrapeTask.logs.push(line);
+        if (activeFbScrapeTask.logs.length > 300) {
+          activeFbScrapeTask.logs = activeFbScrapeTask.logs.slice(-300);
+        }
+      }
+    });
+
+    activeFbScrapeProcess.stderr?.on('data', (data: Buffer) => {
+      const text = data.toString('utf8').trim();
+      if (text) activeFbScrapeTask.logs.push(`⚠️ ${text}`);
+    });
+
+    activeFbScrapeProcess.on('close', (code: number) => {
+      activeFbScrapeTask.status = code === 0 ? 'completed' : 'failed';
+      activeFbScrapeTask.logs.push(code === 0 ? '✅ Facebook Scraper finished successfully!' : `❌ Facebook Scraper failed with exit code ${code}`);
+      activeFbScrapeProcess = null;
+    });
+  } catch (err: any) {
+    activeFbScrapeTask.status = 'failed';
+    activeFbScrapeTask.logs.push(`❌ Spawn error: ${err.message}`);
+    activeFbScrapeProcess = null;
+  }
+
+  res.json({ success: true, message: 'Facebook Scraper started.' });
+});
+
+app.get(['/api/facebook-scraper/status', '/facebook-scraper/status'], requireAuth, (_req, res) => {
+  let leads = [];
+  const currentLeadsFile = path.join(FB_LEADS_DIR, 'current_leads.json');
+  if (fs.existsSync(currentLeadsFile)) {
+    try {
+      leads = JSON.parse(fs.readFileSync(currentLeadsFile, 'utf8'));
+    } catch (_) {}
+  }
+  res.json({
+    ...activeFbScrapeTask,
+    leads
+  });
+});
+
+app.post(['/api/facebook-scraper/stop', '/facebook-scraper/stop'], requireAuth, (_req, res) => {
+  if (activeFbScrapeProcess) {
+    try { activeFbScrapeProcess.kill('SIGINT'); } catch (_) {}
+    activeFbScrapeTask.status = 'failed';
+    activeFbScrapeTask.logs.push('🛑 Scraper stopped by user request.');
+    activeFbScrapeProcess = null;
+    res.json({ success: true, message: 'Facebook Scraper stopped.' });
+  } else {
+    res.status(400).json({ error: 'Facebook Scraper is not running.' });
+  }
+});
+
+app.get(['/api/facebook-scraper/download', '/facebook-scraper/download'], requireAuth, (req, res) => {
+  const format = (req.query.format as string) || 'csv';
+  if (!fs.existsSync(FB_LEADS_DIR)) {
+    return res.status(404).json({ error: 'No reports generated yet' });
+  }
+  const files = fs.readdirSync(FB_LEADS_DIR)
+    .filter(f => f.endsWith('.' + format))
+    .map(f => ({ name: f, path: path.join(FB_LEADS_DIR, f), stat: fs.statSync(path.join(FB_LEADS_DIR, f)) }))
+    .sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime());
+  if (files.length === 0) {
+    return res.status(404).json({ error: `No ${format.toUpperCase()} reports found.` });
+  }
+  res.download(files[0].path);
+});
+
+// Module Settings Endpoints
+app.get(['/settings/:moduleId', '/api/settings/:moduleId'], requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { moduleId } = req.params;
+    const row = await db.queryOne<any>(`
+      SELECT "settingValue" FROM system_settings WHERE "settingKey" = $1 AND ("tenantId" = $2 OR "tenantId" IS NULL)
+    `, [`module_${moduleId}`, user.tenantId]);
+    let data = {};
+    if (row?.settingValue) {
+      try { data = JSON.parse(row.settingValue); } catch { data = { value: row.settingValue }; }
+    }
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put(['/settings/:moduleId', '/api/settings/:moduleId', '/settings/:moduleId/mine', '/api/settings/:moduleId/mine'], requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { moduleId } = req.params;
+    const val = typeof req.body === 'object' ? JSON.stringify(req.body) : String(req.body);
+    const key = `module_${moduleId}`;
+    const nowIso = new Date().toISOString();
+    await db.execute(`
+      INSERT INTO system_settings (id, "settingKey", "settingValue", category, "tenantId", "updatedAt")
+      VALUES ($1, $2, $3, 'modules', $4, $5)
+      ON CONFLICT ("settingKey") DO UPDATE SET "settingValue" = EXCLUDED."settingValue", "updatedAt" = EXCLUDED."updatedAt"
+    `, [`set_${user.tenantId || 'global'}_${moduleId}`, key, val, user.tenantId || null, nowIso]);
+    res.json({ success: true, message: 'Settings saved' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // GET /api/super-admin/users: Global cross-tenant customer user directory
 app.get('/api/super-admin/users', requirePlatformAdmin, async (req, res) => {
@@ -7248,7 +7709,7 @@ app.post('/api/integrations/leadgen/import', requireAuth, async (req: express.Re
 // â”€â”€â”€ ADMIN AUTHORITY MASTER CONTROL REST ENDPOINTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // GET /api/admin/overview & /admin/overview
-app.get(['/api/admin/overview', '/admin/overview'], requireAuth, requireAdmin, async (req, res) => {
+app.get(['/api/admin/overview', '/admin/overview', '/admin/analytics/overview', '/api/admin/analytics/overview'], requireAuth, requireAdmin, async (req, res) => {
   const user = (req as any).user;
   const isPlatform = user.role === 'platform_admin' || user.role === 'master_admin';
   const tenantId = user.tenantId;

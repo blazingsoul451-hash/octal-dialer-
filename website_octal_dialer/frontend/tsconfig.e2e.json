@@ -1,0 +1,28 @@
+{
+  /*
+   * Types for the Playwright suite only.
+   *
+   * Deliberately NOT referenced from tsconfig.json: `npm run build` and
+   * `tsc --noEmit` must keep compiling only `src`, so the e2e folder can never
+   * break the production build (and does not require @playwright/test to be
+   * installed for the app to build).
+   *
+   * Playwright transpiles these files itself at run time; this config exists
+   * for editor IntelliSense and for an optional standalone check:
+   *     npx tsc -p tsconfig.e2e.json --noEmit
+   */
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true
+  },
+  "include": ["e2e/**/*.ts", "playwright.config.ts"]
+}

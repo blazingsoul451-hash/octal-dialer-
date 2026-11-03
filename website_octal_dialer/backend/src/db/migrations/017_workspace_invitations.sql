@@ -1,4 +1,4 @@
-﻿-- Migration 017: Workspace Invitations and Customer Onboarding Foundation
+-- Migration 017: Workspace Invitations and Customer Onboarding Foundation
 CREATE TABLE IF NOT EXISTS "workspace_invitations" (
   "id" TEXT PRIMARY KEY,
   "tenantId" TEXT NOT NULL,

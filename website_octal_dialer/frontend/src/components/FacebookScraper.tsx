@@ -45,7 +45,7 @@ export const FacebookScraper: React.FC<FacebookScraperProps> = ({
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const logContainerRef = useRef<HTMLDivElement>(null);
 
   // Fetch profiles
   const fetchAccounts = async () => {
@@ -96,8 +96,8 @@ export const FacebookScraper: React.FC<FacebookScraperProps> = ({
   }, [status]);
 
   useEffect(() => {
-    if (logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (logContainerRef.current) {
+      logContainerRef.current?.scrollTo({ top: logContainerRef.current.scrollHeight, behavior: "smooth" });
     }
   }, [logs]);
 
@@ -379,7 +379,7 @@ export const FacebookScraper: React.FC<FacebookScraperProps> = ({
                 </div>
               ))
             )}
-            <div ref={logEndRef} />
+            
           </div>
         </div>
 

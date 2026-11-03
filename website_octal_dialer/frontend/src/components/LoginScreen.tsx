@@ -659,7 +659,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
     : '/login-bg.mp4';
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 sm:p-6 relative overflow-hidden bg-[#05070f] select-none font-sans">
+    <div className="min-h-screen flex items-center justify-center p-3 sm:p-6 py-6 sm:py-8 relative overflow-x-hidden overflow-y-auto bg-[#05070f] select-none font-sans">
       {/* ── Background Video (Dynamic by Screen Mode: Login, Sign Up, Forgot Password) ── */}
       <video
         key={currentVideoSrc}
@@ -671,14 +671,14 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
         onLoadedMetadata={applySlowPlayback}
         onPlay={applySlowPlayback}
         onCanPlay={applySlowPlayback}
-        className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none transition-opacity duration-500"
+        className="fixed inset-0 w-full h-full object-cover z-0 pointer-events-none transition-opacity duration-500"
         style={{ backgroundColor: '#05070f' }}
       >
         <source src={currentVideoSrc} type="video/mp4" />
       </video>
 
       {/* Subtle darkening vignette for vivid starfield contrast */}
-      <div className="absolute inset-0 bg-black/25 pointer-events-none z-0" />
+      <div className="fixed inset-0 bg-black/25 pointer-events-none z-0" />
 
       {/* ── Google Explicit Intent Error Modal ── */}
       {googlePromptError && (
@@ -730,7 +730,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       {/* ── Suspended Account / Workspace Contact Admin Modal ── */}
       {suspendedInfo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-          <div className="bg-[#0b0e14] border border-amber-500/40 rounded-2xl p-6 sm:p-7 shadow-2xl max-w-lg w-full text-slate-100 space-y-5 relative">
+          <div className="bg-[#0b0e14] border border-amber-500/40 rounded-2xl p-6 sm:p-7 shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto text-slate-100 space-y-5 relative">
             <button
               type="button"
               onClick={() => {
@@ -897,23 +897,23 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
       {/* ── SCREEN 1: LOGIN MODE (Octal Dialer Style) ── */}
       {/* ── SCREEN 1: LOGIN MODE (Exact 1:1 Match to o1.octalaccounts.com) ── */}
       {mode === 'login' && !googlePromptError && (
-        <div className="w-full max-w-[960px] mx-auto flex flex-col md:flex-row items-center justify-center relative z-10 px-4 transition-all duration-300">
+        <div className="w-full max-w-[960px] mx-auto flex flex-col md:flex-row items-center justify-center relative z-10 px-2 sm:px-4 transition-all duration-300">
           
-          {/* Left Panel: Dark Translucent Card (rounded-[25px], bg-black/60, box-shadow white glow, -mr-14 overlap) */}
-          <div className="w-full md:w-[540px] bg-black/60 backdrop-blur-md rounded-[25px] p-8 md:p-12 md:pr-20 shadow-[0_0_25px_rgba(255,255,255,0.2)] md:-mr-14 z-0 text-white flex flex-col justify-center min-h-[428px]">
-            <h1 className="text-3xl sm:text-4xl font-bold text-white mb-2 font-display">
+          {/* Left Panel: Dark Translucent Card (rounded-[25px], bg-black/60, box-shadow white glow, -mr-14 overlap on md) */}
+          <div className="w-full md:w-[540px] bg-black/60 backdrop-blur-md rounded-2xl md:rounded-[25px] p-5 sm:p-8 md:p-12 md:pr-20 shadow-[0_0_25px_rgba(255,255,255,0.15)] md:-mr-14 z-0 text-white flex flex-col justify-center text-center md:text-left mb-3 md:mb-0 min-h-0 md:min-h-[428px]">
+            <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-white mb-1.5 md:mb-2 font-display">
               Octal <span className="bg-gradient-to-r from-amber-400 to-amber-500 bg-clip-text text-transparent">Dialer</span>
             </h1>
-            <h2 className="text-lg sm:text-xl font-bold text-white mb-4">
-              The Complete Outbound Telephony & CRM Platform:
+            <h2 className="text-xs sm:text-base md:text-xl font-bold text-slate-100 md:text-white mb-1.5 md:mb-4">
+              The Complete Outbound Telephony & CRM Platform
             </h2>
-            <p className="text-gray-200 text-sm leading-relaxed max-w-[380px]">
+            <p className="hidden md:block text-gray-200 text-sm leading-relaxed max-w-[380px]">
               Streamlined features to supercharge your sales operations. Seamlessly connect, call, and convert leads with precision, live analytics, and automated workflows.
             </p>
           </div>
 
           {/* Right Panel: White Card (rounded-[25px], width 445px, padding 30px) */}
-          <div className="w-full max-w-[445px] bg-white rounded-[25px] shadow-2xl p-[30px] z-10 flex flex-col justify-center min-h-[428px]">
+          <div className="w-full max-w-[445px] bg-white rounded-2xl md:rounded-[25px] shadow-2xl p-5 sm:p-[30px] z-10 flex flex-col justify-center min-h-0 md:min-h-[428px]">
             <form onSubmit={handleSubmit} className="w-full">
               {/* Email Address */}
               <div className="mb-4">
@@ -1021,7 +1021,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                   <button
                     type="button"
                     id="quick-fill-admin-btn"
-                    onClick={() => { setUsername('admin'); setPassword('AdminPassword1234!'); setError(null); }}
+                    onClick={() => { setUsername('admin'); setError(null); }}
                     className="hover:text-amber-600 underline cursor-pointer"
                   >
                     Admin
@@ -1030,7 +1030,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                   <button
                     type="button"
                     id="quick-fill-owner-btn"
-                    onClick={() => { setUsername('owner'); setPassword('OwnerPassword1234!'); setError(null); }}
+                    onClick={() => { setUsername('owner'); setError(null); }}
                     className="hover:text-amber-600 underline cursor-pointer"
                   >
                     Owner
@@ -1051,10 +1051,10 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
 
       {/* ── SCREEN 2: SIGN UP MODE (Exact 1:1 Match to o1.octalaccounts.com) ── */}
       {mode === 'register' && !googlePromptError && (
-        <div className="w-full max-w-[1280px] mx-auto flex flex-col md:flex-row items-center justify-center relative z-10 px-4 transition-all duration-300">
+        <div className="w-full max-w-[1280px] mx-auto flex flex-col md:flex-row items-center justify-center relative z-10 px-2 sm:px-4 transition-all duration-300">
           
           {/* Left Panel: White Card with Sign Up Form (rounded-[25px], width 650px, padding 30px) */}
-          <div className="w-full md:w-[650px] bg-white rounded-[25px] shadow-2xl p-[30px] z-10 flex flex-col justify-center min-h-[378px]">
+          <div className="w-full md:w-[650px] bg-white rounded-2xl md:rounded-[25px] shadow-2xl p-5 sm:p-[30px] z-10 flex flex-col justify-center min-h-0 md:min-h-[378px]">
             <form onSubmit={handleSubmit} className="w-full">
               
               {/* Business Name * */}
@@ -1169,22 +1169,22 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                       type="button"
                       id="register-country-trigger"
                       onClick={() => setIsCountryPickerOpen(!isCountryPickerOpen)}
-                      className="w-[115px] shrink-0 h-[38px] px-2.5 rounded-[4px] border border-gray-300 bg-white hover:bg-amber-50/50 hover:border-amber-500 transition-all flex items-center justify-between text-xs cursor-pointer shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-400/30 select-none"
+                      className="w-[105px] sm:w-[115px] shrink-0 h-[38px] px-2 sm:px-2.5 rounded-[4px] border border-gray-300 bg-white hover:bg-amber-50/50 hover:border-amber-500 transition-all flex items-center justify-between text-xs cursor-pointer shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-400/30 select-none"
                     >
-                      <div className="flex items-center gap-1.5 truncate">
-                        <span className="px-1.5 py-0.5 rounded bg-slate-950 text-amber-400 font-mono font-bold text-[10px]">
+                      <div className="flex items-center gap-1 sm:gap-1.5 truncate">
+                        <span className="px-1 py-0.5 rounded bg-slate-950 text-amber-400 font-mono font-bold text-[9px] sm:text-[10px]">
                           {currentCountry.iso}
                         </span>
-                        <span className="font-bold text-slate-900 text-[13px]">
+                        <span className="font-bold text-slate-900 text-xs sm:text-[13px]">
                           {currentCountry.code || 'Other'}
                         </span>
                       </div>
-                      <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${isCountryPickerOpen ? 'rotate-180 text-amber-600' : ''}`} />
+                      <ChevronDown className={`w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-500 transition-transform duration-200 shrink-0 ${isCountryPickerOpen ? 'rotate-180 text-amber-600' : ''}`} />
                     </button>
 
                     {/* Popover Dropdown Panel */}
                     {isCountryPickerOpen && (
-                      <div className="absolute top-[42px] left-0 z-50 w-[290px] bg-white border border-slate-200 rounded-xl shadow-2xl p-2.5 text-left animate-in fade-in-50 duration-150">
+                      <div className="absolute top-[42px] left-0 z-50 w-[280px] sm:w-[290px] max-w-[calc(100vw-48px)] bg-white border border-slate-200 rounded-xl shadow-2xl p-2.5 text-left animate-in fade-in-50 duration-150">
                         {/* Search Input */}
                         <div className="relative mb-2">
                           <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
@@ -1258,7 +1258,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                     />
                   </div>
                 </div>
-                <div>
+                <div className="mt-2 sm:mt-0">
                   <button
                     id="register-submit-btn"
                     type="submit"
@@ -1268,6 +1268,18 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
                     {loading ? 'Creating...' : 'Sign Up Now'}
                   </button>
                 </div>
+              </div>
+
+              {/* Mobile Quick Sign In Link */}
+              <div className="md:hidden text-center text-xs text-gray-500 mt-3 pt-2 border-t border-gray-100">
+                Already have an account?{' '}
+                <button
+                  type="button"
+                  onClick={() => { setMode('login'); setError(null); setSuccessMsg(null); }}
+                  className="text-amber-600 font-bold hover:underline cursor-pointer"
+                >
+                  Sign In
+                </button>
               </div>
 
               {/* Turnstile CAPTCHA if enabled */}
@@ -1295,16 +1307,16 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
             </form>
           </div>
 
-          {/* Right Panel: Dark Translucent Card (rounded-[25px], bg-black/60, box-shadow glow, -ml-14 overlap) */}
-          <div className="w-full md:w-[650px] bg-black/60 backdrop-blur-md rounded-[25px] p-8 md:py-14 md:pl-20 md:pr-10 shadow-[0_0_25px_rgba(255,255,255,0.2)] md:-ml-14 z-0 text-white flex flex-col justify-center min-h-[378px]">
-            <h2 className="text-3xl font-black text-white text-center mb-3">
+          {/* Right Panel: Dark Translucent Card (rounded-[25px], bg-black/60, box-shadow glow, -ml-14 overlap on md) */}
+          <div className="w-full md:w-[650px] bg-black/60 backdrop-blur-md rounded-2xl md:rounded-[25px] p-5 sm:p-8 md:py-14 md:pl-20 md:pr-10 shadow-[0_0_25px_rgba(255,255,255,0.15)] md:-ml-14 z-0 text-white flex flex-col justify-center min-h-0 md:min-h-[378px] mt-4 md:mt-0">
+            <h2 className="text-2xl sm:text-3xl font-black text-white text-center mb-2 md:mb-3">
               Start Your Journey
             </h2>
-            <p className="text-gray-200 text-sm leading-relaxed text-center mb-6 max-w-lg mx-auto">
+            <p className="text-gray-200 text-xs sm:text-sm leading-relaxed text-center mb-4 md:mb-6 max-w-lg mx-auto">
               Create your account in seconds and unlock the most powerful outbound sales infrastructure. Connect your phones, streamline your leads, and accelerate your revenue growth—all in one place.
             </p>
 
-            <div className="text-sm font-medium text-center text-white mb-6">
+            <div className="text-xs sm:text-sm font-medium text-center text-white mb-4 md:mb-6">
               Already have an account?{' '}
               <button
                 type="button"
@@ -1316,7 +1328,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
               </button>
             </div>
 
-            <p className="text-[11px] text-gray-400 text-center leading-normal mt-auto">
+            <p className="text-[10px] sm:text-[11px] text-gray-400 text-center leading-normal mt-auto">
               This site is protected by reCAPTCHA and the Google{' '}
               <a href="https://policies.google.com/privacy" target="_blank" rel="noreferrer" className="text-gray-300 underline">
                 Privacy Policy
@@ -1333,22 +1345,22 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
 
       {/* ── FORGOT PASSWORD MODE (Matching Geometry) ── */}
       {mode === 'forgot' && (
-        <div className="w-full max-w-[960px] mx-auto flex flex-col md:flex-row items-center justify-center relative z-10 px-4 transition-all duration-300">
+        <div className="w-full max-w-[960px] mx-auto flex flex-col md:flex-row items-center justify-center relative z-10 px-2 sm:px-4 transition-all duration-300">
           {/* Left Dark Card */}
-          <div className="w-full md:w-[540px] bg-black/60 backdrop-blur-md rounded-[25px] p-8 md:p-12 md:pr-20 shadow-[0_0_25px_rgba(255,255,255,0.2)] md:-mr-14 z-0 text-white flex flex-col justify-center min-h-[400px]">
-            <h1 className="text-3xl sm:text-4xl font-bold text-white mb-2 font-display">
+          <div className="w-full md:w-[540px] bg-black/60 backdrop-blur-md rounded-2xl md:rounded-[25px] p-5 sm:p-8 md:p-12 md:pr-20 shadow-[0_0_25px_rgba(255,255,255,0.15)] md:-mr-14 z-0 text-white flex flex-col justify-center text-center md:text-left mb-3 md:mb-0 min-h-0 md:min-h-[400px]">
+            <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-white mb-1.5 md:mb-2 font-display">
               Octal <span className="bg-gradient-to-r from-amber-400 to-amber-500 bg-clip-text text-transparent">Dialer</span>
             </h1>
-            <h2 className="text-lg sm:text-xl font-bold text-white mb-4">
+            <h2 className="text-xs sm:text-base md:text-xl font-bold text-white mb-1.5 md:mb-4">
               Account Recovery
             </h2>
-            <p className="text-gray-200 text-sm leading-relaxed max-w-[380px]">
+            <p className="hidden md:block text-gray-200 text-sm leading-relaxed max-w-[380px]">
               Enter your registered email address or username to receive a password reset link and regain immediate access to your dialing workspace.
             </p>
           </div>
 
           {/* Right White Card */}
-          <div className="w-full max-w-[445px] bg-white rounded-[25px] shadow-2xl p-[30px] z-10 flex flex-col justify-center min-h-[400px]">
+          <div className="w-full max-w-[445px] bg-white rounded-2xl md:rounded-[25px] shadow-2xl p-5 sm:p-[30px] z-10 flex flex-col justify-center min-h-0 md:min-h-[400px]">
             <form onSubmit={handleSubmit} className="w-full">
               <h3 className="text-xl font-bold text-gray-800 mb-1">Forgot Password</h3>
               <p className="text-xs text-gray-500 mb-5">

@@ -1063,18 +1063,19 @@ export default function App() {
           ? 'bg-[#f8fafc] text-slate-900'
           : 'bg-black text-white'
       }`}>
-        <div className={`mr-2 ml-2 sm:mr-4 sm:ml-4 md:ml-0.5 my-2 px-3 sm:px-5 h-14 rounded-2xl border flex items-center justify-between gap-2 sm:gap-4 transition-all duration-300 ${
+        <div className={`mr-2 ml-2 sm:mr-4 sm:ml-4 md:ml-0.5 my-2 px-3 sm:px-5 h-14 rounded-2xl border flex items-center justify-between gap-2 sm:gap-4 transition-all duration-300 flex-nowrap overflow-hidden ${
           isLight
             ? 'bg-white border-slate-200 shadow-md shadow-slate-200/50 text-slate-900'
             : 'bg-[#09090b] border-[#18181b] shadow-xl text-white'
         }`}>
 
           {/* Left: Brand Identity & Menu Toggle */}
-          <div className="flex items-center gap-2 sm:gap-4 select-none min-w-0">
-            <div className="flex items-center gap-2 sm:gap-3 cursor-pointer group min-w-0" onClick={() => setActiveTab('dashboard')}>
+          <div className="flex items-center gap-1.5 sm:gap-4 select-none min-w-0 shrink-0">
+            <div className="flex items-center gap-1.5 sm:gap-3 cursor-pointer group min-w-0" onClick={() => setActiveTab('dashboard')}>
 
               {/* Desktop Menu Icon Button */}
               <button
+                data-testid="sidebar-toggle"
                 onClick={toggleNavPinned}
                 title={isNavPinned ? "Unpin Navigation Sidebar (Collapse)" : "Pin Navigation Sidebar Open"}
                 className={`hidden md:block p-1.5 rounded-lg transition-all cursor-pointer ${
@@ -1090,7 +1091,7 @@ export default function App() {
               <button
                 onClick={(e) => { e.stopPropagation(); setIsMobileMenuOpen(!isMobileMenuOpen); }}
                 title="Toggle Mobile Drawer"
-                className={`block md:hidden p-1.5 rounded-lg transition-all cursor-pointer ${
+                className={`block md:hidden p-1.5 rounded-lg transition-all cursor-pointer shrink-0 ${
                   isMobileMenuOpen
                     ? isLight ? 'text-amber-700 bg-amber-50 border border-amber-200' : 'text-amber-400 bg-slate-900 border border-amber-500/30'
                     : isLight ? 'text-slate-800 hover:bg-slate-100 border border-slate-200' : 'text-slate-200 hover:bg-slate-800 border border-slate-700'
@@ -1100,7 +1101,7 @@ export default function App() {
               </button>
 
               {/* Octal Dialer Premium Gradient Logo Typography */}
-              <div className="flex items-center gap-1 sm:gap-1.5 font-display tracking-tight text-base sm:text-xl font-black select-none truncate">
+              <div className="flex items-center gap-1 sm:gap-1.5 font-display tracking-tight text-sm sm:text-base md:text-xl font-black select-none truncate">
                 <span className={isLight ? 'text-slate-900' : 'text-white'}>
                   OCTAL
                 </span>
@@ -1110,7 +1111,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="hidden lg:flex items-center gap-2 pl-4 border-l border-slate-300 dark:border-slate-700/40 text-xs font-mono">
+            <div data-testid="breadcrumb" className="hidden lg:flex items-center gap-2 pl-4 border-l border-slate-300 dark:border-slate-700/40 text-xs font-mono">
               <span className="text-slate-500 font-bold uppercase text-[10px] tracking-wider">WORKSPACE</span>
               <span className="text-slate-400">/</span>
               <span className="text-amber-600 dark:text-amber-400 font-black capitalize">
@@ -1120,11 +1121,12 @@ export default function App() {
           </div>
 
           {/* Right: Octal Accounts Style Action Bar */}
-          <div className="flex items-center gap-2.5 sm:gap-3 select-none">
+          <div className="flex items-center gap-2 sm:gap-3 select-none shrink-0 flex-nowrap">
 
             {/* Phone Status Pill */}
             <button
               onClick={() => setActiveTab('pair')}
+              data-testid="phone-status"
               title="Click to manage Bluetooth Phone Link connection"
               className={`hidden sm:flex items-center gap-2 px-3 py-1 rounded-full border transition-all cursor-pointer font-extrabold text-[11px] ${
                 socketData.phoneConnected
@@ -1142,7 +1144,7 @@ export default function App() {
 
             {/* 🏢 Detached Company / Organization Tab with Hover Dropdown */}
             <div
-              className="relative"
+              className="relative hidden sm:block"
               onMouseEnter={() => {
                 if (companyMenuTimeoutRef.current) clearTimeout(companyMenuTimeoutRef.current);
                 setCompanyMenuOpen(true);
@@ -1162,6 +1164,7 @@ export default function App() {
                       ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
                       : 'bg-slate-900 border-slate-800 text-slate-200 hover:border-slate-700'
                 }`}
+                data-testid="tenant-selector"
                 title="Company & Workspace Operations"
               >
                 <Building2 className="w-3.5 h-3.5 text-amber-500" />
@@ -1257,7 +1260,7 @@ export default function App() {
             <button
               onClick={() => setActiveTab('upload')}
               title="Upload Lead Sheet"
-              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
+              className={`hidden md:flex w-8 h-8 rounded-full items-center justify-center border transition-all cursor-pointer shadow-sm ${
                 isLight
                   ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
                   : 'bg-slate-900 border-slate-800 text-white hover:bg-slate-800'
@@ -1279,7 +1282,7 @@ export default function App() {
                 }
               }}
               title={activeTab === 'admin' ? 'Close Settings' : 'Workspace Settings'}
-              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
+              className={`hidden sm:flex w-8 h-8 rounded-full items-center justify-center border transition-all cursor-pointer shadow-sm ${
                 activeTab === 'admin'
                   ? isLight
                     ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-md ring-2 ring-amber-400/50'
@@ -1294,8 +1297,9 @@ export default function App() {
 
             {/* Theme Toggle Circle */}
             <button
+              data-testid="theme-toggle"
               onClick={toggleTheme}
-              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm ${
+              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-sm shrink-0 ${
                 isLight
                   ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200 font-bold'
                   : 'bg-slate-900 border-slate-800 text-amber-400 hover:text-white'
@@ -1353,6 +1357,7 @@ export default function App() {
 
         {/* Octal Accounts Style Fixed Left Icon Rail (Starts from Upper Edge top-0) */}
         <nav
+          data-testid="sidebar"
           onMouseEnter={() => setIsNavHovered(true)}
           onMouseLeave={() => setIsNavHovered(false)}
           className={`fixed top-0 bottom-0 z-50 transition-all duration-300 ease-in-out border-r shadow-2xl flex flex-col justify-between select-none ${
@@ -1383,6 +1388,53 @@ export default function App() {
               >
                 <X className="w-5 h-5" />
               </button>
+            </div>
+
+            {/* Mobile Workspace & Quick Actions Panel */}
+            <div className="md:hidden mb-3 p-2.5 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800/80 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Building2 className="w-4 h-4 text-amber-500 shrink-0" />
+                  <span className="text-xs font-bold truncate text-slate-800 dark:text-slate-200">
+                    {companyName || 'Workspace'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    setSettingsSubView('company-profile');
+                    setActiveTab('admin');
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="text-[10px] font-bold text-amber-600 dark:text-amber-400 hover:underline px-2 py-0.5 rounded bg-amber-500/10 cursor-pointer"
+                >
+                  Manage
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-slate-200 dark:border-slate-800 text-[11px] font-semibold">
+                <button
+                  onClick={() => {
+                    setActiveTab('upload');
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:text-amber-500 justify-center cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Upload Leads</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setPrevTabBeforeSettings(activeTab);
+                    setSettingsSubView('overview');
+                    setActiveTab('admin');
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:text-amber-500 justify-center cursor-pointer"
+                >
+                  <Settings className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Settings</span>
+                </button>
+              </div>
             </div>
 
             {/* Core Fixed Workspaces */}

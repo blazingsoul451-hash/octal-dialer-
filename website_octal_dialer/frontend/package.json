@@ -9,6 +9,9 @@
     "build:local": "tsc -b && node scripts/vite-local.cjs build",
     "dev:local": "node scripts/vite-local.cjs serve",
     "test:scraper-ui": "node tests/scraper-browser.cjs",
+    "test:e2e:ui": "playwright test",
+    "test:e2e:ui:headed": "playwright test --headed",
+    "test:e2e:ui:report": "playwright show-report",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -20,6 +23,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
