@@ -127,27 +127,27 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   };
 
   return (
-    <div className="space-y-6 text-left select-none relative overflow-visible">
+    <div className="space-y-3.5 sm:space-y-6 text-left select-none relative overflow-visible">
       
       {/* Octal Dialer User Greeting Header */}
-      <div className={`sticky top-[72px] z-30 flex flex-col space-y-2 pb-2 pt-2 backdrop-blur-md transition-all ${
-        isLight ? 'bg-slate-100/90 text-slate-900' : 'bg-black/90 text-white'
+      <div className={`relative sm:sticky sm:top-[72px] z-30 flex flex-col space-y-1.5 pb-1 sm:pb-2 pt-0 sm:pt-2 backdrop-blur-md transition-all ${
+        isLight ? 'bg-transparent sm:bg-slate-100/90 text-slate-900' : 'bg-transparent sm:bg-black/90 text-white'
       }`}>
-        <h1 className="text-2xl tracking-tight">
+        <h1 className="text-xl sm:text-2xl tracking-tight">
           <span className={`font-medium ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Hello </span>
           <span className={`font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{formatGreetingName(displayName || authUser)}</span>
         </h1>
 
         {/* Dashboard Sub-Tabs */}
-        <div className={`flex items-center gap-6 border-b text-sm font-semibold pt-1 ${
+        <div className={`flex items-center gap-4 sm:gap-6 border-b text-sm font-semibold pt-0.5 sm:pt-1 ${
           isLight ? 'border-slate-200' : 'border-[#18181b]'
         }`}>
-          <button className={`pb-2.5 border-b-2 border-amber-500 font-black cursor-pointer ${
+          <button className={`pb-2 sm:pb-2.5 border-b-2 border-amber-500 font-black cursor-pointer ${
             isLight ? 'text-amber-700' : 'text-amber-400'
           }`}>
             Business Overview
           </button>
-          <button className={`pb-2.5 cursor-pointer font-bold transition ${
+          <button className={`pb-2 sm:pb-2.5 cursor-pointer font-bold transition ${
             isLight ? 'text-slate-700 hover:text-slate-950' : 'text-zinc-400 hover:text-white'
           }`}>
             What's New <span className="text-red-500 font-extrabold">?</span>
@@ -156,7 +156,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       </div>
       
       {/* Top Banner & Quick Controls */}
-      <div className={`p-6 border rounded-2xl shadow-2xl relative overflow-hidden transition-colors ${
+      <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl relative overflow-hidden transition-colors ${
         isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
       }`}>
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 relative z-10">

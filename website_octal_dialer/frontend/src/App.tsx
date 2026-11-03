@@ -953,7 +953,7 @@ export default function App() {
   }
 
   return (
-    <div className={`min-h-screen w-full max-w-full overflow-x-hidden flex flex-col font-sans transition-colors ${
+    <div className={`min-h-screen w-full max-w-full overflow-x-clip overflow-y-visible flex flex-col font-sans transition-colors ${
       isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'
     }`}>
 
@@ -1063,7 +1063,7 @@ export default function App() {
           ? 'bg-[#f8fafc] text-slate-900'
           : 'bg-black text-white'
       }`}>
-        <div className={`mr-2 ml-2 sm:mr-4 sm:ml-4 md:ml-0.5 my-2 px-3 sm:px-5 h-14 rounded-2xl border flex items-center justify-between gap-2 sm:gap-4 transition-all duration-300 flex-nowrap overflow-hidden ${
+        <div className={`mr-2 ml-2 sm:mr-4 sm:ml-4 md:ml-0.5 my-1.5 sm:my-2 px-3 sm:px-5 h-12 sm:h-14 rounded-2xl border flex items-center justify-between gap-2 sm:gap-4 transition-all duration-300 flex-nowrap overflow-hidden ${
           isLight
             ? 'bg-white border-slate-200 shadow-md shadow-slate-200/50 text-slate-900'
             : 'bg-[#09090b] border-[#18181b] shadow-xl text-white'
@@ -1345,7 +1345,7 @@ export default function App() {
       </header>
 
       {/* Main Container Layout */}
-      <div className="w-full min-h-screen flex flex-col pt-20">
+      <div className="w-full min-h-screen flex flex-col pt-16 sm:pt-20">
 
         {/* Backdrop overlay for mobile drawer */}
         {isMobileMenuOpen && (
@@ -2092,7 +2092,7 @@ export default function App() {
         </nav>
 
         {/* Tab Content Panel Container */}
-        <main className={`flex-1 min-w-0 w-full overflow-x-hidden transition-all duration-300 p-2.5 sm:p-5 lg:p-6 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
+        <main className={`flex-1 min-w-0 w-full overflow-x-clip overflow-y-visible transition-all duration-300 p-2 sm:p-5 lg:p-6 pt-1.5 sm:pt-4 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
           {activeTab === 'dashboard' && (
             <DashboardOverview
               isLight={isLight}

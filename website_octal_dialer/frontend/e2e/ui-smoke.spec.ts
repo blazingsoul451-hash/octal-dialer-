@@ -1,6 +1,9 @@
 import { test, expect, Page, TestInfo } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 interface Viewport {
   name: string;
