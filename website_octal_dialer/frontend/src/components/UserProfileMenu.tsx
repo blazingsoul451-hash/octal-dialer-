@@ -17,6 +17,8 @@ interface UserProfileMenuProps {
   trialInfo?: { isTrial: boolean; daysLeft: number; trialEndsAt?: string | null } | null;
   liveTrialText?: string;
   planName?: string;
+  isImpersonating?: boolean;
+  onExitImpersonation?: () => void;
   onNavigateBilling?: () => void;
   onNavigateAccount?: () => void;
   onProfileLoaded?: (profile: UserProfile) => void;
@@ -51,6 +53,8 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
   trialInfo,
   liveTrialText,
   planName,
+  isImpersonating,
+  onExitImpersonation,
   onNavigateBilling,
   onNavigateAccount,
   onProfileLoaded,
@@ -671,12 +675,29 @@ export const UserProfileMenu: React.FC<UserProfileMenuProps> = ({
           </div>
 
           {/* Bottom Sign Out Button */}
-          <div className={`p-3 border-t ${isLight ? 'border-slate-100 bg-slate-50/50' : 'border-[#18181b] bg-zinc-950/40'}`}>
+          <div className={`p-3 border-t space-y-2 ${isLight ? 'border-slate-100 bg-slate-50/50' : 'border-[#18181b] bg-zinc-950/40'}`}>
+            {isImpersonating && (
+              <button
+                onClick={() => {
+                  setDropdownOpen(false);
+                  if (onExitImpersonation) {
+                    onExitImpersonation();
+                  } else {
+                    onLogout();
+                  }
+                }}
+                className="w-full py-2.5 px-3 rounded-xl text-xs font-bold font-mono transition-all flex items-center justify-center gap-2 bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 hover:from-amber-500 hover:to-amber-400 text-black shadow-md cursor-pointer border border-amber-400/40"
+              >
+                <span>🛡️</span>
+                <span>Exit Impersonation (Return to Platform Console)</span>
+              </button>
+            )}
             <button
               onClick={() => {
                 setDropdownOpen(false);
                 onLogout();
               }}
+
               className="w-full py-2.5 px-4 rounded-xl text-xs font-bold font-mono transition-all flex items-center justify-center gap-2 bg-[#4b5563] hover:bg-[#374151] text-white shadow-sm cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />

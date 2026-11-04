@@ -171,14 +171,20 @@ export default function App() {
     if (typeof window !== 'undefined') {
       let hashImpToken: string | null = null;
       let hashImpTenant: string | null = null;
+      let hashImpUser: string | null = null;
+      let hashImpRole: string | null = null;
       if (window.location.hash && window.location.hash.startsWith('#')) {
         const hashParams = new URLSearchParams(window.location.hash.slice(1));
         hashImpToken = hashParams.get('impersonateToken');
         hashImpTenant = hashParams.get('impersonateTenant');
+        hashImpUser = hashParams.get('impersonateUser');
+        hashImpRole = hashParams.get('impersonateRole');
       }
       if (hashImpToken) {
         sessionStorage.setItem('octal_impersonate_token', hashImpToken);
         if (hashImpTenant) sessionStorage.setItem('octal_impersonate_tenant', hashImpTenant);
+        if (hashImpUser) sessionStorage.setItem('octal_impersonate_user', hashImpUser);
+        if (hashImpRole) sessionStorage.setItem('octal_impersonate_role', hashImpRole);
         return hashImpToken;
       }
       return sessionStorage.getItem('octal_impersonate_token');
@@ -188,12 +194,57 @@ export default function App() {
 
   const [impersonateTenant, setImpersonateTenant] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
+      if (window.location.hash && window.location.hash.startsWith('#')) {
+        const hashParams = new URLSearchParams(window.location.hash.slice(1));
+        const hashImpTenant = hashParams.get('impersonateTenant');
+        if (hashImpTenant) {
+          sessionStorage.setItem('octal_impersonate_tenant', hashImpTenant);
+          return hashImpTenant;
+        }
+      }
       return sessionStorage.getItem('octal_impersonate_tenant');
     }
     return null;
   });
 
-  const isImpersonating = !!impersonateToken;
+  const [impersonateUser, setImpersonateUser] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.hash && window.location.hash.startsWith('#')) {
+        const hashParams = new URLSearchParams(window.location.hash.slice(1));
+        const hashImpUser = hashParams.get('impersonateUser');
+        if (hashImpUser) {
+          sessionStorage.setItem('octal_impersonate_user', hashImpUser);
+          return hashImpUser;
+        }
+      }
+      return sessionStorage.getItem('octal_impersonate_user');
+    }
+    return null;
+  });
+
+  const [impersonateRole, setImpersonateRole] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.hash && window.location.hash.startsWith('#')) {
+        const hashParams = new URLSearchParams(window.location.hash.slice(1));
+        const hashImpRole = hashParams.get('impersonateRole');
+        if (hashImpRole) {
+          sessionStorage.setItem('octal_impersonate_role', hashImpRole);
+          return hashImpRole;
+        }
+      }
+      return sessionStorage.getItem('octal_impersonate_role');
+    }
+    return null;
+  });
+
+  const [impersonatedBy, setImpersonatedBy] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('octal_impersonated_by');
+    }
+    return null;
+  });
+
+  const isImpersonating = !!impersonateToken || !!impersonatedBy;
   const effectiveAuthToken = impersonateToken || authToken;
 
   // ─── Permission & Canonical Structural Role ──────────────────────────────────
@@ -428,10 +479,39 @@ export default function App() {
     }
   };
 
+  const handleExitImpersonation = async () => {
+    try {
+      await fetch(`${WEB_API_BASE}/api/super-admin/impersonate/exit`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
+      });
+    } catch (err) {
+      console.warn('Exit impersonation request failed:', err);
+    }
+    sessionStorage.removeItem('octal_impersonate_token');
+    sessionStorage.removeItem('octal_impersonate_tenant');
+    sessionStorage.removeItem('octal_impersonate_user');
+    sessionStorage.removeItem('octal_impersonate_role');
+    sessionStorage.removeItem('octal_impersonated_by');
+    setImpersonateToken(null);
+    setImpersonateTenant(null);
+    setImpersonateUser(null);
+    setImpersonateRole(null);
+    setImpersonatedBy(null);
+    if (window.opener && !window.opener.closed) {
+      window.close();
+    } else {
+      window.location.href = window.location.origin;
+    }
+  };
+
   const clearAuthStorage = () => {
     try {
       sessionStorage.removeItem('octal_impersonate_token');
       sessionStorage.removeItem('octal_impersonate_tenant');
+      sessionStorage.removeItem('octal_impersonate_user');
+      sessionStorage.removeItem('octal_impersonate_role');
+      sessionStorage.removeItem('octal_impersonated_by');
       sessionStorage.removeItem('octal_platform_auth_token');
       sessionStorage.removeItem('octal_platform_auth_user');
       localStorage.removeItem('octal_platform_auth_token');
@@ -444,6 +524,9 @@ export default function App() {
     } catch {}
     setImpersonateToken(null);
     setImpersonateTenant(null);
+    setImpersonateUser(null);
+    setImpersonateRole(null);
+    setImpersonatedBy(null);
     setAuthToken(null);
     setAuthUser(null);
     setAuthIdentity(null);
@@ -451,11 +534,7 @@ export default function App() {
 
   const handleLogout = async () => {
     if (isImpersonating) {
-      sessionStorage.removeItem('octal_impersonate_token');
-      sessionStorage.removeItem('octal_impersonate_tenant');
-      setImpersonateToken(null);
-      setImpersonateTenant(null);
-      window.location.href = window.location.origin;
+      await handleExitImpersonation();
       return;
     }
     const tokenToInvalidate = authToken || effectiveAuthToken;
@@ -518,11 +597,15 @@ export default function App() {
     // Also supports secure fragment-based OAuth tokens (#token=...) to avoid query string exposure
     let hashImpToken: string | null = null;
     let hashImpTenant: string | null = null;
+    let hashImpUser: string | null = null;
+    let hashImpRole: string | null = null;
     let oauthCode: string | null = null;
     if (typeof window !== 'undefined' && window.location.hash && window.location.hash.startsWith('#')) {
       const hashParams = new URLSearchParams(window.location.hash.slice(1));
       hashImpToken = hashParams.get('impersonateToken');
       hashImpTenant = hashParams.get('impersonateTenant');
+      hashImpUser = hashParams.get('impersonateUser');
+      hashImpRole = hashParams.get('impersonateRole');
       if (hashParams.get('token')) {
         oauthToken = hashParams.get('token');
         oauthUser = hashParams.get('displayName') || hashParams.get('username') || hashParams.get('user') || 'Google User';
@@ -538,8 +621,12 @@ export default function App() {
     if (hashImpToken) {
       sessionStorage.setItem('octal_impersonate_token', hashImpToken);
       if (hashImpTenant) sessionStorage.setItem('octal_impersonate_tenant', hashImpTenant);
+      if (hashImpUser) sessionStorage.setItem('octal_impersonate_user', hashImpUser);
+      if (hashImpRole) sessionStorage.setItem('octal_impersonate_role', hashImpRole);
       setImpersonateToken(hashImpToken);
       setImpersonateTenant(hashImpTenant || 'Tenant Organization');
+      if (hashImpUser) setImpersonateUser(hashImpUser);
+      if (hashImpRole) setImpersonateRole(hashImpRole);
       currentToken = hashImpToken;
       const hint = getInitialIdentityHintFromToken(hashImpToken);
       if (hint) setAuthIdentity(hint);
@@ -611,6 +698,14 @@ export default function App() {
           const data = await res.json();
           const preferredName = data.user?.displayName || data.user?.username;
           const verifiedRole = tryNormalizeStructuralRole(data.user?.role || data.role);
+          if (data.user?.impersonatedBy) {
+            setImpersonatedBy(data.user.impersonatedBy);
+            sessionStorage.setItem('octal_impersonated_by', data.user.impersonatedBy);
+            if (!impersonateToken && currentToken) {
+              setImpersonateToken(currentToken);
+              sessionStorage.setItem('octal_impersonate_token', currentToken);
+            }
+          }
           if (verifiedRole) {
             setAuthIdentity(prev => ({
               username: preferredName || prev?.username || 'user',
@@ -828,6 +923,9 @@ export default function App() {
     try {
       sessionStorage.removeItem('octal_impersonate_token');
       sessionStorage.removeItem('octal_impersonate_tenant');
+      sessionStorage.removeItem('octal_impersonate_user');
+      sessionStorage.removeItem('octal_impersonate_role');
+      sessionStorage.removeItem('octal_impersonated_by');
       sessionStorage.removeItem('octal_platform_auth_token');
       sessionStorage.removeItem('octal_platform_auth_user');
       localStorage.removeItem('octal_platform_auth_token');
@@ -959,35 +1057,17 @@ export default function App() {
 
       {/* 🛡️ Platform Support Impersonation Banner */}
       {isImpersonating && (
-        <div className="bg-[#141210] text-white px-5 py-2.5 flex items-center justify-between text-xs font-bold shadow-xl z-50 sticky top-0 border-b border-amber-500/40">
-          <div className="flex items-center gap-3">
-            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-            <div className="flex items-center gap-2 font-mono">
-              <span className="text-amber-400 font-bold uppercase tracking-wider text-[11px] bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
-                AUDITED IMPERSONATION ACTIVE
-              </span>
-              <span className="text-zinc-300">
-                Acting as <strong className="text-white font-sans">{typeof window !== 'undefined' ? (sessionStorage.getItem('octal_impersonate_user') || 'Company User') : 'Company User'}</strong> ({typeof window !== 'undefined' ? (sessionStorage.getItem('octal_impersonate_role') || 'Company Owner') : 'Company Owner'}) in <strong className="text-amber-300 font-sans">{impersonateTenant || 'Workspace'}</strong>
-              </span>
-            </div>
+        <div className="fixed top-0 left-0 right-0 z-50 h-9 bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 text-black px-4 flex items-center justify-between text-xs font-bold shadow-lg select-none">
+          <div className="flex items-center gap-2 truncate mr-2">
+            <span className="truncate">
+              🛡️ AUDITED PLATFORM IMPERSONATION: Acting as <strong className="font-sans">{impersonateUser || 'Company User'}</strong> ({impersonateRole || 'Company Owner'}) in <strong className="font-sans">{impersonateTenant || 'Workspace'}</strong> (By {impersonatedBy || 'SuperAdmin'})
+            </span>
           </div>
           <button
-            onClick={async () => {
-              try {
-                await fetch(`${WEB_API_BASE}/api/super-admin/impersonate/exit`, {
-                  method: 'POST',
-                  headers: { 'Authorization': `Bearer ${effectiveAuthToken}` }
-                });
-              } catch {}
-              sessionStorage.removeItem('octal_impersonate_token');
-              sessionStorage.removeItem('octal_impersonate_tenant');
-              sessionStorage.removeItem('octal_impersonate_user');
-              sessionStorage.removeItem('octal_impersonate_role');
-              window.location.href = window.location.origin;
-            }}
-            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-lg transition font-mono text-xs cursor-pointer shadow-md shadow-amber-500/20"
+            onClick={handleExitImpersonation}
+            className="shrink-0 px-3 py-1 bg-black text-amber-400 hover:text-white hover:bg-zinc-900 font-mono text-[11px] font-black uppercase rounded-lg border border-black/40 transition-all cursor-pointer shadow-sm"
           >
-            Exit Impersonation
+            Exit Impersonation ✕
           </button>
         </div>
       )}
@@ -1056,7 +1136,9 @@ export default function App() {
       )}
 
       {/* Main Octal Accounts Style Rounded Header Block (Fixed Top) */}
-      <header className={`fixed top-0 right-0 left-0 z-40 transition-all duration-300 ${
+      <header className={`fixed right-0 left-0 z-40 transition-all duration-300 ${
+        isImpersonating ? 'top-9' : 'top-0'
+      } ${
         isNavExpanded ? 'md:left-56' : 'md:left-16'
       } ${
         isLight
@@ -1321,6 +1403,8 @@ export default function App() {
               trialInfo={trialInfo}
               liveTrialText={liveTrialText}
               planName={planName}
+              isImpersonating={isImpersonating}
+              onExitImpersonation={handleExitImpersonation}
               onNavigateBilling={() => {
                 setSettingsSubView('billing');
                 setActiveTab('admin');
@@ -1345,7 +1429,9 @@ export default function App() {
       </header>
 
       {/* Main Container Layout */}
-      <div className="w-full min-h-screen flex flex-col pt-16 sm:pt-20">
+      <div className={`w-full min-h-screen flex flex-col transition-all duration-300 ${
+        isImpersonating ? 'pt-24 sm:pt-28' : 'pt-16 sm:pt-20'
+      }`}>
 
         {/* Backdrop overlay for mobile drawer */}
         {isMobileMenuOpen && (
@@ -1360,7 +1446,9 @@ export default function App() {
           data-testid="sidebar"
           onMouseEnter={() => setIsNavHovered(true)}
           onMouseLeave={() => setIsNavHovered(false)}
-          className={`fixed top-0 bottom-0 z-50 transition-all duration-300 ease-in-out border-r shadow-2xl flex flex-col justify-between select-none ${
+          className={`fixed bottom-0 z-40 transition-all duration-300 ease-in-out border-r shadow-2xl flex flex-col justify-between select-none ${
+            isImpersonating ? 'top-9' : 'top-0'
+          } ${
             isMobileMenuOpen
               ? 'left-0 w-64 max-w-[85vw] p-3 sm:p-4'
               : '-left-72 md:left-0 ' + (isExpandedNav ? 'md:w-56 md:p-3' : 'md:w-16 md:p-2.5 md:items-center')

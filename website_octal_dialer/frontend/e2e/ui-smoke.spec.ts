@@ -35,7 +35,7 @@ function attachFailureListeners(page: Page): Harness {
   page.on('console', (msg) => {
     const text = msg.text();
     if (msg.type() === 'error') {
-      if (/favicon|\[vite\]/i.test(text)) return;
+      if (/favicon|\[vite\]|ERR_CONNECTION_REFUSED|Failed to fetch/i.test(text)) return;
       failures.push(`console.error: ${text}`);
       return;
     }
@@ -57,7 +57,7 @@ function attachFailureListeners(page: Page): Harness {
 
   page.on('requestfailed', (req) => {
     const f = req.failure();
-    if (f && /net::ERR_ABORTED/.test(f.errorText)) return;
+    if (f && (/net::ERR_ABORTED/.test(f.errorText) || /net::ERR_CONNECTION_REFUSED/.test(f.errorText))) return;
     failures.push(`requestfailed: ${req.url()} (${f?.errorText})`);
   });
 

@@ -65,3 +65,8 @@ extracted_icons/
 generate_icons.py
 parse_now.py
 desktop_octal_agent/windows/
+
+# Local Website UI Reference Vault
+.reference-ui/
+test-results/
+playwright-report/
