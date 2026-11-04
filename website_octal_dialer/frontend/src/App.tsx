@@ -1429,7 +1429,9 @@ export default function App() {
       </header>
 
       {/* Main Container Layout */}
-      <div className={`w-full min-h-screen flex flex-col transition-all duration-300 ${isImpersonating ? 'pt-24 sm:pt-[106px]' : 'pt-16 sm:pt-[70px]'}`}>
+      <div className={`w-full min-h-screen flex flex-col transition-all duration-300 ${
+        isImpersonating ? 'pt-[78px] sm:pt-[82px]' : 'pt-[48px] sm:pt-[52px]'
+      }`}>
 
         {/* Backdrop overlay for mobile drawer */}
         {isMobileMenuOpen && (
@@ -2178,7 +2180,7 @@ export default function App() {
         </nav>
 
         {/* Tab Content Panel Container */}
-        <main className={`flex-1 min-w-0 w-full overflow-x-clip overflow-y-visible transition-all duration-300 p-2 sm:p-4 lg:p-5 pt-1 sm:pt-2 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
+        <main className={`flex-1 min-w-0 w-full overflow-x-clip overflow-y-visible transition-all duration-300 px-3 sm:px-6 py-1 sm:py-1.5 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
           {activeTab === 'dashboard' && (
             <DashboardOverview
               isLight={isLight}

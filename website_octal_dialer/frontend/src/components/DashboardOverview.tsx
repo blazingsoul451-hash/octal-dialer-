@@ -127,27 +127,24 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   };
 
   return (
-    <div className="space-y-3.5 sm:space-y-6 text-left select-none relative overflow-visible">
+    <div className="space-y-2 sm:space-y-2.5 text-left select-none relative overflow-visible">
       
-      {/* Octal Dialer User Greeting Header */}
-      <div className={`relative sm:sticky sm:top-[72px] z-30 flex flex-col space-y-1.5 pb-1 sm:pb-2 pt-0 sm:pt-2 backdrop-blur-md transition-all ${
-        isLight ? 'bg-transparent sm:bg-slate-100/90 text-slate-900' : 'bg-transparent sm:bg-black/90 text-white'
+      {/* Octal Dialer User Greeting Header & Sub-Tabs Inline */}
+      <div className={`relative sm:sticky sm:top-[68px] z-30 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 pb-1 border-b backdrop-blur-md transition-all ${
+        isLight ? 'bg-transparent sm:bg-slate-100/90 border-slate-200 text-slate-900' : 'bg-transparent sm:bg-black/90 border-[#18181b] text-white'
       }`}>
-        <h1 className="text-xl sm:text-2xl tracking-tight">
+        <h1 className="text-base sm:text-lg tracking-tight">
           <span className={`font-medium ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Hello </span>
           <span className={`font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{formatGreetingName(displayName || authUser)}</span>
         </h1>
 
-        {/* Dashboard Sub-Tabs */}
-        <div className={`flex items-center gap-4 sm:gap-6 border-b text-sm font-semibold pt-0.5 sm:pt-1 ${
-          isLight ? 'border-slate-200' : 'border-[#18181b]'
-        }`}>
-          <button className={`pb-2 sm:pb-2.5 border-b-2 border-amber-500 font-black cursor-pointer ${
+        <div className="flex items-center gap-4 text-xs font-semibold">
+          <button className={`pb-1 border-b-2 border-amber-500 font-black cursor-pointer ${
             isLight ? 'text-amber-700' : 'text-amber-400'
           }`}>
             Business Overview
           </button>
-          <button className={`pb-2 sm:pb-2.5 cursor-pointer font-bold transition ${
+          <button className={`pb-1 cursor-pointer font-bold transition ${
             isLight ? 'text-slate-700 hover:text-slate-950' : 'text-zinc-400 hover:text-white'
           }`}>
             What's New <span className="text-red-500 font-extrabold">?</span>
@@ -156,39 +153,39 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       </div>
       
       {/* Top Banner & Quick Controls */}
-      <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl relative overflow-hidden transition-colors ${
+      <div className={`px-3.5 py-2 sm:px-4 sm:py-2.5 border rounded-xl shadow-md relative overflow-hidden transition-colors ${
         isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
       }`}>
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 relative z-10">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 relative z-10">
           <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className={`text-[10px] font-mono font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full border ${
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className={`text-[9px] font-mono font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${
                 isLight ? 'bg-amber-500/15 text-amber-900 border-amber-300' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
               }`}>
                 EXECUTIVE DIALER CONSOLE
               </span>
-              <span className={`text-[11px] font-bold ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>● Live Operational Overview</span>
+              <span className={`text-[10px] font-bold ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>● Live Operational Overview</span>
             </div>
-            <h1 className={`text-xl font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+            <h1 className={`text-base sm:text-lg font-black font-display tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Telecom Analytics & System Dashboard
             </h1>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               onClick={fetchDashboardStats}
               title="Refresh Dashboard Data"
-              className={`p-2.5 border rounded-xl transition cursor-pointer ${
+              className={`p-1.5 border rounded-lg transition cursor-pointer ${
                 isLight ? 'bg-slate-100 border-slate-200 text-slate-800 hover:bg-slate-200' : 'bg-[#18181b] border-[#27272a] text-zinc-300 hover:text-white'
               }`}
             >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-amber-500' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-amber-500' : ''}`} />
             </button>
             <button
               onClick={() => onNavigateTab('dialer')}
-              className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs font-mono uppercase tracking-wider rounded-xl shadow-sm transition flex items-center gap-2 cursor-pointer"
+              className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs font-mono uppercase tracking-wider rounded-xl shadow-sm transition flex items-center gap-1.5 cursor-pointer"
             >
-              <Play className="w-3.5 h-3.5 fill-current" />
+              <Play className="w-3 h-3 fill-current" />
               <span>Launch Dialer</span>
             </button>
           </div>
@@ -196,88 +193,88 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       </div>
 
       {/* KPI Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5">
         
         {/* Total Campaigns & Pipeline */}
-        <div className={`p-5 border rounded-2xl shadow-xl transition-all ${
+        <div className={`p-2.5 sm:p-3 border rounded-xl shadow-sm transition-all ${
           isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex justify-between items-start">
             <span className={`text-[10px] font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Active Campaigns</span>
-            <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-500">
+            <div className="p-1.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-500">
               <Layers className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3">
-            <span className={`text-2xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{campaigns.length}</span>
+          <div className="mt-1">
+            <span className={`text-xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{campaigns.length}</span>
             <span className={`text-xs ml-2 font-bold ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Pipelines</span>
           </div>
-          <div className={`mt-2 text-[11px] font-mono flex items-center gap-1.5 font-bold ${isLight ? 'text-amber-800' : 'text-amber-400'}`}>
+          <div className={`mt-1 text-[10px] font-mono flex items-center gap-1 font-bold ${isLight ? 'text-amber-800' : 'text-amber-400'}`}>
             <Users className="w-3.5 h-3.5" />
             <span>{totalLeadsInCampaigns.toLocaleString()} Total Leads Loaded</span>
           </div>
         </div>
 
         {/* Total Calls Made */}
-        <div className={`p-5 border rounded-2xl shadow-xl transition-all ${
+        <div className={`p-2.5 sm:p-3 border rounded-xl shadow-sm transition-all ${
           isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex justify-between items-start">
             <span className={`text-[10px] font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Total Calls Processed</span>
-            <div className="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-500">
+            <div className="p-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-500">
               <PhoneCall className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3">
-            <span className={`text-2xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{totalCalls}</span>
+          <div className="mt-1">
+            <span className={`text-xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{totalCalls}</span>
             <span className={`text-xs ml-2 font-bold ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Calls</span>
           </div>
-          <div className={`mt-2 text-[11px] font-mono flex items-center gap-1.5 font-bold ${isLight ? 'text-emerald-800' : 'text-emerald-400'}`}>
+          <div className={`mt-1 text-[10px] font-mono flex items-center gap-1 font-bold ${isLight ? 'text-emerald-800' : 'text-emerald-400'}`}>
             <Clock className="w-3.5 h-3.5" />
             <span>{formatDuration(totalDurationSecs)} Total Talk Time</span>
           </div>
         </div>
 
         {/* Call Success Rate */}
-        <div className={`p-5 border rounded-2xl shadow-xl transition-all ${
+        <div className={`p-2.5 sm:p-3 border rounded-xl shadow-sm transition-all ${
           isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex justify-between items-start">
             <span className={`text-[10px] font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Answer Success Rate</span>
-            <div className="p-2 bg-blue-500/10 border border-blue-500/20 rounded-xl text-blue-400">
+            <div className="p-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg text-blue-400">
               <TrendingUp className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3">
-            <span className={`text-2xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{successRate}%</span>
+          <div className="mt-1">
+            <span className={`text-xl font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{successRate}%</span>
             <span className={`text-xs ml-2 font-bold ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>Connected</span>
           </div>
-          <div className={`mt-2 text-[11px] font-mono flex items-center gap-1.5 font-bold ${isLight ? 'text-blue-800' : 'text-blue-400'}`}>
+          <div className={`mt-1 text-[10px] font-mono flex items-center gap-1 font-bold ${isLight ? 'text-blue-800' : 'text-blue-400'}`}>
             <CheckCircle2 className="w-3.5 h-3.5" />
             <span>{answeredCalls} Answered / {totalCalls} Total</span>
           </div>
         </div>
 
         {/* Bluetooth Handset Status */}
-        <div className={`p-5 border rounded-2xl shadow-xl transition-all ${
+        <div className={`p-2.5 sm:p-3 border rounded-xl shadow-sm transition-all ${
           isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
         }`}>
           <div className="flex justify-between items-start">
             <span className={`text-[10px] font-mono font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>GSM Handset Status</span>
-            <div className={`p-2 border rounded-xl ${
+            <div className={`p-1.5 border rounded-lg ${
               phoneConnected ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'
             }`}>
               <Smartphone className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3">
+          <div className="mt-1">
             <span className={`text-sm font-black font-mono capitalize ${
               phoneConnected ? 'text-emerald-400' : 'text-red-400'
             }`}>
               {phoneConnected ? (phoneDeviceName || 'Handset Connected') : 'Offline / Unpaired'}
             </span>
           </div>
-          <div className={`mt-2 text-[11px] font-mono flex items-center gap-1.5 font-bold ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>
+          <div className={`mt-1 text-[10px] font-mono flex items-center gap-1 font-bold ${isLight ? 'text-slate-700' : 'text-zinc-400'}`}>
             <Activity className="w-3.5 h-3.5" />
             <span>{devicesCount} Registered Device(s)</span>
           </div>
@@ -286,13 +283,13 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       </div>
 
       {/* Main Split Layout: Performance Breakdown + Recent Call Activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4">
         
         {/* Left (7 cols): Call Outcome Breakdown & Active Campaigns Table */}
-        <div className="lg:col-span-7 space-y-6">
+        <div className="lg:col-span-7 space-y-3 sm:space-y-4">
           
           {/* Outcome Breakdown Card */}
-          <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl space-y-5 ${
+          <div className={`p-3 sm:p-3.5 border rounded-xl shadow-md space-y-2 ${
             isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-[#09090b] border-[#18181b]'
           }`}>
             {/* Header */}
@@ -306,8 +303,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             {/* Donut Chart & Legend Block */}
             <div className="flex flex-col sm:flex-row items-center justify-around gap-6 py-2">
               {/* Left Column: Donut Chart */}
-              <div className="relative w-56 h-56 flex items-center justify-center shrink-0">
-                <svg width="210" height="210" viewBox="0 0 120 120" className="transform -rotate-90">
+              <div className="relative w-40 h-40 flex items-center justify-center shrink-0">
+                <svg width="150" height="150" viewBox="0 0 120 120" className="transform -rotate-90">
                   {(() => {
                     const total = answeredCalls + missedCalls + voicemailCalls + busyCalls;
                     const hasData = total > 0;
@@ -339,7 +336,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                           r={r}
                           fill="transparent"
                           stroke={item.color}
-                          strokeWidth={isHovered ? 14 : 10}
+                          strokeWidth={isHovered ? 12 : 8}
                           strokeDasharray={`${strokeLength} ${C - strokeLength}`}
                           strokeDashoffset={strokeOffset}
                           onMouseEnter={() => {
@@ -364,7 +361,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   {hoveredSlice ? (
                     <>
                       <span 
-                        className="text-2xl font-black font-mono leading-none transition-all duration-200"
+                        className="text-xl font-black font-mono leading-none transition-all duration-200"
                         style={{ color: hoveredSlice.color }}
                       >
                         {hoveredSlice.percentage.toFixed(1)}%
@@ -378,7 +375,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                     </>
                   ) : (
                     <>
-                      <span className={`text-2xl font-black font-mono leading-none ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                      <span className={`text-xl font-black font-mono leading-none ${isLight ? 'text-slate-900' : 'text-white'}`}>
                         {totalCalls > 0 ? `${successRate}%` : '0.0%'}
                       </span>
                       <span className={`text-[10px] font-mono font-bold uppercase tracking-widest mt-1 ${isLight ? 'text-slate-700' : 'text-zinc-500'}`}>
@@ -533,7 +530,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         </div>
 
         {/* Right (5 cols): Recent Activity Feed + Quick Actions */}
-        <div className="lg:col-span-5 space-y-6">
+        <div className="lg:col-span-5 space-y-3 sm:space-y-4">
           
           {/* Quick Operations Card */}
           <div className={`p-4 sm:p-6 border rounded-2xl shadow-2xl space-y-4 ${
@@ -547,7 +544,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             <div className="grid grid-cols-2 gap-3 text-xs font-mono font-bold">
               <button
                 onClick={() => onNavigateTab('upload')}
-                className={`p-3.5 border rounded-xl text-left transition flex flex-col gap-1.5 cursor-pointer ${
+                className={`p-2 sm:p-2.5 border rounded-xl text-left transition flex flex-col gap-1 cursor-pointer ${
                   isLight ? 'bg-slate-50 border-slate-200 hover:border-amber-400 text-slate-900' : 'bg-[#121215] border-[#27272a] hover:border-amber-500 text-white'
                 }`}
               >
@@ -557,7 +554,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
               <button
                 onClick={() => onNavigateTab('crm')}
-                className={`p-3.5 border rounded-xl text-left transition flex flex-col gap-1.5 cursor-pointer ${
+                className={`p-2 sm:p-2.5 border rounded-xl text-left transition flex flex-col gap-1 cursor-pointer ${
                   isLight ? 'bg-slate-50 border-slate-200 hover:border-amber-400 text-slate-900' : 'bg-[#121215] border-[#27272a] hover:border-amber-500 text-white'
                 }`}
               >
@@ -567,7 +564,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
               <button
                 onClick={() => onNavigateTab('dnc')}
-                className={`p-3.5 border rounded-xl text-left transition flex flex-col gap-1.5 cursor-pointer ${
+                className={`p-2 sm:p-2.5 border rounded-xl text-left transition flex flex-col gap-1 cursor-pointer ${
                   isLight ? 'bg-slate-50 border-slate-200 hover:border-amber-400 text-slate-900' : 'bg-[#121215] border-[#27272a] hover:border-amber-500 text-white'
                 }`}
               >
@@ -577,7 +574,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
               <button
                 onClick={() => onNavigateTab('pair')}
-                className={`p-3.5 border rounded-xl text-left transition flex flex-col gap-1.5 cursor-pointer ${
+                className={`p-2 sm:p-2.5 border rounded-xl text-left transition flex flex-col gap-1 cursor-pointer ${
                   isLight ? 'bg-slate-50 border-slate-200 hover:border-amber-400 text-slate-900' : 'bg-[#121215] border-[#27272a] hover:border-amber-500 text-white'
                 }`}
               >
@@ -612,7 +609,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                 No call logs available yet. Make your first call via auto dialer.
               </div>
             ) : (
-              <div className="space-y-2.5 max-h-[360px] overflow-y-auto pr-1">
+              <div className="space-y-2.5 max-h-[200px] overflow-y-auto pr-1">
                 {safeLogs.slice(0, 10).map((log, lIdx) => {
                   const outcome = (log?.outcome || 'UNKNOWN').toUpperCase();
                   const isAnswered = outcome === 'ANSWERED';
