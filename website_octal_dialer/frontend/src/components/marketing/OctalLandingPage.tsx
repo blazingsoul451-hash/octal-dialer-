@@ -39,7 +39,7 @@ export const OctalLandingPage: React.FC<OctalLandingPageProps> = ({
   const scrollTo = (id: string) => {
     const el = document.getElementById(id);
     if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
+      window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 80, behavior: 'smooth' });
     }
   };
 
