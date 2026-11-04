@@ -17,7 +17,7 @@ import { LeadQueue } from './components/LeadQueue';
 import { CallLog } from './components/CallLog';
 import { DispositionModal } from './components/DispositionModal';
 import type { DispositionResult } from './components/DispositionModal';
-import { OctalLandingPage } from './components/marketing/OctalLandingPage';
+import { LoginScreen } from './components/LoginScreen';
 import { DncPanel } from './components/DncPanel';
 import { AutoEmailer } from './components/AutoEmailer';
 import { FacebookScraper } from './components/FacebookScraper';
@@ -936,7 +936,7 @@ export default function App() {
       localStorage.removeItem('octal_auth_user');
       localStorage.removeItem('octal_session_id');
     } catch {}
-    return <OctalLandingPage serverUrl={WEB_API_BASE} onLoginSuccess={handleLogin} isLight={isLight} />;
+    return <LoginScreen serverUrl={WEB_API_BASE} onLogin={handleLogin} />;
   }
 
   // ─── Gate: show spinner while checking stored token or resolving initial identity ───
