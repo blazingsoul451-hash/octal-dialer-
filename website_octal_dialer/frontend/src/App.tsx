@@ -1051,13 +1051,13 @@ export default function App() {
   }
 
   return (
-    <div className={`min-h-screen w-full max-w-full overflow-x-clip overflow-y-visible flex flex-col font-sans transition-colors ${
+    <div className={`h-screen w-full flex flex-col overflow-hidden font-sans transition-colors ${
       isLight ? 'bg-slate-100 text-slate-900' : 'bg-black text-slate-100'
     }`}>
 
       {/* 🛡️ Platform Support Impersonation Banner */}
       {isImpersonating && (
-        <div className="fixed top-0 left-0 right-0 z-50 h-9 bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 text-black px-4 flex items-center justify-between text-xs font-bold shadow-lg select-none">
+        <div className="w-full shrink-0 z-50 h-9 bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 text-black px-4 flex items-center justify-between text-xs font-bold shadow-lg select-none">
           <div className="flex items-center gap-2 truncate mr-2">
             <span className="truncate">
               🛡️ AUDITED PLATFORM IMPERSONATION: Acting as <strong className="font-sans">{impersonateUser || 'Company User'}</strong> ({impersonateRole || 'Company Owner'}) in <strong className="font-sans">{impersonateTenant || 'Workspace'}</strong> (By {impersonatedBy || 'SuperAdmin'})
@@ -1135,17 +1135,13 @@ export default function App() {
         />
       )}
 
-      {/* Main Octal Accounts Style Rounded Header Block (Fixed Top) */}
-      <header className={`fixed right-0 left-0 z-40 transition-all duration-300 ${
-        isImpersonating ? 'top-9' : 'top-0'
-      } ${
-        isNavExpanded ? 'md:left-56' : 'md:left-16'
-      } ${
+      {/* Main Octal Accounts Style Rounded Header Block (Top Shrink-0) */}
+      <header className={`w-full shrink-0 z-40 transition-all duration-300 ${
         isLight
           ? 'bg-[#f8fafc] text-slate-900'
           : 'bg-black text-white'
       }`}>
-        <div className={`mr-2 ml-2 sm:mr-4 sm:ml-4 md:ml-0.5 my-1.5 sm:my-2 px-3 sm:px-5 h-12 sm:h-14 rounded-2xl border flex items-center justify-between gap-2 sm:gap-4 transition-all duration-300 flex-nowrap overflow-hidden ${
+        <div className={`mx-2 sm:mx-4 my-1.5 sm:my-2 px-3 sm:px-5 h-12 sm:h-14 rounded-2xl border flex items-center justify-between gap-2 sm:gap-4 transition-all duration-300 flex-nowrap overflow-hidden ${
           isLight
             ? 'bg-white border-slate-200 shadow-md shadow-slate-200/50 text-slate-900'
             : 'bg-[#09090b] border-[#18181b] shadow-xl text-white'
@@ -1428,10 +1424,8 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Container Layout */}
-      <div className={`w-full min-h-screen flex flex-col transition-all duration-300 ${
-        isImpersonating ? 'pt-[78px] sm:pt-[82px]' : 'pt-[48px] sm:pt-[52px]'
-      }`}>
+      {/* Lower Workspace Body (Left Icon Sidebar + Main Content Area) */}
+      <div className="flex flex-1 min-h-0 min-w-0 w-full overflow-hidden relative">
 
         {/* Backdrop overlay for mobile drawer */}
         {isMobileMenuOpen && (
@@ -1441,17 +1435,15 @@ export default function App() {
           />
         )}
 
-        {/* Octal Accounts Style Fixed Left Icon Rail (Starts from Upper Edge top-0) */}
+        {/* Octal Accounts Style Left Icon Rail */}
         <nav
           data-testid="sidebar"
           onMouseEnter={() => setIsNavHovered(true)}
           onMouseLeave={() => setIsNavHovered(false)}
-          className={`fixed bottom-0 z-40 transition-all duration-300 ease-in-out border-r shadow-2xl flex flex-col justify-between select-none ${
-            isImpersonating ? 'top-9' : 'top-0'
-          } ${
+          className={`shrink-0 transition-all duration-300 ease-in-out border-r shadow-2xl flex flex-col justify-between select-none ${
             isMobileMenuOpen
-              ? 'left-0 w-64 max-w-[85vw] p-3 sm:p-4'
-              : '-left-72 md:left-0 ' + (isExpandedNav ? 'md:w-56 md:p-3' : 'md:w-16 md:p-2.5 md:items-center')
+              ? 'fixed inset-y-0 left-0 z-50 w-64 max-w-[85vw] p-3 sm:p-4'
+              : 'fixed md:static inset-y-0 md:inset-auto -left-72 md:left-0 z-40 md:z-auto h-full ' + (isExpandedNav ? 'md:w-56 md:p-3' : 'md:w-16 md:p-2.5 md:items-center')
           } ${
             isLight ? 'bg-white border-slate-200 text-slate-900 shadow-slate-300/50' : 'bg-[#09090b] border-[#18181b] text-white shadow-2xl'
           }`}
@@ -2180,7 +2172,7 @@ export default function App() {
         </nav>
 
         {/* Tab Content Panel Container */}
-        <main className={`flex-1 min-w-0 w-full overflow-x-clip overflow-y-visible transition-all duration-300 px-3 sm:px-6 py-1 sm:py-1.5 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
+        <main className="flex-1 min-w-0 max-w-full h-full overflow-y-auto overflow-x-hidden box-border p-2 sm:p-4 lg:p-6">
           {activeTab === 'dashboard' && (
             <DashboardOverview
               isLight={isLight}
