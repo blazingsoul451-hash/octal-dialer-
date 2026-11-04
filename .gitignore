@@ -70,3 +70,8 @@ desktop_octal_agent/windows/
 .reference-ui/
 test-results/
 playwright-report/
+
+# Separate standalone marketing site
+octal_marketing_site/
+
+*.tsbuildinfo
