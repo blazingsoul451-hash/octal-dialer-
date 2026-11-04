@@ -251,7 +251,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
   };
 
   return (
-    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left select-none transition-colors ${
+    <div className={`border rounded-2xl p-4 sm:p-5 shadow-2xl space-y-4 text-left select-none transition-colors ${
       isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
     }`}>
       {/* Header */}
@@ -275,7 +275,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
           type="button"
           onClick={fetchFiles}
           disabled={loading}
-          className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 flex items-center gap-1.5 transition cursor-pointer self-start sm:self-auto shadow-sm"
+          className="shrink-0 px-3.5 py-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 flex items-center gap-1.5 transition cursor-pointer self-start sm:self-auto shadow-sm"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           <span>Refresh Files</span>
@@ -297,7 +297,7 @@ export const ScraperFilesPanel: React.FC<ScraperFilesPanelProps> = ({
       )}
 
       {/* Main Scraper Dashboard Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         
         {/* Left Column: Scraper Form & Live Terminal */}
         <div className="lg:col-span-7 space-y-5">

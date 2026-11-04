@@ -31,3 +31,6 @@ Screenshots are NOT verification. "I reviewed the code" is NOT verification. If 
 4. **Window Scroll Drift:** Never call `element.scrollIntoView()` in chat/log panes (`OmnichannelUnibox.tsx`); always scroll the container ref (`containerRef.current.scrollTo(...)`).
 5. **Silent Catch Blocks:** Never write an empty `catch {}` block anywhere in frontend or backend code.
 6. **Non-ASCII Migrations:** Never put Unicode box-drawing characters or smart quotes in SQL migrations (breaks `WIN1252` clusters).
+7. **Vertical Layout Offset Drift & Free-Space Gap:** Never apply oversized vertical offsets (`pt-20`, `pt-24`, etc.) on content wrappers below fixed headers that are only 56px–64px tall. The distance between the bottom of the top header and the top of any active workspace card must never exceed 8px–10px.
+8. **Invisible Light-Mode Scrollbars:** Never allow custom scrollbars to be transparent or unstyled in Light mode. Both Light (`#cbd5e1` thumb) and Dark (`#27272a` thumb) modes must have clearly visible scrollbars so users can always see and use vertical scroll.
+9. **Laptop Viewport Height Fitting:** Workspace cards and panels must use compact padding (`p-4 sm:p-5`, `space-y-4`) to ensure full controls, action buttons, and terminals fit cleanly without bottom cutoffs on standard 1366x768 and 1440x900 screens.

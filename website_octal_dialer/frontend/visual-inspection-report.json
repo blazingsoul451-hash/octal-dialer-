@@ -1,0 +1,1055 @@
+[
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "mobile_375x812",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (375) <= innerWidth (375)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "mobile_375x812",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "laptop_1024x768",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1024) <= innerWidth (1024)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "laptop_1024x768",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "desktop_1440x900_light",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "desktop_1440x900_light",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (login)",
+    "viewport": "desktop_1440x900_light",
+    "check": "Text Contrast",
+    "verdict": "PASS",
+    "details": "Text contrast passes in light mode",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "mobile_375x812",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (375) <= innerWidth (375)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "mobile_375x812",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "laptop_1024x768",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1024) <= innerWidth (1024)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "laptop_1024x768",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "desktop_1440x900_light",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "desktop_1440x900_light",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (register)",
+    "viewport": "desktop_1440x900_light",
+    "check": "Text Contrast",
+    "verdict": "PASS",
+    "details": "Text contrast passes in light mode",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "mobile_375x812",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (375) <= innerWidth (375)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "mobile_375x812",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "laptop_1024x768",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1024) <= innerWidth (1024)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "laptop_1024x768",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "desktop_1440x900_light",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "desktop_1440x900_light",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "LoginScreen (forgot)",
+    "viewport": "desktop_1440x900_light",
+    "check": "Text Contrast",
+    "verdict": "PASS",
+    "details": "Text contrast passes in light mode",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "mobile_375x812",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (375) <= innerWidth (375)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "mobile_375x812",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "laptop_1024x768",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1024) <= innerWidth (1024)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "laptop_1024x768",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "desktop_1440x900_light",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "desktop_1440x900_light",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "App Shell & Header",
+    "viewport": "desktop_1440x900_light",
+    "check": "Text Contrast",
+    "verdict": "PASS",
+    "details": "Text contrast passes in light mode",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "mobile_375x812",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (375) <= innerWidth (375)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "mobile_375x812",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "laptop_1024x768",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1024) <= innerWidth (1024)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "laptop_1024x768",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "desktop_1440x900_light",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "desktop_1440x900_light",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "DashboardOverview",
+    "viewport": "desktop_1440x900_light",
+    "check": "Text Contrast",
+    "verdict": "PASS",
+    "details": "Text contrast passes in light mode",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "mobile_375x812",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (375) <= innerWidth (375)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "mobile_375x812",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "laptop_1024x768",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1024) <= innerWidth (1024)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "laptop_1024x768",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "desktop_1440x900_light",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "desktop_1440x900_light",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "CRMWorkspacePage",
+    "viewport": "desktop_1440x900_light",
+    "check": "Text Contrast",
+    "verdict": "PASS",
+    "details": "Text contrast passes in light mode",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "mobile_375x812",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (375) <= innerWidth (375)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "mobile_375x812",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "laptop_1024x768",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1024) <= innerWidth (1024)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "laptop_1024x768",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "desktop_1440x900_light",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "desktop_1440x900_light",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "OmnichannelUnibox",
+    "viewport": "desktop_1440x900_light",
+    "check": "Text Contrast",
+    "verdict": "PASS",
+    "details": "Text contrast passes in light mode",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "mobile_375x812",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (375) <= innerWidth (375)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "mobile_375x812",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "laptop_1024x768",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1024) <= innerWidth (1024)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "laptop_1024x768",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "desktop_1440x900_light",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "desktop_1440x900_light",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "AutoEmailer",
+    "viewport": "desktop_1440x900_light",
+    "check": "Text Contrast",
+    "verdict": "PASS",
+    "details": "Text contrast passes in light mode",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "mobile_375x812",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (375) <= innerWidth (375)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "mobile_375x812",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "tablet_768x1024_pinned",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (768) <= innerWidth (768)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "tablet_768x1024_collapsed",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "laptop_1024x768",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1024) <= innerWidth (1024)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "laptop_1024x768",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "desktop_1440x900_dark",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "desktop_1440x900_light",
+    "check": "Horizontal Overflow",
+    "verdict": "PASS",
+    "details": "scrollWidth (1440) <= innerWidth (1440)",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "desktop_1440x900_light",
+    "check": "Element Collisions",
+    "verdict": "PASS",
+    "details": "No header/action collisions detected",
+    "file": "",
+    "line": 0
+  },
+  {
+    "view": "SuperAdminPortal",
+    "viewport": "desktop_1440x900_light",
+    "check": "Text Contrast",
+    "verdict": "PASS",
+    "details": "Text contrast passes in light mode",
+    "file": "",
+    "line": 0
+  }
+]

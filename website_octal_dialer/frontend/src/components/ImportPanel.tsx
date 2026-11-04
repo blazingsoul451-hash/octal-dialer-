@@ -185,7 +185,7 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
   };
 
   return (
-    <div className={`border rounded-2xl p-6 shadow-2xl space-y-6 text-left select-none transition-colors ${
+    <div className={`border rounded-2xl p-4 sm:p-5 shadow-xl space-y-4 text-left select-none transition-colors ${
       isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
     }`}>
       <div className={`flex justify-between items-center pb-4 border-b ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
@@ -214,7 +214,7 @@ export const ImportPanel: React.FC<ImportPanelProps> = ({ onImportSuccess, serve
       {!file ? (
         <div
           onClick={triggerFileSelect}
-          className={`border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center cursor-pointer transition select-none ${
+          className={`border-2 border-dashed rounded-2xl p-6 sm:p-8 flex flex-col items-center justify-center text-center cursor-pointer transition select-none ${
             isLight
               ? 'border-slate-300 hover:border-amber-500 hover:bg-amber-50/40 bg-slate-50'
               : 'border-[#27272a] hover:border-amber-500 bg-[#121215]'

@@ -34,7 +34,8 @@ Before creating any component, inspect `src/components/`:
   3. `768x1024` with sidebar **COLLAPSED**
   4. `1024x768` (Laptop)
   5. `1440x900` (Desktop — both Dark and Light mode)
-- **Scroll Containment:** Page body (`document.documentElement.scrollWidth`) must never exceed `window.innerWidth`. Wide tables, kanban boards, and logs must sit inside an `overflow-x-auto` wrapper. Auto-scrolling feeds must use `containerRef.current.scrollTo()`, never `scrollIntoView()`.
+- **Scroll Containment & Visibility:** Page body (`document.documentElement.scrollWidth`) must never exceed `window.innerWidth`. Wide tables, kanban boards, and logs must sit inside an `overflow-x-auto` wrapper. Auto-scrolling feeds must use `containerRef.current.scrollTo()`, never `scrollIntoView()`. Custom scrollbars MUST be styled and clearly visible in BOTH Light mode (`#cbd5e1` thumb) and Dark mode (`#27272a` thumb).
+- **Top Gap & Vertical Offset Discipline:** Content wrappers below fixed headers must never have excessive `pt-20` / `pt-24` padding. Distance from bottom of header to top of active cards must be <= 10px. Cards on desktop/laptop must use `p-4 sm:p-5` with `space-y-4` so entire interfaces fit cleanly without bottom cutoffs.
 - **Test Hooks:** Preserve `data-testid` attributes on `sidebar`, `sidebar-toggle`, `breadcrumb`, `phone-status`, `tenant-selector`, `theme-toggle`, and `thread-card`.
 
 ## 4. Bundle Budget (Under 800 kB)

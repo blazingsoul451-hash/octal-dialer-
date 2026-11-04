@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Eye, EyeOff, AlertCircle, CheckCircle2, ChevronDown, Search, ShieldAlert, Mail, Send, X, MessageSquare } from 'lucide-react';
+import { Eye, EyeOff, AlertCircle, CheckCircle2, ChevronDown, Search, ShieldAlert, Mail, Send, X, MessageSquare, Zap, ArrowLeft } from 'lucide-react';
 import { type AuthIdentity, tryNormalizeStructuralRole } from '../utils/roleUtils';
+import { FamilyStyleShowcase } from './marketing/FamilyStyleShowcase';
 
 interface LoginScreenProps {
   serverUrl: string;
@@ -92,6 +93,7 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
   const [countrySearchQuery, setCountrySearchQuery] = useState('');
   const countryPickerRef = useRef<HTMLDivElement>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [showShowcase, setShowShowcase] = useState(false);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -658,6 +660,24 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
     ? '/forgot-bg.mp4' 
     : '/login-bg.mp4';
 
+  if (showShowcase) {
+    return (
+      <div className="relative min-h-screen bg-[#08080a] text-white overflow-x-clip">
+        <div className="fixed top-5 right-5 z-50 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setShowShowcase(false)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-mono font-bold text-xs uppercase tracking-wider shadow-lg shadow-amber-500/20 cursor-pointer transition-all"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Return to Sign In</span>
+          </button>
+        </div>
+        <FamilyStyleShowcase />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center p-3 sm:p-6 py-6 sm:py-8 relative overflow-x-clip overflow-y-auto bg-[#05070f] select-none font-sans">
       {/* ── Background Video (Dynamic by Screen Mode: Login, Sign Up, Forgot Password) ── */}
@@ -910,6 +930,16 @@ export function LoginScreen({ serverUrl, onLogin }: LoginScreenProps) {
             <p className="hidden md:block text-gray-200 text-sm leading-relaxed max-w-[380px]">
               Streamlined features to supercharge your sales operations. Seamlessly connect, call, and convert leads with precision, live analytics, and automated workflows.
             </p>
+            <div className="pt-3">
+              <button
+                type="button"
+                onClick={() => setShowShowcase(true)}
+                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/50 text-amber-400 hover:text-amber-300 font-mono text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-lg shadow-amber-500/10 hover:shadow-amber-500/20 active:scale-95"
+              >
+                <Zap className="w-4 h-4 animate-pulse text-amber-400" />
+                <span>⚡ Experience 3D Zestify Showcase</span>
+              </button>
+            </div>
           </div>
 
           {/* Right Panel: White Card (rounded-[25px], width 445px, padding 30px) */}

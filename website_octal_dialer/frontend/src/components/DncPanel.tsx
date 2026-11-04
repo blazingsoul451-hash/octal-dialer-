@@ -152,9 +152,9 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
   );
 
   return (
-    <div className="space-y-6 select-none text-left">
+    <div className="space-y-4 select-none text-left">
       {/* Top Banner Header */}
-      <div className={`p-6 rounded-2xl border shadow-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition-colors ${
+      <div className={`p-4 sm:p-5 rounded-2xl border shadow-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition-colors ${
         isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
       }`}>
         <div className="flex items-center gap-4">
@@ -195,7 +195,7 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
       )}
 
       {/* Add Single DNC Form */}
-      <div className={`p-6 rounded-2xl border shadow-2xl ${
+      <div className={`p-4 sm:p-5 rounded-2xl border shadow-xl ${
         isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
         <h3 className="text-xs font-mono font-black text-zinc-400 uppercase tracking-widest mb-4">
@@ -246,10 +246,10 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
       </div>
 
       {/* Suppression List Table */}
-      <div className={`p-6 rounded-2xl border shadow-2xl ${
+      <div className={`p-4 sm:p-5 rounded-2xl border shadow-xl ${
         isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#18181b]'
       }`}>
-        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-6">
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-4">
           <div className="relative w-full max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
             <input
@@ -323,7 +323,7 @@ export const DncPanel: React.FC<DncPanelProps> = ({ isLight, serverUrl, authToke
           onClick={(e) => { if (e.target === e.currentTarget) setShowBulkModal(false); }}
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
         >
-          <div className={`w-full max-w-lg p-6 rounded-2xl border shadow-2xl ${
+          <div className={`w-full max-w-lg p-4 sm:p-5 rounded-2xl border shadow-xl ${
             isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#09090b] border-[#18181b] text-white'
           }`}>
             <div className="flex justify-between items-center mb-4">

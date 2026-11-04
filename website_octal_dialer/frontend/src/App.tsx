@@ -17,7 +17,7 @@ import { LeadQueue } from './components/LeadQueue';
 import { CallLog } from './components/CallLog';
 import { DispositionModal } from './components/DispositionModal';
 import type { DispositionResult } from './components/DispositionModal';
-import { LoginScreen } from './components/LoginScreen';
+import { OctalLandingPage } from './components/marketing/OctalLandingPage';
 import { DncPanel } from './components/DncPanel';
 import { AutoEmailer } from './components/AutoEmailer';
 import { FacebookScraper } from './components/FacebookScraper';
@@ -936,7 +936,7 @@ export default function App() {
       localStorage.removeItem('octal_auth_user');
       localStorage.removeItem('octal_session_id');
     } catch {}
-    return <LoginScreen serverUrl={WEB_API_BASE} onLogin={handleLogin} />;
+    return <OctalLandingPage serverUrl={WEB_API_BASE} onLoginSuccess={handleLogin} isLight={isLight} />;
   }
 
   // ─── Gate: show spinner while checking stored token or resolving initial identity ───
@@ -1429,9 +1429,7 @@ export default function App() {
       </header>
 
       {/* Main Container Layout */}
-      <div className={`w-full min-h-screen flex flex-col transition-all duration-300 ${
-        isImpersonating ? 'pt-24 sm:pt-28' : 'pt-16 sm:pt-20'
-      }`}>
+      <div className={`w-full min-h-screen flex flex-col transition-all duration-300 ${isImpersonating ? 'pt-24 sm:pt-[106px]' : 'pt-16 sm:pt-[70px]'}`}>
 
         {/* Backdrop overlay for mobile drawer */}
         {isMobileMenuOpen && (
@@ -2180,7 +2178,7 @@ export default function App() {
         </nav>
 
         {/* Tab Content Panel Container */}
-        <main className={`flex-1 min-w-0 w-full overflow-x-clip overflow-y-visible transition-all duration-300 p-2 sm:p-5 lg:p-6 pt-1.5 sm:pt-4 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
+        <main className={`flex-1 min-w-0 w-full overflow-x-clip overflow-y-visible transition-all duration-300 p-2 sm:p-4 lg:p-5 pt-1 sm:pt-2 ${isNavExpanded ? 'ml-0 md:ml-56' : 'ml-0 md:ml-16'}`}>
           {activeTab === 'dashboard' && (
             <DashboardOverview
               isLight={isLight}

@@ -1,0 +1,62 @@
+﻿{
+    "mcpServers":  {
+                       "shadcn":  {
+                                      "args":  [
+                                                   "shadcn@latest",
+                                                   "mcp"
+                                               ],
+                                      "command":  "npx"
+                                  },
+                       "firecrawl-mcp":  {
+                                             "args":  [
+                                                          "-y",
+                                                          "firecrawl-mcp"
+                                                      ],
+                                             "env":  {
+                                                         "FIRECRAWL_API_KEY":  "YOUR_FIRECRAWL_API_KEY"
+                                                     },
+                                             "command":  "npx"
+                                         },
+                       "playwright-mcp":  {
+                                              "args":  [
+                                                           "-y",
+                                                           "@playwright/mcp@latest"
+                                                       ],
+                                              "command":  "npx"
+                                          },
+                       "21st-dev-magic":  {
+                                              "args":  [
+                                                           "-y",
+                                                           "@21st-dev/magic@latest"
+                                                       ],
+                                              "env":  {
+                                                          "TWENTYFIRST_API_KEY":  "YOUR_21ST_API_KEY"
+                                                      },
+                                              "command":  "npx"
+                                          },
+                       "figma-developer-mcp":  {
+                                                   "args":  [
+                                                                "-y",
+                                                                "figma-developer-mcp"
+                                                            ],
+                                                   "env":  {
+                                                               "FIGMA_ACCESS_TOKEN":  "YOUR_FIGMA_ACCESS_TOKEN"
+                                                           },
+                                                   "command":  "npx"
+                                               },
+                       "svgmaker-mcp":  {
+                                            "args":  [
+                                                         "-y",
+                                                         "@svgmaker/mcp"
+                                                     ],
+                                            "command":  "npx"
+                                        },
+                       "lighthouse-mcp":  {
+                                              "args":  [
+                                                           "-y",
+                                                           "lighthouse-mcp"
+                                                       ],
+                                              "command":  "npx"
+                                          }
+                   }
+}
