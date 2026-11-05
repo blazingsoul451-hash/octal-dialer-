@@ -1080,3 +1080,35 @@ CREATE INDEX IF NOT EXISTS "idx_fb_accounts_tenant" ON "fb_accounts"("tenantId",
 CREATE INDEX IF NOT EXISTS "idx_fb_groups_tenant_status" ON "fb_groups"("tenantId", "status");
 CREATE INDEX IF NOT EXISTS "idx_fb_activity_tenant_created" ON "fb_activity_log"("tenantId", "createdAt" DESC);
 CREATE INDEX IF NOT EXISTS "idx_fb_tasks_claimed" ON "fb_task_queue"("status", "claimedAt");
+
+
+-- Table: tenant_members (Team Command reporting hierarchy)
+CREATE TABLE IF NOT EXISTS "tenant_members" (
+  "id" TEXT PRIMARY KEY,
+  "tenant_id" TEXT NOT NULL,
+  "user_id" TEXT NOT NULL,
+  "role" TEXT NOT NULL DEFAULT 'agent',
+  "reports_to_user_id" TEXT,
+  "team_command_access" TEXT NOT NULL DEFAULT 'none' CHECK ("team_command_access" IN ('none', 'view', 'manage')),
+  "can_reassign_work" BOOLEAN NOT NULL DEFAULT FALSE,
+  "can_approve_quotes" BOOLEAN NOT NULL DEFAULT FALSE,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Table: crm_command_audit_logs (audit log for in-place administrative actions)
+CREATE TABLE IF NOT EXISTS "crm_command_audit_logs" (
+  "id" TEXT PRIMARY KEY,
+  "tenant_id" TEXT NOT NULL,
+  "actor_user_id" TEXT NOT NULL,
+  "actor_role" TEXT NOT NULL,
+  "target_agent_id" TEXT NOT NULL,
+  "action_type" TEXT NOT NULL,
+  "entity_type" TEXT,
+  "entity_id" TEXT,
+  "metadata" JSONB NOT NULL DEFAULT '{}'::jsonb,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS "idx_tenant_members_hierarchy" ON "tenant_members"("tenant_id", "reports_to_user_id");
+CREATE INDEX IF NOT EXISTS "idx_tenant_members_role_access" ON "tenant_members"("tenant_id", "role", "team_command_access");
+CREATE INDEX IF NOT EXISTS "idx_crm_command_audit_tenant_created" ON "crm_command_audit_logs"("tenant_id", "created_at" DESC);

@@ -4,14 +4,15 @@ import {
   Search, ArrowRight, AlertCircle, Plus,
   Activity, Layers, RefreshCw, Phone,
   Briefcase, CalendarCheck, Edit3,
-  Calculator, Settings, X, UserCheck,
-  TrendingUp, Award, CheckSquare, Video, Check,
+  Calculator, Settings, X, 
+   ShieldCheck, CheckSquare, Video, Check,
   Printer, Download
 } from 'lucide-react';
 import { LeadProfileDrawer } from './LeadProfileDrawer';
 import { CompanyProfileDrawer } from './CompanyProfileDrawer';
 import { ContactProfileDrawer } from './ContactProfileDrawer';
 import { TaskTimerBadge } from './TaskTimerBadge';
+import { TeamCommandPanel } from './TeamCommandPanel';
 import {
   CloseTaskModal,
   RescheduleTaskModal,
@@ -40,7 +41,7 @@ import type {
   CrmWorkItem,
   CrmWorkStatus,
   CrmQuote,
-  CrmPerformanceData,
+  
   CrmSearchResult
 } from '../../types/crm';
 
@@ -50,7 +51,9 @@ interface CRMWorkspacePageProps {
   authToken: string;
   campaigns: Campaign[];
   userRole?: string;
-  initialSubTab?: 'overview' | 'companies' | 'contacts' | 'leads' | 'tasks' | 'meetings' | 'client-work' | 'quotes' | 'performance' | 'activity' | 'follow-ups';
+  currentUserId?: string;
+  tenantId?: string;
+  initialSubTab?: 'overview' | 'companies' | 'contacts' | 'leads' | 'tasks' | 'meetings' | 'client-work' | 'quotes' | 'performance' | 'team_command' | 'activity' | 'follow-ups';
   onDialLead?: (phone: string, leadId: string, leadName: string) => void;
   onNavigateTab?: (tab: string) => void;
 }
@@ -61,12 +64,14 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   authToken,
   campaigns,
   userRole = 'member',
+  currentUserId,
+  tenantId,
   initialSubTab = 'overview',
   onDialLead,
   onNavigateTab: _onNavigateTab
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<
-    'overview' | 'companies' | 'contacts' | 'leads' | 'tasks' | 'meetings' | 'client-work' | 'quotes' | 'performance' | 'activity'
+    'overview' | 'companies' | 'contacts' | 'leads' | 'tasks' | 'meetings' | 'client-work' | 'quotes' | 'performance' | 'team_command' | 'activity'
   >(
     initialSubTab === 'follow-ups' ? 'tasks' : (initialSubTab as any) || 'overview'
   );
@@ -74,10 +79,24 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const decodedAuth = useMemo(() => {
+    try {
+      if (!authToken || !authToken.includes('.')) return null;
+      const base64Url = authToken.split('.')[1];
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+      return JSON.parse(jsonPayload);
+    } catch {
+      return null;
+    }
+  }, [authToken]);
+
+  const effectiveTenantId = tenantId || decodedAuth?.tenantId || '';
+  const effectiveUserId = currentUserId || decodedAuth?.sub || decodedAuth?.id || '';
+
   // Date Range for Overview Metrics & Performance
   const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7d' | '30d' | 'this_month' | 'last_month' | 'all'>('30d');
-  const [performancePeriod, setPerformancePeriod] = useState<'today' | 'this_week' | 'this_month' | 'all_time'>('this_month');
-
+  
   // CRM Data State
   const [metrics, setMetrics] = useState<CrmOverviewMetrics | null>(null);
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
@@ -87,8 +106,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
   const [meetings, setMeetings] = useState<CrmTask[]>([]);
   const [workItems, setWorkItems] = useState<CrmWorkItem[]>([]);
   const [quotes, setQuotes] = useState<CrmQuote[]>([]);
-  const [performance, setPerformance] = useState<CrmPerformanceData | null>(null);
-  const [timeline, setTimeline] = useState<CrmTimelineItem[]>([]);
+    const [timeline, setTimeline] = useState<CrmTimelineItem[]>([]);
   const [users, setUsers] = useState<Array<{ id: string; name: string }>>([]);
 
   // Active Drawers
@@ -190,8 +208,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
         meetingsRes,
         workRes,
         quotesRes,
-        perfRes,
-        timelineRes,
+                timelineRes,
         usersRes
       ] = await Promise.allSettled([
         fetch(`${serverUrl}/api/crm/overview?range=${dateRange}`, { headers }),
@@ -202,8 +219,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
         fetch(`${serverUrl}/api/crm/meetings`, { headers }),
         fetch(`${serverUrl}/api/crm/work-items`, { headers }),
         fetch(`${serverUrl}/api/crm/quotes`, { headers }),
-        fetch(`${serverUrl}/api/crm/performance?period=${performancePeriod}`, { headers }),
-        fetch(`${serverUrl}/api/crm/timeline?limit=50`, { headers }),
+                fetch(`${serverUrl}/api/crm/timeline?limit=50`, { headers }),
         fetch(`${serverUrl}/api/admin/users`, { headers })
       ]);
 
@@ -241,11 +257,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
         const json = await quotesRes.value.json();
         if (isSafe()) setQuotes(json.quotes || []);
       }
-      if (perfRes.status === 'fulfilled' && perfRes.value.ok) {
-        const json = await perfRes.value.json();
-        if (isSafe()) setPerformance(json);
-      }
-      if (timelineRes.status === 'fulfilled' && timelineRes.value.ok) {
+            if (timelineRes.status === 'fulfilled' && timelineRes.value.ok) {
         const json = await timelineRes.value.json();
         if (isSafe()) setTimeline(json.items || []);
       }
@@ -266,7 +278,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [serverUrl, authToken, dateRange, performancePeriod]);
+  }, [serverUrl, authToken, dateRange]);
 
   useEffect(() => {
     if (initialSubTab) {
@@ -622,7 +634,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
             { id: 'meetings', label: 'Meetings', icon: CalendarCheck, count: meetings.filter(m => m.status === 'pending').length },
             { id: 'client-work', label: 'Client Work', icon: Briefcase, count: workItems.filter(w => w.status !== 'COMPLETED' && w.status !== 'REJECTED').length },
             { id: 'quotes', label: 'Quotes & Pricing', icon: Calculator, count: quotes.length },
-            { id: 'performance', label: 'Performance', icon: Award, count: null },
+            { id: 'team_command', label: 'Team Command', icon: ShieldCheck, count: null },
             { id: 'activity', label: 'Unified Activity', icon: Layers, count: timeline.length },
           ].map(tab => {
             const Icon = tab.icon;
@@ -2007,142 +2019,17 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
       )}
 
       {/* ========================================================================= */}
-      {/* SUB-TAB 9: PERFORMANCE DASHBOARD (Scoped)                                 */}
+      {/* SUB-TAB 9: TEAM COMMAND                                                   */}
       {/* ========================================================================= */}
-      {activeSubTab === 'performance' && (
-        <div className="space-y-6">
-          <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-2">
-              <Award className="w-5 h-5 text-amber-500" />
-              <h2 className="text-sm font-mono font-black uppercase text-white tracking-wide">
-                Sales & Telephony Performance Scorecard
-              </h2>
-            </div>
-
-            <div className="flex items-center gap-1.5 bg-[#121216] border border-[#27272a] p-1 rounded-xl text-xs font-mono">
-              {[
-                { id: 'today', label: 'Today' },
-                { id: 'this_week', label: 'This Week' },
-                { id: 'this_month', label: 'This Month' },
-                { id: 'all_time', label: 'All Time' },
-              ].map(p => (
-                <button
-                  key={p.id}
-                  onClick={() => setPerformancePeriod(p.id as any)}
-                  className={`px-3 py-1 rounded-lg transition ${
-                    performancePeriod === p.id ? 'bg-amber-500 text-black font-bold' : 'text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Performance Summary Cards */}
-          {performance?.summary && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="p-4 bg-[#121216] border border-[#27272a] rounded-2xl space-y-1">
-                <span className="text-xs font-medium text-zinc-400">Total calls dialed</span>
-                <div className="text-3xl font-bold text-white tracking-tight">{performance.summary.totalCalls}</div>
-                <div className="text-xs font-normal text-emerald-400">
-                  {performance.summary.totalAnsweredCalls} answered ({performance.summary.answerRate}%)
-                </div>
-              </div>
-
-              <div className="p-4 bg-[#121216] border border-[#27272a] rounded-2xl space-y-1">
-                <span className="text-xs font-medium text-zinc-400">Tasks & meetings conducted</span>
-                <div className="text-3xl font-bold text-amber-400 tracking-tight">
-                  {performance.summary.totalTasksCompleted}
-                </div>
-                <div className="text-xs font-normal text-cyan-400">
-                  {performance.summary.totalMeetingsConducted} meetings held
-                </div>
-              </div>
-
-              <div className="p-4 bg-[#121216] border border-[#27272a] rounded-2xl space-y-1">
-                <span className="text-xs font-medium text-zinc-400">Client deliverables completed</span>
-                <div className="text-3xl font-bold text-blue-400 tracking-tight">
-                  {performance.summary.totalWorkCompleted}
-                </div>
-                <div className="text-xs font-normal text-zinc-400">Deliverables closed</div>
-              </div>
-
-              <div className="p-4 bg-[#121216] border border-[#27272a] rounded-2xl space-y-1">
-                <span className="text-xs font-medium text-zinc-400">Won revenue & quotes</span>
-                <div className="text-3xl font-bold text-emerald-400 tracking-tight">
-                  ${performance.summary.totalWonValue.toLocaleString()}
-                </div>
-                <div className="text-xs font-normal text-zinc-400">
-                  {performance.summary.totalQuotesWon} / {performance.summary.totalQuotesCreated} quotes won ({performance.summary.conversionRate}%)
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Agent Breakdown Leaderboard (Owner & Team Lead only) */}
-          {performance?.agentBreakdown && performance.agentBreakdown.length > 0 && (
-            <div className="p-5 bg-[#09090b] border border-[#18181b] rounded-2xl space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                  <TrendingUp className="w-4 h-4 text-amber-500" />
-                  <span>Agent performance breakdown</span>
-                </h3>
-                <span className="text-[11px] font-mono text-zinc-400">
-                  {performance.isOwner ? 'Company-wide Team' : 'My Team Members'}
-                </span>
-              </div>
-
-              <div className="border border-[#1f1f23] rounded-xl overflow-hidden bg-[#0a0a0d]">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-[#121216] border-b border-[#1f1f23] text-xs font-semibold text-zinc-400">
-                      <th className="py-3 px-4">Agent Name</th>
-                      <th className="py-3 px-4">Role</th>
-                      <th className="py-3 px-4 text-center">Leads Assigned</th>
-                      <th className="py-3 px-4 text-center">Calls Made</th>
-                      <th className="py-3 px-4 text-center">Tasks Done</th>
-                      <th className="py-3 px-4 text-center">Meetings</th>
-                      <th className="py-3 px-4 text-center">Work Done</th>
-                      <th className="py-3 px-4 text-right">Won Revenue</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#18181c] text-xs">
-                    {performance.agentBreakdown.map(agent => (
-                      <tr key={agent.userId} className="hover:bg-[#121216]/60 transition">
-                        <td className="py-3 px-4 font-bold text-white flex items-center gap-2">
-                          <UserCheck className="w-4 h-4 text-amber-400" />
-                          <span>{agent.username}</span>
-                        </td>
-                        <td className="py-3 px-4 text-zinc-400 uppercase font-mono text-[10px]">
-                          {agent.role}
-                        </td>
-                        <td className="py-3 px-4 text-center font-mono text-zinc-300">
-                          {agent.leadsAssigned}
-                        </td>
-                        <td className="py-3 px-4 text-center font-mono text-zinc-300">
-                          {agent.callsMade}
-                        </td>
-                        <td className="py-3 px-4 text-center font-mono text-zinc-300">
-                          {agent.tasksCompleted}
-                        </td>
-                        <td className="py-3 px-4 text-center font-mono text-cyan-400">
-                          {agent.meetingsConducted}
-                        </td>
-                        <td className="py-3 px-4 text-center font-mono text-blue-400">
-                          {agent.workCompleted}
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono font-bold text-emerald-400">
-                          ${agent.wonValue.toLocaleString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
+      {(activeSubTab === 'team_command' || activeSubTab === 'performance') && (
+        <TeamCommandPanel
+          tenantId={effectiveTenantId}
+          currentUserId={effectiveUserId}
+          currentUserRole={userRole}
+          isLight={isLight}
+          serverUrl={serverUrl}
+          authToken={authToken}
+        />
       )}
 
       {/* ========================================================================= */}

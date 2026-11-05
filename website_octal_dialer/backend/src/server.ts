@@ -216,6 +216,7 @@ import {
   isTrackedUrlSignatureValid as isTrackedUrlSignatureValidWithSecret
 } from './services/redirectGuard';
 import { analyticsRouter } from './analyticsRoutes';
+import { crmCommandRouter } from './crmCommandRoutes';
 import { setReplyEngineSocketIo, generateDeterministicMessageId, startImapIdleForAccount } from './services/omnichannelReplyEngine';
 import { config } from './config';
 import { getTenantScraperStatus, stopTenantScraperJob } from './googleMapsScraperService';
@@ -7584,6 +7585,7 @@ app.get(['/api/metrics/agents', '/metrics/agents'], requireAuth, async (req, res
 
 registerScraperRoutes(app, requireAuth, io);
 app.use('/api/facebook-poster', requireAuth, facebookPosterRouter);
+app.use('/api/crm', requireAuth, crmCommandRouter);
 app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (req.path.startsWith('/unibox') || req.path.startsWith('/fb-tasks') || req.path.startsWith('/webhooks/facebook')) {
     return requireAuth(req, res, next);

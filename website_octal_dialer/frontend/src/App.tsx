@@ -2018,6 +2018,8 @@ export default function App() {
                 authToken={effectiveAuthToken || ''}
                 campaigns={campaigns}
                 userRole={authIdentity?.role || userRole}
+                currentUserId={(authIdentity as any)?.id || ''}
+                tenantId={authIdentity?.tenantId}
                 onDialLead={(phone, leadId, leadName) => {
                   socketData.dialLead(phone, leadName, 30, leadId);
                   setActiveTab('dialer');
@@ -2064,6 +2066,8 @@ export default function App() {
                 authToken={effectiveAuthToken || ''}
                 campaigns={campaigns}
                 userRole={authIdentity?.role || userRole}
+                currentUserId={(authIdentity as any)?.id || ''}
+                tenantId={authIdentity?.tenantId}
                 initialSubTab="follow-ups"
                 onDialLead={(phone, leadId, leadName) => {
                   socketData.dialLead(phone, leadName, 30, leadId);
