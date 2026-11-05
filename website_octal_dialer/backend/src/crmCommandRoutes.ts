@@ -95,7 +95,7 @@ crmCommandRouter.get('/team-command/hierarchy', async (req: Request, res: Respon
 
     const { rows } = await db.query(rosterQuery, params);
 
-    const teamLeads = rows.filter((r: any) => ['team_lead', 'teamlead', 'supervisor', 'owner', 'company_owner', 'admin'].includes(r.role));
+    const teamLeads = rows.filter((r: any) => ['team_lead', 'teamlead', 'supervisor'].includes(r.role));
     const agents = rows.filter((r: any) => !['team_lead', 'teamlead', 'supervisor', 'owner', 'company_owner', 'admin'].includes(r.role));
 
     return res.json({
