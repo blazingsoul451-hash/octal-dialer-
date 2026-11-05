@@ -85,27 +85,38 @@ export const AgentDetailPane: React.FC<AgentDetailPaneProps> = ({
 
       {/* QUICK DISPATCH BAR */}
       {callerScope?.teamCommandAccess === 'manage' && (
-        <div className={`grid grid-cols-1 md:grid-cols-2 gap-3 rounded-xl border p-3 ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#18181b] border-[#27272a]'}`}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {/* Task Dispatch */}
-          <div className="space-y-1.5">
-            <div className="text-[10px] font-mono font-bold uppercase text-amber-500">Dispatch Urgent Task</div>
-            <div className="flex gap-1.5">
-              <input
-                type="text"
-                placeholder="Task title..."
-                value={newTaskTitle}
-                onChange={(e) => setNewTaskTitle(e.target.value)}
-                className={`flex-1 rounded-lg border px-2.5 py-1 text-xs ${isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-black border-[#27272a] text-white'}`}
-              />
+          <div className={`space-y-2 rounded-xl border p-3 ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#18181b] border-[#27272a]'}`}>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-amber-500">Dispatch Urgent Task</span>
               <select
                 value={newTaskPriority}
                 onChange={(e) => setNewTaskPriority(e.target.value as any)}
-                className={`rounded-lg border px-1.5 py-1 text-xs font-mono ${isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-black border-[#27272a] text-zinc-300'}`}
+                className={`rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase font-bold cursor-pointer ${isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-black border-[#27272a] text-amber-400'}`}
               >
                 <option value="normal">Normal</option>
                 <option value="high">High</option>
                 <option value="urgent">Urgent</option>
               </select>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="text"
+                placeholder="Task title or directive..."
+                value={newTaskTitle}
+                onChange={(e) => setNewTaskTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && newTaskTitle.trim()) {
+                    executeAgentAction('DISPATCH_TASK', {
+                      title: newTaskTitle.trim(),
+                      priority: newTaskPriority,
+                    });
+                    setNewTaskTitle('');
+                  }
+                }}
+                className={`min-w-0 flex-1 rounded-lg border px-2.5 py-1 text-xs ${isLight ? 'bg-white border-slate-300 text-slate-800 focus:border-amber-500' : 'bg-black border-[#27272a] text-white focus:border-amber-500'}`}
+              />
               <button
                 onClick={() => {
                   if (!newTaskTitle.trim()) return;
@@ -115,7 +126,7 @@ export const AgentDetailPane: React.FC<AgentDetailPaneProps> = ({
                   });
                   setNewTaskTitle('');
                 }}
-                className="rounded-lg bg-amber-500 hover:bg-amber-400 px-3 py-1 text-xs font-mono font-bold text-black cursor-pointer transition"
+                className="shrink-0 rounded-lg bg-amber-500 hover:bg-amber-400 px-3 py-1 text-xs font-mono font-bold text-black cursor-pointer transition shadow-sm"
               >
                 Push
               </button>
@@ -123,21 +134,23 @@ export const AgentDetailPane: React.FC<AgentDetailPaneProps> = ({
           </div>
 
           {/* Meeting Booking */}
-          <div className="space-y-1.5">
-            <div className="text-[10px] font-mono font-bold uppercase text-sky-400">Book Client Meeting</div>
-            <div className="flex gap-1.5">
-              <input
-                type="text"
-                placeholder="Agenda title..."
-                value={newMeetingTitle}
-                onChange={(e) => setNewMeetingTitle(e.target.value)}
-                className={`flex-1 rounded-lg border px-2.5 py-1 text-xs ${isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-black border-[#27272a] text-white'}`}
-              />
+          <div className={`space-y-2 rounded-xl border p-3 ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#18181b] border-[#27272a]'}`}>
+            <div className="text-[10px] font-mono font-bold uppercase tracking-wider text-sky-400">
+              Book Client Meeting
+            </div>
+            <input
+              type="text"
+              placeholder="Agenda or meeting title..."
+              value={newMeetingTitle}
+              onChange={(e) => setNewMeetingTitle(e.target.value)}
+              className={`w-full rounded-lg border px-2.5 py-1 text-xs ${isLight ? 'bg-white border-slate-300 text-slate-800 focus:border-sky-500' : 'bg-black border-[#27272a] text-white focus:border-sky-500'}`}
+            />
+            <div className="flex items-center gap-1.5">
               <input
                 type="datetime-local"
                 value={newMeetingTime}
                 onChange={(e) => setNewMeetingTime(e.target.value)}
-                className={`rounded-lg border px-1.5 py-1 text-xs font-mono ${isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-black border-[#27272a] text-zinc-300'}`}
+                className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-xs font-mono ${isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-black border-[#27272a] text-zinc-300'}`}
               />
               <button
                 onClick={() => {
@@ -148,7 +161,7 @@ export const AgentDetailPane: React.FC<AgentDetailPaneProps> = ({
                   });
                   setNewMeetingTitle('');
                 }}
-                className="rounded-lg bg-sky-500 hover:bg-sky-400 px-3 py-1 text-xs font-mono font-bold text-black cursor-pointer transition"
+                className="shrink-0 rounded-lg bg-sky-500 hover:bg-sky-400 px-3 py-1 text-xs font-mono font-bold text-black cursor-pointer transition shadow-sm"
               >
                 Book
               </button>
