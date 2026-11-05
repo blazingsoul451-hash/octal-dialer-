@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   PhoneCall, Database, Upload, History,
   Bluetooth, PlaySquare, Sun, Moon, ShieldAlert, LayoutDashboard, Menu, Mail,
-  Play, Layers, Settings, Users, FileText, Search,
-  Facebook, Share2, Terminal, Bot, Shield, CreditCard, TrendingUp,
+  Play, Layers, Settings, Users, FileText,
+  Share2, Terminal, Bot, Shield, CreditCard, TrendingUp,
   Target, Building2, ChevronDown, UserPlus, Inbox, X
 } from 'lucide-react';
 import { OmnichannelUnibox } from './components/OmnichannelUnibox';
@@ -11,7 +11,6 @@ import { useSocket } from './hooks/useSocket';
 import { DashboardOverview } from './components/DashboardOverview';
 import { ReportsPage } from './components/ReportsPage';
 import { ConnectionPanel } from './components/ConnectionPanel';
-import { ScraperFilesPanel } from './components/ScraperFilesPanel';
 import { ImportPanel } from './components/ImportPanel';
 import { LeadQueue } from './components/LeadQueue';
 import { CallLog } from './components/CallLog';
@@ -20,7 +19,6 @@ import type { DispositionResult } from './components/DispositionModal';
 import { LoginScreen } from './components/LoginScreen';
 import { DncPanel } from './components/DncPanel';
 import { AutoEmailer } from './components/AutoEmailer';
-import { FacebookScraper } from './components/FacebookScraper';
 import { FacebookAutoPoster } from './components/FacebookAutoPoster';
 import { AdminPanel } from './components/AdminPanel';
 import { LeadsTable } from './components/LeadsTable';
@@ -64,12 +62,10 @@ const SERVER_URL = WEB_API_BASE;
 
 export default function App() {
   const authInitializationStarted = useRef(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'unibox' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'scraper' | 'scraper-import' | 'scraper-settings' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-scraper' | 'fb-scraper-files' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs' | 'team-lead' | 'super-admin'>(() => {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'unibox' | 'campaigns' | 'follow-ups' | 'reports' | 'admin' | 'billing' | 'leads' | 'dialer' | 'pair' | 'upload' | 'dnc' | 'history' | 'emailer-gmail' | 'emailer-campaign' | 'emailer-templates' | 'emailer-leads' | 'fb-poster-accounts' | 'fb-poster-campaigns' | 'fb-poster-scheduler' | 'fb-poster-joiner' | 'fb-poster-logs' | 'team-lead' | 'super-admin'>(() => {
     if (typeof window !== 'undefined') {
       const p = window.location.pathname.toLowerCase();
-      if (p.startsWith('/scraper') || p.startsWith('/google-scraper')) return 'scraper';
-      if (p.startsWith('/fb-scraper')) return 'fb-scraper';
-      if (p.startsWith('/emailer') || p.startsWith('/email')) return 'emailer-campaign';
+                  if (p.startsWith('/emailer') || p.startsWith('/email')) return 'emailer-campaign';
       if (p.startsWith('/dialer')) return 'dialer';
       if (p.startsWith('/unibox') || p.startsWith('/inbox')) return 'unibox';
       if (p.startsWith('/crm')) return 'crm';
@@ -256,9 +252,7 @@ export default function App() {
     octalDialer: false,
     leads: false,
     reports: false,
-    googleScraper: false,
     autoEmailer: false,
-    facebookScraper: false,
     facebookPoster: false
   });
 
@@ -402,39 +396,31 @@ export default function App() {
 
   const [openAccordion, setOpenAccordion] = useState<Record<string, boolean>>({
     octalDialer: true,
-    googleScraper: false,
     autoEmailer: false,
-    facebookScraper: false,
     facebookPoster: false
   });
 
   // Synchronize accordion open/collapse state with active tab
   useEffect(() => {
     const isDialerSubTab = ['dialer', 'pair', 'upload', 'dnc', 'history'].includes(activeTab);
-    const isScraperSubTab = ['scraper', 'scraper-import', 'scraper-settings'].includes(activeTab);
-    const isEmailerSubTab = ['emailer-gmail', 'emailer-campaign', 'emailer-templates', 'emailer-leads'].includes(activeTab);
-    const isFbScraperSubTab = ['fb-scraper', 'fb-scraper-files'].includes(activeTab);
-    const isFbPosterSubTab = ['fb-poster-accounts', 'fb-poster-campaigns', 'fb-poster-scheduler', 'fb-poster-joiner', 'fb-poster-logs'].includes(activeTab);
+        const isEmailerSubTab = ['emailer-gmail', 'emailer-campaign', 'emailer-templates', 'emailer-leads'].includes(activeTab);
+        const isFbPosterSubTab = ['fb-poster-accounts', 'fb-poster-campaigns', 'fb-poster-scheduler', 'fb-poster-joiner', 'fb-poster-logs'].includes(activeTab);
 
     if (isDialerSubTab) {
-      setOpenAccordion({ octalDialer: true, googleScraper: false, autoEmailer: false, facebookScraper: false, facebookPoster: false });
-    } else if (isScraperSubTab) {
-      setOpenAccordion({ octalDialer: false, googleScraper: true, autoEmailer: false, facebookScraper: false, facebookPoster: false });
-    } else if (isEmailerSubTab) {
-      setOpenAccordion({ octalDialer: false, googleScraper: false, autoEmailer: true, facebookScraper: false, facebookPoster: false });
-    } else if (isFbScraperSubTab) {
-      setOpenAccordion({ octalDialer: false, googleScraper: false, autoEmailer: false, facebookScraper: true, facebookPoster: false });
-    } else if (isFbPosterSubTab) {
-      setOpenAccordion({ octalDialer: false, googleScraper: false, autoEmailer: false, facebookScraper: false, facebookPoster: true });
+      setOpenAccordion({ octalDialer: true, autoEmailer: false, facebookPoster: false });
+        } else if (isEmailerSubTab) {
+      setOpenAccordion({ octalDialer: false, autoEmailer: true, facebookPoster: false });
+        } else if (isFbPosterSubTab) {
+      setOpenAccordion({ octalDialer: false, autoEmailer: false, facebookPoster: true });
     } else {
-      setOpenAccordion({ octalDialer: false, googleScraper: false, autoEmailer: false, facebookScraper: false, facebookPoster: false });
+      setOpenAccordion({ octalDialer: false, autoEmailer: false, facebookPoster: false });
     }
   }, [activeTab]);
 
   const toggleAccordion = (key: string, e: React.MouseEvent) => {
     e.stopPropagation();
     // Toggle accordion open/closed
-    const newState: Record<string, boolean> = { octalDialer: false, googleScraper: false, autoEmailer: false, facebookScraper: false, facebookPoster: false };
+    const newState: Record<string, boolean> = { octalDialer: false, autoEmailer: false, facebookPoster: false };
     newState[key] = !openAccordion[key];
     setOpenAccordion(newState);
 
@@ -442,13 +428,9 @@ export default function App() {
     if (newState[key]) {
       if (key === 'octalDialer') {
         setActiveTab('dialer');
-      } else if (key === 'googleScraper') {
-        setActiveTab('scraper');
-      } else if (key === 'autoEmailer') {
+            } else if (key === 'autoEmailer') {
         setActiveTab('emailer-gmail');
-      } else if (key === 'facebookScraper') {
-        setActiveTab('fb-scraper');
-      } else if (key === 'facebookPoster') {
+            } else if (key === 'facebookPoster') {
         setActiveTab('fb-poster-accounts');
       }
     }
@@ -797,9 +779,7 @@ export default function App() {
           if (verifiedRole === 'platform_admin' || verifiedRole === 'superadmin') {
             setUserPermissions({
               octalDialer: true,
-              googleScraper: true,
               autoEmailer: true,
-              facebookScraper: true,
               facebookPoster: true,
               crm: true,
               campaigns: true,
@@ -1768,139 +1748,6 @@ export default function App() {
                 </div>
                 )}
 
-                {/* Google Maps Scraper Group */}
-                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.googleScraper || userPermissions.scraper) && (
-                <div className="space-y-1">
-                  <button
-                    onClick={(e) => toggleAccordion('googleScraper', e)}
-                    className={`w-full flex items-center justify-between pl-2.5 pr-2 py-1.5 rounded-lg transition-all duration-300 cursor-pointer select-none ${
-                      openAccordion.googleScraper
-                        ? isLight
-                          ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30 shadow-sm'
-                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20 shadow-sm'
-                        : isLight
-                          ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
-                          : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Search className={`w-4 h-4 shrink-0 ${openAccordion.googleScraper ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
-                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-xs font-extrabold select-none">
-                        <span className={openAccordion.googleScraper ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
-                          MAPS
-                        </span>
-                        <span className="bg-gradient-to-r from-amber-500 to-amber-600 dark:from-amber-400 dark:to-amber-500 bg-clip-text text-transparent font-black">
-                          SCRAPER
-                        </span>
-                      </div>
-                    </div>
-                    <span className={`font-bold text-[10px] ${openAccordion.googleScraper ? 'text-amber-500' : (isLight ? 'text-slate-500' : 'text-slate-400')}`}>
-                      {openAccordion.googleScraper ? '−' : '+'}
-                    </span>
-                  </button>
-                  <div className={`grid transition-all duration-300 ease-in-out ${
-                    openAccordion.googleScraper ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'
-                  }`}>
-                    <div className="overflow-hidden">
-                      <div className="pl-2 space-y-1 border-l border-slate-300 dark:border-slate-800 ml-3 pt-1 pb-1.5">
-                        {[
-                          { id: 'scraper', label: 'Google Scraper', icon: Search },
-                          { id: 'scraper-import', label: 'Import Scraped Leads', icon: Upload },
-                          { id: 'scraper-settings', label: 'Scraper Settings', icon: Settings },
-                        ].map((item, idx) => {
-                          const Icon = item.icon;
-                          const active = activeTab === item.id;
-                          return (
-                            <button
-                              key={item.label + idx}
-                              onClick={() => setActiveTab(item.id as any)}
-                              className={`w-full flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md text-xs font-sans font-medium transition-all duration-300 cursor-pointer ${
-                                active
-                                  ? isLight
-                                    ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
-                                    : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500'
-                                  : isLight
-                                    ? 'text-slate-700 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5'
-                                    : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
-                              }`}
-                            >
-                              <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
-                              <span className="truncate">{item.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                )}
-
-                {/* Facebook Scraper Group */}
-                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.facebookScraper || userPermissions['fb-scraper']) && (
-                <div className="space-y-1">
-                  <button
-                    onClick={(e) => toggleAccordion('facebookScraper', e)}
-                    className={`w-full flex items-center justify-between pl-2.5 pr-2 py-1.5 rounded-lg transition-all duration-300 cursor-pointer select-none ${
-                      openAccordion.facebookScraper
-                        ? isLight
-                          ? 'bg-amber-500/10 text-amber-900 border border-amber-500/30 shadow-sm'
-                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20 shadow-sm'
-                        : isLight
-                          ? 'text-slate-800 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5 shadow-sm'
-                          : 'text-slate-200 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5 shadow-sm'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Facebook className={`w-4 h-4 shrink-0 ${openAccordion.facebookScraper ? 'text-amber-500' : (isLight ? 'text-slate-700' : 'text-slate-300')}`} />
-                      <div className="flex items-center gap-0.5 font-sans tracking-tight text-xs font-extrabold select-none">
-                        <span className={openAccordion.facebookScraper ? 'text-amber-500' : (isLight ? 'text-slate-800' : 'text-white')}>
-                          FB
-                        </span>
-                        <span className="bg-gradient-to-r from-amber-500 to-amber-600 dark:from-amber-400 dark:to-amber-500 bg-clip-text text-transparent font-black">
-                          SCRAPER
-                        </span>
-                      </div>
-                    </div>
-                    <span className={`font-bold text-[10px] ${openAccordion.facebookScraper ? 'text-amber-500' : (isLight ? 'text-slate-500' : 'text-slate-400')}`}>
-                      {openAccordion.facebookScraper ? '−' : '+'}
-                    </span>
-                  </button>
-                  <div className={`grid transition-all duration-300 ease-in-out ${
-                    openAccordion.facebookScraper ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'
-                  }`}>
-                    <div className="overflow-hidden">
-                      <div className="pl-2 space-y-1 border-l border-slate-300 dark:border-slate-800 ml-3 pt-1 pb-1.5">
-                        {[
-                          { id: 'fb-scraper', label: 'FB Group Scraper', icon: Facebook },
-                          { id: 'fb-scraper-files', label: 'Extracted Files', icon: FileText },
-                        ].map((item, idx) => {
-                          const Icon = item.icon;
-                          const active = activeTab === item.id;
-                          return (
-                            <button
-                              key={item.label + idx}
-                              onClick={() => setActiveTab(item.id as any)}
-                              className={`w-full flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md text-xs font-sans font-medium transition-all duration-300 cursor-pointer ${
-                                active
-                                  ? isLight
-                                    ? 'bg-amber-500/15 text-amber-950 font-bold border-l-3 border-amber-500'
-                                    : 'bg-amber-500/15 text-amber-400 font-bold border-l-3 border-amber-500'
-                                  : isLight
-                                    ? 'text-slate-700 hover:text-amber-600 hover:bg-amber-500/5 hover:translate-x-0.5'
-                                    : 'text-slate-300 hover:text-amber-400 hover:bg-amber-500/10 hover:translate-x-0.5'
-                              }`}
-                            >
-                              <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-amber-500' : 'text-slate-400'}`} />
-                              <span className="truncate">{item.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                )}
-
                 {/* Auto Emailer Group */}
                 {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.autoEmailer) && (
                 <div className="space-y-1">
@@ -2059,44 +1906,6 @@ export default function App() {
                     }`}
                   >
                     <PhoneCall className="w-5 h-5" />
-                  </button>
-                )}
-
-                {/* Google Maps Scraper Main Module */}
-                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.googleScraper || userPermissions.scraper) && (
-                  <button
-                    onClick={() => setActiveTab('scraper')}
-                    title="Google Maps Scraper"
-                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
-                      ['scraper', 'scraper-import', 'scraper-settings'].includes(activeTab)
-                        ? isLight
-                          ? 'bg-amber-500/20 text-amber-800 border-amber-500 shadow-sm'
-                          : 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-sm'
-                        : isLight
-                          ? 'text-slate-600 hover:bg-slate-100 hover:text-amber-600 border-transparent'
-                          : 'text-slate-400 hover:text-white hover:bg-slate-800/60 border-transparent'
-                    }`}
-                  >
-                    <Search className="w-5 h-5" />
-                  </button>
-                )}
-
-                {/* Facebook Scraper Main Module */}
-                {(userRole === 'platform_admin' || userRole === 'superadmin' || userRole === 'admin' || userPermissions.facebookScraper || userPermissions['fb-scraper']) && (
-                  <button
-                    onClick={() => setActiveTab('fb-scraper')}
-                    title="Facebook Scraper"
-                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
-                      ['fb-scraper', 'fb-scraper-files'].includes(activeTab)
-                        ? isLight
-                          ? 'bg-amber-500/20 text-amber-800 border-amber-500 shadow-sm'
-                          : 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-sm'
-                        : isLight
-                          ? 'text-slate-600 hover:bg-slate-100 hover:text-amber-600 border-transparent'
-                          : 'text-slate-400 hover:text-white hover:bg-slate-800/60 border-transparent'
-                    }`}
-                  >
-                    <Facebook className="w-5 h-5" />
                   </button>
                 )}
 
@@ -2449,26 +2258,6 @@ export default function App() {
             />
           )}
 
-          {['scraper', 'scraper-import', 'scraper-settings'].includes(activeTab) && (
-            (userRole === 'admin' || userRole === 'platform_admin' || userPermissions.googleScraper) ? (
-              <ScraperFilesPanel
-                isLight={isLight}
-                onImportSuccess={handleImportSuccess}
-                serverUrl={SERVER_URL}
-                authToken={effectiveAuthToken || ''}
-                activeSubTab={activeTab}
-              />
-            ) : (
-              <div className={`p-8 border rounded-2xl text-center space-y-3 ${isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'}`}>
-                <Database className="w-8 h-8 text-amber-500 mx-auto" />
-                <h3 className="text-base font-bold font-display">Google Maps Scraper Restricted</h3>
-                <p className="text-xs font-mono text-slate-500 max-w-md mx-auto">
-                  Your user account does not currently have permissions enabled for the Google Scraper module. Contact your administrator to request access.
-                </p>
-              </div>
-            )
-          )}
-
           {activeTab === 'upload' && (
             <ImportPanel
               isLight={isLight}
@@ -2509,16 +2298,7 @@ export default function App() {
           )}
 
 
-          {['fb-scraper', 'fb-scraper-files'].includes(activeTab) && (
-            <div className="space-y-4">
-              <FacebookScraper
-                isLight={isLight}
-                serverUrl={SERVER_URL}
-                authToken={effectiveAuthToken || ''}
-                activeSubTab={activeTab}
-              />
-            </div>
-          )}
+
 
           {['fb-poster-accounts', 'fb-poster-campaigns', 'fb-poster-scheduler', 'fb-poster-joiner', 'fb-poster-logs'].includes(activeTab) && (
             (userRole === 'admin' || userRole === 'platform_admin' || userPermissions.facebookPoster) ? (

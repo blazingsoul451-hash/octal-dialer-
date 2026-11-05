@@ -28,7 +28,7 @@ interface DashboardOverviewProps {
   phoneConnected: boolean;
   phoneDeviceName?: string | null;
   campaigns: Campaign[];
-  onNavigateTab: (tab: 'dialer' | 'upload' | 'scraper' | 'dnc' | 'pair' | 'history' | 'crm') => void;
+  onNavigateTab: (tab: 'dialer' | 'upload' | 'dnc' | 'pair' | 'history' | 'crm') => void;
   onSelectCampaign: (campId: string) => void;
 }
 
