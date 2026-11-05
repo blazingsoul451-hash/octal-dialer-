@@ -627,6 +627,7 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
         <div className={`flex items-center gap-2 pt-6 border-t mt-6 select-none overflow-x-auto no-scrollbar flex-nowrap sm:flex-wrap pb-1.5 ${isLight ? 'border-slate-200' : 'border-[#18181b]'}`}>
           {[
             { id: 'overview', label: 'CRM Overview', icon: Activity, count: null },
+            { id: 'team_command', label: 'Team Command', icon: ShieldCheck, count: null },
             { id: 'companies', label: 'Companies', icon: Building2, count: companies.length },
             { id: 'contacts', label: 'Contacts', icon: Users, count: contacts.length },
             { id: 'leads', label: 'Canonical Leads', icon: Phone, count: leads.length },
@@ -634,7 +635,6 @@ export const CRMWorkspacePage: React.FC<CRMWorkspacePageProps> = ({
             { id: 'meetings', label: 'Meetings', icon: CalendarCheck, count: meetings.filter(m => m.status === 'pending').length },
             { id: 'client-work', label: 'Client Work', icon: Briefcase, count: workItems.filter(w => w.status !== 'COMPLETED' && w.status !== 'REJECTED').length },
             { id: 'quotes', label: 'Quotes & Pricing', icon: Calculator, count: quotes.length },
-            { id: 'team_command', label: 'Team Command', icon: ShieldCheck, count: null },
             { id: 'activity', label: 'Unified Activity', icon: Layers, count: timeline.length },
           ].map(tab => {
             const Icon = tab.icon;
